@@ -55,7 +55,12 @@ jobs:
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13
+          version: v2.15.0
+          # Build the linter with the job's Go toolchain: a prebuilt binary
+          # made with an older Go cannot read newer export data and fails
+          # every package with "export data version ... is greater than
+          # maximum supported version".
+          install-mode: goinstall
       - name: Test (race)
         run: go test -race -count=1 ./...
       - name: Fuzz
