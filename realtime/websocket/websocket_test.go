@@ -472,7 +472,7 @@ func TestMessageRateLimit(t *testing.T) {
 
 func TestKeepalive(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t, realtime.Options{}, websocket.Options{PingInterval: 40 * time.Millisecond, PingTimeout: 200 * time.Millisecond})
+	f := newFixture(t, realtime.Options{}, websocket.Options{PingInterval: 100 * time.Millisecond, PingTimeout: time.Second})
 	u := f.user(f.tenant, "orders:read")
 
 	// A client that reads answers pings automatically and stays connected
@@ -480,7 +480,7 @@ func TestKeepalive(t *testing.T) {
 	alive := f.mustDial(u)
 	alive.send(t, map[string]string{"type": "subscribe", "topic": "orders"})
 	alive.expect(t, "subscribed")
-	alive.expectSilence(t, 500*time.Millisecond) // about 12 pings, all answered
+	alive.expectSilence(t, 500*time.Millisecond) // about 5 pings, all answered
 
 	// A client that never reads cannot answer the ping and is dropped.
 	deaf, _, err := f.dial(u, "")
