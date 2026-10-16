@@ -63,7 +63,11 @@ func NewWithMiddleware(
 	}
 	// Outermost first: every response, including 413 and recovered panics,
 	// carries the security headers and the request ID.
-	wrapped := securityHeaders(cfg, requestID(logger, recoverer(limitBody(cfg.HTTP.MaxBodyBytes, wrappedHandler))))
+	wrapped := trustedProxy(
+		cfg.HTTP.TrustedProxyCIDRs,
+		requestID(logger, recoverer(limitBody(cfg.HTTP.MaxBodyBytes, wrappedHandler))),
+	)
+	wrapped = securityHeaders(cfg, wrapped)
 	return &Server{
 		server: &http.Server{
 			Addr:              cfg.HTTP.Address,

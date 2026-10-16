@@ -45,9 +45,11 @@ disclosure, **D**enial of service, **E**levation of privilege.
   that terminates TLS. If clients can reach the port directly, traffic is
   plain HTTP and HSTS gives no protection. Forge cannot verify this; it is an
   operator responsibility.
-- Forge does not interpret `X-Forwarded-*` headers, so a client cannot spoof
-  its address or scheme through them; equally, the real client IP is not
-  available to handlers.
+- Forwarded client address and scheme are ignored by default. When
+  `FORGE_HTTP_TRUSTED_PROXIES` is configured, only a socket peer within those
+  CIDRs can supply `X-Forwarded-For`/`X-Forwarded-Proto`; malformed chains and
+  multi-valued schemes are ignored. The operator must ensure the proxy strips
+  client-supplied forwarding headers or appends the actual socket peer.
 - The environment and mounted files are controlled by the operator.
 - The database server (or the host and volume holding a SQLite file) and its
   administrators are trusted. Forge protects
@@ -68,6 +70,7 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | Response header injection | T | Framework header values are constants or generated UUIDs; incoming `X-Request-ID` is ignored. `net/http` neutralises CR/LF in header values when writing. |
 | Clickjacking, MIME sniffing, referrer leakage | I, T | `X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`, `nosniff`, `Referrer-Policy: no-referrer`. |
 | Protocol downgrade | T, I | HSTS in `tls` and `trusted-proxy` modes; `production` rejects `plain`. |
+| Spoofed forwarded client address or scheme | S, T | Forwarded headers are ignored unless the socket peer matches an explicitly configured trusted-proxy CIDR; malformed or oversized values are ignored. The edge must overwrite scheme and append/replace the client chain. |
 | Handler panic crashes process or leaks stack | D, I | Recovery middleware logs the stack server-side and returns a generic JSON `500`. |
 | Error logs flooded by disconnecting clients | D, R | `web.Error` logs client cancellations at debug level; real `5xx` failures are logged at error level with their cause. |
 | Internal error details returned to clients | I | `web.Error` serializes only the `code` and `message` of a `*fault.Error`; any other error becomes a generic `500 internal_error`. Causes and metadata are never serialized. `fault.Error.Error()` omits the cause. Readiness responses expose check names and pass/fail only. Router `400`/`404`/`405` use the same format. |

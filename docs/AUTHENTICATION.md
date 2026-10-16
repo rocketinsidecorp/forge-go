@@ -144,9 +144,11 @@ in bounded batches using `SKIP LOCKED`, so multiple cleanup workers can run
 without blocking each other.
 
 A blocked login returns `login_throttled` with HTTP `429`; the HTTP adapter
-also sends `Retry-After`. Source detection uses the socket peer from
-`RemoteAddr` only. Forge does not trust `X-Forwarded-For` until an explicit
-trusted-proxy policy exists.
+also sends `Retry-After`. Source detection uses the socket peer by default.
+When `FORGE_HTTP_TRUSTED_PROXIES` explicitly allowlists the proxy, it uses the
+validated client address from `web.ClientIP`; malformed forwarding data falls
+back to the proxy peer. See [DEPLOYMENT.md](DEPLOYMENT.md#transport-trusted-proxy-vs-tls)
+for the required edge-proxy header behavior.
 
 See [ADR 0011](adr/0011-login-throttling.md).
 

@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ func TestLoadWithLookup(t *testing.T) {
 		"FORGE_ENV":                      "staging",
 		"FORGE_HTTP_ADDR":                "0.0.0.0:9000",
 		"FORGE_HTTP_TRANSPORT":           "trusted-proxy",
+		"FORGE_HTTP_TRUSTED_PROXIES":     "10.0.0.9/24, 2001:db8::/32",
 		"FORGE_HTTP_READ_HEADER_TIMEOUT": "3s",
 		"FORGE_HTTP_MAX_BODY_BYTES":      "2048",
 		"FORGE_AUTH_MFA_KEY":             "example-mfa-key",
@@ -27,6 +29,27 @@ func TestLoadWithLookup(t *testing.T) {
 	}
 	if cfg.Auth.MFAKey.Reveal() != "example-mfa-key" || strings.Contains(cfg.Auth.MFAKey.String(), "example-mfa-key") {
 		t.Fatalf("MFA key was not loaded/redacted")
+	}
+	if len(cfg.HTTP.TrustedProxyCIDRs) != 2 || cfg.HTTP.TrustedProxyCIDRs[0] != netip.MustParsePrefix("10.0.0.0/24") {
+		t.Fatalf("trusted proxy CIDRs were not parsed and masked: %v", cfg.HTTP.TrustedProxyCIDRs)
+	}
+}
+
+func TestLoadRejectsInvalidTrustedProxyCIDRs(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"", "10.0.0.1", "not-a-cidr", "0.0.0.0/0", "::/0", "::ffff:192.0.2.1/128", "10.0.0.0/24,"} {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			_, err := config.LoadWithLookup(func(key string) (string, bool) {
+				if key == "FORGE_HTTP_TRUSTED_PROXIES" {
+					return value, true
+				}
+				return "", false
+			})
+			if err == nil || strings.Contains(err.Error(), value) && value != "" {
+				t.Fatalf("invalid proxy list error=%v", err)
+			}
+		})
 	}
 }
 

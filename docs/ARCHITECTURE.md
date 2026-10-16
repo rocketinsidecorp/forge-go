@@ -140,23 +140,33 @@ Wraps the router in a fixed security/lifecycle chain, outermost first:
    `Strict-Transport-Security: max-age=31536000; includeSubDomains` when the
    transport is `tls` or `trusted-proxy`. The CSP targets JSON APIs; serving
    HTML requires overriding it in the handler.
-2. **Request ID** - generates a UUIDv7, sets `X-Request-ID` on the response,
+2. **Trusted proxy metadata** - when `FORGE_HTTP_TRUSTED_PROXIES` is set,
+   accepts bounded `X-Forwarded-For` and a single `X-Forwarded-Proto` value
+   only when the socket peer matches an allowlisted CIDR. It exposes validated
+   values through `web.ClientIP` and `web.RequestScheme`; untrusted or malformed
+   forwarding values are ignored.
+3. **Request ID** - generates a UUIDv7, sets `X-Request-ID` on the response,
    and stores the ID and a logger carrying `request_id` in the request
    context (`web.RequestID`, `web.Logger`). Incoming `X-Request-ID` headers
    are not trusted or reused. If ID generation fails, the request is answered
    with a JSON `500`.
-3. **Panic recovery** - logs method, path, panic value, and stack with the
+4. **Panic recovery** - logs method, path, panic value, and stack with the
    request logger; responds `500` with the JSON error body
    (`internal_error`). `http.ErrAbortHandler` is re-panicked.
-4. **Body limit** - rejects a declared `Content-Length` above
+5. **Body limit** - rejects a declared `Content-Length` above
    `FORGE_HTTP_MAX_BODY_BYTES` with a JSON `413` (`body_too_large`), and wraps
    the body in `http.MaxBytesReader` for undeclared or chunked bodies.
-5. **Application middleware** - zero or more optional handlers registered
+6. **Application middleware** - zero or more optional handlers registered
    with `forge.WithHTTPMiddleware`. They run in declaration order, outermost
    first among custom middleware, after the body limit and inside panic
    recovery. They receive the framework request ID and may add request-scoped
    context for tracing, metrics, or application-specific behavior.
-6. **Router.**
+7. **Router.**
+
+Applications may opt into OpenTelemetry server spans and HTTP metrics with the
+separate `observability` package. It uses route templates for bounded
+cardinality and adds no exporter or external service; see
+[OBSERVABILITY.md](OBSERVABILITY.md).
 
 Because security headers and the request ID come first, every response,
 including `413`, recovered panics, and router errors, carries them. Every
@@ -172,8 +182,9 @@ those requests' contexts so they release resources such as database
 connections.
 
 `trusted-proxy` mode means "TLS is terminated upstream". It enables HSTS and
-satisfies the production transport rule. It does not rewrite the client
-address or scheme from `X-Forwarded-*` headers.
+satisfies the production transport rule. It does not trust any proxy by itself:
+configure explicit `FORGE_HTTP_TRUSTED_PROXIES` CIDRs before forwarded address
+or scheme metadata is accepted.
 
 ### web
 

@@ -28,9 +28,10 @@ bucket. This lets a legitimate user recover from prior failed passwords while
 still limiting password-spraying attempts from one source across many
 accounts.
 
-The HTTP adapter derives the source only from `RemoteAddr`. It does not trust
-`X-Forwarded-For` or similar headers until Forge has an explicit trusted-proxy
-policy.
+The HTTP adapter derives the source from the socket peer by default. If
+`FORGE_HTTP_TRUSTED_PROXIES` is configured, it uses only the validated client
+address produced by the HTTP server's trusted-proxy middleware; malformed
+forwarding data falls back to the socket peer.
 
 ## Consequences
 
@@ -42,4 +43,5 @@ policy.
 - PostgreSQL deployments can share throttle state immediately without Redis.
 - Expired PostgreSQL buckets must be pruned periodically; Phase 4 scheduling
   can automate that later.
-- Trusted reverse-proxy address handling remains a separate explicit feature.
+- Forwarded headers remain ignored unless the operator explicitly configures
+  proxy CIDRs and ensures the proxy sanitizes or appends forwarding headers.

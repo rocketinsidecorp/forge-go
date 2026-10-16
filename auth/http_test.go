@@ -7,10 +7,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/fabriciobonjorno/forge-go/web"
 )
 
 type revokeStub struct {
@@ -157,6 +159,19 @@ func TestRequestSourceUsesPeerAddressNotForwardedHeaders(t *testing.T) {
 	request.Header.Set("X-Forwarded-For", "198.51.100.9")
 	if got := requestSource(request); got != "203.0.113.7" {
 		t.Fatalf("source=%q", got)
+	}
+}
+
+func TestRequestSourceUsesValidatedProxyClientAddress(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodPost, "/login", nil)
+	request.RemoteAddr = "10.0.0.2:4321"
+	request = request.WithContext(web.WithProxyInfo(request.Context(), web.ProxyInfo{
+		ClientIP: netip.MustParseAddr("198.51.100.9"),
+		Scheme:   "https",
+	}))
+	if got := requestSource(request); got != "198.51.100.9" {
+		t.Fatalf("request source=%q, want trusted client address", got)
 	}
 }
 

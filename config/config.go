@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 )
 
@@ -27,6 +28,7 @@ const (
 type HTTP struct {
 	Address           string
 	Transport         TransportMode
+	TrustedProxyCIDRs []netip.Prefix
 	TLSCertFile       string
 	TLSKeyFile        string
 	ReadHeaderTimeout time.Duration
@@ -115,6 +117,11 @@ func (c Config) Validate() error {
 	}
 	if c.HTTP.Transport == TransportTLS && (c.HTTP.TLSCertFile == "" || c.HTTP.TLSKeyFile == "") {
 		return errors.New("TLS transport requires certificate and key files")
+	}
+	for _, prefix := range c.HTTP.TrustedProxyCIDRs {
+		if !prefix.IsValid() || prefix.Bits() == 0 || prefix.Addr().Is4In6() {
+			return errors.New("trusted proxy CIDRs must be valid, specific IPv4 or IPv6 prefixes")
+		}
 	}
 	if c.HTTP.Address == "" {
 		return errors.New("HTTP address is required")

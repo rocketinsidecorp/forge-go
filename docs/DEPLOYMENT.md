@@ -119,6 +119,7 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_ENV`                         | `development`    | `development`, `test`, `staging`, `production` |
 | `FORGE_HTTP_ADDR`                   | `127.0.0.1:8080` | Listen address. Use `0.0.0.0:PORT` in containers. |
 | `FORGE_HTTP_TRANSPORT`              | `plain`          | `plain`, `tls`, `trusted-proxy`. `production` rejects `plain`. |
+| `FORGE_HTTP_TRUSTED_PROXIES`        | (empty)          | Comma-separated proxy IPv4/IPv6 CIDRs. Only peers matching these prefixes may supply trusted forwarding metadata. |
 | `FORGE_HTTP_TLS_CERT_FILE`          | (empty)          | Required when transport is `tls` |
 | `FORGE_HTTP_TLS_KEY_FILE`           | (empty)          | Required when transport is `tls` |
 | `FORGE_HTTP_READ_HEADER_TIMEOUT`    | `5s`             | Time allowed to read request headers |
@@ -166,8 +167,28 @@ Requirements:
 - The application port must be reachable **only** through the proxy. Do not
   publish it to the internet or to untrusted networks. The proxy must redirect
   or reject plain HTTP from clients.
-- Forge does not derive client IP or scheme from `X-Forwarded-For` or
-  `X-Forwarded-Proto`; `r.RemoteAddr` is the proxy's address.
+- Configure `FORGE_HTTP_TRUSTED_PROXIES` with the proxy's source CIDRs when
+  handlers need the real client address or external scheme. The default is
+  empty, so Forge ignores forwarding headers until an explicit allowlist is
+  supplied.
+- The proxy must overwrite incoming `X-Forwarded-Proto` and append the actual
+  socket peer to `X-Forwarded-For` (or replace the header). Forge walks the
+  address chain right-to-left, skipping configured proxy CIDRs and choosing
+  the first untrusted address. Malformed, oversized (over 4 KiB), or longer
+  than 32-hop chains are ignored. The scheme is accepted only as one `http` or
+  `https` value.
+- `web.ClientIP(r)` returns the validated forwarded client IP, or the direct
+  socket peer when forwarding metadata is absent or invalid.
+  `web.RequestScheme(r)` returns a validated forwarded scheme or derives it
+  from the direct TLS connection. Authentication throttling uses the same
+  validated client IP.
+
+Example for a proxy reachable from the container network:
+
+```sh
+FORGE_HTTP_TRANSPORT=trusted-proxy
+FORGE_HTTP_TRUSTED_PROXIES=10.42.0.0/16,2001:db8:42::/48
+```
 
 **`tls`**: Forge terminates TLS itself using Go's `crypto/tls` defaults.
 

@@ -118,8 +118,10 @@ Core changes made alongside:
 
 Not scheduled in a specific phase unless noted.
 
-- `X-Forwarded-For` / `X-Forwarded-Proto` are not interpreted; handlers see
-  the proxy's address behind `trusted-proxy`.
+- Forwarded proxy metadata is opt-in through `FORGE_HTTP_TRUSTED_PROXIES`;
+  deployment still depends on the edge stripping/overwriting incoming
+  forwarding headers and being reachable only from the app over trusted
+  networks.
 - Readiness results are not cached; every probe runs the checks.
 - Matched requests are looked up in `ServeMux` twice (once to detect
   unmatched routes); tracked for Phase 9.
@@ -223,11 +225,20 @@ Foundation:
 
 Remaining:
 
-- [ ] OpenTelemetry server spans and trace-context propagation.
-- [ ] Bounded-cardinality HTTP metrics and a documented export path.
-- [ ] Correlate structured logs with active trace/span identifiers.
-- [ ] Add database and background-job instrumentation without coupling the
-  standard-library core to an exporter or external observability service.
+- [x] Optional OpenTelemetry server spans and W3C Trace Context extraction;
+  route templates are used for low-cardinality span names and attributes.
+- [x] HTTP server duration metrics through the official HTTP instrumentation;
+  provider/exporter setup and export ownership are documented for applications.
+- [x] Correlate Forge request-scoped `slog` records with active trace/span IDs;
+  global `slog` bridging and pre-middleware server logs remain application or
+  follow-up work.
+- [x] Optional spans around scheduled jobs, propagating the active context and
+  recording sanitized failure events.
+- [ ] Add database adapter and PostgreSQL outbox instrumentation without
+  coupling the standard-library core to an exporter or external service.
+
+See [OBSERVABILITY.md](OBSERVABILITY.md) for provider configuration, privacy,
+sampling, and remaining boundaries.
 
 ## Phase 6 - API tooling
 

@@ -29,9 +29,13 @@ not an agent authorization boundary. See the [AI agent guide](docs/AI_AGENT_GUID
 The PostgreSQL transactional outbox supports bounded concurrent delivery,
 leases, acknowledgements, bounded retries, dead-letter replay, and queue
 metrics. An in-process job scheduler (`jobs.Scheduler`) runs recurring work
-with configurable concurrency. OpenTelemetry, OpenAPI, resource code
-generation, performance work, and further security hardening remain
-planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
+with configurable concurrency. Optional OpenTelemetry server spans, HTTP
+duration metrics, and scheduled-job spans are available; Forge's request-scoped
+logs carry trace IDs. Database/outbox instrumentation and global `slog` bridging
+remain in progress.
+OpenAPI, resource code generation, performance work, and further security
+hardening remain planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full
+status.
 
 ## Packages
 
@@ -49,6 +53,7 @@ Core packages import only the standard library and each other; a test
 | `config`     | Environment configuration with fail-fast validation; database selection by URL scheme; `config.Secret` for redacted values |
 | `router`     | Route registry on `net/http.ServeMux` (Go 1.22 patterns), frozen after the first request; JSON `400`/`404`/`405` |
 | `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown, and composable application middleware |
+| `observability` | Optional OpenTelemetry HTTP spans and server metrics; application-owned providers and exporters |
 | `web`        | JSON responses, the single error format, strict JSON decoding, request ID and request-scoped logger |
 | `views`      | Concurrent-safe server-rendered HTML templates with contextual escaping and buffered rendering |
 | `pagination` | Keyset pagination over UUIDv7 with opaque cursors |
@@ -318,6 +323,7 @@ CI (`.github/workflows/ci.yml`):
 - [AI agent guide and current authorization boundaries](docs/AI_AGENT_GUIDE.md)
 - [Database](docs/DATABASE.md)
 - [Deployment](docs/DEPLOYMENT.md)
+- [Observability](docs/OBSERVABILITY.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Multi-tenancy](docs/MULTI_TENANCY.md)

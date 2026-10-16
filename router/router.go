@@ -71,9 +71,20 @@ func (r *Router) Routes() []Route {
 	return result
 }
 
+// RoutePattern returns the registered ServeMux pattern matching request. It
+// freezes route registration just like ServeHTTP, and is intended for
+// middleware that needs a bounded route label before dispatch.
+func (r *Router) RoutePattern(request *http.Request) string {
+	if !r.frozen.Load() {
+		r.freeze()
+	}
+	_, pattern := r.mux.Handler(request)
+	return pattern
+}
+
 func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	if !r.frozen.Load() {
-		r.frozen.Store(true)
+		r.freeze()
 	}
 
 	path := strings.ToLower(request.URL.EscapedPath())
@@ -82,12 +93,22 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		web.Error(w, request, fault.New("invalid_path", "invalid request path", fault.CategoryInvalid, http.StatusBadRequest))
 		return
 	}
-	if handler, pattern := r.mux.Handler(request); pattern == "" {
+	handler, pattern := r.mux.Handler(request)
+	if pattern == "" {
 		r.unmatched(w, request, handler)
 		return
 	}
+	// Preserve the ServeMux route template for middleware that observes the
+	// request before ServeMux assigns Request.Pattern itself.
+	request.Pattern = pattern
 	// ServeHTTP (not the handler above) so the request gets its path values.
 	r.mux.ServeHTTP(w, request)
+}
+
+func (r *Router) freeze() {
+	r.mu.Lock()
+	r.frozen.Store(true)
+	r.mu.Unlock()
 }
 
 // unmatched answers requests no route accepts in the standard error format.

@@ -148,6 +148,9 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		if command.Name == "test" && (!containsString(command.Environment.Files, ".env.development") || !containsString(command.Environment.Variables, "FORGE_TEST_DATABASE_URL")) {
 			t.Errorf("test command omits its environment inputs: %+v", command.Environment)
 		}
+		if command.Name == "doctor" && !containsString(command.Environment.Variables, "FORGE_HTTP_TRUSTED_PROXIES") {
+			t.Errorf("doctor command omits the trusted-proxy configuration input: %+v", command.Environment)
+		}
 		if command.Name == "generate" {
 			for _, flag := range command.Flags {
 				if flag.Name == "--dry-run" && strings.Contains(flag.Description, "without creating") {

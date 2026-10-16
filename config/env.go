@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,6 +24,13 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 	}
 	if value, ok := lookup("FORGE_HTTP_TRANSPORT"); ok {
 		cfg.HTTP.Transport = TransportMode(value)
+	}
+	if value, ok := lookup("FORGE_HTTP_TRUSTED_PROXIES"); ok {
+		prefixes, err := parseTrustedProxyCIDRs(value)
+		if err != nil {
+			return Config{}, invalidValue("FORGE_HTTP_TRUSTED_PROXIES", "comma-separated IPv4 or IPv6 CIDRs")
+		}
+		cfg.HTTP.TrustedProxyCIDRs = prefixes
 	}
 	if value, ok := lookup("FORGE_AUTH_MFA_KEY"); ok {
 		cfg.Auth.MFAKey = NewSecret(value)
@@ -102,4 +111,21 @@ func setString(lookup func(string) (string, bool), key string, target *string) {
 // may be a misplaced secret.
 func invalidValue(key, expected string) error {
 	return fmt.Errorf("invalid %s: expected %s", key, expected)
+}
+
+func parseTrustedProxyCIDRs(value string) ([]netip.Prefix, error) {
+	parts := strings.Split(value, ",")
+	prefixes := make([]netip.Prefix, 0, len(parts))
+	for _, part := range parts {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(part))
+		if err != nil {
+			return nil, err
+		}
+		prefix = prefix.Masked()
+		if !prefix.IsValid() || prefix.Bits() == 0 || prefix.Addr().Is4In6() {
+			return nil, fmt.Errorf("invalid trusted proxy CIDR")
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes, nil
 }

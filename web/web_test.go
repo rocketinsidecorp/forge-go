@@ -93,6 +93,17 @@ func TestDecodeJSON(t *testing.T) {
 	}
 }
 
+func TestClientIPRejectsMalformedOrZonedPeerAddress(t *testing.T) {
+	t.Parallel()
+	for _, remoteAddr := range []string{"not-an-ip", "[fe80::1%eth0]:8080"} {
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.RemoteAddr = remoteAddr
+		if address, ok := web.ClientIP(request); ok {
+			t.Errorf("ClientIP(%q)=%s, want no address", remoteAddr, address)
+		}
+	}
+}
+
 func TestDecodeJSONBodyTooLarge(t *testing.T) {
 	t.Parallel()
 	recorder := httptest.NewRecorder()

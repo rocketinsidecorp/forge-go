@@ -52,6 +52,6 @@ revoked sessions.
   CSRF defenses are not an XSS defense.
 - Unsafe GET handlers remain an application bug because safe methods bypass
   CSRF checks.
-- Forge still does not trust `X-Forwarded-Proto` or `X-Forwarded-For`;
-  cookie-login origin validation compares the browser-supplied HTTPS Origin
-  host to `Request.Host`.
+- Forwarded metadata is accepted only from explicitly configured trusted
+  proxy CIDRs. Cookie-login origin validation continues to compare the
+  browser-supplied HTTPS Origin host to `Request.Host`.

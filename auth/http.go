@@ -2,7 +2,6 @@ package auth
 
 import (
 	"errors"
-	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -138,9 +137,8 @@ func newLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Han
 }
 
 func requestSource(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
+	if address, ok := web.ClientIP(r); ok {
+		return address.String()
 	}
 	return r.RemoteAddr
 }
