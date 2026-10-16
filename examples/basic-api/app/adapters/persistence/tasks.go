@@ -8,10 +8,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/application"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/domain"
-	"github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/application"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/domain"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 const taskColumns = "id, title, done, version, created_at, updated_at"

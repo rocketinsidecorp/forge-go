@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
 )
 
 // A header line made only of whitespace, or ending in whitespace, is stripped

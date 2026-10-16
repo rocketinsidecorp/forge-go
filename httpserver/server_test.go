@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/httpserver"
-	"github.com/fabriciobonjorno/forge-go/web"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/httpserver"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 func TestServerMiddleware(t *testing.T) {

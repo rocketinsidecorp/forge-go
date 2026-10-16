@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // fakeStore is a scriptable Store for worker lifecycle tests: it hands out

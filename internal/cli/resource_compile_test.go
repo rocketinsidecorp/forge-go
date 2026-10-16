@@ -79,8 +79,8 @@ func matrixApplication(t *testing.T, database string, resources [][]string) stri
 	// the module cache.
 	frameworkMod := readFile(t, filepath.Join(frameworkPath, "go.mod"))
 	_, requirements, _ := strings.Cut(frameworkMod, "go 1.27.1")
-	requirements = strings.Replace(requirements, "require (\n", "require (\n\t"+"github.com/fabriciobonjorno/forge-go v0.0.0\n", 1)
-	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/mx\n\ngo 1.27.1\n"+requirements+"\nreplace github.com/fabriciobonjorno/forge-go => "+frameworkPath+"\n")
+	requirements = strings.Replace(requirements, "require (\n", "require (\n\t"+"github.com/rocketinsidecorp/forge-go v0.0.0\n", 1)
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/mx\n\ngo 1.27.1\n"+requirements+"\nreplace github.com/rocketinsidecorp/forge-go => "+frameworkPath+"\n")
 	writeFile(t, filepath.Join(dir, "go.sum"), readFile(t, filepath.Join(frameworkPath, "go.sum")))
 	writeFile(t, filepath.Join(dir, ".golangci.yml"), readFile(t, filepath.Join(frameworkPath, ".golangci.yml")))
 

@@ -1,6 +1,6 @@
 package domain
 
-import "github.com/fabriciobonjorno/forge-go/fault"
+import "github.com/rocketinsidecorp/forge-go/fault"
 
 // Domain errors carry stable codes that are part of the API contract. They
 // are sentinels: compare them with errors.Is and never modify them. The HTTP

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
 )
 
 // Delivery is one recorded message.

@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/mysql/mysqltest"
-	"github.com/fabriciobonjorno/forge-go/queue"
-	queuemysql "github.com/fabriciobonjorno/forge-go/queue/mysql"
-	"github.com/fabriciobonjorno/forge-go/queue/storetest"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	queuemysql "github.com/rocketinsidecorp/forge-go/queue/mysql"
+	"github.com/rocketinsidecorp/forge-go/queue/storetest"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 )
 
 func newDB(t testing.TB) *sqldb.DB {

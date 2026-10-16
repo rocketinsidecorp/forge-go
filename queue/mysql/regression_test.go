@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/queue"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // A business transaction that enqueues a duplicate of a running job must not

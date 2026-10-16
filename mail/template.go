@@ -11,7 +11,7 @@ import (
 	"strings"
 	texttemplate "text/template"
 
-	"github.com/fabriciobonjorno/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/fault"
 )
 
 // ErrTemplate is returned when a template fails to render. Rendering is

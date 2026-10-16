@@ -4,7 +4,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/fabriciobonjorno/forge-go/migrate"
+	"github.com/rocketinsidecorp/forge-go/migrate"
 )
 
 func TestLoadMigrations(t *testing.T) {

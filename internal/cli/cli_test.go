@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/mysql/mysqltest"
-	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
-	"github.com/fabriciobonjorno/forge-go/sqlite/sqlitetest"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestRunVersion(t *testing.T) {

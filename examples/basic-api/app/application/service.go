@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/domain"
-	"github.com/fabriciobonjorno/forge-go/pagination"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/domain"
+	"github.com/rocketinsidecorp/forge-go/pagination"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // Service implements the task use cases. It is safe for concurrent use.

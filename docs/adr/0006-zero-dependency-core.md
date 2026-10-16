@@ -13,7 +13,7 @@ randomness, JSON, and `database/sql` interfaces.
 
 ## Decision
 
-The Forge core (`go.mod` module `github.com/fabriciobonjorno/forge-go`) has
+The Forge core (`go.mod` module `github.com/rocketinsidecorp/forge-go`) has
 no third-party Go module dependencies. It requires Go 1.27.1.
 
 - Needed functionality is implemented on the standard library, as done for

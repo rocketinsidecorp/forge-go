@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/fault"
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
 )
 
 // A refusal by the mail server is not a client error: surfacing it as 400

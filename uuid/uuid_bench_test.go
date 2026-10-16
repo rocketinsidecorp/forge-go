@@ -3,7 +3,7 @@ package uuid_test
 import (
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func BenchmarkNew(b *testing.B) {

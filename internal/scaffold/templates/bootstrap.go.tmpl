@@ -10,18 +10,18 @@ import (
 	{{- end}}
 	"net/http"
 
-	forge "github.com/fabriciobonjorno/forge-go"
+	forge "github.com/rocketinsidecorp/forge-go"
 {{- if and .DB .DB.Identity}}
-	"github.com/fabriciobonjorno/forge-go/auth"
-	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
+	"github.com/rocketinsidecorp/forge-go/auth"
+	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
 {{- end}}
 {{- if and .DB .DB.Jobs}}
-	"github.com/fabriciobonjorno/forge-go/jobs"
+	"github.com/rocketinsidecorp/forge-go/jobs"
 {{- end}}
 {{- if .DB}}
-	"github.com/fabriciobonjorno/forge-go/{{.DB.Adapter}}"
+	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
 {{- end}}
-	"github.com/fabriciobonjorno/forge-go/web"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 // Configure registers dependencies, readiness checks and routes. Keep

@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fabriciobonjorno/forge-go/events"
-	forgepostgres "github.com/fabriciobonjorno/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/events"
+	forgepostgres "github.com/rocketinsidecorp/forge-go/postgres"
 )
 
 // Insert appends event using the active transaction from postgres.InTx, so the

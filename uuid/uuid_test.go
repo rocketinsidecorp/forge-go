@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestGeneratorNew(t *testing.T) {

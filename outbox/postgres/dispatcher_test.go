@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fabriciobonjorno/forge-go/events"
-	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/events"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 )
 
 func TestConcurrentClaimersGetDistinctEvents(t *testing.T) {

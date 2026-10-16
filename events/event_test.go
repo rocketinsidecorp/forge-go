@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/events"
+	"github.com/rocketinsidecorp/forge-go/events"
 )
 
 func TestNewCreatesValidEventAndCopiesPayload(t *testing.T) {

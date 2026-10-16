@@ -7,7 +7,7 @@ import (
 	driver "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 
-	"github.com/fabriciobonjorno/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 )
 
 // Markers SQLite puts before the constraint in its error messages, for

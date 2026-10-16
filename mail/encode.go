@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // Encoded is a message ready for transport: the RFC 5322 bytes plus the SMTP

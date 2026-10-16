@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 func loadMail(env map[string]string) (config.Config, error) {

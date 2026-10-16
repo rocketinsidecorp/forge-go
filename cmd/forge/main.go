@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/fabriciobonjorno/forge-go/internal/cli"
+	"github.com/rocketinsidecorp/forge-go/internal/cli"
 )
 
 func main() { os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr)) }

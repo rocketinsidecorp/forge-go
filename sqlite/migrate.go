@@ -6,9 +6,9 @@ import (
 	"io/fs"
 	"log/slog"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/migrate"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/migrate"
 )
 
 // NewMigrator returns a migrator for the database cfg points at, creating the

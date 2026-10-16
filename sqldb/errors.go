@@ -10,7 +10,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/fabriciobonjorno/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/fault"
 )
 
 // Kind is a database-independent category of failure. Each adapter maps its

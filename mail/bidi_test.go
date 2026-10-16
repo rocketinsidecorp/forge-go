@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
 )
 
 // Direction overrides in a display name or subject let an attacker reorder

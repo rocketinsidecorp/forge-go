@@ -56,8 +56,8 @@ import (
 
 	driver "modernc.org/sqlite"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 )
 
 const (

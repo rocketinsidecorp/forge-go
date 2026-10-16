@@ -17,14 +17,14 @@ func TestRunInspectJSONInventoriesForgeProjectWithoutLeakingEnvironment(t *testi
 
 go 1.27.1
 
-require github.com/fabriciobonjorno/forge-go v0.0.0
-replace github.com/fabriciobonjorno/forge-go => ../forge-go
+require github.com/rocketinsidecorp/forge-go v0.0.0
+replace github.com/rocketinsidecorp/forge-go => ../forge-go
 `)
 	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), `package main
 import (
 	"net/http"
-	"github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/jobs"
+	"github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/jobs"
 )
 func main() {
 	mux := http.NewServeMux()
@@ -35,7 +35,7 @@ func main() {
 
 `)
 	writeFile(t, filepath.Join(root, "app", "routes.go"), `package app
-import "github.com/fabriciobonjorno/forge-go/views"
+import "github.com/rocketinsidecorp/forge-go/views"
 func routes(mux interface{ Handle(string, interface{}) }) {
 	mux.Handle("GET /items", nil)
 	mux.Handle("GET /items", nil)
@@ -74,7 +74,7 @@ func routes(mux interface{ Handle(string, interface{}) }) {
 func TestRunInspectJSONDoesNotModifyProjectFiles(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\ngo 1.27.1\nrequire github.com/fabriciobonjorno/forge-go v0.0.0\n")
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\ngo 1.27.1\nrequire github.com/rocketinsidecorp/forge-go v0.0.0\n")
 	writeFile(t, filepath.Join(root, "app", "routes.go"), "package app\n")
 	before := inspectFixtureSnapshot(t, root)
 
@@ -158,7 +158,7 @@ func TestRunInspectJSONReturnsPartialReportForInvalidEnvironment(t *testing.T) {
 func TestRunInspectJSONMarksSourceParseErrorsIncomplete(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\ngo 1.27.1\nrequire github.com/fabriciobonjorno/forge-go v0.0.0\n")
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\ngo 1.27.1\nrequire github.com/rocketinsidecorp/forge-go v0.0.0\n")
 	writeFile(t, filepath.Join(root, "app", "broken.go"), "package app\nfunc broken(\n")
 	var output bytes.Buffer
 	err := runInspectAt([]string{"--json"}, &output, root, nil)

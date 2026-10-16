@@ -152,7 +152,7 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | `forge generate` overwrites application files | T | Migration and view files are created with `O_EXCL`; generated names are allow-listed and existing files are refused. |
 | Malicious or malformed application name | T | Name must match `^[a-z][a-z0-9-]{0,62}$`; module path is validated and may not contain `..`. Templates fail on missing keys. |
 | Shell injection through arguments | E | Subprocesses (`go get`, `go mod edit`, `go mod tidy`, `go mod vendor`, `go build`, `go test`, and the application binary run by `forge dev`, `forge migrate`, and `forge rollback`) are executed directly via `os/exec`, never through a shell. |
-| Wrong code vendored via `--framework-path` | T | The path's `go.mod` must declare `github.com/fabriciobonjorno/forge-go`. |
+| Wrong code vendored via `--framework-path` | T | The path's `go.mod` must declare `github.com/rocketinsidecorp/forge-go`. |
 | Generated files readable by other local users | I | Files are written `0600`, directories `0750`. |
 | Resource exhaustion via `forge uuid` | D | `--count` limited to 1-1000. |
 

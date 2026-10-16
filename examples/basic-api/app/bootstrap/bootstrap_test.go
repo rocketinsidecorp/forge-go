@@ -9,12 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/bootstrap"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/db"
-	"github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/bootstrap"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/db"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 )
 
 func TestConfigureRequiresDatabase(t *testing.T) {

@@ -22,8 +22,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/fabriciobonjorno/forge-go/fault"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 const (

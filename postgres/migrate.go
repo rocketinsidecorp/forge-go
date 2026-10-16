@@ -9,9 +9,9 @@ import (
 
 	"github.com/jackc/pgx/v5/stdlib"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/migrate"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/migrate"
 )
 
 // migrationLockKey serializes migrators across processes and replicas.

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/config"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 func TestWithMigratorRejectsSetCollisionBeforeOpeningDatabase(t *testing.T) {

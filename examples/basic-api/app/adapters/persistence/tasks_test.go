@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/adapters/persistence"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/application"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/domain"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/db"
-	"github.com/fabriciobonjorno/forge-go/fault"
-	"github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/adapters/persistence"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/application"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/domain"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/db"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func newRepository(t *testing.T) (*persistence.TaskRepository, *postgres.DB) {

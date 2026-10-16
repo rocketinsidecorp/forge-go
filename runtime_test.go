@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/web"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 func envLookup(values map[string]string) func(string) (string, bool) {

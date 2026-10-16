@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/fabriciobonjorno/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/fault"
 )
 
 // ErrorBody is the only error format Forge APIs return.

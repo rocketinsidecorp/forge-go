@@ -14,9 +14,9 @@ import (
 
 	driver "github.com/go-sql-driver/mysql"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/fault"
-	"github.com/fabriciobonjorno/forge-go/mysql"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/mysql"
 )
 
 func mysqlError(number uint16, message string) error {

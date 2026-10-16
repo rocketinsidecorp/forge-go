@@ -3,8 +3,8 @@ package application
 import (
 	"context"
 
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/domain"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/domain"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // TaskRepository persists tasks. Implementations report domain.ErrTaskNotFound

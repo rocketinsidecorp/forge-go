@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/auth"
-	"github.com/fabriciobonjorno/forge-go/internal/scaffold"
+	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
 func TestGenerateCreatesDockerizedApplication(t *testing.T) {
@@ -58,7 +58,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		"go.mod":           {"module example.com/acme/billing"},
 		"cmd/billing-api/main.go": {
 			`"example.com/acme/billing/app/bootstrap"`,
-			`authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"`,
+			`authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"`,
 			"postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations())",
 		},
 		"app/bootstrap/bootstrap.go": {
@@ -263,9 +263,9 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 			want: map[string][]string{
 				"compose.yaml":                    {"image: mysql:8.4", "MYSQL_DATABASE: shop_development", "mysql:/var/lib/mysql", "FORGE_DATABASE_URL: mysql://shop:development@mysql:3306/shop_development", `"mysqladmin", "ping"`},
 				".env.development":                {"FORGE_DATABASE_URL=mysql://shop:development@127.0.0.1:", "FORGE_TEST_DATABASE_URL=mysql://root:development@127.0.0.1:"},
-				"cmd/shop/main.go":                {`"github.com/fabriciobonjorno/forge-go/mysql"`, "mysql.Commands(db.Migrations())"},
+				"cmd/shop/main.go":                {`"github.com/rocketinsidecorp/forge-go/mysql"`, "mysql.Commands(db.Migrations())"},
 				"app/bootstrap/bootstrap.go":      {"mysql.Open(ctx, app.Config().Database)"},
-				"app/bootstrap/bootstrap_test.go": {`"github.com/fabriciobonjorno/forge-go/mysql/mysqltest"`, "mysqltest.Config(t)"},
+				"app/bootstrap/bootstrap_test.go": {`"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"`, "mysqltest.Config(t)"},
 				".github/workflows/ci.yml":        {"image: mysql:8.4", "MYSQL_ROOT_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
 				"README.md":                       {"MySQL 8.4", "`tls=true`"},
 			},

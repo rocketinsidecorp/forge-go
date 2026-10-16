@@ -114,7 +114,7 @@ func inspectProject(rootPath string, baseEnv []string) projectInspection {
 	}
 	slices.Sort(report.Modules)
 	slices.Sort(report.Routes)
-	if _, found := imports["core"]; !found && !strings.Contains(string(goMod), "github.com/fabriciobonjorno/forge-go") {
+	if _, found := imports["core"]; !found && !strings.Contains(string(goMod), "github.com/rocketinsidecorp/forge-go") {
 		addInspectDiagnostic(&report, "project.not_forge", "No Forge framework import was found.", "Run forge inspect inside a Forge application.")
 	}
 	return report
@@ -134,10 +134,10 @@ func inspectGoMod(content []byte) (module, goVersion, frameworkVersion string) {
 		case "go":
 			goVersion = fields[1]
 		}
-		if len(fields) >= 2 && fields[0] == "github.com/fabriciobonjorno/forge-go" && fields[1] != "=>" {
+		if len(fields) >= 2 && fields[0] == "github.com/rocketinsidecorp/forge-go" && fields[1] != "=>" {
 			frameworkVersion = fields[1]
 		}
-		if len(fields) == 3 && fields[0] == "require" && fields[1] == "github.com/fabriciobonjorno/forge-go" {
+		if len(fields) == 3 && fields[0] == "require" && fields[1] == "github.com/rocketinsidecorp/forge-go" {
 			frameworkVersion = fields[2]
 		}
 	}
@@ -262,7 +262,7 @@ func inspectSourceTree(root *os.Root, directory string, imports, routes map[stri
 }
 
 func inspectImports(file *ast.File, modules map[string]struct{}) {
-	const prefix = "github.com/fabriciobonjorno/forge-go"
+	const prefix = "github.com/rocketinsidecorp/forge-go"
 	for _, imported := range file.Imports {
 		value, err := strconv.Unquote(imported.Path.Value)
 		if err != nil {

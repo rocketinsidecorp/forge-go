@@ -5,8 +5,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/application"
-	"github.com/fabriciobonjorno/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/application"
+	"github.com/rocketinsidecorp/forge-go/postgres"
 )
 
 // Transactor is the PostgreSQL application.Transactor: each call runs in one

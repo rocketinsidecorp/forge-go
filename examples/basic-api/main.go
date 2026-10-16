@@ -7,10 +7,10 @@
 package main
 
 import (
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/bootstrap"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/db"
-	"github.com/fabriciobonjorno/forge-go/postgres"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/bootstrap"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/db"
+	"github.com/rocketinsidecorp/forge-go/postgres"
 )
 
 func main() { forge.Main(bootstrap.Configure, postgres.Commands(db.Migrations())...) }

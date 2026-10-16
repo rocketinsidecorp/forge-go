@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/fabriciobonjorno/forge-go/internal/version"
+	"github.com/rocketinsidecorp/forge-go/internal/version"
 )
 
 type commandCatalog struct {

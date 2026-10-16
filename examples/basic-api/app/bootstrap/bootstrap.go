@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"time"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/adapters/httpapi"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/adapters/persistence"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/application"
-	"github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/adapters/httpapi"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/adapters/persistence"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/application"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // Configure implements forge.Configure. The service needs its database:

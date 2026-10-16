@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 var fixedNow = time.Date(2026, 10, 14, 15, 4, 5, 0, time.FixedZone("BRT", -3*3600))

@@ -28,7 +28,7 @@ func buildResourceWiring(spec resourceSpec) resourceWiringParts {
 			spec.Module + "/app/adapters/httpapi",
 			spec.Module + "/app/adapters/persistence",
 			spec.Module + "/app/application",
-			"github.com/fabriciobonjorno/forge-go/uuid",
+			"github.com/rocketinsidecorp/forge-go/uuid",
 		},
 		Usage: fmt.Sprintf(`	%[1]sService, err := application.New%[2]sService(persistence.New%[2]sRepository(database), time.Now, uuid.New)
 	if err != nil {
@@ -87,7 +87,7 @@ func buildResourceWiring(spec resourceSpec) resourceWiringParts {
 		}
 		return parts
 	}
-	parts.Imports = append(parts.Imports, "github.com/fabriciobonjorno/forge-go/fault")
+	parts.Imports = append(parts.Imports, "github.com/rocketinsidecorp/forge-go/fault")
 	parts.Where = "inside Configure, after the `routes(ctx, app)` call and its error check"
 	tenantNote := ""
 	if spec.TenantScoped {

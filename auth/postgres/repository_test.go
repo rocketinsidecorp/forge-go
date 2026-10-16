@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/auth"
-	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
-	"github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/auth"
+	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestRepositoryResolvesCurrentIdentityAndRevocation(t *testing.T) {

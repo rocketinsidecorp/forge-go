@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/config"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
 )
 
 // previewConfig is a configuration that explicitly opted in to previews.
