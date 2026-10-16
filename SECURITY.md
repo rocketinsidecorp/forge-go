@@ -11,7 +11,7 @@ Do not open a public issue for a suspected vulnerability.
 
 Report it privately through GitHub's **Report a vulnerability** form on the
 repository's **Security** tab
-(`github.com/fabriciobonjorno/forge-go/security`). If private reporting is not
+(`github.com/rocketinsidecorp/forge-go/security`). If private reporting is not
 available, contact the maintainer through their GitHub profile and ask for a
 private channel before sharing details.
 
