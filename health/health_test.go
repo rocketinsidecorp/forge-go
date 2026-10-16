@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/health"
+	"github.com/rocketinsidecorp/forge-go/health"
 )
 
 func TestRegistryReady(t *testing.T) {

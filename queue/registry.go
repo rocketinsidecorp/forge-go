@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // maxHandlerTimeout bounds a handler timeout option.

@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/auth"
-	"github.com/fabriciobonjorno/forge-go/tenancy"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestTokenRoundTripAndEntropyFailure(t *testing.T) {

@@ -169,7 +169,7 @@ func resourceProject(t *testing.T, databaseURL string) string {
 	if databaseURL != "" {
 		writeFile(t, filepath.Join(root, ".env.development"), "FORGE_DATABASE_URL="+databaseURL+"\n")
 	}
-	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), "package main\n\nimport _ \"github.com/fabriciobonjorno/forge-go/auth/postgres\"\n\nfunc main() {}\n")
+	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), "package main\n\nimport _ \"github.com/rocketinsidecorp/forge-go/auth/postgres\"\n\nfunc main() {}\n")
 	return root
 }
 

@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/migrate"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/migrate"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 const (

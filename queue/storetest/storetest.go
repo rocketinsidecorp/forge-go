@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/queue"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // NewStore returns a store on a fresh, migrated database that the test

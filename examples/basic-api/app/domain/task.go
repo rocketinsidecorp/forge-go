@@ -8,7 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // MaxTitleLength is measured in characters (Unicode code points), matching

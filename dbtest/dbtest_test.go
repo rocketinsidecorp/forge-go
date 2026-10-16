@@ -5,8 +5,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/dbtest"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/dbtest"
 )
 
 // recorder captures how ServerURL ends a test without ending this one.

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/tenancy"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestCookieLoginSetsSecureHostCookies(t *testing.T) {

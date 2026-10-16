@@ -18,14 +18,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/fault"
-	"github.com/fabriciobonjorno/forge-go/migrate"
-	"github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
-	"github.com/fabriciobonjorno/forge-go/tenancy"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/migrate"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))

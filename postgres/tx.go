@@ -8,8 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fabriciobonjorno/forge-go/sqldb"
-	"github.com/fabriciobonjorno/forge-go/tenancy"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/tenancy"
 )
 
 // Isolation levels accepted by TxOptions.

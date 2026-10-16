@@ -20,7 +20,7 @@ import (
 )
 
 // FrameworkModule is the module path generated applications depend on.
-const FrameworkModule = "github.com/fabriciobonjorno/forge-go"
+const FrameworkModule = "github.com/rocketinsidecorp/forge-go"
 
 //go:embed all:templates
 var templateFS embed.FS

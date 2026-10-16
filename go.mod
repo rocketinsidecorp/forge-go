@@ -1,4 +1,4 @@
-module github.com/fabriciobonjorno/forge-go
+module github.com/rocketinsidecorp/forge-go
 
 go 1.27.1
 

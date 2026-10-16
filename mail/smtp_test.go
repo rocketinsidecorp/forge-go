@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/fault"
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
 )
 
 const (

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
 )
 
 func TestFileSenderWritesPrivateEMLAndLogsOnlyThePath(t *testing.T) {

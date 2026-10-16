@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/router"
+	"github.com/rocketinsidecorp/forge-go/router"
 )
 
 func BenchmarkRouterStatic(b *testing.B) {

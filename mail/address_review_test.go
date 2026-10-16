@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/config"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
 )
 
 // Non-ASCII (SMTPUTF8/IDN) addresses cannot be delivered. That must be a

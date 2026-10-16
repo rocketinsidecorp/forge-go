@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 // Preview describes one email an application can render in the browser

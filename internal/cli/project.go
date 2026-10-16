@@ -13,8 +13,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/fabriciobonjorno/forge-go/internal/scaffold"
-	"github.com/fabriciobonjorno/forge-go/internal/version"
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
+	"github.com/rocketinsidecorp/forge-go/internal/version"
 )
 
 var releaseVersion = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`)

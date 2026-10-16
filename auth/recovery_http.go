@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/fabriciobonjorno/forge-go/web"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 type recoveryRequestBody struct {

@@ -9,9 +9,9 @@ import (
 	"io/fs"
 	"log/slog"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/migrate"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/migrate"
 )
 
 // migrationLockName is the GET_LOCK name that serializes migrators across

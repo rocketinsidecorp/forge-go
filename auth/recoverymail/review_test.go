@@ -10,10 +10,10 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/auth"
-	"github.com/fabriciobonjorno/forge-go/auth/recoverymail"
-	"github.com/fabriciobonjorno/forge-go/mail"
-	"github.com/fabriciobonjorno/forge-go/mail/mailtest"
+	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/recoverymail"
+	"github.com/rocketinsidecorp/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/mail/mailtest"
 )
 
 func configWith(logger *slog.Logger, mutate func(*recoverymail.Config)) recoverymail.Config {

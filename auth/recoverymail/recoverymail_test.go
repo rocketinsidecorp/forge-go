@@ -12,11 +12,11 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/auth"
-	"github.com/fabriciobonjorno/forge-go/auth/recoverymail"
-	"github.com/fabriciobonjorno/forge-go/mail"
-	"github.com/fabriciobonjorno/forge-go/mail/mailtest"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/recoverymail"
+	"github.com/rocketinsidecorp/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/mail/mailtest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 var fixedNow = time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)

@@ -33,7 +33,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 const (

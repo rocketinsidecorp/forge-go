@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/fault"
 )
 
 var ErrLoginThrottled = fault.New("login_throttled", "too many login attempts", fault.CategoryRateLimited, 0)

@@ -10,9 +10,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/internal/version"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/version"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 const maxUUIDCount = 1000

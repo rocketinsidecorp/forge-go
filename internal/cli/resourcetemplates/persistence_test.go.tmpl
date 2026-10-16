@@ -22,20 +22,20 @@ import (
 	"[[.Module]]/app/domain"
 	"[[.Module]]/db"
 [[- if and .Postgres .Identity]]
-	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
+	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
 [[- end]]
-	"github.com/fabriciobonjorno/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/fault"
 [[- if .Postgres]]
-	"github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 [[- else]]
-	"github.com/fabriciobonjorno/forge-go/[[.Database]]/[[.Database]]test"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/[[.Database]]/[[.Database]]test"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 [[- end]]
 [[- if .Tenant]]
-	"github.com/fabriciobonjorno/forge-go/tenancy"
+	"github.com/rocketinsidecorp/forge-go/tenancy"
 [[- end]]
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // These are integration tests. Each one migrates a database of its own, and

@@ -27,9 +27,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	forgepostgres "github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/queue"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	forgepostgres "github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // uniqueViolation is SQLSTATE 23505.

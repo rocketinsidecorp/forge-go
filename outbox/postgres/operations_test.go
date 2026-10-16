@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/events"
-	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/events"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestStatsReportsQueueStates(t *testing.T) {

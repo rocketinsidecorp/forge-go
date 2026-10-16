@@ -17,14 +17,14 @@ import (
 	"testing/fstest"
 	"time"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/fault"
-	"github.com/fabriciobonjorno/forge-go/migrate"
-	"github.com/fabriciobonjorno/forge-go/mysql"
-	"github.com/fabriciobonjorno/forge-go/mysql/mysqltest"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/migrate"
+	"github.com/rocketinsidecorp/forge-go/mysql"
+	"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))

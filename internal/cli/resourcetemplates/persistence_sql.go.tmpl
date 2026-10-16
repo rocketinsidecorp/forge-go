@@ -11,12 +11,12 @@ import (
 
 	"[[.Module]]/app/application"
 	"[[.Module]]/app/domain"
-	"github.com/fabriciobonjorno/forge-go/[[.Database]]"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/[[.Database]]"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 [[- if .Tenant]]
-	"github.com/fabriciobonjorno/forge-go/tenancy"
+	"github.com/rocketinsidecorp/forge-go/tenancy"
 [[- end]]
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 const (

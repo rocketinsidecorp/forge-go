@@ -9,7 +9,7 @@ import (
 
 	driver "github.com/go-sql-driver/mysql"
 
-	"github.com/fabriciobonjorno/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 )
 
 // Server error numbers Forge handles. See

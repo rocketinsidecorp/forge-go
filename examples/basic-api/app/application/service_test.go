@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/application"
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/domain"
-	"github.com/fabriciobonjorno/forge-go/pagination"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/application"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/domain"
+	"github.com/rocketinsidecorp/forge-go/pagination"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 var start = time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)

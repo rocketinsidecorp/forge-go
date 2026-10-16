@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/config"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
 )
 
 // sendViaFake sends to a fake plaintext server while presenting host as the

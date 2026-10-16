@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 // ErrNotConfigured is returned by FromConfig when FORGE_MAIL_URL is empty.

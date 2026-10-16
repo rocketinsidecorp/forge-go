@@ -437,7 +437,7 @@ func hasIdentityMigrations(projectRoot *os.Root) bool {
 			continue
 		}
 		source, err := fs.ReadFile(projectRoot.FS(), filepath.Join("cmd", entry.Name(), "main.go"))
-		if err == nil && strings.Contains(string(source), `"github.com/fabriciobonjorno/forge-go/auth/postgres"`) {
+		if err == nil && strings.Contains(string(source), `"github.com/rocketinsidecorp/forge-go/auth/postgres"`) {
 			return true
 		}
 	}

@@ -4,8 +4,8 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/pagination"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/pagination"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestCursorRoundTrip(t *testing.T) {

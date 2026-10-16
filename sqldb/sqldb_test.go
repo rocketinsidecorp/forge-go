@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/fault"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 )
 
 // kindError carries the Classification a fake driver would report.

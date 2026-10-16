@@ -10,10 +10,10 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/fault"
-	"github.com/fabriciobonjorno/forge-go/uuid"
-	"github.com/fabriciobonjorno/forge-go/web"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 type Server struct {

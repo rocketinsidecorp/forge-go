@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/router"
-	"github.com/fabriciobonjorno/forge-go/web"
+	"github.com/rocketinsidecorp/forge-go/router"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 func TestRouterHandleAndFreeze(t *testing.T) {

@@ -32,8 +32,8 @@ import (
 
 	driver "github.com/go-sql-driver/mysql"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 )
 
 const (

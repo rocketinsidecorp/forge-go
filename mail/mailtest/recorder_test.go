@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
-	"github.com/fabriciobonjorno/forge-go/mail/mailtest"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/mail/mailtest"
 )
 
 func message(subject string) forgemail.Message {

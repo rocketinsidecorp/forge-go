@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/queue"
-	queuesqlite "github.com/fabriciobonjorno/forge-go/queue/sqlite"
-	"github.com/fabriciobonjorno/forge-go/queue/storetest"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
-	"github.com/fabriciobonjorno/forge-go/sqlite/sqlitetest"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	queuesqlite "github.com/rocketinsidecorp/forge-go/queue/sqlite"
+	"github.com/rocketinsidecorp/forge-go/queue/storetest"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
 )
 
 func newDB(t testing.TB) *sqldb.DB {

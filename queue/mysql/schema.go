@@ -5,11 +5,11 @@ import (
 	"embed"
 	"io/fs"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/config"
-	forgemysql "github.com/fabriciobonjorno/forge-go/mysql"
-	"github.com/fabriciobonjorno/forge-go/queue"
-	"github.com/fabriciobonjorno/forge-go/queue/queuecmd"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
+	forgemysql "github.com/rocketinsidecorp/forge-go/mysql"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	"github.com/rocketinsidecorp/forge-go/queue/queuecmd"
 )
 
 //go:embed migrations/*.sql

@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"time"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/config"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 // Opener returns a migrator for the configured database; Commands closes it.

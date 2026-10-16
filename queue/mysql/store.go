@@ -28,10 +28,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	forgemysql "github.com/fabriciobonjorno/forge-go/mysql"
-	"github.com/fabriciobonjorno/forge-go/queue"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	forgemysql "github.com/rocketinsidecorp/forge-go/mysql"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // duplicateEntry is MySQL and MariaDB error 1062 (ER_DUP_ENTRY).

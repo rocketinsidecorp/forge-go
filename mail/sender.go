@@ -16,7 +16,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/fabriciobonjorno/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/fault"
 )
 
 // Sender delivers one message. Implementations must be safe for concurrent

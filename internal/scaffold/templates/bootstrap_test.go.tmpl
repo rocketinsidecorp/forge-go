@@ -4,7 +4,7 @@ import (
 	{{- if and .DB .DB.Identity}}
 	"bytes"
 	"log/slog"
-	"github.com/fabriciobonjorno/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth"
 	{{- end}}
 	"context"
 	"net/http"
@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	forge "github.com/fabriciobonjorno/forge-go"
+	forge "github.com/rocketinsidecorp/forge-go"
 {{- if .DB}}
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/{{.DB.Adapter}}/{{.DB.TestPackage}}"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}/{{.DB.TestPackage}}"
 {{- end}}
 )
 

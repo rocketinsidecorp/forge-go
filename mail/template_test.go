@@ -7,8 +7,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
-	"github.com/fabriciobonjorno/forge-go/mail/mailtest"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/mail/mailtest"
 )
 
 type welcomeData struct {

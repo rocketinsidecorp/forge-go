@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 // Configure registers an application's routes, checks and dependencies on a

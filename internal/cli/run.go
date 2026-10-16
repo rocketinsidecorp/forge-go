@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/internal/scaffold"
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
 // appShutdownGrace bounds how long forge waits for the application to drain

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const modulePath = "github.com/fabriciobonjorno/forge-go"
+const modulePath = "github.com/rocketinsidecorp/forge-go"
 
 // corePackages may import only the standard library and each other (ADR 0006,
 // ADR 0007). Applications that never touch the database therefore never link

@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fabriciobonjorno/forge-go/auth"
-	"github.com/fabriciobonjorno/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/postgres"
 )
 
 type LoginThrottler struct {

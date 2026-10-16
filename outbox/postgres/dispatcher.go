@@ -13,8 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fabriciobonjorno/forge-go/events"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/events"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // ErrLeaseLost means another dispatcher reclaimed the event before this

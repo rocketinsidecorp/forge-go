@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/dbtest"
-	"github.com/fabriciobonjorno/forge-go/migrate"
-	queuesqlite "github.com/fabriciobonjorno/forge-go/queue/sqlite"
-	"github.com/fabriciobonjorno/forge-go/sqlite"
-	"github.com/fabriciobonjorno/forge-go/sqlite/sqlitetest"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/dbtest"
+	"github.com/rocketinsidecorp/forge-go/migrate"
+	queuesqlite "github.com/rocketinsidecorp/forge-go/queue/sqlite"
+	"github.com/rocketinsidecorp/forge-go/sqlite"
+	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // Stored text can come from a writer other than the worker (another tool, an

@@ -14,12 +14,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/health"
-	"github.com/fabriciobonjorno/forge-go/httpserver"
-	"github.com/fabriciobonjorno/forge-go/router"
-	htmlviews "github.com/fabriciobonjorno/forge-go/views"
-	"github.com/fabriciobonjorno/forge-go/web"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/health"
+	"github.com/rocketinsidecorp/forge-go/httpserver"
+	"github.com/rocketinsidecorp/forge-go/router"
+	htmlviews "github.com/rocketinsidecorp/forge-go/views"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 const liveRoutePath = "/health/live"

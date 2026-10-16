@@ -9,11 +9,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
-	"github.com/fabriciobonjorno/forge-go/queue"
-	queuepostgres "github.com/fabriciobonjorno/forge-go/queue/postgres"
-	"github.com/fabriciobonjorno/forge-go/queue/storetest"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	queuepostgres "github.com/rocketinsidecorp/forge-go/queue/postgres"
+	"github.com/rocketinsidecorp/forge-go/queue/storetest"
 )
 
 func newDB(t testing.TB) *postgres.DB {

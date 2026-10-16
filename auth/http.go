@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/web"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 type loginRequest struct {

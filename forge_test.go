@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	forge "github.com/fabriciobonjorno/forge-go"
+	forge "github.com/rocketinsidecorp/forge-go"
 )
 
 func TestAppHealthAndApplicationRoute(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/fault"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // ErrFileSender is returned when the development sender cannot store a

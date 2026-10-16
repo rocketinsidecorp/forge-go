@@ -17,11 +17,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/config"
-	"github.com/fabriciobonjorno/forge-go/dbtest"
-	"github.com/fabriciobonjorno/forge-go/migrate"
-	"github.com/fabriciobonjorno/forge-go/mysql"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/dbtest"
+	"github.com/rocketinsidecorp/forge-go/migrate"
+	"github.com/rocketinsidecorp/forge-go/mysql"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 )
 
 // safeName is what dbtest.DatabaseName produces; anything else is refused

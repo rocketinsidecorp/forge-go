@@ -32,10 +32,10 @@ import (
 
 	sqlite3 "modernc.org/sqlite/lib"
 
-	"github.com/fabriciobonjorno/forge-go/queue"
-	"github.com/fabriciobonjorno/forge-go/sqldb"
-	forgesqlite "github.com/fabriciobonjorno/forge-go/sqlite"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
+	forgesqlite "github.com/rocketinsidecorp/forge-go/sqlite"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // timeFormat is a fixed-width UTC timestamp, so TEXT columns sort and compare

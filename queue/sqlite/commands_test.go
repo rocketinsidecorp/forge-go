@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	forge "github.com/fabriciobonjorno/forge-go"
-	"github.com/fabriciobonjorno/forge-go/dbtest"
-	"github.com/fabriciobonjorno/forge-go/migrate"
-	"github.com/fabriciobonjorno/forge-go/queue"
-	queuesqlite "github.com/fabriciobonjorno/forge-go/queue/sqlite"
-	"github.com/fabriciobonjorno/forge-go/sqlite"
-	"github.com/fabriciobonjorno/forge-go/sqlite/sqlitetest"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/dbtest"
+	"github.com/rocketinsidecorp/forge-go/migrate"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	queuesqlite "github.com/rocketinsidecorp/forge-go/queue/sqlite"
+	"github.com/rocketinsidecorp/forge-go/sqlite"
+	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
 )
 
 type commandRun struct {

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fabriciobonjorno/forge-go/examples/basic-api/app/domain"
-	"github.com/fabriciobonjorno/forge-go/fault"
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/examples/basic-api/app/domain"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 var now = time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)

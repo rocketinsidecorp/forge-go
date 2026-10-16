@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 func TestSecretIsRedactedEverywhere(t *testing.T) {

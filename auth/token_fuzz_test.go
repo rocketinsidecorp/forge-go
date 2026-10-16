@@ -3,7 +3,7 @@ package auth_test
 import (
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth"
 )
 
 func FuzzParseToken(f *testing.F) {

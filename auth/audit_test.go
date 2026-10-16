@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/fabriciobonjorno/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestSecurityEventValidation(t *testing.T) {

@@ -6,13 +6,13 @@ import (
 	"errors"
 	"testing"
 
-	authpostgres "github.com/fabriciobonjorno/forge-go/auth/postgres"
-	"github.com/fabriciobonjorno/forge-go/events"
-	"github.com/fabriciobonjorno/forge-go/migrate"
-	"github.com/fabriciobonjorno/forge-go/outbox/postgres"
-	forgepostgres "github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/postgres/postgrestest"
 	"github.com/jackc/pgx/v5"
+	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
+	"github.com/rocketinsidecorp/forge-go/events"
+	"github.com/rocketinsidecorp/forge-go/migrate"
+	"github.com/rocketinsidecorp/forge-go/outbox/postgres"
+	forgepostgres "github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 )
 
 func TestInsertCommitsWithDomainTransaction(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/fabriciobonjorno/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 // DBTX is satisfied by *DB, *sql.DB, *sql.Tx and *sql.Conn, so a repository

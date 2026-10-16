@@ -80,7 +80,7 @@ An application links only the adapter it imports. The `forge` CLI lives in
 Requires Go 1.27.1+ and Docker with BuildKit and Compose.
 
 ```sh
-go install github.com/fabriciobonjorno/forge-go/cmd/forge@latest
+go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest
 forge new myapp                 # PostgreSQL; or -d mysql, -d mariadb, -d sqlite, -d none
 cd myapp
 docker compose up --build
@@ -209,7 +209,7 @@ Flags for `forge new`:
 - `--framework-path DIR` is for framework contributors: it adds a `replace`
   directive pointing at a local checkout, then runs `go mod tidy` and
   `go mod vendor` so the Docker build context is self-contained. Without it,
-  `forge new` runs `go get github.com/fabriciobonjorno/forge-go@<cli version or
+  `forge new` runs `go get github.com/rocketinsidecorp/forge-go@<cli version or
   latest>` followed by `go mod tidy`.
 
 `forge generate migration NAME` requires `NAME` to match

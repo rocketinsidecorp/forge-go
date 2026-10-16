@@ -4,7 +4,7 @@ import (
 	"runtime"
 	"testing"
 
-	forgemail "github.com/fabriciobonjorno/forge-go/mail"
+	forgemail "github.com/rocketinsidecorp/forge-go/mail"
 )
 
 // Encoding a large attachment must not hold many full copies of it at once.

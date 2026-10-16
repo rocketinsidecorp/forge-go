@@ -3,10 +3,10 @@ package postgres
 import (
 	"context"
 
-	"github.com/fabriciobonjorno/forge-go/auth"
-	"github.com/fabriciobonjorno/forge-go/postgres"
-	"github.com/fabriciobonjorno/forge-go/uuid"
-	"github.com/fabriciobonjorno/forge-go/web"
+	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 var _ auth.SecurityAuditor = (*Repository)(nil)

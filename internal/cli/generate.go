@@ -100,7 +100,7 @@ const generatedViewRenderer = `package views
 import (
 	"embed"
 
-	forge "github.com/fabriciobonjorno/forge-go"
+	forge "github.com/rocketinsidecorp/forge-go"
 )
 
 //go:embed *.gohtml
