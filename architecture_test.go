@@ -23,6 +23,7 @@ var corePackages = []string{
 	modulePath + "/agent",
 	modulePath + "/config",
 	modulePath + "/csrf",
+	modulePath + "/credentials",
 	modulePath + "/dbtest",
 	modulePath + "/encryption",
 	modulePath + "/events",
