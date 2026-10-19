@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"sync/atomic"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/ratelimit"
@@ -36,10 +35,10 @@ func Migrations() fs.FS {
 // Limiter is the SQLite implementation of ratelimit.Limiter and
 // ratelimit.Pruner. It is safe for concurrent use and starts no goroutines.
 type Limiter struct {
-	db        *sqldb.DB
-	opts      ratelimit.StoreOptions
-	now       func() time.Time
-	lastPrune atomic.Int64 // unix nanoseconds of the last opportunistic prune
+	db   *sqldb.DB
+	opts ratelimit.StoreOptions
+	now  func() time.Time
+	gate ratelimit.PruneGate
 }
 
 var (
@@ -89,37 +88,44 @@ func (l *Limiter) Allow(ctx context.Context, key string, limit ratelimit.Limit) 
 	return ratelimit.Decision{Allowed: true, Remaining: limit.N - int(hits)}, nil
 }
 
-// maybePrune removes a bounded batch of expired buckets at most once per
-// PruneInterval. It ignores errors: the hit it follows has been decided.
+// maybePrune prunes when the gate says so. It ignores errors: the hit it
+// follows has been decided.
 func (l *Limiter) maybePrune(ctx context.Context, nowMicro int64) {
-	if l.opts.PruneInterval < 0 {
-		return
+	if l.gate.Due(l.opts) {
+		_, _ = l.prune(ctx, nowMicro)
 	}
-	now := time.Now().UnixNano()
-	last := l.lastPrune.Load()
-	if now-last < int64(l.opts.PruneInterval) || !l.lastPrune.CompareAndSwap(last, now) {
-		return
-	}
-	_, _ = l.prune(ctx, nowMicro)
 }
 
-// Prune deletes at most PruneBatch expired buckets and returns how many.
+// Prune removes expired buckets, in up to MaxPruneRounds batches of PruneBatch,
+// and returns how many. One call is bounded work yet keeps up with a sustained
+// stream of new keys; Allow also calls it after every PruneBatch hits.
 func (l *Limiter) Prune(ctx context.Context) (int64, error) {
 	return l.prune(ctx, l.now().UnixMicro())
 }
 
 func (l *Limiter) prune(ctx context.Context, nowMicro int64) (int64, error) {
-	result, err := l.db.ExecContext(ctx, `
-		DELETE FROM forge_rate_limits
-		WHERE bucket IN (
-			SELECT bucket FROM forge_rate_limits
-			WHERE expires_at <= ?
-			ORDER BY expires_at
-			LIMIT ?
-		)
-	`, nowMicro, l.opts.PruneBatch)
-	if err != nil {
-		return 0, forgesqlite.Translate(fmt.Errorf("prune rate limits: %w", err))
+	var removed int64
+	for range ratelimit.MaxPruneRounds {
+		result, err := l.db.ExecContext(ctx, `
+			DELETE FROM forge_rate_limits
+			WHERE bucket IN (
+				SELECT bucket FROM forge_rate_limits
+				WHERE expires_at <= ?
+				ORDER BY expires_at
+				LIMIT ?
+			)
+		`, nowMicro, l.opts.PruneBatch)
+		if err != nil {
+			return removed, forgesqlite.Translate(fmt.Errorf("prune rate limits: %w", err))
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return removed, err
+		}
+		removed += n
+		if n < int64(l.opts.PruneBatch) {
+			break
+		}
 	}
-	return result.RowsAffected()
+	return removed, nil
 }

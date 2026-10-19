@@ -97,11 +97,14 @@ type Pruner interface {
 // StoreOptions tunes a database-backed limiter. Zero values select the
 // defaults.
 type StoreOptions struct {
-	// PruneInterval is the minimum time between the opportunistic prunes that
-	// Allow runs inline. Zero means one minute; a negative value disables
-	// them (then call Prune yourself).
+	// PruneInterval is the longest time between the opportunistic prunes that
+	// Allow runs inline; a prune also runs after every PruneBatch hits, so
+	// expired buckets cannot pile up faster than they are removed. Zero means
+	// one minute; a negative value disables inline pruning (then call Prune
+	// yourself).
 	PruneInterval time.Duration
-	// PruneBatch bounds the buckets one prune removes. Zero means 500.
+	// PruneBatch is the size of one prune batch; a Prune call runs at most
+	// MaxPruneRounds batches. Zero means 500.
 	PruneBatch int
 }
 

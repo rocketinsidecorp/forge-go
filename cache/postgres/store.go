@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,10 +37,10 @@ func Migrations() fs.FS {
 // Store is the PostgreSQL implementation of cache.Cache and cache.Pruner. It
 // is safe for concurrent use and starts no goroutines.
 type Store struct {
-	db        *forgepostgres.DB
-	opts      cache.StoreOptions
-	flight    cache.Flight
-	lastPrune atomic.Int64 // unix nanoseconds of the last opportunistic prune
+	db     *forgepostgres.DB
+	opts   cache.StoreOptions
+	flight cache.Flight
+	gate   cache.PruneGate
 }
 
 var (
@@ -134,60 +133,69 @@ func (s *Store) Fetch(ctx context.Context, key string, ttl time.Duration, comput
 	return cache.FetchThrough(ctx, s, &s.flight, key, ttl, compute)
 }
 
-// maybePrune prunes at most once per PruneInterval. It ignores errors: the
-// write it follows has succeeded.
+// maybePrune prunes when the gate says so: once per PruneInterval, or sooner
+// after PruneBatch writes. It ignores errors: the write it follows has succeeded.
 func (s *Store) maybePrune(ctx context.Context) {
-	if s.opts.PruneInterval < 0 {
-		return
+	if s.gate.Due(s.opts) {
+		_, _ = s.Prune(ctx)
 	}
-	now := time.Now().UnixNano()
-	last := s.lastPrune.Load()
-	if now-last < int64(s.opts.PruneInterval) || !s.lastPrune.CompareAndSwap(last, now) {
-		return
-	}
-	_, _ = s.Prune(ctx)
 }
 
-// Prune deletes up to PruneBatch expired entries and, when more than
-// MaxEntries remain, up to PruneBatch of the oldest writes. It returns how many
-// entries it removed. Replicas may call it concurrently: SKIP LOCKED keeps them
-// from blocking each other. Counting the entries is a scan of the table; with
-// millions of entries, raise PruneInterval.
+// Prune removes expired entries (up to MaxPruneRounds batches of PruneBatch)
+// and, when more than MaxEntries remain, the oldest writes (likewise bounded).
+// It returns how many entries it removed. One call is bounded work yet keeps up
+// with sustained writes of new keys, and the stores call it after every
+// PruneBatch writes, so the table stays within about one batch of MaxEntries per
+// process. Counting the entries is a scan; with millions of entries, raise
+// PruneBatch to count less often.
 func (s *Store) Prune(ctx context.Context) (int64, error) {
-	tag, err := s.db.Exec(ctx, `
-		DELETE FROM forge_cache_entries
-		WHERE key_hash IN (
-			SELECT key_hash FROM forge_cache_entries
-			WHERE expires_at <= clock_timestamp()
-			ORDER BY expires_at
-			LIMIT $1
-			FOR UPDATE SKIP LOCKED
-		)
-	`, s.opts.PruneBatch)
-	if err != nil {
-		return 0, forgepostgres.Translate(fmt.Errorf("prune expired cache entries: %w", err))
+	var removed int64
+	for range cache.MaxPruneRounds {
+		tag, err := s.db.Exec(ctx, `
+			DELETE FROM forge_cache_entries
+			WHERE key_hash IN (
+				SELECT key_hash FROM forge_cache_entries
+				WHERE expires_at <= clock_timestamp()
+				ORDER BY expires_at
+				LIMIT $1
+				FOR UPDATE SKIP LOCKED
+			)
+		`, s.opts.PruneBatch)
+		if err != nil {
+			return removed, forgepostgres.Translate(fmt.Errorf("prune expired cache entries: %w", err))
+		}
+		removed += tag.RowsAffected()
+		if tag.RowsAffected() < int64(s.opts.PruneBatch) {
+			break
+		}
 	}
-	removed := tag.RowsAffected()
 
 	var count int64
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM forge_cache_entries`).Scan(&count); err != nil {
 		return removed, forgepostgres.Translate(fmt.Errorf("count cache entries: %w", err))
 	}
 	excess := count - int64(s.opts.MaxEntries)
-	if excess <= 0 {
-		return removed, nil
+	for range cache.MaxPruneRounds {
+		if excess <= 0 {
+			break
+		}
+		tag, err := s.db.Exec(ctx, `
+			DELETE FROM forge_cache_entries
+			WHERE key_hash IN (
+				SELECT key_hash FROM forge_cache_entries
+				ORDER BY created_at
+				LIMIT $1
+				FOR UPDATE SKIP LOCKED
+			)
+		`, min(excess, int64(s.opts.PruneBatch)))
+		if err != nil {
+			return removed, forgepostgres.Translate(fmt.Errorf("evict cache entries: %w", err))
+		}
+		if tag.RowsAffected() == 0 {
+			break
+		}
+		removed += tag.RowsAffected()
+		excess -= tag.RowsAffected()
 	}
-	tag, err = s.db.Exec(ctx, `
-		DELETE FROM forge_cache_entries
-		WHERE key_hash IN (
-			SELECT key_hash FROM forge_cache_entries
-			ORDER BY created_at
-			LIMIT $1
-			FOR UPDATE SKIP LOCKED
-		)
-	`, min(excess, int64(s.opts.PruneBatch)))
-	if err != nil {
-		return removed, forgepostgres.Translate(fmt.Errorf("evict cache entries: %w", err))
-	}
-	return removed + tag.RowsAffected(), nil
+	return removed, nil
 }

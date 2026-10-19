@@ -2,6 +2,7 @@ package mysql_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -68,16 +69,39 @@ func TestSetPrunesOpportunistically(t *testing.T) {
 func TestPruneIsBounded(t *testing.T) {
 	store := newStore(t, cache.StoreOptions{Options: cache.Options{MaxEntries: 1}, PruneInterval: -1, PruneBatch: 2})
 	ctx := context.Background()
-	for _, key := range []string{"a", "b", "c", "d", "e", "f"} {
-		if err := store.Set(ctx, key, []byte("v"), time.Hour); err != nil {
+	for i := range 60 {
+		if err := store.Set(ctx, fmt.Sprintf("k%02d", i), []byte("v"), time.Hour); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(3 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
 	}
-	for i, want := range []int64{2, 2, 1, 0} { // 6 entries -> bound 1, two per batch
+	// One call is bounded work: MaxPruneRounds batches of 2.
+	for i, want := range []int64{cache.MaxPruneRounds * 2, 19, 0} {
 		if removed, err := store.Prune(ctx); err != nil || removed != want {
 			t.Fatalf("Prune #%d = %d, %v; want %d", i+1, removed, err, want)
 		}
+	}
+}
+
+func TestSustainedWritesOfNewKeysStayNearTheBound(t *testing.T) {
+	// The default interval is a minute: only the write counter can keep up.
+	db := mysqltest.NewMigrated(t, cachemysql.Migrations())
+	store, err := cachemysql.NewStore(db, cache.StoreOptions{Options: cache.Options{MaxEntries: 100}, PruneBatch: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for i := range 2000 {
+		if err := store.Set(ctx, fmt.Sprintf("k%d", i), []byte("v"), time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM forge_cache_entries`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows > 100+2*50 {
+		t.Fatalf("%d rows after 2000 writes of new keys with MaxEntries=100, want at most %d", rows, 100+2*50)
 	}
 }
 
