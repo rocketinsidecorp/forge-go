@@ -589,8 +589,10 @@ restart. It:
   the original `Host`. Forge applications ignore these headers
   (`trusted-proxy` mode); if you read them, trust them only because the app
   port is reachable solely through the proxy;
-- rejects bodies over `max_body_bytes` with `413`, buffers bodies up to 1 MiB
-  (30 s to arrive) before contacting the application, and gives the
+- rejects bodies over `max_body_bytes` with `413`; reads bodies up to 1 MiB
+  completely, with or without `Content-Length`, before contacting the
+  application, and answers `408` if one does not arrive within 30 s; streams
+  larger bodies, answering `408` when no data arrives for 30 s; gives the
   application `response_timeout` to send response headers;
 - writes JSON access logs (service, host, method, path without query,
   status, bytes, duration, client IP, target) to `docker logs forge-proxy`;

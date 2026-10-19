@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -19,7 +20,8 @@ import (
 )
 
 // bodyReadTimeout bounds how long a client may take to send a body that the
-// proxy buffers before forwarding.
+// proxy buffers before forwarding, and how long any single read of a
+// larger, streamed body may wait for data.
 const bodyReadTimeout = 30 * time.Second
 
 // Server routes requests to the current target of each service. Create it
@@ -28,6 +30,8 @@ type Server struct {
 	logger    *slog.Logger
 	statePath string
 	health    *http.Client
+	// bodyTimeout is bodyReadTimeout; tests shorten it.
+	bodyTimeout time.Duration
 
 	mu       sync.RWMutex
 	services map[string]*service
@@ -66,11 +70,12 @@ type target struct {
 // any. An empty statePath disables persistence.
 func New(logger *slog.Logger, statePath string) (*Server, error) {
 	s := &Server{
-		logger:    logger,
-		statePath: statePath,
-		services:  make(map[string]*service),
-		hosts:     make(map[string]*service),
-		locks:     make(map[string]*sync.Mutex),
+		logger:      logger,
+		statePath:   statePath,
+		bodyTimeout: bodyReadTimeout,
+		services:    make(map[string]*service),
+		hosts:       make(map[string]*service),
+		locks:       make(map[string]*sync.Mutex),
 		health: &http.Client{
 			Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext},
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -111,6 +116,12 @@ func newTarget(addr string, settings *DeployRequest, logger *slog.Logger) *targe
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if maxBytes := (*http.MaxBytesError)(nil); errors.As(err, &maxBytes) {
 				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if bodyTimedOut(r) {
+				// A streamed body stalled past the per-read deadline; the
+				// server cancels the request context too, so check first.
+				http.Error(w, "request body not received in time", http.StatusRequestTimeout)
 				return
 			}
 			if r.Context().Err() != nil {
@@ -237,10 +248,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, svc *service) str
 	}
 	if r.Body != nil && r.Body != http.NoBody {
 		r.Body = http.MaxBytesReader(w, r.Body, settings.MaxBodyBytes)
-		if r.ContentLength > 0 && r.ContentLength <= settings.BufferBytes {
-			if !bufferBody(w, r) {
-				return ""
-			}
+		if !s.prepareBody(w, r, settings.BufferBytes) {
+			return ""
 		}
 	}
 	for {
@@ -254,29 +263,97 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, svc *service) str
 			t.proxy.ServeHTTP(w, r)
 			return t.addr
 		}
+		if svc.target.Load() == t {
+			// Retired without a successor: the service was removed
+			// after this request was routed.
+			http.Error(w, "service has no target", http.StatusServiceUnavailable)
+			return ""
+		}
 		// t was retired after we loaded it; the current target has
 		// already been swapped in, so the next load returns it.
 	}
 }
 
-// bufferBody reads a small body completely before the request reaches the
-// application.
-func bufferBody(w http.ResponseWriter, r *http.Request) bool {
+// prepareBody protects the application from slow clients. Bodies of at
+// most limit bytes, with or without Content-Length, are read completely
+// within the body timeout before the application is contacted (408
+// otherwise). Larger bodies are streamed, and every read must receive
+// data within the body timeout; a stalled upload gets 408.
+func (s *Server) prepareBody(w http.ResponseWriter, r *http.Request, limit int64) bool {
 	controller := http.NewResponseController(w)
-	_ = controller.SetReadDeadline(time.Now().Add(bodyReadTimeout))
-	body, err := io.ReadAll(r.Body)
+	if r.ContentLength > limit {
+		r.Body = &deadlineBody{body: r.Body, controller: controller, timeout: s.bodyTimeout}
+		return true
+	}
+	_ = controller.SetReadDeadline(time.Now().Add(s.bodyTimeout))
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	_ = controller.SetReadDeadline(time.Time{})
 	if err != nil {
 		if maxBytes := (*http.MaxBytesError)(nil); errors.As(err, &maxBytes) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		} else {
-			http.Error(w, "request body could not be read", http.StatusRequestTimeout)
+			http.Error(w, "request body not received in time", http.StatusRequestTimeout)
 		}
 		return false
 	}
+	if int64(len(body)) > limit {
+		// Unknown length beyond the buffer: stream the rest.
+		rest := &deadlineBody{body: r.Body, controller: controller, timeout: s.bodyTimeout}
+		r.Body = &prefixedBody{reader: io.MultiReader(bytes.NewReader(body), rest), rest: rest}
+		return true
+	}
 	_ = r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.TransferEncoding = nil
 	return true
+}
+
+// deadlineBody gives every read of a streamed body its own deadline and
+// clears it when the body ends, so the connection's later reads are not
+// affected.
+type deadlineBody struct {
+	body       io.ReadCloser
+	controller *http.ResponseController
+	timeout    time.Duration
+	expired    atomic.Bool
+}
+
+func (b *deadlineBody) Read(p []byte) (int, error) {
+	_ = b.controller.SetReadDeadline(time.Now().Add(b.timeout))
+	n, err := b.body.Read(p)
+	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			b.expired.Store(true)
+		}
+		_ = b.controller.SetReadDeadline(time.Time{})
+	}
+	return n, err
+}
+
+// prefixedBody is a buffered prefix followed by the streamed rest.
+type prefixedBody struct {
+	reader io.Reader
+	rest   *deadlineBody
+}
+
+func (b *prefixedBody) Read(p []byte) (int, error) { return b.reader.Read(p) }
+func (b *prefixedBody) Close() error               { return b.rest.Close() }
+
+// bodyTimedOut reports whether r's streamed body hit its read deadline.
+func bodyTimedOut(r *http.Request) bool {
+	switch body := r.Body.(type) {
+	case *deadlineBody:
+		return body.expired.Load()
+	case *prefixedBody:
+		return body.rest.expired.Load()
+	}
+	return false
+}
+
+func (b *deadlineBody) Close() error {
+	_ = b.controller.SetReadDeadline(time.Time{})
+	return b.body.Close()
 }
 
 const maintenancePage = `<!doctype html>
@@ -498,11 +575,14 @@ func (s *Server) Remove(name string, drainTimeout time.Duration) error {
 	}
 	delete(s.services, name)
 	s.reindexLocked()
+	// Requests routed before the removal see no target (503) instead of
+	// a retired one.
+	previous := svc.target.Swap(nil)
 	s.mu.Unlock()
 	err := s.saveState()
 	lock.Unlock()
-	if t := svc.target.Load(); t != nil {
-		t.drain(drainTimeout)
+	if previous != nil {
+		previous.drain(drainTimeout)
 	}
 	return err
 }
