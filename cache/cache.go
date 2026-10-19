@@ -122,12 +122,13 @@ func (o Options) Normalize() (Options, error) {
 // StoreOptions tunes a database-backed cache.
 type StoreOptions struct {
 	Options
-	// PruneInterval is the minimum time between the opportunistic prunes that
-	// Set runs inline. Zero means one minute; a negative value disables them
-	// (then call Prune yourself).
+	// PruneInterval is the longest time between the opportunistic prunes that
+	// Set runs inline; a prune also runs after every PruneBatch writes, so
+	// sustained writes cannot outrun eviction. Zero means one minute; a
+	// negative value disables inline pruning (then call Prune yourself).
 	PruneInterval time.Duration
-	// PruneBatch bounds the entries one prune removes per kind (expired,
-	// surplus). Zero means 500.
+	// PruneBatch is the size of one prune batch (expired, surplus); a Prune
+	// call runs at most MaxPruneRounds batches of each kind. Zero means 500.
 	PruneBatch int
 }
 
@@ -189,11 +190,15 @@ func (o Options) EffectiveTTL(ttl time.Duration) (time.Duration, error) {
 	return ttl, nil
 }
 
-// Key joins a namespace and parts into one unambiguous key: every part is
-// length-prefixed, so ("a", "bc") and ("ab", "c") never collide, and a part
-// that comes from a user cannot reach into another namespace.
+// Key joins a namespace and parts into one unambiguous key: the namespace and
+// every part are length-prefixed, so ("a", "bc") and ("ab", "c") never collide,
+// a namespace built from a dynamic value ("tenant:"+id) cannot be confused with
+// a shorter namespace plus parts, and a part that comes from a user cannot reach
+// into another namespace.
 func Key(namespace string, parts ...string) string {
 	var b strings.Builder
+	b.WriteString(strconv.Itoa(len(namespace)))
+	b.WriteByte(':')
 	b.WriteString(namespace)
 	for _, part := range parts {
 		b.WriteByte(':')

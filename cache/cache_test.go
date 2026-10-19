@@ -185,6 +185,34 @@ func TestKeyIsUnambiguous(t *testing.T) {
 	}
 }
 
+func TestKeyNamespaceIsLengthPrefixedToo(t *testing.T) {
+	// A dynamic namespace ("tenant:"+id) must never equal a shorter namespace
+	// plus parts, or one tenant could read another's entries.
+	pairs := [][2]string{
+		{Key("a:1:b"), Key("a", "b")},
+		{Key("tenant:7"), Key("tenant", "7")},
+		{Key("a:1:b", "c"), Key("a", "b", "c")},
+		{Key(""), Key("", "")},
+		{Key("1:a"), Key("1", "a")},
+	}
+	for i, p := range pairs {
+		if p[0] == p[1] {
+			t.Errorf("pair %d: distinct (namespace, parts) produced the same key %q", i, p[0])
+		}
+	}
+	seen := map[string][3]string{}
+	for _, ns := range []string{"", "a", "a:1", "a:1:b", "1:a", "tenant:7"} {
+		for _, parts := range [][]string{nil, {""}, {"a"}, {"b"}, {"a", "b"}, {"1:a"}, {"", ""}} {
+			k := Key(ns, parts...)
+			id := [3]string{ns, strings.Join(parts, "\x00"), string(rune('0' + len(parts)))}
+			if prev, dup := seen[k]; dup && prev != id {
+				t.Errorf("collision: %v and %v both give %q", prev, id, k)
+			}
+			seen[k] = id
+		}
+	}
+}
+
 func TestEffectiveTTL(t *testing.T) {
 	o, _ := Options{DefaultTTL: time.Minute}.Normalize()
 	for in, want := range map[time.Duration]time.Duration{0: time.Minute, time.Hour: time.Hour, time.Microsecond: time.Millisecond} {
