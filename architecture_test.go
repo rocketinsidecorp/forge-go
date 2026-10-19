@@ -24,6 +24,7 @@ var corePackages = []string{
 	modulePath + "/config",
 	modulePath + "/csrf",
 	modulePath + "/dbtest",
+	modulePath + "/encryption",
 	modulePath + "/events",
 	modulePath + "/fault",
 	modulePath + "/health",

@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
@@ -22,6 +21,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/rocketinsidecorp/forge-go/encryption"
 	"github.com/rocketinsidecorp/forge-go/fault"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
@@ -91,25 +91,24 @@ type AESGCMSecretCipher struct {
 // NewAESGCMSecretCipherBase64 decodes a canonical unpadded base64url key and
 // builds the standard AES-256-GCM cipher. Errors never echo the secret value.
 func NewAESGCMSecretCipherBase64(encoded string) (*AESGCMSecretCipher, error) {
-	raw, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
-	if err != nil || len(raw) != 32 || base64.RawURLEncoding.EncodeToString(raw) != encoded {
+	raw, err := encryption.ParseKey(encoded)
+	if err != nil {
 		return nil, errors.New("MFA encryption key must be canonical unpadded base64url for exactly 32 bytes")
 	}
 	return NewAESGCMSecretCipher(raw)
 }
 
-// NewAESGCMSecretCipher builds a standard-library AES-256-GCM secret cipher.
-// Applications must load the 32-byte key from an external secret manager or
-// environment secret and must not store it in the identity database.
+// NewAESGCMSecretCipher builds a standard-library AES-256-GCM secret cipher on
+// the primitives of package encryption. The stored form is nonce||ciphertext
+// with no associated data, unchanged since the first release. Applications
+// must load the 32-byte key from an external secret manager or environment
+// secret and must not store it in the identity database. Applications that
+// need key rotation implement SecretCipher with encryption.Cipher instead.
 func NewAESGCMSecretCipher(key []byte) (*AESGCMSecretCipher, error) {
 	if len(key) != 32 {
 		return nil, errors.New("MFA encryption key must be exactly 32 bytes")
 	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := encryption.NewAEAD(key)
 	if err != nil {
 		return nil, err
 	}
@@ -120,23 +119,14 @@ func (c *AESGCMSecretCipher) Seal(plaintext []byte) ([]byte, error) {
 	if c == nil || c.aead == nil {
 		return nil, errors.New("MFA secret cipher is not configured")
 	}
-	nonce := make([]byte, c.aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	sealed := append([]byte(nil), nonce...)
-	return c.aead.Seal(sealed, nonce, plaintext, nil), nil
+	return encryption.SealPrefixed(c.aead, plaintext, nil)
 }
 
 func (c *AESGCMSecretCipher) Open(ciphertext []byte) ([]byte, error) {
 	if c == nil || c.aead == nil {
 		return nil, errors.New("MFA secret cipher is not configured")
 	}
-	nonceSize := c.aead.NonceSize()
-	if len(ciphertext) < nonceSize+c.aead.Overhead() {
-		return nil, errors.New("invalid encrypted MFA secret")
-	}
-	plaintext, err := c.aead.Open(nil, ciphertext[:nonceSize], ciphertext[nonceSize:], nil)
+	plaintext, err := encryption.OpenPrefixed(c.aead, ciphertext, nil)
 	if err != nil {
 		return nil, errors.New("invalid encrypted MFA secret")
 	}
