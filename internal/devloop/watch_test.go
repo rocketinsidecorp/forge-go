@@ -88,17 +88,27 @@ func TestWatchKeepsExtendingTheBatchWhileFilesKeepChanging(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	write(t, root, "main.go", "package main\n")
-	changes := startWatch(t, root)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	changes, err := Watch(ctx, Options{Root: root, PollInterval: testPoll, Debounce: 300 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	for i := 1; i <= 5; i++ {
+	var lastWrite time.Time
+	for i := 1; i <= 6; i++ {
 		write(t, root, "main.go", "package main\n// "+strings.Repeat("x", i)+"\n")
-		time.Sleep(testDebounce / 3)
+		lastWrite = time.Now()
+		time.Sleep(60 * time.Millisecond)
 	}
 	change := expectChange(t, changes)
 	if change.Count != 1 {
 		t.Fatalf("change = %+v", change)
 	}
-	expectQuiet(t, changes, 5*testDebounce)
+	if quiet := time.Since(lastWrite); quiet < 200*time.Millisecond {
+		t.Fatalf("batch was reported %s after the last write; it must wait for the debounce", quiet)
+	}
+	expectQuiet(t, changes, 600*time.Millisecond)
 }
 
 func TestWatchIgnoresUnwatchedFilesAndDirectories(t *testing.T) {
