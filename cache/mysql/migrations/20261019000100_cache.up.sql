@@ -1,4 +1,4 @@
--- Shared application cache (ADR 0027). Rows are addressed by the SHA-256 of
+-- Shared application cache (ADR 0032). Rows are addressed by the SHA-256 of
 -- the cache key, so keys, which may name users or sessions, are never stored.
 CREATE TABLE forge_cache_entries (
     key_hash BINARY(32) NOT NULL,

@@ -1,4 +1,4 @@
-# ADR 0028: File storage
+# ADR 0033: File storage
 
 - **Status:** Accepted
 - **Date:** 2026-10-19
@@ -127,8 +127,11 @@ exists. Responses:
 - request `Content-Type` must be `multipart/form-data` (415 otherwise);
 - the body is capped (`MaxFiles x MaxFileBytes + MaxFields x MaxFieldBytes +
   64 KiB`) before reading, both from `Content-Length` and with
-  `http.MaxBytesReader`, and **streamed**: the only buffering is a 512-byte
-  sniffing window per file; each file also has its own `MaxBytes` in `Put`;
+  `http.MaxBytesReader`; **files are streamed** (only a 512-byte sniffing window
+  of each is held) and each has its own `MaxBytes` in `Put`; **text fields are
+  held in memory** but bounded: at most `MaxFields` values in total (every
+  repetition of a name counts) and at most `MaxFields x MaxFieldBytes` bytes
+  (default 32 values, 2 MiB);
 - one expected file field; files in other fields, extra files, empty files,
   `Content-Transfer-Encoding` other than identity, unnamed parts and surplus or
   oversized text fields are rejected (400/413);

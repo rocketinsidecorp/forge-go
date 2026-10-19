@@ -1,4 +1,4 @@
-# ADR 0026: Rate limiting
+# ADR 0031: Rate limiting
 
 - **Status:** Accepted
 - **Date:** 2026-10-19
@@ -94,12 +94,18 @@ bucket, hits, expires_at) and counts a hit atomically:
 - SQLite: one upsert with `RETURNING` under the single-writer lock; the
   application clock is the only clock (SQLite serves one host).
 
-Expired rows are removed by `Prune(ctx)`, which deletes at most `PruneBatch`
-(default 500) rows per call, `SKIP LOCKED` where available so replicas do not
-block each other. Allow also prunes opportunistically, **inline, at most once per
-`PruneInterval` (default one minute)**, after the hit has been decided, ignoring
-errors: tables stay small with no scheduler and no goroutine, and
-`jobs.Scheduler` can call `Prune` for an explicit cadence.
+Expired rows are removed by `Prune(ctx)`, which deletes up to `MaxPruneRounds`
+(20) batches of `PruneBatch` (default 500) rows per call, `SKIP LOCKED` where
+available so replicas do not block each other. Allow also prunes
+opportunistically, **inline, after every `PruneBatch` hits or every
+`PruneInterval` (default one minute), whichever comes first**, after the hit has
+been decided, ignoring errors: expired buckets cannot pile up faster than they
+are removed (a time-only trigger let a stream of distinct keys do exactly that),
+tables stay small with no scheduler and no goroutine, and `jobs.Scheduler` can
+call `Prune` for an explicit cadence. Live buckets are bounded by the number of
+distinct keys seen within one window; unlike `Memory` the database limiter has
+no `MaxKeys`, which is why it is the right store for attacker-choosable keys
+(see `docs/RATE_LIMITING.md`).
 
 A database limiter costs one round trip (PostgreSQL, SQLite) or one short
 transaction (MySQL) per request. Put a `Memory` limiter with a generous limit

@@ -2,7 +2,7 @@
 
 Forge's `cache` package is the equivalent of Rails' Solid Cache: a key/value
 cache with expiry that lives in the database you already run, plus a bounded
-in-memory cache. The design is in [ADR 0027](adr/0027-cache.md).
+in-memory cache. The design is in [ADR 0032](adr/0032-cache.md).
 
 ## The interface
 
@@ -81,9 +81,12 @@ cold ones on each write, and starts no goroutines.
 
 The database stores are pruned in bounded batches: expired entries first, then
 the **oldest writes** while more than `MaxEntries` remain (FIFO by write time,
-like Solid Cache; reads are not tracked). Pruning runs inline after a write, at
-most once per `StoreOptions.PruneInterval` (default one minute, `-1` disables),
-and as `store.Prune(ctx)` for an explicit schedule:
+like Solid Cache; reads are not tracked). One `store.Prune(ctx)` call runs at
+most `cache.MaxPruneRounds` (20) batches of `StoreOptions.PruneBatch` (default
+500) of each kind. Writes call it inline **after every `PruneBatch` writes or
+every `PruneInterval` (default one minute), whichever comes first** (`-1`
+disables inline pruning), so sustained writes of new keys cannot outrun
+eviction. You can also run it on a schedule:
 
 ```go
 sched.Register("cache.prune", jobs.ScheduleSpec{Every: time.Minute}, func(ctx context.Context) error {
@@ -92,16 +95,19 @@ sched.Register("cache.prune", jobs.ScheduleSpec{Every: time.Minute}, func(ctx co
 })
 ```
 
-On the database stores the entry bound is therefore **soft**: the table can
-exceed `MaxEntries` by about the write rate times the prune interval. Size
-`MaxEntries` with headroom or prune more often. Counting entries scans the
-table; with millions of rows, raise the interval.
+The entry bound on the database stores is **soft but tight**: each process
+prunes after every `PruneBatch` writes, and a prune evicts the whole excess (up
+to 20 batches), so the table stays within about `PruneBatch` entries per writing
+process, plus writes in flight, of `MaxEntries`. A burst of more than
+`20 x PruneBatch` new keys between two prunes by one process is cleared over the
+next prunes. Each prune counts the table (a scan): with millions of rows, raise
+`PruneBatch` so it runs less often, and leave headroom in `MaxEntries`.
 
 ## Security notes
 
 - **Poisoning.** Whoever can write a key controls what every reader of that key
   sees. Never build a key from untrusted input without a namespace and
-  `cache.Key` (length-prefixed parts cannot reach into another namespace), and
+  `cache.Key` (the namespace and every part are length-prefixed, so neither a part nor a dynamic namespace such as `"tenant:"+id` can reach into another namespace), and
   never cache per-user data under a key a different user can compute or choose.
   Cache entries are untrusted bytes: decode them strictly (`GetJSON` does) and
   do not cache authorization decisions longer than the permission can change.

@@ -1,4 +1,4 @@
-// Package sqlite is the SQLite adapter of Forge's shared cache (ADR 0027).
+// Package sqlite is the SQLite adapter of Forge's shared cache (ADR 0032).
 // SQLite serves one application instance on one host, so the shared state is
 // what several processes of that host need; the application's clock is the
 // only clock. Entries are addressed by the SHA-256 of the cache key.

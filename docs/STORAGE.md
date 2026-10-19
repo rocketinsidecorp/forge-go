@@ -3,7 +3,7 @@
 Forge's `storage` package is the equivalent of Rails' Active Storage for local
 disk: a `Storage` port, a disk adapter, HMAC-signed expiring links, an HTTP
 handler that serves them safely, and a strict multipart upload helper. The
-design and its trade-offs are in [ADR 0028](adr/0028-file-storage.md).
+design and its trade-offs are in [ADR 0033](adr/0033-file-storage.md).
 
 An S3-compatible adapter is **not** included; see
 [Writing another adapter](#writing-another-adapter).
@@ -87,6 +87,11 @@ Authenticate, authorize and CSRF-check **before** `Receive`. Multipart bodies
 are not parsed by `csrf.Protection` (it reads urlencoded forms), so send the
 token in the `X-CSRF-Token` header from a `fetch`/Stimulus submit, or check the
 field you get back in `got.Fields`.
+
+Files are streamed to the store; text fields (form values next to the file) are
+held in memory, so they are limited to `MaxFields` values in total, repeated
+names included (default 32), and `MaxFields x MaxFieldBytes` bytes (default
+2 MiB).
 
 `Receive` rejects, with a stable fault and without storing anything:
 

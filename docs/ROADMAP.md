@@ -380,8 +380,8 @@ Rails-style HTML CRUD on the standard-library core
 Rate limiting, application cache and file storage on the standard-library core,
 each with shared stores for PostgreSQL, MySQL/MariaDB and SQLite (rate limit and
 cache) and a conformance suite
-([ADR 0026](adr/0026-rate-limiting.md), [ADR 0027](adr/0027-cache.md),
-[ADR 0028](adr/0028-file-storage.md)).
+([ADR 0031](adr/0031-rate-limiting.md), [ADR 0032](adr/0032-cache.md),
+[ADR 0033](adr/0033-file-storage.md)).
 
 - [x] `ratelimit`: fixed-window `Limiter`, bounded in-memory store with no
   background goroutines, HTTP middleware (`429`, `Retry-After`, JSON or HTML),

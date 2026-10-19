@@ -3,7 +3,7 @@
 Forge's `ratelimit` package is Rails' `rate_limit` with safe defaults: a
 fixed-window limiter, HTTP middleware that answers `429` with `Retry-After`, a
 bounded in-memory store, and shared stores for PostgreSQL, MySQL/MariaDB and
-SQLite. The design is in [ADR 0026](adr/0026-rate-limiting.md).
+SQLite. The design is in [ADR 0031](adr/0031-rate-limiting.md).
 
 (Password login has its own two-key throttle, [ADR 0011](adr/0011-login-throttling.md);
 use `ratelimit` for everything else.)
@@ -128,13 +128,23 @@ until space frees (no counter is lost, but a flood of distinct keys locks out
 new clients). Pick `MemoryOptions{WhenFull: ratelimit.Deny}` where a bypass is
 worse than an outage.
 
+**Never key an `EvictSoonest` limiter on a value the attacker can choose per
+target** (the username of a login or reset attempt, an e-mail address, a
+resource ID in the URL). Flooding the limiter with more than `MaxKeys` distinct
+junk keys evicts the victim's counter and resets it, which defeats a
+per-target limit. Use `Deny`, or better a database limiter (no key cap, expired
+rows pruned), for such keys, and combine them with a per-client key.
+
 ### Pruning the database tables
 
 Expired rows are removed in bounded batches (`StoreOptions.PruneBatch`, default
-500): inline, at most once per `PruneInterval` (default one minute) after a hit
-has been decided, and by `limiter.Prune(ctx)`, which you can run from
-`jobs.Scheduler` for an explicit cadence. `PruneInterval: -1` disables the
-inline prune. No goroutine is ever started.
+500; one `Prune` call runs at most `ratelimit.MaxPruneRounds` = 20 batches):
+inline after every `PruneBatch` hits or every `PruneInterval` (default one
+minute), whichever comes first, once the hit has been decided, so a stream of
+new keys cannot pile up expired rows; and by `limiter.Prune(ctx)`, which you can
+run from `jobs.Scheduler`. `PruneInterval: -1` disables the inline prune. No
+goroutine is ever started. Live rows are bounded only by the distinct keys seen
+within one window.
 
 ## Fixed windows: what to expect
 

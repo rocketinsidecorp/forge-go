@@ -1,5 +1,5 @@
 // Package postgres is the PostgreSQL adapter of Forge's shared rate limiter
-// (ADR 0026): one atomic INSERT ... ON CONFLICT statement per hit, with all
+// (ADR 0031): one atomic INSERT ... ON CONFLICT statement per hit, with all
 // window arithmetic on the database clock, so replicas with skewed clocks
 // agree and a hit can neither be lost nor counted twice.
 package postgres

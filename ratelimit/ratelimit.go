@@ -1,5 +1,5 @@
 // Package ratelimit limits how often something may happen per key: Rails'
-// rate_limit, with fail-closed defaults (ADR 0026).
+// rate_limit, with fail-closed defaults (ADR 0031).
 //
 // A Limiter counts hits per key in fixed windows. The window of a key starts
 // with its first hit and lasts Limit.Per; at most Limit.N hits are allowed in

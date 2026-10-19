@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// RateLimit configures the in-memory rate limiter (ADR 0026). Zero values
+// RateLimit configures the in-memory rate limiter (ADR 0031). Zero values
 // select the defaults, so a Config built without Default still validates.
 type RateLimit struct {
 	// MaxKeys bounds the buckets the in-memory limiter holds
@@ -15,7 +15,7 @@ type RateLimit struct {
 	MaxKeys int
 }
 
-// Cache configures the application cache (ADR 0027). Zero values select the
+// Cache configures the application cache (ADR 0032). Zero values select the
 // defaults.
 type Cache struct {
 	// MaxEntries bounds the entries of a cache (FORGE_CACHE_MAX_ENTRIES,
@@ -32,7 +32,7 @@ type Cache struct {
 	DefaultTTL time.Duration
 }
 
-// Storage configures file storage (ADR 0028). An empty Root means the
+// Storage configures file storage (ADR 0033). An empty Root means the
 // application does not use disk storage.
 type Storage struct {
 	// Root is the directory the disk adapter stores files in

@@ -1,5 +1,5 @@
 // Package cache is Forge's application cache, the equivalent of Rails'
-// Solid Cache (ADR 0027): byte values under string keys with a time to live,
+// Solid Cache (ADR 0032): byte values under string keys with a time to live,
 // a bounded in-memory implementation, and database-backed stores
 // (cache/postgres, cache/mysql, cache/sqlite) that every replica shares.
 //

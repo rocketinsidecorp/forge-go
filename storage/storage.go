@@ -1,5 +1,5 @@
 // Package storage is Forge's file storage, the equivalent of Rails' Active
-// Storage (ADR 0028): a Storage port, an adapter for local disk
+// Storage (ADR 0033): a Storage port, an adapter for local disk
 // (storage/disk), HMAC-signed time-limited links, an HTTP handler that serves
 // them with safe headers, and a strict multipart upload helper.
 //

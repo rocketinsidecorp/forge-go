@@ -1,5 +1,5 @@
 // Package postgres is the PostgreSQL adapter of Forge's shared cache
-// (ADR 0027), the equivalent of Solid Cache: entries live in a table keyed by
+// (ADR 0032), the equivalent of Solid Cache: entries live in a table keyed by
 // the SHA-256 of the cache key, all expiry arithmetic uses the database
 // clock, and pruning removes expired entries and, above MaxEntries, the oldest
 // writes, in bounded batches.

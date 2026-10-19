@@ -1,4 +1,4 @@
-// Package disk is the local-disk adapter of Forge's file storage (ADR 0028).
+// Package disk is the local-disk adapter of Forge's file storage (ADR 0033).
 //
 // Files live under one root directory, opened once as an os.Root: the
 // operating system then refuses any path that leaves the root, whether through

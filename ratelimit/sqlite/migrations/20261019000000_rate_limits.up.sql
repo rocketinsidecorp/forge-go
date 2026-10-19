@@ -1,4 +1,4 @@
--- One row per live rate limit bucket (ADR 0026). The bucket name is the
+-- One row per live rate limit bucket (ADR 0031). The bucket name is the
 -- opaque, ASCII key chosen by ratelimit.Key (a SHA-256 digest), never a raw
 -- address or identifier. expires_at is unix microseconds (UTC).
 CREATE TABLE forge_rate_limits (

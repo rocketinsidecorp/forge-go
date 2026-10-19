@@ -1,5 +1,5 @@
 // Package sqlite is the SQLite adapter of Forge's shared rate limiter
-// (ADR 0026). SQLite serves one application instance on one host, so the
+// (ADR 0031). SQLite serves one application instance on one host, so the
 // shared state is what several processes of that host (for example a web
 // server and a worker) need, and the application's clock is the only clock.
 // Each hit is one atomic upsert under SQLite's write lock.

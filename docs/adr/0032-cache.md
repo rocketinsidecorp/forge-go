@@ -1,4 +1,4 @@
-# ADR 0027: Application cache
+# ADR 0032: Application cache
 
 - **Status:** Accepted
 - **Date:** 2026-10-19
@@ -74,15 +74,16 @@ returned. Direct `Get`/`Set`/`Delete` calls report store errors.
 
 `Memory` starts no goroutines: expired entries are dropped when read and a few
 cold entries are checked on every write. The database stores prune with
-`Prune(ctx)`: up to `PruneBatch` (default 500) expired entries, then, if more
-than `MaxEntries` remain, up to `PruneBatch` of the oldest. They also prune
-inline on writes, at most once per `PruneInterval` (default one minute), after
-the write has succeeded and ignoring errors. So the entry bound is enforced
-within one interval: it is a *soft* bound on the database stores, which can
-exceed `MaxEntries` by roughly the write rate times the interval. Size
-`MaxEntries` with that headroom, or call `Prune` from `jobs.Scheduler` at a
-tighter cadence. Counting entries is a scan; with millions of rows, raise the
-interval.
+`Prune(ctx)`: up to `MaxPruneRounds` (20) batches of `PruneBatch` (default 500)
+expired entries, then, if more than `MaxEntries` remain, up to as many batches
+of the oldest. They also prune inline after a write, **after every `PruneBatch`
+writes or every `PruneInterval` (default one minute), whichever comes first**,
+after the write has succeeded and ignoring errors. A time-only trigger was
+rejected: eviction capped at one batch per interval let a stream of new keys
+grow the table to thousands of rows over `MaxEntries`. With the write counter the
+bound is *soft but tight*: the table stays within about `PruneBatch` entries per
+writing process (plus writes in flight) of `MaxEntries`. Each prune counts the
+table, a scan; with millions of rows, raise `PruneBatch`.
 
 ### Keys are hashed; keys and values are never logged
 
@@ -92,8 +93,9 @@ and errors never contain them. The cost is that keys cannot be listed or
 deleted by pattern; use a namespace in the key and let TTLs and eviction
 clean up (the Solid Cache trade-off).
 
-`cache.Key(namespace, parts...)` builds keys unambiguously (length-prefixed
-parts), so a user-controlled part cannot reach into another namespace.
+`cache.Key(namespace, parts...)` builds keys unambiguously (the namespace and
+every part are length-prefixed), so neither a user-controlled part nor a
+dynamic namespace can reach into another namespace.
 
 ### Time
 

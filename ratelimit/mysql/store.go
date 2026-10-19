@@ -1,5 +1,5 @@
 // Package mysql is the MySQL and MariaDB adapter of Forge's shared rate
-// limiter (ADR 0026). A hit is one transaction: an INSERT ... ON DUPLICATE
+// limiter (ADR 0031). A hit is one transaction: an INSERT ... ON DUPLICATE
 // KEY UPDATE that leaves the bucket's row locked, then a read of that row,
 // so the count a caller sees is its own even under concurrency. All window
 // arithmetic uses the database clock (UTC_TIMESTAMP), so replicas with

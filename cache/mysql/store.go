@@ -1,5 +1,5 @@
 // Package mysql is the MySQL and MariaDB adapter of Forge's shared cache
-// (ADR 0027): entries live in a table addressed by the SHA-256 of the cache
+// (ADR 0032): entries live in a table addressed by the SHA-256 of the cache
 // key, all expiry arithmetic uses the database clock (UTC_TIMESTAMP), and
 // pruning removes expired entries and, above MaxEntries, the oldest writes, in
 // bounded batches.
