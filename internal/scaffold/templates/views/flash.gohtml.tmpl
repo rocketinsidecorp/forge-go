@@ -1,0 +1,3 @@
+{{range flashes}}
+<p class="flash flash-{{.Kind}}" role="{{if eq .Kind "alert"}}alert{{else}}status{{end}}">{{.Text}}</p>
+{{end}}

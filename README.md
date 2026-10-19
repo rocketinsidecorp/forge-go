@@ -47,10 +47,11 @@ Core packages import only the standard library and each other; a test
 | `agent`      | Provider-neutral allowlisted action pipeline with policy, validation, principal permissions, explicit approval and mandatory journaling |
 | `tenancy`    | Fail-closed tenant context; used by authentication and tenant-aware database transactions |
 | `config`     | Environment configuration with fail-fast validation; database selection by URL scheme; `config.Secret` for redacted values |
-| `router`     | Route registry on `net/http.ServeMux` (Go 1.22 patterns), frozen after the first request; JSON `400`/`404`/`405` |
+| `router`     | Route registry on `net/http.ServeMux` (Go 1.22 patterns), frozen after the first request; JSON `400`/`404`/`405`; conventional `Resources` routes |
 | `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown, and composable application middleware |
-| `web`        | JSON responses, the single error format, strict JSON decoding, request ID and request-scoped logger |
-| `views`      | Concurrent-safe server-rendered HTML templates with contextual escaping and buffered rendering |
+| `web`        | JSON responses, the single error format, strict JSON and form decoding, safe redirects, content negotiation, flash messages, method override, request ID and request-scoped logger |
+| `csrf`       | CSRF protection for browser requests: double-submit token in forms and headers, cross-origin rejection |
+| `views`      | Concurrent-safe server-rendered HTML with layouts, partials, CSRF and flash helpers, contextual escaping and buffered rendering |
 | `pagination` | Keyset pagination over UUIDv7 with opaque cursors |
 | `events`     | Versioned event envelope with bounded JSON payloads |
 | `jobs`       | In-process scheduler with bounded concurrency, fixed-rate, daily, and numeric 5-field cron schedules |
@@ -187,6 +188,7 @@ configured for production behind a TLS-terminating proxy. See
 | `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
+| `forge routes` | Read-only table of the routes found in the source (including `Resources` routes) and Forge's health routes |
 | `forge help --json` | Emit the versioned command catalog with per-command flags, examples, environment inputs, exit codes and side effects |
 | `forge uuid [--count N]` | Print N UUIDv7 values (1-1000) |
 | `forge version` | Print CLI version, commit, and build date |
@@ -360,6 +362,7 @@ CI (`.github/workflows/ci.yml`):
 - [Authentication and authorization](docs/AUTHENTICATION.md)
 - [AI agent guide and current authorization boundaries](docs/AI_AGENT_GUIDE.md)
 - [Database](docs/DATABASE.md)
+- [Server-rendered HTML](docs/VIEWS.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Threat model](docs/THREAT_MODEL.md)

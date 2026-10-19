@@ -320,6 +320,28 @@ otherwise):
   runs vet, build, the generated tests and migrate/rollback; Docker smoke
   checks run in CI.)
 
+## Server-rendered HTML (Rails parity)
+
+Rails-style HTML CRUD on the standard-library core
+([ADR 0025](adr/0025-server-rendered-html.md), [VIEWS.md](VIEWS.md)).
+
+- [x] G1a: `views.Load` with layouts, partials and one template set per page;
+  CSRF, flash, method-override, DOM id and `dict` template helpers; strict
+  page Content-Security-Policy.
+- [x] G1a: `web.DecodeForm` with typed field errors for `422` re-rendering,
+  local-only `303` redirects, content negotiation, flash messages and method
+  override.
+- [x] G1a: `csrf` protection for HTML forms sharing the cookie-login token,
+  with cross-origin rejection; negative tests for missing, wrong, query-string,
+  malformed, cross-site and oversized cases.
+- [x] G1a: `Router.Resources`, `App.Use`, `forge routes`; `forge new`
+  generates the layout, flash partial, stylesheet, views package and
+  middleware wiring for every database option, and a test compiles, vets,
+  lints and tests generated applications.
+- [ ] G1b: `forge generate scaffold` (HTML resource on top of the above).
+- [ ] Multipart forms and file uploads, per-page layout selection,
+  fingerprinted assets, Turbo/Hotwire.
+
 ## Phase 9 - Performance
 
 Benchmarks, profiling, and allocation work on hot paths (router, middleware,

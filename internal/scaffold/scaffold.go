@@ -83,6 +83,10 @@ var files = []file{
 	{"bootstrap.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap.go")), false},
 	{"bootstrap_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap_test.go")), false},
 	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), false},
+	{"views.go.tmpl", fixed(filepath.Join("app", "views", "views.go")), false},
+	{"views_test.go.tmpl", fixed(filepath.Join("app", "views", "views_test.go")), false},
+	{"application.gohtml.tmpl", fixed(filepath.Join("app", "views", "layouts", "application.gohtml")), false},
+	{"flash.gohtml.tmpl", fixed(filepath.Join("app", "views", "shared", "_flash.gohtml")), false},
 	{"Dockerfile.tmpl", fixed("Dockerfile"), false},
 	{"dockerignore.tmpl", fixed(".dockerignore"), false},
 	{"compose.yaml.tmpl", fixed("compose.yaml"), false},
@@ -99,7 +103,14 @@ var files = []file{
 var assets = []asset{{
 	source: "templates/assets/forge-go-logo.png",
 	target: filepath.Join("app", "bootstrap", "assets", "forge-go-logo.png"),
+}, {
+	source: "templates/assets/application.css",
+	target: filepath.Join("app", "bootstrap", "assets", "application.css"),
 }}
+
+// viewTemplateSuffix marks templates that produce Go HTML templates. They are
+// parsed with [[ ]] delimiters so the {{ }} actions pass through unchanged.
+const viewTemplateSuffix = ".gohtml.tmpl"
 
 // Normalize validates options and fills defaults.
 func Normalize(opts Options) (Options, error) {
@@ -174,6 +185,10 @@ func render(opts Options) (map[string][]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
+	viewTemplates, err := template.New("").Delims("[[", "]]").Option("missingkey=error").ParseFS(templateFS, "templates/views/*"+viewTemplateSuffix)
+	if err != nil {
+		return nil, fmt.Errorf("parse view templates: %w", err)
+	}
 	data := templateData{Options: opts, DBHostPort: dbHostPort(opts.Name)}
 	data.DBUser, data.DBName = databaseIdentifiers(opts.Name)
 	if data.DB = profileFor(opts.Database, data.DBUser, data.DBName); data.DB != nil {
@@ -191,7 +206,11 @@ func render(opts Options) (map[string][]byte, error) {
 	output := make(map[string][]byte, len(files))
 	for _, f := range selectedFiles(opts) {
 		var buffer bytes.Buffer
-		if err := templates.ExecuteTemplate(&buffer, f.template, data); err != nil {
+		set := templates
+		if strings.HasSuffix(f.template, viewTemplateSuffix) {
+			set = viewTemplates
+		}
+		if err := set.ExecuteTemplate(&buffer, f.template, data); err != nil {
 			return nil, fmt.Errorf("render %s: %w", f.template, err)
 		}
 		content := buffer.Bytes()

@@ -65,6 +65,12 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | Path traversal and path confusion | T, I | Requests with `.`/`..` segments, backslashes, `%2F`, or `%5C` are rejected with `400` before routing. Route registration rejects the same. |
 | Late route registration or conflicts altering routing | T | Router freezes on first request; conflicting patterns return an error at registration. |
 | Malformed or unexpected JSON input | T | `web.DecodeJSON` requires `application/json`, rejects unknown fields and any data after the first value, and maps oversized bodies to `413`. Other body read failures return a generic `400 unreadable_body`, so network addresses in the underlying error are not echoed. |
+| Malformed or unexpected form input | T, D | `web.DecodeForm` binds only `form:"..."` tagged fields (no mass assignment), rejects unknown fields and repeated scalar values with `400`, reads only the body (never the query string), and bounds bodies to 1 MiB and 1000 fields on top of the server limit. Field errors never echo the submitted value. |
+| Cross-site scripting in server-rendered pages | T, I, E | html/template escapes every value for its context; only `csrfField`, `csrfMeta` and `methodField` return `template.HTML`, built from constants and a validated base64url token. `views.Load` refuses templates html/template cannot escape safely at startup. Pages carry `views.DefaultContentSecurityPolicy` (no inline scripts, styles or handlers; same-origin resources and form targets only). Flash text is escaped like any value. |
+| Open redirect | S, I | `web.Redirect` answers `303` only to local paths and refuses absolute and scheme-relative URLs, backslashes, and control, space and non-ASCII bytes before writing anything. |
+| HTML form CSRF and method override abuse | T, E | `csrf.Protection` rejects unsafe requests that browsers mark cross-origin (`Sec-Fetch-Site`, `Origin`) and requires the `__Host-forge_csrf` token in the `X-CSRF-Token` header or the `authenticity_token` form field (constant-time; never from the query string). Bearer and JSON requests, which cross-site pages cannot send without a CORS preflight, skip only the token check; this holds only while the application grants no credentialed CORS. `Exempt` patterns match only the routes they name, and a form `POST` carrying `_method` is never exempt. `web.MethodOverride` accepts only `POST` form bodies and only `PUT`, `PATCH` or `DELETE`, so an override can never reach a safe method. See [ADR 0025](adr/0025-server-rendered-html.md). |
+| Forged flash messages | S | The `__Host-forge_flash` cookie is `HttpOnly`, `Secure`, `SameSite=Lax`, host-only and bounded; a malformed cookie is discarded. It is unsigned: only the host itself can set it, and a user editing their own cookie only changes their own display. |
+| CSRF token cached and shared | I, T | The CSRF cookie is set only on responses that embed a token, which `csrf.Token` marks `Cache-Control: private`; assets, health checks and API responses never carry it. |
 | Response header injection | T | Framework header values are constants or generated UUIDs; incoming `X-Request-ID` is ignored. `net/http` neutralises CR/LF in header values when writing. |
 | Clickjacking, MIME sniffing, referrer leakage | I, T | `X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`, `nosniff`, `Referrer-Policy: no-referrer`. |
 | Protocol downgrade | T, I | HSTS in `tls` and `trusted-proxy` modes; `production` rejects `plain`. |
@@ -162,7 +168,7 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | ------ | ------ | ---------- |
 | Session token stolen from persistence | S, E | Tokens contain 256 random bits; persistence stores only the SHA-256 digest. `Token` exposes the plaintext only through explicit `Reveal`. |
 | Browser session token read by JavaScript | I, E | Cookie sessions use the fixed `__Host-forge_session` cookie with `Secure`, `HttpOnly`, `Path=/`, no `Domain`, and `SameSite=Lax`. Cookie login never returns the session token in its body. |
-| Cross-site request forgery | T, E | Unsafe cookie-authenticated requests require the fixed `__Host-forge_csrf` 256-bit token to match exactly one `X-CSRF-Token` header in constant time. Cookie logout includes the CSRF check by default. Safe methods bypass the check and therefore must not mutate state. |
+| Cross-site request forgery | T, E | Unsafe cookie-authenticated requests require the fixed `__Host-forge_csrf` 256-bit token to match exactly one `X-CSRF-Token` header in constant time. Cookie logout includes the CSRF check by default. HTML forms use the same token through `csrf.Protection` (see HTTP edge). Safe methods bypass the check and therefore must not mutate state. |
 | Login CSRF | S, T | Cookie login requires exactly one HTTPS `Origin` whose host equals `Request.Host`. The bearer login surface remains available for non-browser clients. |
 | Password guessing and spraying | S, D | Login is throttled independently by hashed tenant+account and source keys. The default process-local limiter is bounded; PostgreSQL deployments can share counters across replicas. Unknown accounts take the same throttle path and perform a dummy PBKDF2 verification. |
 | Stale or forged role claims | S, E | Tokens carry no claims. The resolver contract requires current user, membership, expiration and permissions on every request. Bearer and cookie transports are explicit and do not fall back to one another; query and tenant headers are not authentication fallbacks. |
@@ -184,6 +190,14 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | AI execution (Phase 7) | Provider integrations and generated actions; auditable policy/version and permission evidence; first-party journal adapters for MySQL, MariaDB, and SQLite. Policy and approval callbacks remain application trust points and cannot be proven human/restrictive by the engine. |
 
 ## Residual risks
+
+- XSS defeats CSRF protection: a script on the page can read the token.
+  Escaping and the page CSP are the defenses; templates that build
+  `template.HTML` from input reopen it.
+- Routes listed in `csrf.Options.Exempt` (webhooks) have no CSRF or origin
+  check and must authenticate requests themselves, for example by signature.
+- Browsers that send neither `Sec-Fetch-Site` nor `Origin` get only the token
+  check against cross-origin form posts.
 
 - Direct network exposure of a `trusted-proxy` deployment.
 - `sslmode=require` or `verify-ca` without host name verification, or

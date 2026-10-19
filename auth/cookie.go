@@ -1,28 +1,26 @@
 package auth
 
 import (
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
+// The CSRF cookie, header and token format are shared with package csrf, so
+// a token issued at cookie login also protects HTML forms and vice versa.
 const (
 	SessionCookieName = "__Host-forge_session"
-	CSRFCookieName    = "__Host-forge_csrf"
-	CSRFHeaderName    = "X-CSRF-Token"
-
-	csrfTokenBytes = 32
+	CSRFCookieName    = csrf.CookieName
+	CSRFHeaderName    = csrf.HeaderName
 )
 
-var ErrCSRFInvalid = fault.New("csrf_invalid", "CSRF token is missing or invalid", fault.CategoryForbidden, 0)
+var ErrCSRFInvalid = csrf.ErrInvalid
 
 type cookieLoginResponse struct {
 	CSRFToken string    `json:"csrf_token"`
@@ -260,21 +258,9 @@ func requireSecureSameOrigin(r *http.Request) error {
 	return nil
 }
 
-func newCSRFToken() (string, error) {
-	raw := make([]byte, csrfTokenBytes)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
-}
+func newCSRFToken() (string, error) { return csrf.NewToken() }
 
-func parseCSRFToken(value string) ([]byte, error) {
-	decoded, err := base64.RawURLEncoding.Strict().DecodeString(value)
-	if err != nil || len(decoded) != csrfTokenBytes || base64.RawURLEncoding.EncodeToString(decoded) != value {
-		return nil, ErrCSRFInvalid
-	}
-	return decoded, nil
-}
+func parseCSRFToken(value string) ([]byte, error) { return csrf.ParseToken(value) }
 
 func setSessionCookies(w http.ResponseWriter, sessionToken, csrfToken string, expiresAt time.Time) {
 	expiresAt = expiresAt.UTC()

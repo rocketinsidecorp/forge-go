@@ -1,0 +1,28 @@
+// Package views holds {{.Name}}'s server-rendered HTML. Templates live in
+// directories next to this file: layouts/ wraps pages, files named
+// _NAME.gohtml are partials ({{"{{"}}template "shared/_flash" .{{"}}"}}), and
+// every other .gohtml file is a page named by its path, such as
+// "posts/index". See the Forge views guide (docs/VIEWS.md).
+package views
+
+import (
+	"embed"
+	"io/fs"
+
+	forgeviews "github.com/rocketinsidecorp/forge-go/views"
+)
+
+// files holds every template one directory below app/views, partials
+// included. Add a pattern such as */*/*.gohtml before nesting deeper.
+//
+//go:embed */*.gohtml
+var files embed.FS
+
+// Files returns the embedded templates.
+func Files() fs.FS { return files }
+
+// New parses the templates. Build one renderer at startup and share it: it
+// is safe for concurrent use.
+func New() (*forgeviews.Renderer, error) {
+	return forgeviews.Load(files, forgeviews.Options{})
+}

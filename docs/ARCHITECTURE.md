@@ -35,7 +35,9 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 ├── config       Config struct, defaults, environment loading, validation, Secret
 ├── router       Route registry on http.ServeMux
 ├── httpserver   http.Server, middleware chain, run/shutdown lifecycle
-├── web          JSON responses, error format, strict decoding, request context values
+├── web          JSON responses, error format, strict JSON and form decoding, redirects, flash, method override, request context values
+├── csrf         CSRF protection for browser requests (double-submit token, cross-origin rejection)
+├── views        Server-rendered HTML: layouts, partials, request-aware helpers
 ├── pagination   UUIDv7 keyset pagination and cursors
 ├── events       Versioned application-event envelope with bounded JSON payloads
 ├── health       Readiness check registry
@@ -66,13 +68,15 @@ Dependency direction (imports within the module):
 | Package                 | Imports |
 | ----------------------- | ------- |
 | `forge`                 | `config`, `health`, `httpserver`, `router`, `web` |
-| `auth`                  | `fault`, `tenancy`, `uuid`, `web` |
+| `auth`                  | `csrf`, `fault`, `tenancy`, `uuid`, `web` |
+| `csrf`                  | `fault`, `web` |
+| `views`                 | `csrf`, `uuid`, `web` |
 | `tenancy`               | `fault`, `uuid` |
 | `httpserver`            | `config`, `fault`, `uuid`, `web` |
 | `router`                | `fault`, `web` |
 | `pagination`            | `fault`, `uuid` |
 | `events`                | `uuid` |
-| `web`                   | `fault` |
+| `web`                   | `fault`, `uuid` |
 | `sqldb`                 | `config`, `fault` |
 | `migrate`               | `forge`, `config` |
 | `dbtest`                | `config`, `migrate`, `uuid` |
@@ -129,6 +133,11 @@ list is in [DEPLOYMENT.md](DEPLOYMENT.md#environment-variables).
   `/tree/` for a `/tree/` pattern) are passed through unchanged. As a result,
   matched requests are looked up in the mux twice.
 - `Routes()` returns the registered routes sorted by path and method.
+- `Resources(path, handler, middleware...)` registers the conventional
+  index, new, create, show, edit, update (`PATCH` and `PUT`) and destroy
+  routes for the methods the handler implements; `ResourceRoutes(path)`
+  lists them. `forge routes` and `forge inspect` expand `Resources` calls
+  with a literal path.
 
 ### httpserver
 
@@ -138,8 +147,10 @@ Wraps the router in a fixed security/lifecycle chain, outermost first:
    `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
    `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, and
    `Strict-Transport-Security: max-age=31536000; includeSubDomains` when the
-   transport is `tls` or `trusted-proxy`. The CSP targets JSON APIs; serving
-   HTML requires overriding it in the handler.
+   transport is `tls` or `trusted-proxy`. The CSP targets JSON APIs; pages
+   rendered by a `views.Load` renderer replace it with
+   `views.DefaultContentSecurityPolicy`, and other HTML handlers set their
+   own.
 2. **Request ID** - generates a UUIDv7, sets `X-Request-ID` on the response,
    and stores the ID and a logger carrying `request_id` in the request
    context (`web.RequestID`, `web.Logger`). Incoming `X-Request-ID` headers
@@ -156,7 +167,11 @@ Wraps the router in a fixed security/lifecycle chain, outermost first:
    first among custom middleware, after the body limit and inside panic
    recovery. They receive the framework request ID and may add request-scoped
    context for tracing, metrics, or application-specific behavior.
-6. **Router.**
+6. **`App.Use` middleware** - added from `Configure`, in call order, still
+   before routing. Generated applications install `web.MethodOverride`,
+   `csrf.Protection.Handler` and `web.Flash` here. `Use` fails once the
+   application has served a request.
+7. **Router.**
 
 Because security headers and the request ID come first, every response,
 including `413`, recovered panics, and router errors, carries them. Every
@@ -204,6 +219,32 @@ The HTTP adapter toolkit for handlers:
 - `web.RequestID(ctx)` and `web.Logger(ctx)` return the request ID and the
   request-scoped `*slog.Logger` (never nil; a discarding logger outside a
   request).
+- For HTML ([VIEWS.md](VIEWS.md), [ADR 0025](adr/0025-server-rendered-html.md)):
+  `web.DecodeForm` binds `form:"..."` tagged struct fields from a bounded
+  `application/x-www-form-urlencoded` body (unknown or repeated fields are
+  `400 invalid_form`; conversion problems are `web.FormErrors`, `422`);
+  `web.Redirect` answers `303` to local paths only; `web.Negotiate` and
+  `web.PrefersHTML` read `Accept`; `web.Flash` and `web.SetFlash` carry
+  one-request messages in the `__Host-forge_flash` cookie;
+  `web.MethodOverride` routes `POST` forms with `_method=PUT|PATCH|DELETE`.
+
+### csrf
+
+`csrf.Protection.Handler` rejects unsafe requests that a browser marks as
+cross-origin (`net/http.CrossOriginProtection`) or whose `X-CSRF-Token`
+header or `authenticity_token` form field does not match the
+`__Host-forge_csrf` cookie, the token cookie login also issues
+([ADR 0012](adr/0012-cookie-sessions-and-csrf.md)). Requests with a bearer
+token or a JSON body skip the token check. `csrf.Token` issues the cookie
+when a page first embeds a token.
+
+### views
+
+`views.New` parses a flat directory into one template set (unchanged).
+`views.Load` parses `layouts/`, `_partial.gohtml` files and pages into one
+template set per page and adds the CSRF, flash, method-override, DOM id and
+`dict` helpers; `RenderRequest` binds the request-scoped helpers through
+pooled clones. Rendering is buffered.
 
 ### pagination
 
@@ -318,8 +359,8 @@ adapter.
 `forge.New(opts...)` builds an `App` from a validated `config.Config`
 (`WithConfig`) and an `*slog.Logger` (`WithLogger`), registers the health
 routes, and constructs the HTTP server. `App` exposes `Config`, `Logger`,
-`Handle`, `HandleFunc`, `Readiness`, `Routes`, `Handler`, `OnShutdown`,
-`Close`, and `Run`.
+`Handle`, `HandleFunc`, `Resources`, `Use`, `Readiness`, `Routes`,
+`Handler`, `OnShutdown`, `Close`, and `Run`.
 
 - `OnShutdown(hook)` registers a `func(ctx) error` that releases a resource.
   Hooks run once, in reverse registration order.
@@ -384,8 +425,11 @@ environment taking precedence.
 
 ```text
 cmd/<name>/main.go   forge.Main(bootstrap.Configure, <adapter>.Commands(db.Migrations())...)
-app/bootstrap/       composition root: database pool, readiness check "database", routes
-                     (generated with GET /v1/status and tests)
+app/bootstrap/       composition root: database pool, readiness check "database", routes,
+                     method override + CSRF + flash middleware
+                     (generated with GET /v1/status, assets/application.css and tests)
+app/views/           embedded HTML: layouts/application.gohtml, shared/_flash.gohtml,
+                     views.New() renderer and tests
 db/db.go             embeds db/migrations
 db/migrations/       SQL migrations (empty, with .keep)
 ```
@@ -489,6 +533,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0019](adr/0019-outbox-dispatch.md) | PostgreSQL outbox dispatch |
 | [0020](adr/0020-background-jobs-scheduling.md) | Background jobs and scheduling |
 | [0021](adr/0021-resource-generator.md) | Resource generator |
+| [0025](adr/0025-server-rendered-html.md) | Server-rendered HTML |
 
 ## Not yet implemented
 

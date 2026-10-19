@@ -58,6 +58,7 @@ forge generate view welcome --dry-run     # preview files without writing
 forge generate view welcome              # embedded, auto-escaped HTML template
 forge generate job cleanup --dry-run      # preview a job stub and its tests
 forge generate job cleanup               # create files under app/jobs/
+forge routes                             # list the routes found in app/ and cmd/
 {{- if .DB}}
 forge generate migration create_widgets --dry-run # preview exact migration files
 forge generate migration create_widgets  # new db/migrations/<timestamp>_create_widgets.{up,down}.sql
@@ -67,7 +68,18 @@ forge rollback                           # revert the latest migration
 {{- end}}
 ```
 
+## HTML pages
+
+Server-rendered pages live in `app/views`: `layouts/application.gohtml`
+wraps every page that defines a `content` block, partials are named
+`_NAME.gohtml` (`shared/_flash.gohtml` shows flash messages), and the
+stylesheet is `app/bootstrap/assets/application.css`. Build the renderer
+once with `views.New()` and render pages with `RenderRequest`.
+`bootstrap.Configure` installs method override (`_method` in forms), CSRF
+protection (`{{"{{"}}csrfField{{"}}"}}` in every form) and flash messages
+for all routes. See the Forge views guide (`docs/VIEWS.md`).
 {{- if and .DB .DB.Identity}}
+
 ## Authentication (generated with PostgreSQL)
 
 The following endpoints are registered by `bootstrap.Configure`:

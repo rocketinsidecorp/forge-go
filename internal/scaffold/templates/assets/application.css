@@ -1,0 +1,94 @@
+/*
+ * Application stylesheet, served at /assets/application.css and linked by
+ * app/views/layouts/application.gohtml. Keep styles in files like this one:
+ * the page Content-Security-Policy allows same-origin stylesheets only, so
+ * inline style attributes and <style> elements are blocked.
+ */
+:root {
+	color-scheme: light dark;
+	font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+	line-height: 1.5;
+}
+
+body {
+	margin: 0;
+}
+
+main {
+	max-width: 48rem;
+	margin: 0 auto;
+	padding: 2rem 1rem;
+}
+
+:focus-visible {
+	outline: 3px solid #d9822b;
+	outline-offset: 2px;
+}
+
+.skip-link {
+	position: absolute;
+	left: -100vw;
+}
+
+.skip-link:focus {
+	left: 1rem;
+	top: 1rem;
+	padding: 0.5rem 1rem;
+	background: Canvas;
+	color: CanvasText;
+}
+
+.flash {
+	margin: 0 0 1rem;
+	padding: 0.75rem 1rem;
+	border: 1px solid;
+	border-left-width: 4px;
+	border-radius: 4px;
+}
+
+.flash-notice {
+	border-color: #2f855a;
+}
+
+.flash-alert {
+	border-color: #c53030;
+}
+
+label {
+	display: block;
+	font-weight: 600;
+}
+
+input,
+select,
+textarea,
+button {
+	font: inherit;
+}
+
+input,
+select,
+textarea {
+	box-sizing: border-box;
+	width: 100%;
+	max-width: 32rem;
+	padding: 0.4rem;
+}
+
+button {
+	padding: 0.4rem 1rem;
+	cursor: pointer;
+}
+
+[aria-invalid="true"] {
+	border-color: #c53030;
+}
+
+.field {
+	margin-bottom: 1rem;
+}
+
+.field-error {
+	margin: 0.25rem 0 0;
+	color: #c53030;
+}

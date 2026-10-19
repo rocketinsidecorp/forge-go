@@ -49,6 +49,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runDoctor(args[1:], stdout)
 	case "inspect":
 		err = runInspect(args[1:], stdout)
+	case "routes":
+		err = runRoutes(args[1:], stdout)
 	case "new":
 		err = runNew(args[1:], stdout, commandStderr)
 	case "dev":
@@ -285,6 +287,7 @@ commands:
                       persistence and HTTP layers with tests; never public
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
+  routes              list the routes found in the source, as a table
   help --json         print the versioned machine-readable command catalog
   uuid [--count N]    generate UUIDv7 identifiers
   version             print the Forge version

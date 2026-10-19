@@ -52,6 +52,13 @@ type App struct {
 	hooksMu       sync.Mutex
 	shutdownHooks []ShutdownHook
 	closed        bool
+
+	// middlewareMu guards middlewares and serving's transition to true;
+	// chain is the composed handler the server dispatches to.
+	middlewareMu sync.Mutex
+	middlewares  []httpserver.Middleware
+	chain        atomic.Pointer[http.Handler]
+	serving      atomic.Bool
 }
 
 // ShutdownHook releases a resource, such as a database pool, after the HTTP
@@ -84,7 +91,9 @@ func New(opts ...Option) (*App, error) {
 	if err := app.registerHealthRoutes(); err != nil {
 		return nil, err
 	}
-	server, err := httpserver.NewWithMiddleware(app.config, app.router, app.logger, settings.httpMiddlewares...)
+	var routes http.Handler = app.router
+	app.chain.Store(&routes)
+	server, err := httpserver.NewWithMiddleware(app.config, http.HandlerFunc(app.dispatch), app.logger, settings.httpMiddlewares...)
 	if err != nil {
 		return nil, err
 	}
@@ -166,6 +175,49 @@ func (a *App) Close(ctx context.Context) error {
 		return fmt.Errorf("shutdown hooks: %w", err)
 	}
 	return nil
+}
+
+// Use adds middleware that runs before routing, inside the middleware given
+// to WithHTTPMiddleware, in the order Use is called (the first is
+// outermost). Configure uses it to install request-wide behavior that must
+// see the request before a route is chosen, such as web.MethodOverride,
+// csrf.Protection.Handler and web.Flash. The chain is rebuilt on every call,
+// so a middleware constructor may run more than once. After the first
+// request has been served, Use returns an error wrapping router.ErrFrozen.
+func (a *App) Use(middleware httpserver.Middleware) error {
+	if middleware == nil {
+		return errors.New("HTTP middleware is required")
+	}
+	a.middlewareMu.Lock()
+	defer a.middlewareMu.Unlock()
+	if a.serving.Load() {
+		return fmt.Errorf("add HTTP middleware: %w", router.ErrFrozen)
+	}
+	middlewares := append(slices.Clone(a.middlewares), middleware)
+	var handler http.Handler = a.router
+	for _, current := range slices.Backward(middlewares) {
+		if handler = current(handler); handler == nil {
+			return errors.New("HTTP middleware returned a nil handler")
+		}
+	}
+	a.middlewares = middlewares
+	a.chain.Store(&handler)
+	return nil
+}
+
+func (a *App) dispatch(w http.ResponseWriter, r *http.Request) {
+	if !a.serving.Load() {
+		a.middlewareMu.Lock()
+		a.serving.Store(true)
+		a.middlewareMu.Unlock()
+	}
+	(*a.chain.Load()).ServeHTTP(w, r)
+}
+
+// Resources registers the conventional resource routes for the actions
+// handler implements; see router.Router.Resources.
+func (a *App) Resources(path string, handler any, middleware ...router.ResourceMiddleware) error {
+	return a.router.Resources(path, handler, middleware...)
 }
 
 func (a *App) Handle(pattern string, handler http.Handler) error {
