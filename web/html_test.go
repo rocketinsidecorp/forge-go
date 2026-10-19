@@ -129,3 +129,27 @@ func TestMethodOverride(t *testing.T) {
 		}
 	}
 }
+
+func TestAcceptsExplicitly(t *testing.T) {
+	t.Parallel()
+	for accept, want := range map[string]bool{
+		"text/vnd.turbo-stream.html, text/html": true,
+		"TEXT/VND.TURBO-STREAM.HTML;q=0.1":      true,
+		"text/vnd.turbo-stream.html;q=0":        false,
+		"*/*":                                   false,
+		"text/*":                                false,
+		"text/html":                             false,
+		"":                                      false,
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		if accept != "" {
+			request.Header.Set("Accept", accept)
+		}
+		if got := web.AcceptsExplicitly(request, "text/vnd.turbo-stream.html"); got != want {
+			t.Errorf("AcceptsExplicitly(%q) = %v, want %v", accept, got, want)
+		}
+	}
+	if web.AcceptsExplicitly(httptest.NewRequest(http.MethodGet, "/", nil), "bogus") {
+		t.Error("a malformed media type matched")
+	}
+}
