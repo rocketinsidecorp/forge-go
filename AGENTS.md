@@ -545,3 +545,6 @@ In addition to the global definition of done, verify all
 project-specific checks discovered from CI/tooling and respect any
 migration, release, or compatibility requirements evidenced by the
 repository.
+
+Every user-facing feature also updates README.md with copyable commands
+to create, run and use it (owner decision, 2026-10-19).
