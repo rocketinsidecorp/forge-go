@@ -73,7 +73,7 @@ func TestScaffoldDryRunWritesNothingAndPrintsTheHTMLWiring(t *testing.T) {
 		"would create  " + filepath.Join("app", "views", "shared", "_flash.gohtml"),
 		"htmlui.RegisterPosts(app, postService, renderer, protectCookie)",
 		"httpapi.RegisterPosts(app, postService, protect)",
-		"middleware.AuthenticateCookie(guarded)",
+		"middleware.AuthenticateBrowser(\"/session/new\", guarded)",
 		"renderer, err := views.New()",
 		"Forge did not edit app/bootstrap/bootstrap.go. Wire the scaffold there",
 	} {
@@ -264,7 +264,7 @@ func TestScaffoldWiringKeepsThePagesClosed(t *testing.T) {
 		want         []string
 		not          []string
 	}{
-		{"identity tenant", "postgres", true, true, []string{"htmlui.RegisterPosts(app, postService, renderer, protectCookie)", "middleware.AuthenticateCookie(guarded)", "AuthenticateCookie"}, []string{"protectPlatformWrite"}},
+		{"identity tenant", "postgres", true, true, []string{"htmlui.RegisterPosts(app, postService, renderer, protectCookie)", "middleware.AuthenticateBrowser(\"/session/new\", guarded)", "AuthenticateBrowser"}, []string{"protectPlatformWrite"}},
 		{"identity global", "postgres", true, false, []string{
 			"htmlui.RegisterPosts(app, postService, renderer, func(permission string, next http.Handler)",
 			`permission == "posts:write"`, "return protectCookie(permission, next)", "protectPlatformWrite := func(",

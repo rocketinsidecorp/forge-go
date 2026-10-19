@@ -88,7 +88,25 @@ func currentCommandCatalog() commandCatalog {
 			Flags:       []flagDetail{{Name: "-steps", Value: "N", Default: "1", Description: "Number of migrations to revert."}},
 		},
 		{
-			Name: "generate", Usage: "forge generate <migration|view|job|resource|scaffold> NAME [field:type...] [flags]",
+			Name: "setup", Usage: "forge setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]",
+			Summary:     "Create the first organization, tenant and owner account (PostgreSQL identity); refuses once a tenant exists.",
+			SideEffects: []string{"database_write", "subprocess", "interactive_input"},
+			Examples:    []string{"forge setup --tenant acme --email owner@example.com --organization \"Acme Inc\""},
+			Environment: environmentInfo{
+				Files:     []string{".env.development", ".env.local"},
+				Variables: append(runtimeEnvironment().Variables, "FORGE_SETUP_PASSWORD"),
+				Notes:     "Runs the application's setup command with the development environment. The owner password is read from FORGE_SETUP_PASSWORD, from one line of standard input with --password-stdin, or from a terminal prompt without echo; it is never an argument and never printed. It must be at least 12 characters.",
+			},
+			Flags: []flagDetail{
+				{Name: "--tenant", Value: "SLUG", Description: "Tenant slug people type at sign-in: a lowercase letter, then 1-62 lowercase letters, digits or hyphens."},
+				{Name: "--email", Value: "EMAIL", Description: "The owner's sign-in email."},
+				{Name: "--organization", Value: "NAME", Description: "Organization display name; defaults to the tenant slug."},
+				{Name: "--password-stdin", Description: "Read the password from the first line of standard input."},
+			},
+		},
+		{Name: "seed", Usage: "forge seed", Summary: "Load the application's idempotent seed data (db.Seed) in one transaction.", SideEffects: []string{"database_write", "subprocess"}, Examples: []string{"forge seed"}, Environment: runtimeEnvironment()},
+		{
+			Name: "generate", Usage: "forge generate <migration|view|job|resource|scaffold|authentication> NAME [field:type...] [flags]",
 			Summary:     "Generate or preview migrations, auto-escaped HTML views, cancellation-aware job stubs, a complete resource (migration, domain, application, persistence, JSON API and tests), or a scaffold: that resource plus server-rendered HTML CRUD pages (forms, validation errors at 422, flash notices, CSRF), without overwriting files.",
 			SideEffects: []string{"filesystem_read", "filesystem_write"},
 			Examples: []string{
@@ -97,8 +115,9 @@ func currentCommandCatalog() commandCatalog {
 				"forge generate resource category name:string --global --plural categories",
 				"forge generate scaffold post title:string body:text published:bool --global --dry-run",
 				"forge generate scaffold ticket subject:string 'details:text?' --tenant-scoped",
+				"forge generate authentication --dry-run",
 			},
-			Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Reads go.mod and relevant generator paths; --dry-run does not create files or directories. `generate resource` reads FORGE_DATABASE_URL (process environment over env files, as forge inspect does) only to choose the database dialect; the value is never printed. Field types: string (up to 255 characters), text, int (64-bit), bool, time (UTC), uuid (UUIDv7); a trailing ? makes a field optional (quote it in shells that expand ?). `generate scaffold` takes the same arguments as `generate resource` and adds app/adapters/htmlui/NAME.go and its tests, app/views/PLURAL/{index,show,new,edit,_form,not_found}.gohtml and, when the application has none, the views base `forge new` generates (app/views/views.go, layouts/application.gohtml, shared/_flash.gohtml); the pages are served at /PLURAL, the JSON API at /v1/PLURAL. `generate view NAME` or DIR/NAME adds app/views/DIR/NAME.gohtml (DIR defaults to pages). Exactly one of --tenant-scoped or --global is required. Resources and scaffolds are never public: the printed wiring requires an application-supplied guard, and nothing edits app/bootstrap/bootstrap.go."},
+			Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Reads go.mod and relevant generator paths; --dry-run does not create files or directories. `generate resource` reads FORGE_DATABASE_URL (process environment over env files, as forge inspect does) only to choose the database dialect; the value is never printed. Field types: string (up to 255 characters), text, int (64-bit), bool, time (UTC), uuid (UUIDv7); a trailing ? makes a field optional (quote it in shells that expand ?). `generate scaffold` takes the same arguments as `generate resource` and adds app/adapters/htmlui/NAME.go and its tests, app/views/PLURAL/{index,show,new,edit,_form,not_found}.gohtml and, when the application has none, the views base `forge new` generates (app/views/views.go, layouts/application.gohtml, shared/_flash.gohtml); the pages are served at /PLURAL, the JSON API at /v1/PLURAL. `generate view NAME` or DIR/NAME adds app/views/DIR/NAME.gohtml (DIR defaults to pages). `generate authentication` (PostgreSQL applications only; others are refused because Forge persists identities only in PostgreSQL) adds app/adapters/htmlauth and app/views/{sessions,passwords}, the sign-in, sign-out, two-factor and password-reset pages forge new generates, and prints their wiring. Exactly one of --tenant-scoped or --global is required. Resources and scaffolds are never public: the printed wiring requires an application-supplied guard, and nothing edits app/bootstrap/bootstrap.go."},
 			Flags: []flagDetail{
 				{Name: "--dry-run", Description: "Read-only: print exact planned paths without creating directories or files."},
 				{Name: "--tenant-scoped", Description: "resource and scaffold: rows belong to one tenant (tenant_id bound in every statement; PostgreSQL also enables row-level security)."},

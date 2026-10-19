@@ -177,6 +177,11 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 	if err != nil {
 		return err
 	}
+	// The view renderer every HTML page shares (app/views).
+	renderer, err := views.New()
+	if err != nil {
+		return err
+	}
 	middleware, err := auth.NewMiddleware(repository)
 	if err != nil {
 		return err
@@ -256,10 +261,6 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 		Recovery: recoveryService,
 		Auditor:  repository,
 	})
-	if err != nil {
-		return err
-	}
-	renderer, err := views.New()
 	if err != nil {
 		return err
 	}

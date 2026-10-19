@@ -47,11 +47,20 @@ func TestScaffoldPagesAreNotPublic(t *testing.T) {
 		request.Header.Set("Accept", "text/html")
 		recorder := httptest.NewRecorder()
 		app.Handler().ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusUnauthorized && recorder.Code != http.StatusForbidden {
-			t.Errorf("GET %%s = %%d, want 401 or 403 without credentials: %%s", path, recorder.Code, recorder.Body)
+		// With Forge identity a signed-out browser is sent to the sign-in page.
+		redirected := recorder.Code == http.StatusSeeOther && recorder.Header().Get("Location") == "/session/new?return_to="+url.QueryEscape(path)
+		if recorder.Code != http.StatusUnauthorized && recorder.Code != http.StatusForbidden && !redirected {
+			t.Errorf("GET %%s = %%d (Location %%q), want 401, 403 or the sign-in redirect without credentials: %%s", path, recorder.Code, recorder.Header().Get("Location"), recorder.Body)
 		}
 		if strings.Contains(recorder.Body.String(), "<form") {
 			t.Errorf("GET %%s served a form to an unauthenticated caller", path)
+		}
+		api := httptest.NewRequest(http.MethodGet, path, nil)
+		api.Header.Set("Accept", "application/json")
+		apiRecorder := httptest.NewRecorder()
+		app.Handler().ServeHTTP(apiRecorder, api)
+		if apiRecorder.Code != http.StatusUnauthorized && apiRecorder.Code != http.StatusForbidden {
+			t.Errorf("GET %%s as JSON = %%d, want 401 or 403", path, apiRecorder.Code)
 		}
 	}
 	// A form post without the CSRF token never reaches the handler.
@@ -61,6 +70,134 @@ func TestScaffoldPagesAreNotPublic(t *testing.T) {
 	app.Handler().ServeHTTP(recorder, post)
 	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "csrf") {
 		t.Errorf("POST without a token = %%d %%s, want the CSRF rejection", recorder.Code, recorder.Body)
+	}
+}
+`
+
+// scaffoldSignInFlowTest is added to the generated PostgreSQL application
+// with the printed wiring: the owner `setup` creates signs in through the
+// generated pages, is sent back to the scaffold page it asked for, holds the
+// scaffold's permissions through the owner role, and loses access on sign-out.
+const scaffoldSignInFlowTest = `package bootstrap
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	forge "github.com/rocketinsidecorp/forge-go"
+	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/migrate"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+
+	appdb "example.com/mx/db"
+)
+
+func TestOwnerSignsInAndReachesTheScaffoldPages(t *testing.T) {
+	ctx := context.Background()
+	database, databaseConfig := postgrestest.NewWithConfig(t)
+	loaded, err := migrate.LoadMigrationSets(authpostgres.Migrations(), appdb.Migrations())
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrator, err := postgres.NewMigrator(databaseConfig, loaded, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrator.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = migrator.Close()
+	repository, err := authpostgres.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const password = "correct horse battery staple"
+	if _, err := repository.ProvisionOwner(ctx, authpostgres.OwnerAccount{Organization: "Acme", TenantSlug: "acme", Email: "owner@example.com", Password: password}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Database = databaseConfig
+	cfg.Auth.MFAKey = config.NewSecret("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	app, err := forge.New(forge.WithConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Configure(ctx, app); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.Close(context.Background()) })
+
+	cookies := map[string]*http.Cookie{}
+	do := func(method, target string, form url.Values) *httptest.ResponseRecorder {
+		t.Helper()
+		var request *http.Request
+		if form != nil {
+			form.Set(csrf.FormField, cookies[csrf.CookieName].Value)
+			request = httptest.NewRequest(method, target, strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		} else {
+			request = httptest.NewRequest(method, target, nil)
+		}
+		request.Header.Set("Accept", "text/html")
+		for _, cookie := range cookies {
+			request.AddCookie(cookie)
+		}
+		recorder := httptest.NewRecorder()
+		app.Handler().ServeHTTP(recorder, request)
+		for _, cookie := range recorder.Result().Cookies() {
+			if cookie.MaxAge < 0 {
+				delete(cookies, cookie.Name)
+			} else {
+				cookies[cookie.Name] = cookie
+			}
+		}
+		return recorder
+	}
+
+	redirect := do(http.MethodGet, "/products", nil)
+	if redirect.Code != http.StatusSeeOther {
+		t.Fatalf("signed-out GET /products = %d", redirect.Code)
+	}
+	signInPage := do(http.MethodGet, redirect.Header().Get("Location"), nil)
+	if signInPage.Code != http.StatusOK || !strings.Contains(signInPage.Body.String(), ` + "`" + `name="return_to" value="/products"` + "`" + `) {
+		t.Fatalf("sign-in page status=%d body=%s", signInPage.Code, signInPage.Body)
+	}
+	if failed := do(http.MethodPost, "/session", url.Values{"tenant": {"acme"}, "email": {"owner@example.com"}, "password": {"wrong password"}, "return_to": {"/products"}}); failed.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("wrong password status=%d", failed.Code)
+	}
+	signedIn := do(http.MethodPost, "/session", url.Values{"tenant": {"acme"}, "email": {"owner@example.com"}, "password": {password}, "return_to": {"/products"}})
+	if signedIn.Code != http.StatusSeeOther || signedIn.Header().Get("Location") != "/products" {
+		t.Fatalf("sign in status=%d Location=%q body=%s", signedIn.Code, signedIn.Header().Get("Location"), signedIn.Body)
+	}
+	for path, want := range map[string]int{
+		"/products":        http.StatusOK,
+		"/products/new":    http.StatusOK,
+		"/categories":      http.StatusOK,
+		"/categories/new":  http.StatusForbidden, // global writes stay behind protectPlatformWrite
+		"/v1/auth/session": http.StatusUnauthorized,
+	} {
+		if page := do(http.MethodGet, path, nil); page.Code != want {
+			t.Errorf("signed-in GET %s = %d, want %d: %s", path, page.Code, want, page.Body)
+		}
+	}
+	if page := do(http.MethodGet, "/products", nil); !strings.Contains(page.Body.String(), "Products") {
+		t.Errorf("the products page did not render:\n%s", page.Body)
+	}
+	if signedOut := do(http.MethodPost, "/session", url.Values{"_method": {"DELETE"}}); signedOut.Code != http.StatusSeeOther {
+		t.Fatalf("sign out status=%d", signedOut.Code)
+	}
+	if again := do(http.MethodGet, "/products", nil); again.Code != http.StatusSeeOther {
+		t.Fatalf("after sign-out GET /products = %d", again.Code)
 	}
 }
 `
@@ -113,7 +250,7 @@ func TestGeneratedScaffoldBuildsWiresAndPasses(t *testing.T) {
 				request.Scaffold = true
 				specs = append(specs, resourceSpec{
 					resourceRequest: request, Module: "example.com/mx", Database: database.adapter,
-					Identity: database.adapter == "postgres", BrowserPipeline: true,
+					Identity: database.adapter == "postgres", BrowserPipeline: true, ViewRenderer: database.adapter == "postgres",
 				})
 			}
 			wireResources(t, dir, specs)
@@ -122,6 +259,9 @@ func TestGeneratedScaffoldBuildsWiresAndPasses(t *testing.T) {
 				mfa = "\tcfg.Auth.MFAKey = config.NewSecret(\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\")\n"
 			}
 			writeFile(t, filepath.Join(dir, "app", "bootstrap", "scaffold_wired_test.go"), fmt.Sprintf(scaffoldWiredTest, database.adapter, database.testPackage, mfa))
+			if database.adapter == "postgres" {
+				writeFile(t, filepath.Join(dir, "app", "bootstrap", "scaffold_sign_in_test.go"), scaffoldSignInFlowTest)
+			}
 
 			runGo(t, dir, "go", "vet", "./...")
 			runGo(t, dir, "go", "build", "-o", os.DevNull, "./cmd/mx")
@@ -147,6 +287,13 @@ func TestGeneratedScaffoldBuildsWiresAndPasses(t *testing.T) {
 				// The scaffold's own TestRoutes skips by design in database applications.
 				if !strings.Contains(string(output), "--- PASS: TestScaffoldPagesAreNotPublic") || strings.Count(string(output), "--- SKIP") != 1 || !strings.Contains(string(output), "--- SKIP: TestRoutes") {
 					t.Fatalf("the wired application test did not run, or an unexpected test was skipped\n%s", output)
+				}
+				if database.adapter == "postgres" {
+					for _, want := range []string{"--- PASS: TestOwnerSignsInAndReachesTheScaffoldPages", "--- PASS: TestPagesAgainstPostgres", "--- PASS: TestFailedSignInIsUniform"} {
+						if !strings.Contains(string(output), want) {
+							t.Fatalf("the sign-in flow did not run: missing %q\n%s", want, output)
+						}
+					}
 				}
 			}
 			lint, err := exec.LookPath("golangci-lint")

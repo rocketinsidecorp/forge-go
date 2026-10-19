@@ -16,9 +16,11 @@ const scaffoldUsage = "usage: forge generate scaffold NAME field:type... (--tena
 
 // scaffoldReservedPlurals are the first path segments the application or the
 // view tree already owns: /assets and /health are routes Forge registers,
-// /auth and /v1 belong to the identity and JSON routes, and app/views/layouts
-// and app/views/shared hold the layout and its partials, not pages.
-var scaffoldReservedPlurals = []string{"assets", "auth", "health", "v1", "layouts", "shared"}
+// /auth and /v1 belong to the identity and JSON routes, /session and
+// /passwords (with app/views/sessions and app/views/passwords) to the
+// sign-in pages, and app/views/layouts and app/views/shared hold the layout
+// and its partials, not pages.
+var scaffoldReservedPlurals = []string{"assets", "auth", "health", "v1", "layouts", "shared", "session", "sessions", "passwords"}
 
 // runGenerateScaffold is `forge generate scaffold`: everything `forge generate
 // resource` generates, plus server-rendered HTML pages (index, show, new,
@@ -48,6 +50,7 @@ func runGenerateScaffold(args []string, stdout io.Writer, root string, env []str
 // the views base the application lacks.
 func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFile, error) {
 	spec.BrowserPipeline = hasBrowserPipeline(projectRoot)
+	spec.ViewRenderer = hasViewRenderer(projectRoot)
 	view := newScaffoldView(*spec)
 	var files []generatedFile
 	for _, source := range []struct{ path, template string }{
@@ -87,4 +90,11 @@ func hasBrowserPipeline(projectRoot *os.Root) bool {
 	}
 	text := string(source)
 	return strings.Contains(text, "csrf.New(") && strings.Contains(text, "web.MethodOverride") && strings.Contains(text, "web.Flash")
+}
+
+// hasViewRenderer reports whether bootstrap.go already builds the shared view
+// renderer, so the printed wiring reuses it instead of declaring it twice.
+func hasViewRenderer(projectRoot *os.Root) bool {
+	source, err := projectRoot.ReadFile(filepath.Join("app", "bootstrap", "bootstrap.go"))
+	return err == nil && strings.Contains(string(source), "renderer, err := views.New()")
 }

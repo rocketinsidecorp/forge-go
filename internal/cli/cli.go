@@ -63,6 +63,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runMigrate(args[1:], stdout, commandStderr)
 	case "rollback":
 		err = runRollback(args[1:], stdout, commandStderr)
+	case "setup":
+		err = runSetup(args[1:], stdout, commandStderr)
+	case "seed":
+		err = runSeed(args[1:], stdout, commandStderr)
 	case "generate":
 		err = runGenerate(args[1:], stdout)
 	case "help":
@@ -276,6 +280,10 @@ commands:
   build               compile the application into bin/
   migrate [status]    apply pending migrations, or list them
   rollback [-steps N] revert the latest migrations
+  setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]
+                      create the first tenant and its owner account (PostgreSQL;
+                      the password is prompted for, never an argument)
+  seed                load db.Seed's data in one transaction
   generate migration NAME [--dry-run]
                       create or preview db/migrations/<timestamp>_NAME.{up,down}.sql
   generate view [DIR/]NAME [--dry-run]
@@ -288,6 +296,9 @@ commands:
   generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural P] [--dry-run]
                       a resource plus HTML CRUD pages: forms, 422 errors,
                       flash notices, CSRF; never public
+  generate authentication [--dry-run]
+                      add the sign-in, sign-out, two-factor and password-reset
+                      pages forge new generates (PostgreSQL)
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
   routes              list the routes found in the source, as a table

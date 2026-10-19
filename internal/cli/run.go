@@ -39,7 +39,27 @@ func runRollback(args []string, stdout, stderr io.Writer) error {
 	return runAppCommand(nil, append([]string{"rollback"}, args...), stdout, stderr)
 }
 
+// runSetup delegates to the application's setup command, which creates the
+// first tenant and owner. Standard input is passed through so the password
+// can be typed at the terminal (without echo) or piped with
+// --password-stdin; it is never an argument.
+func runSetup(args []string, stdout, stderr io.Writer) error {
+	return runAppCommandWithInput(nil, append([]string{"setup"}, args...), os.Stdin, stdout, stderr)
+}
+
+// runSeed delegates to the application's seed command.
+func runSeed(args []string, stdout, stderr io.Writer) error {
+	if len(args) != 0 {
+		return errors.New("usage: forge seed")
+	}
+	return runAppCommand(nil, []string{"seed"}, stdout, stderr)
+}
+
 func runAppCommand(nameArgs, appArgs []string, stdout, stderr io.Writer) error {
+	return runAppCommandWithInput(nameArgs, appArgs, nil, stdout, stderr)
+}
+
+func runAppCommandWithInput(nameArgs, appArgs []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	name, err := resolveCommand(".", nameArgs)
 	if err != nil {
 		return err
@@ -50,7 +70,7 @@ func runAppCommand(nameArgs, appArgs []string, stdout, stderr io.Writer) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return runApp(ctx, ".", name, appArgs, env, stdout, stderr)
+	return runAppWithInput(ctx, ".", name, appArgs, env, stdin, stdout, stderr)
 }
 
 // runTest runs go test with the development environment, so database tests
@@ -107,6 +127,12 @@ func hasKey(env []string, key string) bool {
 // only to forge would otherwise leave the application running. Cancelling ctx
 // sends the application an interrupt so it shuts down gracefully.
 func runApp(ctx context.Context, root, name string, args, env []string, stdout, stderr io.Writer) error {
+	return runAppWithInput(ctx, root, name, args, env, nil, stdout, stderr)
+}
+
+// runAppWithInput is runApp with standard input for the application; nil
+// means none.
+func runAppWithInput(ctx context.Context, root, name string, args, env []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	buildDir, err := os.MkdirTemp("", "forge-app-")
 	if err != nil {
 		return err
@@ -123,6 +149,7 @@ func runApp(ctx context.Context, root, name string, args, env []string, stdout, 
 	command := exec.CommandContext(ctx, binary, args...) // #nosec G204 -- the binary built above, with forge-chosen arguments
 	command.Dir = root
 	command.Env = env
+	command.Stdin = stdin
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.Cancel = func() error { return command.Process.Signal(os.Interrupt) }
