@@ -75,8 +75,8 @@ func TestMemoryDenyWhenFullKeepsEveryCounter(t *testing.T) {
 	}
 	ctx := context.Background()
 	limit := Limit{N: 1, Per: time.Minute}
-	m.Allow(ctx, "a", limit)
-	m.Allow(ctx, "b", limit)
+	_, _ = m.Allow(ctx, "a", limit)
+	_, _ = m.Allow(ctx, "b", limit)
 	d, _ := m.Allow(ctx, "c", limit)
 	if d.Allowed || d.RetryAfter <= 0 {
 		t.Fatalf("new key while full = %+v, want denied with a retry-after", d)
@@ -94,10 +94,10 @@ func TestMemoryExpiredBucketsLeaveTheMap(t *testing.T) {
 	c := newClock()
 	m, _ := newMemory(MemoryOptions{MaxKeys: 100}, c.Now)
 	for i := range 50 {
-		m.Allow(context.Background(), fmt.Sprintf("k%d", i), Limit{N: 1, Per: time.Second})
+		_, _ = m.Allow(context.Background(), fmt.Sprintf("k%d", i), Limit{N: 1, Per: time.Second})
 	}
 	c.Advance(2 * time.Second)
-	m.Allow(context.Background(), "fresh", Limit{N: 1, Per: time.Second})
+	_, _ = m.Allow(context.Background(), "fresh", Limit{N: 1, Per: time.Second})
 	if got := m.Len(); got != 1 {
 		t.Fatalf("Len = %d after expiry, want only the fresh bucket", got)
 	}
@@ -108,9 +108,9 @@ func TestMemoryFixedWindowSemantics(t *testing.T) {
 	m, _ := newMemory(MemoryOptions{}, c.Now)
 	ctx := context.Background()
 	limit := Limit{N: 2, Per: 10 * time.Second}
-	m.Allow(ctx, "k", limit)
+	_, _ = m.Allow(ctx, "k", limit)
 	c.Advance(4 * time.Second)
-	m.Allow(ctx, "k", limit)
+	_, _ = m.Allow(ctx, "k", limit)
 	d, _ := m.Allow(ctx, "k", limit)
 	if d.Allowed || d.RetryAfter != 6*time.Second {
 		t.Fatalf("denied = %+v, want RetryAfter 6s (window started at the first hit)", d)

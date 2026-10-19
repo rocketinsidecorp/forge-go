@@ -597,7 +597,7 @@ func TestReceiveStoresAnAllowedFileAndReturnsFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, _ := io.ReadAll(rc)
-	rc.Close()
+	_ = rc.Close()
 	if !bytes.Equal(stored, pngBytes) {
 		t.Fatal("stored content differs from the upload")
 	}

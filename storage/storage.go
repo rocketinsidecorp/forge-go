@@ -159,8 +159,7 @@ func SanitizeFilename(name string) string {
 	var b strings.Builder
 	for _, r := range name {
 		switch {
-		case r == utf8.RuneError, unicode.IsControl(r), r == '"', r == ' ', r == ' ',
-			r >= '‪' && r <= '‮', r >= '⁦' && r <= '⁩', r == '‎', r == '‏', r == '؜':
+		case r == utf8.RuneError, unicode.IsControl(r), r == '"', isFormatting(r):
 			continue
 		}
 		if b.Len()+utf8.RuneLen(r) > 255 {
@@ -169,6 +168,21 @@ func SanitizeFilename(name string) string {
 		b.WriteRune(r)
 	}
 	return strings.TrimLeft(strings.TrimSpace(b.String()), ".")
+}
+
+// isFormatting reports whether r is a line or paragraph separator or a
+// bidirectional control (U+2028, U+2029, U+202A-202E, U+2066-2069, U+200E,
+// U+200F, U+061C): invisible characters that reorder or hide text, which a file
+// name must not carry. They are compared by number so that this source has no
+// such character in it.
+func isFormatting(r rune) bool {
+	switch {
+	case r == 0x2028, r == 0x2029, r == 0x200e, r == 0x200f, r == 0x061c:
+		return true
+	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+		return true
+	}
+	return false
 }
 
 // inlineSafe are the content types a browser renders without running

@@ -121,8 +121,8 @@ func (s *Signer) Sign(key string, opts SignOptions) (Link, error) {
 // absolute http(s) URL such as "https://app.example.com/files".
 func (s *Signer) URL(prefix, key string, opts SignOptions) (string, error) {
 	local := strings.HasPrefix(prefix, "/") && !strings.HasPrefix(prefix, "//")
-	if !(local || strings.HasPrefix(prefix, "https://") || strings.HasPrefix(prefix, "http://")) ||
-		strings.ContainsAny(prefix, "?#\\ ") {
+	absolute := strings.HasPrefix(prefix, "https://") || strings.HasPrefix(prefix, "http://")
+	if (!local && !absolute) || strings.ContainsAny(prefix, "?#\\ ") {
 		return "", errors.New("storage link prefix must be a local path or an http(s) URL without query")
 	}
 	link, err := s.Sign(key, opts)

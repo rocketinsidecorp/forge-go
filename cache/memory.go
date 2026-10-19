@@ -56,7 +56,7 @@ var _ Cache = (*Memory)(nil)
 func NewMemory(opts MemoryOptions) (*Memory, error) { return newMemory(opts, time.Now) }
 
 func newMemory(opts MemoryOptions, now func() time.Time) (*Memory, error) {
-	base, err := opts.Options.Normalize()
+	base, err := opts.Normalize()
 	if err != nil {
 		return nil, err
 	}

@@ -48,7 +48,7 @@ func TestTraversalKeysNeverTouchTheFileSystemOutsideTheRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	for _, key := range []string{"../secret.txt", "..", "a/../../secret.txt", "/etc/passwd", secret, "..%2fsecret.txt", `..\secret.txt`, "blobs/../../secret.txt"} {
 		if _, _, err := s.Open(bg, key); err == nil {
 			t.Errorf("Open(%q) succeeded", key)
@@ -172,7 +172,7 @@ func TestOpenReturnsASeekableReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	seeker, ok := rc.(io.ReadSeeker)
 	if !ok {
 		t.Fatal("the disk adapter's reader must be seekable so that ranges work")
@@ -225,7 +225,7 @@ func TestNewValidationAndConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if _, err := os.Stat(filepath.Join(dir, "blobs")); err != nil {
 		t.Errorf("root was not prepared: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestLargeStreamedUploadRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	if n, _ := io.Copy(io.Discard, rc); n != size {
 		t.Fatalf("read %d bytes", n)
 	}

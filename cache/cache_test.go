@@ -259,7 +259,8 @@ func TestFlightPanicReleasesWaiters(t *testing.T) {
 		})
 	}()
 	select {
-	case <-waiter:
+	case err := <-waiter:
+		_ = err
 	case <-time.After(5 * time.Second):
 		t.Fatal("a panicking computation left its waiters blocked")
 	}
