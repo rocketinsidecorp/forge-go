@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/telemetry"
 )
 
 // Configure registers an application's routes, checks and dependencies on a
@@ -196,10 +197,12 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger, configur
 // newLogger emits JSON where logs are machine-collected and readable text
 // where a developer is watching the terminal.
 func newLogger(environment config.Environment, output io.Writer) *slog.Logger {
+	// Records logged with a traced context (logger.InfoContext(ctx, ...))
+	// carry trace_id and span_id.
 	if environment == config.Development || environment == config.Test {
-		return slog.New(slog.NewTextHandler(output, nil))
+		return slog.New(telemetry.NewLogHandler(slog.NewTextHandler(output, nil)))
 	}
-	return slog.New(slog.NewJSONHandler(output, nil))
+	return slog.New(telemetry.NewLogHandler(slog.NewJSONHandler(output, nil)))
 }
 
 // probeLiveness calls the liveness endpoint over loopback on the configured
