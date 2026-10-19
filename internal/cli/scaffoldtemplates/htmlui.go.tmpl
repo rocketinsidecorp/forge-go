@@ -412,7 +412,7 @@ func (h [[.Camel]]Pages) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	status, conflict := http.StatusUnprocessableEntity, false
 	if len(problems) == 0 {
-		updated, err := h.service.Update(r.Context(), id, form.Version, form.changes())
+		[[if .Broadcast]]updated[[else]]_[[end]], err := h.service.Update(r.Context(), id, form.Version, form.changes())
 		if err == nil {
 [[- if .Broadcast]]
 			h.publishUpdated(r, updated)

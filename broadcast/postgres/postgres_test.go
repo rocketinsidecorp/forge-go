@@ -329,9 +329,18 @@ func TestShutdownStopsTheListenerAndEndsSubscriptions(t *testing.T) {
 		t.Fatal("still listening after Shutdown")
 	}
 	// The dedicated connection went back to the server, not to the pool.
+	// The server notices the closed socket asynchronously.
 	var listeners int
-	if err := db.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'LISTEN %' AND datname = current_database()`).Scan(&listeners); err != nil || listeners != 0 {
-		t.Fatalf("listening sessions = %d, err=%v", listeners, err)
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'LISTEN %' AND datname = current_database()`).Scan(&listeners); err != nil {
+			t.Fatal(err)
+		}
+		if listeners == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("listening sessions = %d", listeners)
+		}
 	}
 }
 
