@@ -38,7 +38,7 @@ import (
 // business rules in app/domain and app/application; only wire them here.
 {{- if .DB}}
 func Configure(ctx context.Context, app *forge.App) error {
-	database, err := {{.DB.Adapter}}.Open(ctx, app.Config().Database)
+	database, err := {{.DB.Adapter}}.Open(ctx, app.Config().Database, {{.DB.Adapter}}.WithTelemetry(app.Telemetry()))
 	if err != nil {
 		return err
 	}
@@ -73,6 +73,7 @@ func Configure(_ context.Context, app *forge.App) error {
 func JobsConfigure(app *forge.App) error {
 	scheduler := jobs.NewScheduler(jobs.SchedulerOptions{
 		MaxConcurrentJobs: 4,
+		Telemetry:         app.Telemetry(),
 		OnError: func(name string, err error) {
 			app.Logger().Error("scheduled job failed", "job", name, "error", err)
 		},
