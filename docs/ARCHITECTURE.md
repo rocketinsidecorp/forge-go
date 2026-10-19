@@ -476,6 +476,12 @@ above without editing existing files. It reads the database adapter from
 | `app/adapters/httpapi/<name>.go` | `Register<Plural>(router, service, protect)` and thin handlers |
 | `*_test.go` next to each | Domain table tests, an in-memory-fake service test, database integration tests and handler tests |
 
+`forge generate scaffold` (same arguments) additionally writes
+`app/adapters/htmlui/<name>.go` (+ test) and `app/views/<plural>/*.gohtml`:
+another inbound adapter over the same `<Name>Service`, which depends on
+`application` and `domain` and on the framework's `views`, `web` and `router`
+packages, never on `persistence` or `httpapi`.
+
 Every exported name carries the resource name (`ProductService`,
 `ErrProductNotFound`, `RegisterProducts`), so several resources share the
 same packages; the generator refuses to run when a name it would declare is

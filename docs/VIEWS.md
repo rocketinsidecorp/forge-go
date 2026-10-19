@@ -98,9 +98,111 @@ styles, images and fonts, forms posting to the same origin, and nothing
 inline: put styles in `app/bootstrap/assets/` files, not in `style=`
 attributes or `<style>` elements.
 
+## Scaffold a CRUD
+
+`forge generate scaffold` writes the HTML CRUD of the example below, backed by
+a real database table, in one command (the equivalent of `rails g scaffold`).
+It takes the arguments of `forge generate resource`, writes the same files for
+the resource (migration, domain, application, persistence, JSON API and their
+tests) and adds the pages:
+
+```sh
+forge generate scaffold post title:string body:text published:bool --global --dry-run
+forge generate scaffold post title:string body:text published:bool --global
+```
+
+```text
+  create  db/migrations/<timestamp>_create_posts.{up,down}.sql
+  create  app/domain/post.go (+ _test)
+  create  app/application/post.go (+ _test)
+  create  app/adapters/persistence/post.go (+ _test)
+  create  app/adapters/httpapi/post.go (+ _test)        JSON API at /v1/posts
+  create  app/adapters/htmlui/post.go                   the HTML handlers
+  create  app/adapters/htmlui/post_test.go
+  create  app/views/posts/index.gohtml
+  create  app/views/posts/show.gohtml
+  create  app/views/posts/new.gohtml
+  create  app/views/posts/edit.gohtml
+  create  app/views/posts/_form.gohtml
+  create  app/views/posts/not_found.gohtml
+```
+
+An application without `app/views/views.go` also gets the base `forge new`
+generates (the views package, `layouts/application.gohtml`,
+`shared/_flash.gohtml`). `forge generate view welcome` adds a single page,
+`app/views/pages/welcome.gohtml` (or `DIR/NAME`), to the same tree.
+
+Like every generator it refuses to overwrite a file and does not edit
+`app/bootstrap/bootstrap.go`; it prints the wiring. For a PostgreSQL
+application (Forge identity) the HTML part is:
+
+```go
+protectCookie := func(permission string, next http.Handler) (http.Handler, error) {
+	required, err := auth.NewPermission(permission)
+	// ...
+	guarded, err := auth.RequireAudited(required, next, repository)
+	// ...
+	return middleware.AuthenticateCookie(guarded), nil
+}
+
+renderer, err := views.New()
+// ...
+if err := htmlui.RegisterPosts(app, postService, renderer, protectCookie); err != nil {
+	return err
+}
+```
+
+For other databases the same deny-all `protect` guard as for the JSON routes
+serves the pages until you write your own authentication and authorization.
+The pages are never public: `RegisterPosts` refuses a missing guard, index and
+show need `posts:read`, and new, edit, create, update and destroy need
+`posts:write`. A `--global` scaffold keeps all of those writes (the forms
+included) behind `protectPlatformWrite`, as the JSON routes do. Forge has no
+login page; the pages authenticate the cookie that `POST /auth/cookie/login`
+sets, and a browser without it receives the `401` JSON error. The forms are
+protected by the CSRF middleware from `bootstrap.go`; the command warns if
+that file does not install `csrf.Protection`, `web.MethodOverride` and
+`web.Flash`.
+
+What the pages do:
+
+| Request | Result |
+| ------- | ------ |
+| `GET /posts` | the newest posts, a "Next page" link (keyset cursor) |
+| `GET /posts/new`, `GET /posts/{id}/edit` | the form (`_form.gohtml`): CSRF field, `_method=PATCH` and the stored `version` when editing |
+| `POST /posts` | `303` to the new post with "Post was created."; invalid input re-renders the form with `422`, the submitted text and a message beside each field |
+| `PATCH /posts/{id}` | `303` to the post with "Post was updated."; `422` as above; `409` when someone else changed the post since the form was loaded: the form is shown again with a link to the latest version and nothing is written |
+| `DELETE /posts/{id}` | `303` to the index with "Post was deleted."; when the post changed since the page was shown it is kept and the browser returns to it with an alert |
+| a missing or malformed id | the `404` page (`posts/not_found`); also for another tenant's row |
+
+Fields become inputs by type: `string` a text input, `text` a textarea, `int`
+a number input, `time` a `datetime-local` input, `uuid` a text input with a
+UUIDv7 pattern, `bool` a checkbox. An optional field (`'body:text?'`) is not
+`required` and may be left empty, which clears the stored value; an optional
+`bool` is a not-set/yes/no select, because an unchecked box cannot say "not
+set". Browser attributes are conveniences: the domain validates every value,
+the form reports problems with the domain's own messages (the domain reports
+the first invalid field per submission; conversion errors are all reported
+together), and a request with a field the form does not have (`id`,
+`tenant_id`, `version` on create) is a `400`, so nothing can be mass-assigned.
+
+The generated `post_test.go` drives the pages through the same middleware the
+application installs and the application's own templates, with an in-memory
+repository: index, new, create (success and `422`), show, edit, update
+(success, `422`, stale version), destroy (including a stale delete), `404`,
+CSRF rejection for create, update and delete, unknown form fields, the
+permission split and the refusal to register without a guard.
+
+Edit the templates freely: they are production code in `app/views/posts/`.
+Styles belong in `app/bootstrap/assets/application.css` (the page
+Content-Security-Policy forbids inline styles); the rules the scaffold uses
+(`table`, `.form-errors`, `.muted`, checkbox width) are part of the stylesheet
+`forge new` generates today, and are plain CSS to copy into an older one.
+
 ## Example: posts
 
-The handler below implements every action of a resource. Register it with
+Scaffolded handlers follow this shape. The handler below implements every
+action of a resource by hand. Register it with
 `app.Resources`, which maps methods to routes:
 
 | Method | Route | Handler |
