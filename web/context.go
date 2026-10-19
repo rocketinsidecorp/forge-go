@@ -14,6 +14,7 @@ type contextKey int
 const (
 	requestIDKey contextKey = iota
 	loggerKey
+	routeKey
 )
 
 var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -39,4 +40,26 @@ func Logger(ctx context.Context) *slog.Logger {
 		return logger
 	}
 	return discardLogger
+}
+
+// RouteInfo receives the ServeMux pattern of the route that serves a
+// request, such as "GET /users/{id}". Middleware that runs before routing
+// (telemetry, access logs) installs one with WithRouteInfo and reads it after
+// the handler returns; the router fills it through RecordRoute. Labeling
+// requests by pattern instead of raw path keeps metric cardinality bounded.
+type RouteInfo struct {
+	Pattern string
+}
+
+// WithRouteInfo returns ctx carrying info for the router to fill.
+func WithRouteInfo(ctx context.Context, info *RouteInfo) context.Context {
+	return context.WithValue(ctx, routeKey, info)
+}
+
+// RecordRoute stores the matched pattern in the RouteInfo carried by ctx, if
+// any. It does not allocate.
+func RecordRoute(ctx context.Context, pattern string) {
+	if info, ok := ctx.Value(routeKey).(*RouteInfo); ok && info != nil {
+		info.Pattern = pattern
+	}
 }

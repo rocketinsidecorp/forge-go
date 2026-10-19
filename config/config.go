@@ -99,6 +99,7 @@ type Config struct {
 	RateLimit   RateLimit
 	Cache       Cache
 	Storage     Storage
+	Telemetry   Telemetry
 }
 
 func Default() Config {
@@ -130,7 +131,8 @@ func Default() Config {
 			MaxValueBytes: 1 << 20,
 			DefaultTTL:    time.Hour,
 		},
-		Storage: Storage{MaxUploadBytes: defaultStorageBytes, LinkTTL: defaultStorageTTL},
+		Storage:   Storage{MaxUploadBytes: defaultStorageBytes, LinkTTL: defaultStorageTTL},
+		Telemetry: defaultTelemetry(),
 	}
 }
 
@@ -176,5 +178,8 @@ func (c Config) Validate() error {
 	if err := c.Cache.validate(); err != nil {
 		return err
 	}
-	return c.Storage.validate(c.Environment, c.HTTP.MaxBodyBytes)
+	if err := c.Storage.validate(c.Environment, c.HTTP.MaxBodyBytes); err != nil {
+		return err
+	}
+	return c.Telemetry.validate(c.Environment, c.HTTP.Address)
 }
