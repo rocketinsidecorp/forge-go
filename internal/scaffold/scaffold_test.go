@@ -432,3 +432,99 @@ func TestGenerateServerRenderedHTML(t *testing.T) {
 		})
 	}
 }
+
+// TestGenerateAuthenticationPagesForPostgreSQLOnly: PostgreSQL applications,
+// whose identity Forge persists, get the sign-in pages wired by default;
+// every database application gets an empty, valid seed function and the seed
+// command; nothing else changes for other databases.
+func TestGenerateAuthenticationPagesForPostgreSQLOnly(t *testing.T) {
+	t.Parallel()
+	authFiles := []string{
+		"app/adapters/htmlauth/htmlauth.go", "app/adapters/htmlauth/htmlauth_test.go",
+		"app/views/sessions/new.gohtml", "app/views/sessions/mfa.gohtml", "app/views/sessions/_sign_out.gohtml",
+		"app/views/passwords/new.gohtml", "app/views/passwords/edit.gohtml",
+	}
+	for _, database := range []string{"", "sqlite", "mysql", "postgresql"} {
+		t.Run("database "+database, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "shop")
+			paths, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: database})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range authFiles {
+				if contains(paths, filepath.FromSlash(path)) != (database == "postgresql") {
+					t.Errorf("%s generated=%v for database %q", path, contains(paths, filepath.FromSlash(path)), database)
+				}
+			}
+			if contains(paths, filepath.FromSlash("db/seeds.go")) != (database != "") {
+				t.Errorf("db/seeds.go generated for database %q: %v", database, contains(paths, filepath.FromSlash("db/seeds.go")))
+			}
+			switch database {
+			case "postgresql":
+				assertContains(t, dir, map[string][]string{
+					"app/bootstrap/bootstrap.go": {
+						`"example.com/shop/app/adapters/htmlauth"`, "auth.NewBrowser(auth.BrowserOptions{", "htmlauth.Register(app, browser, renderer)",
+						"middleware.AuthenticateBrowser(htmlauth.SignInPath, page)",
+					},
+					"cmd/shop/main.go":         {"authpostgres.SetupCommand()", "postgres.SeedCommand(db.Seed)"},
+					"db/seeds.go":              {"func Seed(ctx context.Context, tx pgx.Tx) error {", "`shop setup`"},
+					"app/bootstrap/welcome.go": {`href="/session/new"`},
+					"README.md":                {"forge setup --tenant acme --email you@example.com", "/session/new"},
+				})
+			case "sqlite", "mysql":
+				assertContains(t, dir, map[string][]string{
+					"cmd/shop/main.go": {database + ".SeedCommand(db.Seed)"},
+					"db/seeds.go":      {"func Seed(ctx context.Context, tx *sql.Tx) error {"},
+				})
+			}
+			for _, path := range paths {
+				if !strings.HasPrefix(filepath.ToSlash(path), "app/views/") || !strings.HasSuffix(path, ".gohtml") {
+					continue
+				}
+				content, err := os.ReadFile(filepath.Join(dir, path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, forbidden := range []string{"<script", "<style", " style=", " onclick", "http://", "https://", "[["} {
+					if strings.Contains(string(content), forbidden) {
+						t.Errorf("%s contains %q: views must be CSP-compatible and use no external resources", path, forbidden)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestAuthenticationFilesMatchForgeNew(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "shop")
+	if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: "postgresql"}); err != nil {
+		t.Fatal(err)
+	}
+	files, err := scaffold.AuthenticationFiles("shop", "example.com/shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 7 {
+		t.Fatalf("got %d authentication files", len(files))
+	}
+	for _, file := range files {
+		generated, err := os.ReadFile(filepath.Join(dir, file.Path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(generated) != string(file.Content) {
+			t.Errorf("%s differs between forge new and AuthenticationFiles", file.Path)
+		}
+	}
+	base, err := scaffold.ViewBase("shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range base {
+		if strings.Contains(filepath.ToSlash(file.Path), "sessions/") || strings.Contains(filepath.ToSlash(file.Path), "passwords/") {
+			t.Errorf("the views base must not include authentication pages: %s", file.Path)
+		}
+	}
+}

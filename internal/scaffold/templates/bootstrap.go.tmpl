@@ -23,6 +23,11 @@ import (
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
 {{- end}}
 	"github.com/rocketinsidecorp/forge-go/web"
+{{- if and .DB .DB.Identity}}
+
+	"{{.Module}}/app/adapters/htmlauth"
+	"{{.Module}}/app/views"
+{{- end}}
 )
 
 // Configure registers dependencies, readiness checks and routes. Keep
@@ -241,9 +246,37 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 		return err
 	}
 
+	// HTML sign-in, sign-out, two-factor and password-reset pages
+	// (app/adapters/htmlauth). They set the same session cookies as the
+	// cookie routes above; auth.Browser verifies the CSRF token of every form.
+	browser, err := auth.NewBrowser(auth.BrowserOptions{
+		Login:    login,
+		Sessions: repository,
+		MFA:      mfaService,
+		Recovery: recoveryService,
+		Auditor:  repository,
+	})
+	if err != nil {
+		return err
+	}
+	renderer, err := views.New()
+	if err != nil {
+		return err
+	}
+	if err := htmlauth.Register(app, browser, renderer); err != nil {
+		return err
+	}
+
 	// MFA enrollment/management routes (require authenticated principal + step-up authorizer)
 	// These are intentionally left for application-specific step-up policy.
 	// Applications can wire them in app/bootstrap/bootstrap.go after generation.
+
+	// Pages behind a permission authenticate the session cookie and send
+	// signed-out browsers to the sign-in page, for example:
+	//
+	//	page, err := auth.RequireAudited("reports:read", reportsPage, repository)
+	//	...
+	//	guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
 
 	return app.Handle("GET /v1/auth/session", middleware.Authenticate(http.HandlerFunc(currentSession)))
 }

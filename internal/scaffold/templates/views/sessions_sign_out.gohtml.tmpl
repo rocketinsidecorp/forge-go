@@ -1,0 +1,6 @@
+{{/* A sign-out button. Include it with template "sessions/_sign_out" on pages people see while signed in. */}}
+<form method="post" action="/session" class="sign-out">
+	{{csrfField}}
+	{{methodField "DELETE"}}
+	<button type="submit">Sign out</button>
+</form>

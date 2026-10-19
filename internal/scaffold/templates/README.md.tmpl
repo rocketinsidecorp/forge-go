@@ -80,7 +80,51 @@ protection (`{{"{{"}}csrfField{{"}}"}}` in every form) and flash messages
 for all routes. See the Forge views guide (`docs/VIEWS.md`).
 {{- if and .DB .DB.Identity}}
 
-## Authentication (generated with PostgreSQL)
+## Sign in
+
+Create the first organization, tenant and owner account once, after the
+migrations (the password is prompted for twice, never passed as an argument):
+
+```bash
+forge migrate
+forge setup --tenant acme --email you@example.com --organization "Acme Inc"
+forge dev
+```
+
+Then open `http://localhost:8080/session/new` and sign in with organization
+`acme`. The owner holds every permission: `setup` grants all registered
+permissions to the tenant's `owner` role, and the migrations of
+`forge generate resource` and `forge generate scaffold` grant their new
+permissions to it. `setup` refuses once a tenant exists. In a container, run
+`docker compose run --rm app setup --tenant acme --email you@example.com`, or
+pipe the password with `--password-stdin` (or set `FORGE_SETUP_PASSWORD` for
+that one command) where there is no terminal.
+
+The pages live in `app/adapters/htmlauth` and `app/views/sessions` and
+`app/views/passwords`; change their markup and wording freely. `auth.Browser`
+in the framework makes every security decision: CSRF verification, uniform
+failures, throttling (429 with `Retry-After`), the session cookies and
+validated return paths.
+
+| Method | Path | Page |
+| ------ | ---- | ---- |
+| `GET` | `/session/new` | Sign-in form (organization, email, password) |
+| `POST` | `/session` | Sign in; 303 to the validated `return_to` or `/` |
+| `DELETE` | `/session` | Sign out (`_method=DELETE` form, `sessions/_sign_out` partial) |
+| `GET`, `POST` | `/session/mfa` | Authenticator or backup code, when `FORGE_AUTH_MFA_KEY` is set |
+| `GET` | `/passwords/new` | Forgot-password form |
+| `POST` | `/passwords` | Send reset instructions (same answer whether or not the account exists) |
+| `GET` | `/passwords/edit?token=...` | Choose a new password from the emailed link |
+| `PATCH` | `/passwords` | Change the password; signs every session out |
+
+Guard pages with `middleware.AuthenticateBrowser(htmlauth.SignInPath, page)`
+(the wiring `forge generate scaffold` prints does): a signed-out browser is
+sent to the sign-in page and back, while JSON clients still get `401`.
+
+`db/seeds.go` holds `db.Seed`, which `forge seed` (`{{.Name}} seed`) runs in
+one transaction. Keep it idempotent.
+
+## Authentication API (generated with PostgreSQL)
 
 The following endpoints are registered by `bootstrap.Configure`:
 
@@ -109,10 +153,14 @@ adapter before advertising password recovery to users.
 
 | Path | Purpose |
 | --- | --- |
-| `cmd/{{.Name}}` | Process entrypoint: `serve` (default), `healthcheck`{{if .DB}}, `migrate`, `rollback`{{end}} |
+| `cmd/{{.Name}}` | Process entrypoint: `serve` (default), `healthcheck`{{if .DB}}, `migrate`, `rollback`, `seed`{{end}}{{if and .DB .DB.Identity}}, `setup`{{end}} |
 | `app/bootstrap` | Composition root: dependencies, readiness checks, routes |
+{{- if and .DB .DB.Identity}}
+| `app/adapters/htmlauth` | Sign-in, sign-out, two-factor and password-reset pages |
+{{- end}}
 {{- if .DB}}
 | `db/migrations` | SQL migrations, embedded in the binary |
+| `db/seeds.go` | Idempotent seed data for `seed` |
 {{- end}}
 | `Dockerfile` | Production image: static binary, distroless, non-root |
 | `compose.yaml` | Local stack running the same image in development mode |
@@ -148,9 +196,10 @@ exactly 32 random bytes and belongs in `.env.local` during development or a
 secret manager in deployed environments. It is never stored in the identity
 database.
 
-Run `migrate` before serving so the Forge identity tables exist. Account
-provisioning and MFA enrollment/rotation remain application opt-ins because
-they require application policy and step-up authorization. Browser-cookie
+Run `migrate` before serving so the Forge identity tables exist, then
+`setup` once to create the first owner. Inviting further users and MFA
+enrollment/rotation remain application opt-ins because they require
+application policy and step-up authorization. Browser-cookie
 routes are available for HTTPS applications. Password recovery delivery must
 be configured by the application; it can use a self-hosted SMTP server and
 does not require a particular email SaaS provider.

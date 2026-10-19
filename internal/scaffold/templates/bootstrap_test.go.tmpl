@@ -183,6 +183,17 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 		t.Fatalf("unauthenticated session status=%d body=%s", authRecorder.Code, authRecorder.Body.String())
 	}
 
+	signIn := httptest.NewRecorder()
+	app.Handler().ServeHTTP(signIn, httptest.NewRequest(http.MethodGet, "/session/new", nil))
+	if signIn.Code != http.StatusOK || !strings.Contains(signIn.Body.String(), `action="/session"`) || !strings.Contains(signIn.Body.String(), csrf.FormField) {
+		t.Fatalf("sign-in page status=%d body=%s", signIn.Code, signIn.Body.String())
+	}
+	resetRequest := httptest.NewRecorder()
+	app.Handler().ServeHTTP(resetRequest, httptest.NewRequest(http.MethodGet, "/passwords/new", nil))
+	if resetRequest.Code != http.StatusOK {
+		t.Fatalf("password reset page status=%d body=%s", resetRequest.Code, resetRequest.Body.String())
+	}
+
 	mfaRequest := httptest.NewRequest(http.MethodPost, "/auth/mfa/complete", strings.NewReader("{}"))
 	mfaRequest.Header.Set("Content-Type", "application/json")
 	mfaRecorder := httptest.NewRecorder()

@@ -1,0 +1,468 @@
+package htmlauth_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"{{.Module}}/app/adapters/htmlauth"
+	appviews "{{.Module}}/app/views"
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/auth"
+	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
+	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/web"
+)
+
+const (
+	testTenant   = "acme"
+	testEmail    = "owner@example.com"
+	testPassword = "correct horse battery staple"
+)
+
+// memoryIdentity is one account in one tenant, enough to drive the pages
+// without a database. TestPagesAgainstPostgres uses the real repository.
+type memoryIdentity struct {
+	mu           sync.Mutex
+	subjectID    uuid.UUID
+	membershipID uuid.UUID
+	hash         string
+	sessions     map[auth.Digest]bool
+	resets       map[auth.Digest]bool
+}
+
+func newMemoryIdentity(t *testing.T) *memoryIdentity {
+	t.Helper()
+	hash, err := auth.HashPassword(testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &memoryIdentity{
+		subjectID: uuid.MustNew(), membershipID: uuid.MustNew(), hash: hash,
+		sessions: map[auth.Digest]bool{}, resets: map[auth.Digest]bool{},
+	}
+}
+
+func (m *memoryIdentity) LookupPassword(_ context.Context, email, tenant string) (auth.PasswordIdentity, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if email != testEmail || tenant != testTenant {
+		return auth.PasswordIdentity{}, false, nil
+	}
+	return auth.PasswordIdentity{SubjectID: m.subjectID, MembershipID: m.membershipID, PasswordHash: m.hash, CredentialVersion: 1}, true, nil
+}
+
+func (m *memoryIdentity) ReplacePasswordHash(context.Context, uuid.UUID, string, string) (bool, error) {
+	return false, nil
+}
+
+func (m *memoryIdentity) CreateSessionAtVersion(context.Context, uuid.UUID, int64, time.Time) (auth.Token, error) {
+	token, err := auth.NewToken()
+	if err != nil {
+		return auth.Token{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions[token.Digest()] = true
+	return token, nil
+}
+
+func (m *memoryIdentity) RevokeSession(_ context.Context, token auth.Token) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, token.Digest())
+	return nil
+}
+
+func (m *memoryIdentity) LookupRecovery(_ context.Context, email, tenant string) (auth.RecoveryIdentity, bool, error) {
+	if email != testEmail || tenant != testTenant {
+		return auth.RecoveryIdentity{}, false, nil
+	}
+	return auth.RecoveryIdentity{SubjectID: m.subjectID, Email: testEmail}, true, nil
+}
+
+func (m *memoryIdentity) CreateRecovery(_ context.Context, _ uuid.UUID, digest auth.Digest, _ time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resets[digest] = true
+	return nil
+}
+
+func (m *memoryIdentity) InvalidateRecovery(_ context.Context, digest auth.Digest) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.resets, digest)
+	return nil
+}
+
+func (m *memoryIdentity) ConsumeRecovery(_ context.Context, digest auth.Digest, hash string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.resets[digest] {
+		return false, nil
+	}
+	clear(m.resets)
+	clear(m.sessions)
+	m.hash = hash
+	return true, nil
+}
+
+func (m *memoryIdentity) sessionCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.sessions)
+}
+
+func (m *memoryIdentity) hasSession(digest auth.Digest) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessions[digest]
+}
+
+// mailbox captures reset messages instead of sending email.
+type mailbox struct {
+	mu       sync.Mutex
+	messages []auth.PasswordRecoveryMessage
+}
+
+func (b *mailbox) SendPasswordRecovery(_ context.Context, message auth.PasswordRecoveryMessage) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.messages = append(b.messages, message)
+	return nil
+}
+
+// serve mounts the pages behind the middleware app/bootstrap installs.
+func serve(t *testing.T, browser *auth.Browser) http.Handler {
+	t.Helper()
+	renderer, err := appviews.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	protection, err := csrf.New(csrf.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, middleware := range []func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash} {
+		if err := app.Use(middleware); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := htmlauth.Register(app, browser, renderer); err != nil {
+		t.Fatal(err)
+	}
+	return app.Handler()
+}
+
+func memoryPages(t *testing.T, loginOptions ...auth.LoginOption) (http.Handler, *memoryIdentity, *mailbox) {
+	t.Helper()
+	identity := newMemoryIdentity(t)
+	login, err := auth.NewLoginService(identity, identity, loginOptions...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mail := &mailbox{}
+	recovery, err := auth.NewRecoveryService(identity, mail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: identity, Recovery: recovery})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return serve(t, browser), identity, mail
+}
+
+// client is a browser: it keeps cookies between requests and sends the CSRF
+// token in the forms it submits.
+type client struct {
+	t       *testing.T
+	handler http.Handler
+	cookies map[string]*http.Cookie
+}
+
+func newClient(t *testing.T, handler http.Handler) *client {
+	return &client{t: t, handler: handler, cookies: map[string]*http.Cookie{}}
+}
+
+func (c *client) do(method, target string, form url.Values) *httptest.ResponseRecorder {
+	c.t.Helper()
+	var body io.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
+	}
+	request := httptest.NewRequest(method, "https://app.example.com"+target, body)
+	request.Header.Set("Accept", "text/html")
+	if form != nil {
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	for _, cookie := range c.cookies {
+		request.AddCookie(cookie)
+	}
+	recorder := httptest.NewRecorder()
+	c.handler.ServeHTTP(recorder, request)
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.MaxAge < 0 {
+			delete(c.cookies, cookie.Name)
+		} else {
+			c.cookies[cookie.Name] = cookie
+		}
+	}
+	return recorder
+}
+
+// submit posts form with the CSRF token of the last page shown.
+func (c *client) submit(target string, form url.Values) *httptest.ResponseRecorder {
+	c.t.Helper()
+	token, ok := c.cookies[csrf.CookieName]
+	if !ok {
+		c.t.Fatal("no CSRF cookie: show a form first")
+	}
+	form.Set(csrf.FormField, token.Value)
+	return c.do(http.MethodPost, target, form)
+}
+
+func (c *client) signIn(password, returnTo string) *httptest.ResponseRecorder {
+	c.t.Helper()
+	if page := c.do(http.MethodGet, htmlauth.SignInPath, nil); page.Code != http.StatusOK {
+		c.t.Fatalf("GET %s = %d", htmlauth.SignInPath, page.Code)
+	}
+	form := url.Values{"tenant": {testTenant}, "email": {testEmail}, "password": {password}}
+	if returnTo != "" {
+		form.Set("return_to", returnTo)
+	}
+	return c.submit("/session", form)
+}
+
+func TestSignInPageKeepsOnlyLocalReturnPaths(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := memoryPages(t)
+	browser := newClient(t, handler)
+	page := browser.do(http.MethodGet, "/session/new?tenant=acme&return_to=%2Fproducts%3Fpage%3D2", nil)
+	body := page.Body.String()
+	for _, want := range []string{`name="authenticity_token"`, `name="return_to" value="/products?page=2"`, `name="tenant" type="text" value="acme"`, `href="/passwords/new"`} {
+		if page.Code != http.StatusOK || !strings.Contains(body, want) {
+			t.Fatalf("status=%d, missing %q in:\n%s", page.Code, want, body)
+		}
+	}
+	for _, hostile := range []string{"//evil.example/", "https://evil.example/", "/\\evil.example"} {
+		page := browser.do(http.MethodGet, "/session/new?return_to="+url.QueryEscape(hostile), nil)
+		if page.Code != http.StatusOK || strings.Contains(page.Body.String(), "evil.example") {
+			t.Fatalf("return_to %q was kept: %s", hostile, page.Body)
+		}
+	}
+}
+
+func TestSignInRedirectsOnlyToLocalPaths(t *testing.T) {
+	t.Parallel()
+	handler, identity, _ := memoryPages(t)
+	for returnTo, location := range map[string]string{
+		"/products?page=2":      "/products?page=2",
+		"":                      htmlauth.AfterSignInPath,
+		"//evil.example/":       htmlauth.AfterSignInPath,
+		"https://evil.example/": htmlauth.AfterSignInPath,
+	} {
+		browser := newClient(t, handler)
+		signedIn := browser.signIn(testPassword, returnTo)
+		if signedIn.Code != http.StatusSeeOther || signedIn.Header().Get("Location") != location {
+			t.Fatalf("return_to %q: status=%d Location=%q", returnTo, signedIn.Code, signedIn.Header().Get("Location"))
+		}
+		session, ok := browser.cookies[auth.SessionCookieName]
+		if !ok || !session.HttpOnly || !session.Secure {
+			t.Fatalf("session cookie=%+v", session)
+		}
+		token, err := auth.ParseToken(session.Value)
+		if err != nil || !identity.hasSession(token.Digest()) {
+			t.Fatalf("the session cookie does not name a stored session: %v", err)
+		}
+	}
+}
+
+func TestFailedSignInIsUniform(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := memoryPages(t)
+	for name, form := range map[string]url.Values{
+		"wrong password":      {"tenant": {testTenant}, "email": {testEmail}, "password": {"wrong password"}},
+		"unknown email":       {"tenant": {testTenant}, "email": {"nobody@example.com"}, "password": {testPassword}},
+		"unknown tenant":      {"tenant": {"other"}, "email": {testEmail}, "password": {testPassword}},
+		"invalid tenant slug": {"tenant": {"?"}, "email": {testEmail}, "password": {testPassword}},
+	} {
+		browser := newClient(t, handler)
+		browser.do(http.MethodGet, htmlauth.SignInPath, nil)
+		password := form.Get("password")
+		failed := browser.submit("/session", form)
+		body := failed.Body.String()
+		if failed.Code != http.StatusUnprocessableEntity || !strings.Contains(body, "That organization, email and password do not match an account.") {
+			t.Fatalf("%s: status=%d body:\n%s", name, failed.Code, body)
+		}
+		if strings.Contains(body, password) {
+			t.Fatalf("%s: the password was echoed", name)
+		}
+		if _, ok := browser.cookies[auth.SessionCookieName]; ok {
+			t.Fatalf("%s: a failed sign-in set a session cookie", name)
+		}
+	}
+}
+
+func TestSignInIsThrottled(t *testing.T) {
+	t.Parallel()
+	throttler, err := auth.NewMemoryLoginThrottler(auth.LoginThrottleConfig{Window: time.Minute, AccountLimit: 1, SourceLimit: 100, MaxEntries: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, _, _ := memoryPages(t, auth.WithLoginThrottler(throttler))
+	browser := newClient(t, handler)
+	if first := browser.signIn("wrong password", ""); first.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("first attempt status=%d", first.Code)
+	}
+	throttled := browser.signIn(testPassword, "")
+	if throttled.Code != http.StatusTooManyRequests || throttled.Header().Get("Retry-After") == "" || !strings.Contains(throttled.Body.String(), "Too many sign-in attempts") {
+		t.Fatalf("status=%d Retry-After=%q body:\n%s", throttled.Code, throttled.Header().Get("Retry-After"), throttled.Body)
+	}
+}
+
+func TestFormsRequireTheCSRFToken(t *testing.T) {
+	t.Parallel()
+	handler, identity, _ := memoryPages(t)
+	browser := newClient(t, handler)
+	if signedIn := browser.signIn(testPassword, ""); signedIn.Code != http.StatusSeeOther {
+		t.Fatalf("sign in status=%d", signedIn.Code)
+	}
+	for _, request := range []struct {
+		target string
+		form   url.Values
+	}{
+		{"/session", url.Values{"tenant": {testTenant}, "email": {testEmail}, "password": {testPassword}}},
+		{"/session", url.Values{"_method": {"DELETE"}}},
+		{"/passwords", url.Values{"tenant": {testTenant}, "email": {testEmail}}},
+	} {
+		if rejected := browser.do(http.MethodPost, request.target, request.form); rejected.Code != http.StatusForbidden {
+			t.Errorf("POST %s %v without the token: status=%d", request.target, request.form, rejected.Code)
+		}
+	}
+	if identity.sessionCount() != 1 {
+		t.Fatalf("a sign-out without the token ended the session (sessions=%d)", identity.sessionCount())
+	}
+}
+
+func TestSignOutEndsTheSession(t *testing.T) {
+	t.Parallel()
+	handler, identity, _ := memoryPages(t)
+	browser := newClient(t, handler)
+	browser.signIn(testPassword, "")
+	signedOut := browser.submit("/session", url.Values{"_method": {"DELETE"}})
+	if signedOut.Code != http.StatusSeeOther || signedOut.Header().Get("Location") != htmlauth.SignInPath {
+		t.Fatalf("status=%d Location=%q", signedOut.Code, signedOut.Header().Get("Location"))
+	}
+	if _, ok := browser.cookies[auth.SessionCookieName]; ok || identity.sessionCount() != 0 {
+		t.Fatalf("session still present: cookie=%v stored=%d", ok, identity.sessionCount())
+	}
+	if page := browser.do(http.MethodGet, htmlauth.SignInPath, nil); !strings.Contains(page.Body.String(), "Signed out.") {
+		t.Fatalf("missing the sign-out notice:\n%s", page.Body)
+	}
+}
+
+func TestPasswordResetDoesNotRevealAccounts(t *testing.T) {
+	t.Parallel()
+	handler, _, mail := memoryPages(t)
+	requestReset := func(email string) *httptest.ResponseRecorder {
+		browser := newClient(t, handler)
+		browser.do(http.MethodGet, "/passwords/new", nil)
+		return browser.submit("/passwords", url.Values{"tenant": {testTenant}, "email": {email}})
+	}
+	known, unknown := requestReset(testEmail), requestReset("nobody@example.com")
+	if known.Code != http.StatusSeeOther || known.Code != unknown.Code || known.Header().Get("Location") != unknown.Header().Get("Location") ||
+		known.Body.String() != unknown.Body.String() {
+		t.Fatalf("known: %d %v; unknown: %d %v", known.Code, known.Header(), unknown.Code, unknown.Header())
+	}
+	mail.mu.Lock()
+	messages := mail.messages
+	mail.mu.Unlock()
+	if len(messages) != 1 || messages[0].Email != testEmail {
+		t.Fatalf("messages=%d", len(messages))
+	}
+	token := messages[0].Token.Reveal()
+
+	browser := newClient(t, handler)
+	if invalid := browser.do(http.MethodGet, "/passwords/edit?token=forged", nil); invalid.Code != http.StatusSeeOther {
+		t.Fatalf("forged link status=%d", invalid.Code)
+	}
+	edit := browser.do(http.MethodGet, "/passwords/edit?token="+token, nil)
+	if edit.Code != http.StatusOK || edit.Header().Get("Cache-Control") != "no-store" || !strings.Contains(edit.Body.String(), `name="token" value="`+token+`"`) {
+		t.Fatalf("edit status=%d headers=%v", edit.Code, edit.Header())
+	}
+	const newPassword = "a brand new passphrase"
+	mismatch := browser.submit("/passwords", url.Values{"_method": {"PATCH"}, "token": {token}, "password": {newPassword}, "password_confirmation": {"something else"}})
+	if mismatch.Code != http.StatusUnprocessableEntity || !strings.Contains(mismatch.Body.String(), "does not match") {
+		t.Fatalf("mismatch status=%d", mismatch.Code)
+	}
+	reset := browser.submit("/passwords", url.Values{"_method": {"PATCH"}, "token": {token}, "password": {newPassword}, "password_confirmation": {newPassword}})
+	if reset.Code != http.StatusSeeOther || reset.Header().Get("Location") != htmlauth.SignInPath {
+		t.Fatalf("reset status=%d Location=%q", reset.Code, reset.Header().Get("Location"))
+	}
+	if again := newClient(t, handler).signIn(testPassword, ""); again.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("the old password still works: status=%d", again.Code)
+	}
+	if signedIn := newClient(t, handler).signIn(newPassword, ""); signedIn.Code != http.StatusSeeOther {
+		t.Fatalf("the new password does not work: status=%d", signedIn.Code)
+	}
+}
+
+// TestPagesAgainstPostgres signs in and out through the real identity
+// repository: an owner created the way `{{.Name}} setup` does it, a session
+// that resolves, and a sign-out that revokes it. It needs
+// FORGE_TEST_DATABASE_URL (`forge test` reads it from .env.development) and
+// is skipped otherwise.
+func TestPagesAgainstPostgres(t *testing.T) {
+	database := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repository, err := authpostgres.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := repository.ProvisionOwner(ctx, authpostgres.OwnerAccount{
+		Organization: "Acme", TenantSlug: testTenant, Email: testEmail, Password: testPassword,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	login, err := auth.NewLoginService(repository, repository, auth.WithSecurityAuditor(repository))
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: repository, Auditor: repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visitor := newClient(t, serve(t, browser))
+	if failed := visitor.signIn("wrong password", ""); failed.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("wrong password status=%d", failed.Code)
+	}
+	if signedIn := visitor.signIn(testPassword, "/products"); signedIn.Code != http.StatusSeeOther || signedIn.Header().Get("Location") != "/products" {
+		t.Fatalf("sign in status=%d Location=%q", signedIn.Code, signedIn.Header().Get("Location"))
+	}
+	token, err := auth.ParseToken(visitor.cookies[auth.SessionCookieName].Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := repository.ResolveSession(ctx, token.Digest()); err != nil || !found {
+		t.Fatalf("the new session does not resolve: found=%v err=%v", found, err)
+	}
+	if signedOut := visitor.submit("/session", url.Values{"_method": {"DELETE"}}); signedOut.Code != http.StatusSeeOther {
+		t.Fatalf("sign out status=%d", signedOut.Code)
+	}
+	if _, found, err := repository.ResolveSession(ctx, token.Digest()); err != nil || found {
+		t.Fatalf("the session survived sign-out: found=%v err=%v", found, err)
+	}
+}
