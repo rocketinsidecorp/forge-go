@@ -144,45 +144,7 @@ func startCluster(t *testing.T, names ...string) *sshCluster {
 		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil { // #nosec G306 -- test wrapper must be executable.
 			t.Fatal(err)
 		}
-		port := freePort(t)
-		config := filepath.Join(dir, name, "sshd_config")
-		sshdConfig := fmt.Sprintf(`Port %d
-ListenAddress 127.0.0.1
-HostKey %s
-AuthorizedKeysFile %s
-StrictModes no
-UsePAM no
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-PermitRootLogin prohibit-password
-PidFile none
-ForceCommand %s
-`, port, filepath.Join(dir, "hostkey"), filepath.Join(dir, "authorized_keys"), wrapper)
-		if err := os.WriteFile(config, []byte(sshdConfig), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		daemon := exec.Command(sshd, "-D", "-e", "-f", config)
-		var daemonLog bytes.Buffer
-		daemon.Stderr = &daemonLog
-		if err := daemon.Start(); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			_ = daemon.Process.Kill()
-			_ = daemon.Wait()
-		})
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
-			if err == nil {
-				_ = conn.Close()
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("sshd for %s did not start: %s", name, daemonLog.String())
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		port := startSSHD(t, sshd, filepath.Join(dir, name), filepath.Join(dir, "hostkey"), filepath.Join(dir, "authorized_keys"), wrapper)
 		fmt.Fprintf(&knownHosts, "[127.0.0.1]:%d %s", port, hostPub)
 		fmt.Fprintf(&sshConfig, "Host %s\n  HostName 127.0.0.1\n  Port %d\n  User %s\n  IdentityFile %s\n  IdentitiesOnly yes\n  UserKnownHostsFile %s\n  StrictHostKeyChecking yes\n  LogLevel ERROR\n",
 			name, port, current.Username, filepath.Join(dir, "userkey"), filepath.Join(dir, "known_hosts"))
@@ -196,6 +158,69 @@ ForceCommand %s
 		t.Fatal(err)
 	}
 	return cluster
+}
+
+// startSSHD runs a private sshd on a free loopback port. Another process
+// can take the port between freePort and sshd's bind, so a daemon that
+// exits before it reports listening is retried on a new port; only our
+// own daemon's "Server listening" line counts as started.
+func startSSHD(t *testing.T, sshd, dir, hostKey, authorizedKeys, wrapper string) int {
+	t.Helper()
+	var lastLog string
+	for range 5 {
+		port := freePort(t)
+		config := filepath.Join(dir, "sshd_config")
+		sshdConfig := fmt.Sprintf(`Port %d
+ListenAddress 127.0.0.1
+HostKey %s
+AuthorizedKeysFile %s
+StrictModes no
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+PidFile none
+ForceCommand %s
+`, port, hostKey, authorizedKeys, wrapper)
+		if err := os.WriteFile(config, []byte(sshdConfig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		daemon := exec.Command(sshd, "-D", "-e", "-f", config)
+		daemonLog := &syncBuffer{}
+		daemon.Stderr = daemonLog
+		if err := daemon.Start(); err != nil {
+			t.Fatal(err)
+		}
+		exited := make(chan struct{})
+		go func() {
+			_ = daemon.Wait()
+			close(exited)
+		}()
+		stop := func() {
+			_ = daemon.Process.Kill()
+			<-exited
+		}
+		listening := fmt.Sprintf("Server listening on 127.0.0.1 port %d", port)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if strings.Contains(daemonLog.String(), listening) {
+				t.Cleanup(stop)
+				return port
+			}
+			select {
+			case <-exited:
+			case <-time.After(20 * time.Millisecond):
+				if time.Now().Before(deadline) {
+					continue
+				}
+				stop()
+			}
+			break
+		}
+		lastLog = daemonLog.String()
+	}
+	t.Fatalf("sshd did not start: %s", lastLog)
+	return 0
 }
 
 type syncBuffer struct {
