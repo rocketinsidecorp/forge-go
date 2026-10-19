@@ -107,7 +107,10 @@ ssh:
   # proxy_jump: bastion.example.com
 `
 
-// SecretsTemplate is written to .forge/secrets with mode 0600.
+// SecretsTemplate is written to .forge/secrets with mode 0600. It holds
+// only $VARIABLE references.
+//
+// #nosec G101 -- no credentials: the values are environment references.
 const SecretsTemplate = `# Secrets for forge deploy. This file is listed in .gitignore and
 # .dockerignore; never commit it.
 #
@@ -190,7 +193,7 @@ func ensureLine(path, line string) (bool, error) {
 		text += "\n"
 	}
 	text += "# forge deploy\n" + line + "\n"
-	if err := os.WriteFile(path, []byte(text), 0o600); err != nil { // #nosec G306 -- ignore files hold no secrets; 0600 matches generated files.
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil { // #nosec G306,G703 -- fixed ignore-file names under the project root; 0600 matches generated files.
 		return false, err
 	}
 	return true, nil

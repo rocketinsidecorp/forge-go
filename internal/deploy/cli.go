@@ -338,7 +338,7 @@ var invalidServiceChars = regexp.MustCompile(`[^a-z0-9-]+`)
 // directory name.
 func defaultServiceName(root string) string {
 	name := ""
-	if content, err := os.ReadFile(filepath.Join(root, "go.mod")); err == nil {
+	if content, err := os.ReadFile(filepath.Join(root, "go.mod")); err == nil { // #nosec G304 -- the project go.mod.
 		for line := range strings.Lines(string(content)) {
 			if module, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
 				name = module[strings.LastIndex(module, "/")+1:]

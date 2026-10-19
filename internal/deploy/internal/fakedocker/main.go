@@ -65,7 +65,7 @@ func run(args []string) int {
 	if len(args) > 0 && args[0] == "logs" {
 		return logs(dir, args[1:])
 	}
-	lock, err := os.OpenFile(filepath.Join(dir, "state.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := os.OpenFile(filepath.Join(dir, "state.lock"), os.O_CREATE|os.O_RDWR, 0o600) // #nosec G304,G703 -- test fixture state directory.
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 125
@@ -82,7 +82,7 @@ func run(args []string) int {
 }
 
 func appendCall(dir string, args []string) {
-	file, err := os.OpenFile(filepath.Join(dir, "calls.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(filepath.Join(dir, "calls.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304,G703 -- test fixture state directory.
 	if err != nil {
 		return
 	}
@@ -92,7 +92,7 @@ func appendCall(dir string, args []string) {
 
 func load(dir string) *state {
 	st := &state{Routes: map[string]string{}, Maintenance: map[string]bool{}, EnvSeen: map[string]string{}}
-	content, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	content, err := os.ReadFile(filepath.Join(dir, "state.json")) // #nosec G304,G703 -- test fixture state directory.
 	if err == nil {
 		_ = json.Unmarshal(content, st)
 	}
@@ -110,7 +110,7 @@ func load(dir string) *state {
 
 func save(dir string, st *state) {
 	content, _ := json.MarshalIndent(st, "", "  ")
-	_ = os.WriteFile(filepath.Join(dir, "state.json"), content, 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "state.json"), content, 0o600) // #nosec G703 -- test fixture state directory.
 }
 
 func fail(code int, format string, args ...any) int {
@@ -271,14 +271,14 @@ func runContainer(st *state, args []string) int {
 	}
 	c.Image, c.Args = args[i], args[i+1:]
 	if c.EnvFile != "" {
-		info, err := os.Stat(c.EnvFile)
+		info, err := os.Stat(c.EnvFile) // #nosec G703 -- the env file forge deploy wrote in the fake host home.
 		if err != nil {
 			return fail(125, "env file %s: %v", c.EnvFile, err)
 		}
 		if info.Mode().Perm() != 0o600 {
 			return fail(125, "env file %s has mode %04o, want 0600", c.EnvFile, info.Mode().Perm())
 		}
-		content, _ := os.ReadFile(c.EnvFile)
+		content, _ := os.ReadFile(c.EnvFile) // #nosec G304,G703 -- the env file forge deploy wrote in the fake host home.
 		st.EnvSeen[c.Name] = string(content)
 	}
 	if rm {
@@ -443,7 +443,7 @@ func execute(dir string, st *state, args []string) int {
 		if app == nil || app.State != "running" {
 			return fail(4, "target %s not healthy: request failed", options["target"])
 		}
-		if _, err := os.Stat(filepath.Join(dir, "unhealthy")); err == nil || strings.Contains(app.Image, "unhealthy") {
+		if _, err := os.Stat(filepath.Join(dir, "unhealthy")); err == nil || strings.Contains(app.Image, "unhealthy") { // #nosec G703 -- test fixture state directory.
 			return fail(4, "target %s not healthy within %s: status 503", options["target"], options["deploy-timeout"])
 		}
 		previous := st.Routes[options["service"]]
@@ -498,7 +498,7 @@ func logs(dir string, args []string) int {
 	if !follow {
 		return 0
 	}
-	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("logs-%d.pid", os.Getpid())), []byte(fmt.Sprint(os.Getpid())), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("logs-%d.pid", os.Getpid())), []byte(fmt.Sprint(os.Getpid())), 0o600) // #nosec G703 -- test fixture state directory.
 	for {
 		time.Sleep(time.Hour)
 	}

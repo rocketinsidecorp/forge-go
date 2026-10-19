@@ -40,10 +40,9 @@ type sshHost struct {
 }
 
 type sshCluster struct {
-	dir        string
-	sshConfig  string
-	hosts      map[string]*sshHost
-	secretsEnv []string
+	dir       string
+	sshConfig string
+	hosts     map[string]*sshHost
 }
 
 func requireSSHD(t *testing.T) (string, string, string) {
@@ -295,16 +294,6 @@ func (c *sshCluster) state(t *testing.T, host string) fakeState {
 		t.Fatal(err)
 	}
 	return st
-}
-
-func (s fakeState) running(role string) []string {
-	var names []string
-	for _, c := range s.Containers {
-		if c.Labels[labelRole] == role && c.State == "running" {
-			names = append(names, c.Name)
-		}
-	}
-	return names
 }
 
 func (s fakeState) versions(role string) map[string]string {

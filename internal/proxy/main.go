@@ -216,11 +216,12 @@ func client(ctx context.Context, command string, args []string, stdout, stderr i
 		return ExitUsage
 	}
 	timeout := 30 * time.Second
-	if command == "deploy" {
+	switch command {
+	case "deploy":
 		timeout = deployTimeout + drainTimeout + 30*time.Second
-	} else if command == "remove" {
+	case "remove":
 		timeout = drainTimeout + 30*time.Second
-	} else if command == "healthcheck" {
+	case "healthcheck":
 		request.Op = "status"
 		timeout = 3 * time.Second
 	}
