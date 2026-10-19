@@ -180,14 +180,29 @@ func Generate(opts Options) ([]string, error) {
 	return paths, nil
 }
 
-func render(opts Options) (map[string][]byte, error) {
-	templates, err := template.New("").Option("missingkey=error").ParseFS(templateFS, "templates/*.tmpl")
+func parseTemplates(views bool) (*template.Template, error) {
+	if views {
+		parsed, err := template.New("").Delims("[[", "]]").Option("missingkey=error").ParseFS(templateFS, "templates/views/*"+viewTemplateSuffix)
+		if err != nil {
+			return nil, fmt.Errorf("parse view templates: %w", err)
+		}
+		return parsed, nil
+	}
+	parsed, err := template.New("").Option("missingkey=error").ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
-	viewTemplates, err := template.New("").Delims("[[", "]]").Option("missingkey=error").ParseFS(templateFS, "templates/views/*"+viewTemplateSuffix)
+	return parsed, nil
+}
+
+func render(opts Options) (map[string][]byte, error) {
+	templates, err := parseTemplates(false)
 	if err != nil {
-		return nil, fmt.Errorf("parse view templates: %w", err)
+		return nil, err
+	}
+	viewTemplates, err := parseTemplates(true)
+	if err != nil {
+		return nil, err
 	}
 	data := templateData{Options: opts, DBHostPort: dbHostPort(opts.Name)}
 	data.DBUser, data.DBName = databaseIdentifiers(opts.Name)

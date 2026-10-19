@@ -9,14 +9,22 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
 const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]"
 
 var migrationName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,99}$`)
 var viewName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// defaultViewDirectory holds a view generated without a directory:
+// `generate view welcome` creates app/views/pages/welcome.gohtml.
+const defaultViewDirectory = "pages"
+
 var jobName = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z][a-z0-9]*)*$`)
 
 func runGenerate(args []string, stdout io.Writer) error {
@@ -60,7 +68,7 @@ func runGenerateEnv(args []string, stdout io.Writer, root string, env []string, 
 		directories := []string{"db/migrations"}
 		switch args[0] {
 		case "view":
-			directories = []string{"app/views"}
+			directories = directoriesOf(files)
 		case "job":
 			directories = []string{"app/jobs"}
 		}
@@ -74,6 +82,13 @@ func runGenerateEnv(args []string, stdout io.Writer, root string, env []string, 
 			verb = "would create"
 		}
 		if _, err := fmt.Fprintf(stdout, "  %s  %s\n", verb, file.path); err != nil {
+			return err
+		}
+	}
+	if args[0] == "view" && !dryRun {
+		if _, err := fmt.Fprintf(stdout,
+			"  render it with renderer.RenderRequest(w, r, %q, http.StatusOK, data) (renderer from views.New()); data needs Title and Content\n",
+			strings.TrimSuffix(strings.TrimPrefix(filepath.ToSlash(files[0].path), "app/views/"), ".gohtml")); err != nil {
 			return err
 		}
 	}
@@ -95,37 +110,13 @@ type generatedFile struct {
 	content string
 }
 
-const generatedViewRenderer = `package views
-
-import (
-	"embed"
-
-	forge "github.com/rocketinsidecorp/forge-go"
-)
-
-//go:embed *.gohtml
-var templates embed.FS
-
-// NewRenderer returns the application's embedded HTML templates.
-func NewRenderer() (*forge.ViewRenderer, error) {
-	return forge.NewViewRenderer(templates)
-}
-`
-
-const generatedView = `<!doctype html>
-<html lang="en">
-<head>
-	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>{{.Title}}</title>
-</head>
-<body>
-	<main>
-		<h1>{{.Title}}</h1>
-		<p>{{.Content}}</p>
-	</main>
-</body>
-</html>
+// generatedView is a page of the application's view tree (app/views): it
+// fills the "title" and "content" blocks of layouts/application.gohtml.
+const generatedView = `{{define "title"}}{{.Title}}{{end}}
+{{define "content"}}
+<h1>{{.Title}}</h1>
+<p>{{.Content}}</p>
+{{end}}
 `
 
 const generatedJob = `package jobs
@@ -177,15 +168,17 @@ func TestRun{{Name}}HonorsCancellation(t *testing.T) {
 }
 `
 
-// generateView adds an auto-escaped Go HTML template and a production-safe
-// embed wrapper to an existing Forge application. Existing files are never
+// generateView adds an auto-escaped page to the application's view tree,
+// app/views/DIR/NAME.gohtml (DIR defaults to pages), and, when the application
+// has none, the views base `forge new` generates (the embedding package, the
+// application layout and the flash partial). Existing files are never
 // overwritten.
 func generateView(root, name string) ([]string, error) {
 	files, err := planView(root, name)
 	if err != nil {
 		return nil, err
 	}
-	if err := applyGeneratedFiles(root, []string{"app/views"}, files); err != nil {
+	if err := applyGeneratedFiles(root, directoriesOf(files), files); err != nil {
 		return nil, err
 	}
 	paths := make([]string, 0, len(files))
@@ -195,46 +188,104 @@ func generateView(root, name string) ([]string, error) {
 	return paths, nil
 }
 
+// splitViewName reads NAME or DIR/NAME.
+func splitViewName(name string) (dir, base string, err error) {
+	dir, base = defaultViewDirectory, name
+	if before, after, found := strings.Cut(name, "/"); found {
+		dir, base = before, after
+	}
+	if !viewName.MatchString(dir) || !viewName.MatchString(base) {
+		return "", "", errors.New("view name must be lowercase snake_case (letters, digits and underscores), optionally as DIR/NAME")
+	}
+	if dir == "layouts" {
+		return "", "", errors.New("views in layouts/ are layouts, not pages; choose another directory")
+	}
+	return dir, base, nil
+}
+
 func planView(root, name string) ([]generatedFile, error) {
-	if !viewName.MatchString(name) {
-		return nil, errors.New("view name must be lowercase snake_case (letters, digits and underscores)")
+	dir, base, err := splitViewName(name)
+	if err != nil {
+		return nil, err
 	}
 	projectRoot, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, errors.New("go.mod not found: run this inside a Forge application")
 	}
 	defer func() { _ = projectRoot.Close() }()
-	if _, err := projectRoot.Stat("go.mod"); err != nil {
+	goMod, err := projectRoot.ReadFile("go.mod")
+	if err != nil {
 		return nil, errors.New("go.mod not found: run this inside a Forge application")
 	}
-	if err := rejectExistingSymlinkPaths(projectRoot, []string{filepath.Join("app", "views", name+".gohtml"), filepath.Join("app", "views", "renderer.go")}); err != nil {
+	module, _, _ := inspectGoMod(goMod)
+	viewPath := filepath.Join("app", "views", dir, base+".gohtml")
+	files := []generatedFile{{path: viewPath, content: generatedView}}
+	baseFiles, err := viewBaseFiles(projectRoot, module)
+	if err != nil {
 		return nil, err
 	}
-	viewPath := filepath.Join("app", "views", name+".gohtml")
-	rendererPath := filepath.Join("app", "views", "renderer.go")
-	if _, err := projectRoot.Lstat(viewPath); err == nil {
-		return nil, fmt.Errorf("refusing to overwrite %s", viewPath)
-	} else if !errors.Is(err, os.ErrNotExist) {
+	files = append(files, baseFiles...)
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.path)
+	}
+	if err := rejectExistingSymlinkPaths(projectRoot, paths); err != nil {
 		return nil, err
 	}
-	rendererExists := false
-	if _, err := projectRoot.Lstat(rendererPath); err == nil {
-		renderer, err := projectRoot.ReadFile(rendererPath)
-		if err != nil {
+	for _, path := range paths {
+		if _, err := projectRoot.Lstat(path); err == nil {
+			return nil, fmt.Errorf("refusing to overwrite %s", path)
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-		if !strings.Contains(string(renderer), "//go:embed *.gohtml") || !strings.Contains(string(renderer), "func NewRenderer()") {
-			return nil, fmt.Errorf("refusing to modify existing %s; expected the Forge-generated template embed wrapper", rendererPath)
+	}
+	return files, nil
+}
+
+// viewBaseFiles returns the files an application needs for server-rendered
+// views: none when it already has the views package `forge new` generates,
+// the whole base (views.go, its test, the layout and the flash partial) when
+// it has no views package at all. A views package that is not the generated
+// one is never modified.
+func viewBaseFiles(projectRoot *os.Root, module string) ([]generatedFile, error) {
+	viewsPath := filepath.Join("app", "views", "views.go")
+	source, err := projectRoot.ReadFile(viewsPath)
+	switch {
+	case err == nil:
+		if !strings.Contains(string(source), "//go:embed */*.gohtml") || !strings.Contains(string(source), "func New()") {
+			return nil, fmt.Errorf("refusing to modify existing %s; expected the Forge-generated views package (//go:embed */*.gohtml and func New())", viewsPath)
 		}
-		rendererExists = true
-	} else if !errors.Is(err, os.ErrNotExist) {
+		layout := filepath.Join("app", "views", "layouts", "application.gohtml")
+		if _, err := projectRoot.Lstat(layout); err != nil {
+			return nil, fmt.Errorf("%s is missing: pages render inside the application layout", layout)
+		}
+		return nil, nil
+	case !errors.Is(err, os.ErrNotExist):
 		return nil, err
 	}
-	files := []generatedFile{{path: viewPath, content: generatedView}}
-	if rendererExists {
-		return files, nil
+	name := module[strings.LastIndex(module, "/")+1:]
+	base, err := scaffold.ViewBase(name)
+	if err != nil {
+		if base, err = scaffold.ViewBase("app"); err != nil {
+			return nil, err
+		}
 	}
-	return append(files, generatedFile{path: rendererPath, content: generatedViewRenderer}), nil
+	files := make([]generatedFile, 0, len(base))
+	for _, file := range base {
+		files = append(files, generatedFile{path: file.Path, content: string(file.Content)})
+	}
+	return files, nil
+}
+
+// directoriesOf lists the directories of files, outermost first.
+func directoriesOf(files []generatedFile) []string {
+	var directories []string
+	for _, file := range files {
+		if dir := filepath.Dir(file.path); !slices.Contains(directories, dir) {
+			directories = append(directories, dir)
+		}
+	}
+	return directories
 }
 
 // planJob generates a cancellation-aware job stub and tests without editing
