@@ -2,7 +2,7 @@
 // Context propagation, a minimal tracer with parent-based ratio sampling, a
 // bounded span batcher, metric instruments with a cardinality cap, a
 // Prometheus text handler, an OTLP/HTTP JSON exporter and a log handler that
-// correlates log records with traces (ADR 0026, docs/OBSERVABILITY.md).
+// correlates log records with traces (ADR 0034, docs/OBSERVABILITY.md).
 //
 // It implements the subset of OpenTelemetry that a Forge application needs,
 // on the standard library only, and speaks the OpenTelemetry wire protocol so

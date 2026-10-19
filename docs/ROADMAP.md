@@ -241,7 +241,7 @@ Foundation:
   recovery, and security headers preserved.
 
 Implemented on the standard library only
-([ADR 0026](adr/0026-dependency-free-telemetry.md), [OBSERVABILITY.md](OBSERVABILITY.md)):
+([ADR 0034](adr/0034-dependency-free-telemetry.md), [OBSERVABILITY.md](OBSERVABILITY.md)):
 
 - [x] OpenTelemetry server spans and trace-context propagation: strict,
   fuzz-tested W3C `traceparent`/`tracestate`, parent-based ratio sampling,

@@ -1,4 +1,4 @@
-# ADR 0026: Dependency-free telemetry speaking OpenTelemetry protocols
+# ADR 0034: Dependency-free telemetry speaking OpenTelemetry protocols
 
 - **Status:** Accepted
 - **Date:** 2026-10-19

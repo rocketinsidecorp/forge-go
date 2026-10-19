@@ -5,7 +5,7 @@ any third-party module: the `telemetry` package implements the part of
 OpenTelemetry an application needs on the standard library and speaks the
 OpenTelemetry wire protocol (OTLP/HTTP with JSON encoding), so any
 OpenTelemetry Collector or compatible backend can receive the data
-([ADR 0026](adr/0026-dependency-free-telemetry.md)).
+([ADR 0034](adr/0034-dependency-free-telemetry.md)).
 
 Telemetry is **on by default and exports nothing by default**. Out of the box
 every request has a trace ID that appears in its logs and is propagated to

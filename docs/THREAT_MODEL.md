@@ -84,7 +84,7 @@ disclosure, **D**enial of service, **E**levation of privilege.
 
 ## Telemetry
 
-See [OBSERVABILITY.md](OBSERVABILITY.md) and [ADR 0026](adr/0026-dependency-free-telemetry.md).
+See [OBSERVABILITY.md](OBSERVABILITY.md) and [ADR 0034](adr/0034-dependency-free-telemetry.md).
 
 | Threat | STRIDE | Mitigation |
 | ------ | ------ | ---------- |

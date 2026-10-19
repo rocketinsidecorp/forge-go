@@ -563,6 +563,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0025](adr/0025-server-rendered-html.md) | Server-rendered HTML |
 | [0026](adr/0026-authentication-pages-and-setup.md) | Authentication pages, sign-in redirects and first-owner setup |
 | [0026](adr/0026-dependency-free-telemetry.md) | Dependency-free telemetry speaking OpenTelemetry protocols |
+| [0034](adr/0034-dependency-free-telemetry.md) | Dependency-free telemetry speaking OpenTelemetry protocols |
 
 ## Not yet implemented
 
