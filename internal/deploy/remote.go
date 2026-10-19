@@ -77,7 +77,7 @@ func (d *Deployer) Logs(ctx context.Context, out io.Writer, opts LogsOptions) er
 	for i, host := range hosts {
 		wg.Go(func() {
 			writer := &prefixWriter{prefix: host + "|", out: shared, grep: grep, redactor: d.redactor}
-			errs[i] = d.Runner.Stream(ctx, host, cmd, writer)
+			errs[i] = d.stream(ctx, host, cmd, writer)
 			writer.flush()
 		})
 	}
@@ -183,10 +183,10 @@ func (d *Deployer) Exec(ctx context.Context, out io.Writer, opts ExecOptions) er
 		script = d.cmds.execReuse(role, opts.Argv, opts.Interactive)
 	}
 	if opts.Interactive {
-		return d.Runner.Interactive(ctx, host, script)
+		return d.interactive(ctx, host, script)
 	}
 	writer := &prefixWriter{out: &lockedOutput{w: out}, redactor: d.redactor}
-	err = d.Runner.Stream(ctx, host, Command{Script: script}, writer)
+	err = d.stream(ctx, host, Command{Script: script}, writer)
 	writer.flush()
 	return err
 }
@@ -210,5 +210,5 @@ func (d *Deployer) Shell(ctx context.Context, role, host, image string) error {
 		}
 		script = d.cmds.debugShell(role, image)
 	}
-	return d.Runner.Interactive(ctx, hosts[0], script)
+	return d.interactive(ctx, hosts[0], script)
 }

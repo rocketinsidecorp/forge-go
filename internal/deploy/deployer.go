@@ -109,17 +109,33 @@ func (d *Deployer) logf(host, format string, args ...any) {
 	fmt.Fprintf(d.Log, "%-15s %s\n", host, line)
 }
 
+// run, stream and interactive are the only ways operations reach the
+// Runner: each redacts secrets from the error it returns, because remote
+// stderr and ssh diagnostics end up in `forge: <error>` output.
 func (d *Deployer) run(ctx context.Context, host string, cmd Command) (Result, error) {
 	result, err := d.Runner.Run(ctx, host, cmd)
-	if err != nil {
-		var remote *RemoteError
-		if errors.As(err, &remote) {
-			remote.Stderr = d.redactor.Redact(remote.Stderr)
-		} else {
-			err = errors.New(d.redactor.Redact(err.Error()))
-		}
+	return result, d.redactError(err)
+}
+
+func (d *Deployer) stream(ctx context.Context, host string, cmd Command, out io.Writer) error {
+	return d.redactError(d.Runner.Stream(ctx, host, cmd, out))
+}
+
+func (d *Deployer) interactive(ctx context.Context, host, script string) error {
+	return d.redactError(d.Runner.Interactive(ctx, host, script))
+}
+
+func (d *Deployer) redactError(err error) error {
+	if err == nil {
+		return nil
 	}
-	return result, err
+	// A bare *RemoteError keeps its type (exit codes are read from it);
+	// its Error text is built from Host and Stderr only.
+	if remote, ok := err.(*RemoteError); ok {
+		remote.Stderr = d.redactor.Redact(remote.Stderr)
+		return remote
+	}
+	return errors.New(d.redactor.Redact(err.Error()))
 }
 
 // eachHost runs fn for every host with bounded parallelism (sequentially in
@@ -380,7 +396,7 @@ func (d *Deployer) hook(ctx context.Context, name string, env map[string]string)
 		vars = append(vars, key+"="+env[key])
 	}
 	d.logf("local", "hook %s", name)
-	if err := d.Local.Run(ctx, d.Root, []string{path}, nil, vars); err != nil {
+	if err := d.redactError(d.Local.Run(ctx, d.Root, []string{path}, nil, vars)); err != nil {
 		return withCode(ExitHookFailed, fmt.Errorf("hook %s failed: %w", name, err))
 	}
 	return nil
@@ -411,7 +427,7 @@ func (d *Deployer) build(ctx context.Context, version string) error {
 			argv = append(argv, cfg.Registry.Server)
 		}
 		argv = append(argv, "--username", cfg.Registry.Username, "--password-stdin")
-		if err := d.Local.Run(ctx, d.Root, argv, []byte(password), nil); err != nil {
+		if err := d.redactError(d.Local.Run(ctx, d.Root, argv, []byte(password), nil)); err != nil {
 			return fmt.Errorf("registry login: %w", err)
 		}
 	}
@@ -425,10 +441,10 @@ func (d *Deployer) build(ctx context.Context, version string) error {
 	}
 	argv = append(argv, cfg.Builder.Context)
 	d.logf("local", "building %s", d.cmds.imageRef(version))
-	if err := d.Local.Run(ctx, d.Root, argv, nil, nil); err != nil {
+	if err := d.redactError(d.Local.Run(ctx, d.Root, argv, nil, nil)); err != nil {
 		return fmt.Errorf("build: %w", err)
 	}
-	if err := d.Local.Run(ctx, d.Root, []string{"docker", "push", d.cmds.imageRef(version)}, nil, nil); err != nil {
+	if err := d.redactError(d.Local.Run(ctx, d.Root, []string{"docker", "push", d.cmds.imageRef(version)}, nil, nil)); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 	return nil
