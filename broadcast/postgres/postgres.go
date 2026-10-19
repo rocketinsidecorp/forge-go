@@ -123,6 +123,7 @@ func New(ctx context.Context, db *forgepostgres.DB, local *broadcast.Memory, opt
 	if err != nil {
 		return nil, err
 	}
+	// #nosec G118 -- cancel is stored in the broker and called by Shutdown.
 	runCtx, cancel := context.WithCancel(ctx)
 	broker := &Broker{
 		db: db, local: local, channel: opts.NotifyChannel, origin: origin,

@@ -272,10 +272,17 @@ func validSegment(segment string) bool {
 		return false
 	}
 	for i := range len(segment) {
-		c := segment[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '-') {
+		if !segmentByte(segment[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func segmentByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	}
+	return c == '.' || c == '_' || c == '-'
 }

@@ -300,7 +300,7 @@ func TestHandlerAuthorizeHook(t *testing.T) {
 	if err != nil || allowed.StatusCode != http.StatusOK {
 		t.Fatalf("allowed request: %v", err)
 	}
-	defer allowed.Body.Close()
+	defer func() { _ = allowed.Body.Close() }()
 	if len(seen) != 2 || seen[0] != channel {
 		t.Fatalf("hook saw %v", seen)
 	}

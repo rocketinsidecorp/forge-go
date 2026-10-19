@@ -271,22 +271,35 @@ func TestListenerReconnectsAfterTheConnectionIsKilled(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Both listeners were terminated. Wait for them to come back (backoff 1s).
+	listeners := func() int {
+		var count int
+		_ = db.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'LISTEN %' AND datname = current_database()`).Scan(&count)
+		return count
+	}
 	deadline := time.Now().Add(20 * time.Second)
-	for !(a.Listening() && b.Listening()) || func() bool {
-		var listeners int
-		_ = db.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'LISTEN %' AND datname = current_database()`).Scan(&listeners)
-		return listeners < 2
-	}() {
+	for !a.Listening() || !b.Listening() || listeners() < 2 {
 		if time.Now().After(deadline) {
 			t.Fatal("listeners did not reconnect")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if err := b.Publish(ctx, channel, broadcast.Message{Data: "after reconnect"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := receive(t, sub); got != "after reconnect" {
-		t.Fatalf("got %q", got)
+	// Notifications sent while a listener is still reconnecting are lost by
+	// design, so publish until one arrives.
+	for {
+		if err := b.Publish(ctx, channel, broadcast.Message{Data: "after reconnect"}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case message := <-sub.Messages():
+			if message.Data != "after reconnect" {
+				t.Fatalf("got %q", message.Data)
+			}
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		if time.Now().After(deadline.Add(15 * time.Second)) {
+			t.Fatal("no message arrived after the reconnect")
+		}
 	}
 }
 
