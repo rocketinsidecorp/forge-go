@@ -216,7 +216,11 @@ func TestHealthGateRequiresConsecutivePasses(t *testing.T) {
 func TestDeployDrainsInFlightRequestsBeforeReturning(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	old := newBackend(t, "old", func(w http.ResponseWriter, _ *http.Request) {
+	old := newBackend(t, "old", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/slow" {
+			_, _ = io.WriteString(w, "old")
+			return
+		}
 		close(entered)
 		<-release
 		_, _ = io.WriteString(w, "old-finished")
@@ -269,8 +273,9 @@ func TestDeployDrainsInFlightRequestsBeforeReturning(t *testing.T) {
 func TestDrainTimeoutReportsRemainingRequests(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	old := newBackend(t, "old", func(w http.ResponseWriter, _ *http.Request) {
-		close(entered)
+	var once sync.Once
+	old := newBackend(t, "old", func(http.ResponseWriter, *http.Request) {
+		once.Do(func() { close(entered) })
 		<-release
 	})
 	next := newBackend(t, "new", nil)

@@ -430,7 +430,11 @@ func (s *Server) waitHealthy(ctx context.Context, req *DeployRequest) (int, erro
 		checks++
 		if err := s.probe(ctx, req); err != nil {
 			consecutive = 0
-			last = err.Error()
+			// A probe cut short by the deploy deadline says nothing new;
+			// keep the previous failure for the error message.
+			if ctx.Err() == nil || last == "no check completed" {
+				last = err.Error()
+			}
 		} else {
 			consecutive++
 			if consecutive >= req.HealthyCount {
