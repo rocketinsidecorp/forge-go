@@ -183,3 +183,31 @@ func TestAmbiguousDatabaseURLsAreRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestPasswordResetURLIsValidated(t *testing.T) {
+	t.Parallel()
+	for value, valid := range map[string]bool{
+		"":                                       true,
+		"https://app.example.com/passwords/edit": true,
+		"http://localhost:8080/passwords/edit":   true,
+		"http://app.example.com/passwords/edit":  false,
+		"https://user:pw@app.example.com/x":      false,
+		"https://app.example.com/x?token=1":      false,
+		"https://app.example.com/x#token":        false,
+		"/passwords/edit":                        false,
+		"javascript:alert(1)":                    false,
+	} {
+		cfg, err := config.LoadWithLookup(func(key string) (string, bool) {
+			if key == "FORGE_AUTH_PASSWORD_RESET_URL" {
+				return value, true
+			}
+			return "", false
+		})
+		if (err == nil) != valid {
+			t.Errorf("FORGE_AUTH_PASSWORD_RESET_URL=%q: err=%v, want valid=%v", value, err, valid)
+		}
+		if err == nil && cfg.Auth.PasswordResetURL != value {
+			t.Errorf("FORGE_AUTH_PASSWORD_RESET_URL=%q loaded as %q", value, cfg.Auth.PasswordResetURL)
+		}
+	}
+}

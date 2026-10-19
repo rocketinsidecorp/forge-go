@@ -598,8 +598,23 @@ func TestAuthenticateBrowserRedirectsOnlyHTMLRequests(t *testing.T) {
 			t.Fatalf("Accept %q: status=%d body=%s", accept, api.Code, api.Body)
 		}
 	}
-	if ok := serve(http.MethodGet, "/products", browserAccept, &http.Cookie{Name: SessionCookieName, Value: token.Reveal()}); ok.Code != http.StatusNoContent {
-		t.Fatalf("valid session: status=%d", ok.Code)
+	if ok := serve(http.MethodGet, "/products", browserAccept, &http.Cookie{Name: SessionCookieName, Value: token.Reveal()}); ok.Code != http.StatusNoContent || ok.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("valid session: status=%d Cache-Control=%q", ok.Code, ok.Header().Get("Cache-Control"))
+	}
+	// A handler may still choose its own value after the middleware.
+	custom, err := middleware.AuthenticateBrowser("/session/new", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, max-age=0")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	customRequest := httptest.NewRequest(http.MethodGet, browserSite+"/products", nil)
+	customRequest.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token.Reveal()})
+	customRecorder := httptest.NewRecorder()
+	custom.ServeHTTP(customRecorder, customRequest)
+	if customRecorder.Header().Get("Cache-Control") != "no-store, max-age=0" {
+		t.Fatalf("the handler's Cache-Control was overridden: %q", customRecorder.Header().Get("Cache-Control"))
 	}
 	broken = true
 	if failed := serve(http.MethodGet, "/products", browserAccept, &http.Cookie{Name: SessionCookieName, Value: token.Reveal()}); failed.Code != http.StatusInternalServerError {

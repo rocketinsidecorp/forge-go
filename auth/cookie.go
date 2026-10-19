@@ -54,7 +54,9 @@ func (m *Middleware) AuthenticateCookie(next http.Handler) http.Handler {
 // back; the sign-in handler must validate it again with ReturnPath. Other
 // methods are redirected without a return path, because the submitted form
 // cannot be replayed. JSON and API clients keep AuthenticateCookie's 401, and
-// resolver failures stay 500. signInPath must be a local path without a query
+// resolver failures stay 500. Authenticated responses are marked
+// Cache-Control: no-store before next runs; next may still set its own value.
+// signInPath must be a local path without a query
 // or fragment, such as "/session/new".
 func (m *Middleware) AuthenticateBrowser(signInPath string, next http.Handler) (http.Handler, error) {
 	if next == nil {
@@ -66,6 +68,10 @@ func (m *Middleware) AuthenticateBrowser(signInPath string, next http.Handler) (
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, err := m.cookieContext(r)
 		if err == nil {
+			// Pages behind a session are personal: no shared or browser
+			// cache may keep them after sign-out. Set before next runs, so a
+			// handler can still choose its own (stricter or deliberate) value.
+			w.Header().Set("Cache-Control", "no-store")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
