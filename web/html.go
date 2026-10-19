@@ -138,8 +138,9 @@ func parseAccept(headers []string) []acceptRange {
 // query string is ignored, other methods and content types pass through, and
 // any other _method value is 400 invalid_method_override. The body is read
 // through ParseForm, so its size and field limits apply. Install it before
-// routing and before CSRF protection (both orders are safe, because an
-// override never produces a safe method).
+// routing and outside (before) CSRF protection, so CSRF checks and exemptions
+// see the routed method. An override never produces a safe method, and the
+// csrf package never exempts a form POST that carries _method.
 func MethodOverride(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !IsForm(r) {

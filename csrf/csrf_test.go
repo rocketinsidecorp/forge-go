@@ -304,6 +304,63 @@ func TestTrustedOriginsAndExemptPatterns(t *testing.T) {
 	}
 }
 
+// An exempt subtree pattern exempts only the paths under it: ServeMux answers
+// "/hooks" with a redirect handler and the "/hooks/" pattern, which must not
+// count as a match. Unclean paths that ServeMux would redirect are not exempt
+// either.
+func TestExemptPatternsMatchOnlyTheirRoutes(t *testing.T) {
+	t.Parallel()
+	handler, calls := protected(t, csrf.Options{Exempt: []string{"POST /hooks/"}})
+	for _, tt := range []struct {
+		target string
+		status int
+	}{{"/hooks/stripe", 204}, {"/hooks", 403}, {"/hooks/../posts", 403}, {"/hooks//stripe", 403}} {
+		request := formPost(tt.target, "event=paid")
+		request.Header.Set("Sec-Fetch-Site", "cross-site")
+		request.Header.Set("Origin", "https://payments.example")
+		if tt.status == 204 {
+			request.Header.Del("Sec-Fetch-Site")
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != tt.status {
+			t.Fatalf("%s: status=%d body=%s", tt.target, recorder.Code, recorder.Body.String())
+		}
+	}
+	if *calls != 1 {
+		t.Fatalf("calls = %d", *calls)
+	}
+}
+
+// A method override never rides on an exemption, whichever order the
+// middleware is installed in: an exempt POST that carries _method is
+// verified like any other unsafe request.
+func TestExemptPostCannotCarryMethodOverride(t *testing.T) {
+	t.Parallel()
+	protection, err := csrf.New(csrf.Options{Exempt: []string{"POST /hooks/{provider}"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen string
+	handler := protection.Handler(web.MethodOverride(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Method
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	forged := formPost("/hooks/stripe", "_method=delete")
+	forged.Header.Set("Sec-Fetch-Site", "cross-site")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, forged)
+	if recorder.Code != http.StatusForbidden || seen != "" {
+		t.Fatalf("exempt POST with _method: status=%d seen=%q", recorder.Code, seen)
+	}
+	plain := formPost("/hooks/stripe", "event=paid")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, plain)
+	if recorder.Code != http.StatusNoContent || seen != http.MethodPost {
+		t.Fatalf("exempt POST: status=%d seen=%q", recorder.Code, seen)
+	}
+}
+
 func TestRejectionPrefersHTMLForBrowsers(t *testing.T) {
 	t.Parallel()
 	handler, _ := protected(t, csrf.Options{})

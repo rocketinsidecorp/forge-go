@@ -124,7 +124,17 @@ attach one automatically, and a cross-origin script needs a CORS preflight to
 add it), and requests with a JSON body (`application/json`, `*+json`), which a
 form cannot send and a cross-origin script can send only after a preflight
 Forge does not grant. The origin check still applies to both.
-Cookie-authenticated JSON routes keep `auth.RequireCSRF`.
+Cookie-authenticated JSON routes keep `auth.RequireCSRF`. This exemption holds
+only while the application grants no credentialed CORS: an origin allowed by
+credentialed CORS (and listed in `TrustedOrigins`) could send
+cookie-authenticated JSON without a token to any route that lacks
+`auth.RequireCSRF`.
+
+`Exempt` patterns match only the routes they name. A subtree pattern such as
+`POST /hooks/` does not exempt `POST /hooks` (ServeMux would answer that path
+with a redirect handler for the subtree), and a form `POST` that carries a
+`_method` field is never exempt, so a method override cannot ride on an
+exemption.
 
 The cookie is issued lazily: `csrf.Token` sets it when a response embeds a
 token and the request has no valid cookie, and marks that response
@@ -159,9 +169,11 @@ Applications must not put secrets or personal data in flash messages.
 `web.MethodOverride` rewrites only a `POST` whose form-encoded body contains
 `_method` = `PUT`, `PATCH` or `DELETE` (any case). Other methods, content
 types and the query string are ignored, and any other value is
-`400 invalid_method_override`. An override never produces a safe method, so
-it cannot bypass the CSRF check in either middleware order. The body is read
-through `web.ParseForm`.
+`400 invalid_method_override`. Install it outside (before) CSRF protection,
+as generated applications do, so CSRF checks and exemptions see the method
+that is routed. An override never produces a safe method, and `csrf` refuses
+to exempt a form `POST` carrying `_method`, so the reverse order cannot bypass
+the check either. The body is read through `web.ParseForm`.
 
 ### Redirects and negotiation
 

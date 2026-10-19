@@ -82,12 +82,19 @@ func Match(cookieToken, submitted string) bool {
 // Options configures Protection.
 type Options struct {
 	// TrustedOrigins are origins ("https://admin.example.com") whose
-	// cross-origin unsafe requests pass the origin check. They still need a
-	// valid token.
+	// cross-origin unsafe requests pass the origin check. Form and other
+	// non-JSON requests from them still need a valid token; JSON and bearer
+	// requests skip the token check (see Handler), so never combine a trusted
+	// origin with credentialed CORS on cookie-authenticated JSON routes that
+	// lack auth.RequireCSRF.
 	TrustedOrigins []string
 	// Exempt lists http.ServeMux patterns ("POST /webhooks/payments") that
 	// skip both checks. Use it only for endpoints that authenticate requests
-	// by other means, such as a signature.
+	// by other means, such as a signature. A pattern matches only the routes
+	// it names: a subtree pattern ("POST /hooks/") does not exempt the path
+	// without its trailing slash, and a form POST carrying a _method field is
+	// never exempt, so a method override cannot turn an exempt POST into a
+	// protected PUT, PATCH or DELETE.
 	Exempt []string
 }
 
@@ -122,8 +129,20 @@ func handlePattern(mux *http.ServeMux, pattern string) (err error) {
 			err = fmt.Errorf("csrf: invalid exempt pattern %q: %v", pattern, recovered)
 		}
 	}()
-	mux.Handle(pattern, http.NotFoundHandler())
+	mux.Handle(pattern, exemptMarker)
 	return nil
+}
+
+// exemptMarker is the only handler registered in the exempt mux. Matching it
+// by identity, not by a non-empty pattern, excludes the redirect handlers
+// ServeMux returns for "/tree" when only "/tree/" is registered and for
+// unclean paths.
+var exemptMarker = &exemptHandler{}
+
+type exemptHandler struct{}
+
+func (*exemptHandler) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	http.NotFound(w, nil)
 }
 
 type stateKey struct{}
@@ -178,8 +197,25 @@ func (p *Protection) exempted(r *http.Request) bool {
 	if p.exempt == nil {
 		return false
 	}
-	_, pattern := p.exempt.Handler(r)
-	return pattern != ""
+	if handler, _ := p.exempt.Handler(r); handler != exemptMarker {
+		return false
+	}
+	return !overridesMethod(r)
+}
+
+// overridesMethod reports whether r is a form POST carrying a method-override
+// field, whatever its value. A body that cannot be parsed counts as one, so
+// the request falls through to verification, which rejects it.
+func overridesMethod(r *http.Request) bool {
+	if r.Method != http.MethodPost || !web.IsForm(r) {
+		return false
+	}
+	values, err := web.ParseForm(r)
+	if err != nil {
+		return true
+	}
+	_, present := values[web.MethodOverrideField]
+	return present
 }
 
 func (p *Protection) verify(r *http.Request, cookie string) error {
