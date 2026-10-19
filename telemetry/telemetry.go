@@ -64,9 +64,10 @@ type Options struct {
 	// Spans whose parent exists follow the parent's decision.
 	SampleRatio float64
 	// TrustIncoming makes the HTTP middleware continue traces from the
-	// traceparent header of incoming requests. When false every request
-	// starts a new trace, which suits services exposed directly to the
-	// internet.
+	// traceparent and tracestate headers of incoming requests. When false
+	// (the default) every request starts a new trace, so clients cannot
+	// choose trace IDs, force sampling or forward tracestate downstream.
+	// Enable it only behind a proxy that sets or sanitizes these headers.
 	TrustIncoming bool
 	// SpanExporter receives sampled spans. Nil means spans are never
 	// recorded: they still carry identifiers for log correlation and

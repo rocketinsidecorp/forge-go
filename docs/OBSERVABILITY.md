@@ -9,7 +9,8 @@ OpenTelemetry Collector or compatible backend can receive the data
 
 Telemetry is **on by default and exports nothing by default**. Out of the box
 every request has a trace ID that appears in its logs and is propagated to
-downstream services; metrics are kept in memory. You choose an export path:
+downstream services; incoming trace headers are ignored unless you trust
+them; metrics are kept in memory. You choose an export path:
 
 | Goal | Setting |
 | ---- | ------- |
@@ -57,8 +58,9 @@ echo its value.
 | `FORGE_TELEMETRY_OTLP_COMPRESSION` | `none` | `none` or `gzip` |
 | `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT` | `false` | Permit `http://` endpoints in `production` (sidecar or private network) |
 | `FORGE_TELEMETRY_SAMPLE_RATIO` | `1` | Fraction of new traces sampled, `0`-`1` |
-| `FORGE_TELEMETRY_TRUST_TRACEPARENT` | `true` | Continue traces from incoming `traceparent` headers |
+| `FORGE_TELEMETRY_TRUST_TRACEPARENT` | `false` | Continue traces from incoming `traceparent`/`tracestate` headers. Enable only behind a proxy or gateway that sets or sanitizes them. |
 | `FORGE_TELEMETRY_METRICS_ADDR` | (empty: off) | `host:port` of the Prometheus listener; must differ from `FORGE_HTTP_ADDR` |
+| `FORGE_TELEMETRY_METRICS_PUBLIC` | `false` | Confirms a non-loopback `FORGE_TELEMETRY_METRICS_ADDR` (such as `0.0.0.0:9464` in a container). Without it `production` refuses to start and other environments log a warning. |
 | `FORGE_TELEMETRY_METRICS_INTERVAL` | `1m` | OTLP metric push interval, at least `1s` |
 
 ## What is recorded
@@ -229,21 +231,27 @@ sum by (forge_job_kind) (rate(forge_queue_job_duration_seconds_count{forge_job_o
 
 The metrics listener is separate from the application listener by design:
 the public router never serves `/metrics`. It is plain HTTP without
-authentication and answers only `GET`/`HEAD /metrics`. In a container bind it
-to `0.0.0.0:9464` so Prometheus can reach it **inside the cluster network**,
-and do not publish the port to the internet (no `ports:` mapping in Compose,
-no public Service or load-balancer rule in Kubernetes). Outside containers,
-bind it to `127.0.0.1` or a private interface.
+authentication and answers only `GET`/`HEAD /metrics`. Outside containers
+bind it to `127.0.0.1`. In a container bind it to `0.0.0.0:9464` so
+Prometheus can reach it **inside the cluster network**, confirm that with
+`FORGE_TELEMETRY_METRICS_PUBLIC=true`, and do not publish the port to the
+internet (no `ports:` mapping in Compose, no public Service or load-balancer
+rule in Kubernetes). A non-loopback address without that confirmation stops
+`production` at startup and logs a warning elsewhere.
 
 ## Propagation and sampling
 
-Incoming requests with a valid W3C `traceparent` continue that trace; the
-`tracestate` header is validated and forwarded unchanged. Parsing is strict:
-lowercase hex, no all-zero identifiers, exact lengths, repeated headers
-rejected (fuzz-tested). With `FORGE_TELEMETRY_TRUST_TRACEPARENT=false` every
-request starts a new trace; use it when the service faces the internet
-directly, so clients can neither pick trace IDs that appear in your logs nor
-force sampling of their requests.
+By default incoming `traceparent` and `tracestate` headers are ignored and
+every request starts a new trace: a client could otherwise pick the trace IDs
+that appear in your logs, force recording of its requests past
+`FORGE_TELEMETRY_SAMPLE_RATIO` (a sampled parent is always followed), and
+push `tracestate` to your downstream services. Set
+`FORGE_TELEMETRY_TRUST_TRACEPARENT=true` when the service sits behind a proxy,
+gateway or mesh that sets or sanitizes these headers, or only receives
+internal traffic. Trusted requests with a valid W3C `traceparent` continue
+that trace and forward the validated `tracestate` unchanged. Parsing is
+strict: lowercase hex, no all-zero identifiers, exact lengths, repeated
+headers rejected (fuzz-tested).
 
 New traces are sampled with probability `FORGE_TELEMETRY_SAMPLE_RATIO`
 (OpenTelemetry's `TraceIdRatioBased` algorithm, so services sharing a ratio

@@ -62,14 +62,23 @@ type Telemetry struct {
 	// SampleRatio is the fraction of new traces that are sampled, 0 to 1
 	// (default 1). Child spans follow their parent's decision.
 	SampleRatio float64
-	// TrustTraceparent continues traces from incoming traceparent headers
-	// (default true). Set it to false on services that face the internet
-	// directly, so clients cannot choose trace IDs or force sampling.
+	// TrustTraceparent continues traces from incoming traceparent and
+	// tracestate headers (FORGE_TELEMETRY_TRUST_TRACEPARENT, default false).
+	// Untrusted, every request starts a new trace, so clients can neither
+	// choose trace IDs, force sampling past SampleRatio, nor push tracestate
+	// to downstream services. Enable it only behind a proxy or gateway that
+	// sets or sanitizes these headers.
 	TrustTraceparent bool
 	// MetricsAddress is the host:port of the separate Prometheus listener,
-	// serving GET /metrics. Empty (default) means no listener. Bind it to a
-	// private interface; it has no authentication.
+	// serving GET /metrics. Empty (default) means no listener. It has no
+	// authentication: a non-loopback address must be confirmed with
+	// MetricsPublic, or production refuses to start and other environments
+	// log a warning.
 	MetricsAddress string
+	// MetricsPublic (FORGE_TELEMETRY_METRICS_PUBLIC) confirms that a
+	// non-loopback MetricsAddress is intended, for example 0.0.0.0:9464 in a
+	// container whose port only the cluster network can reach.
+	MetricsPublic bool
 	// MetricsInterval is how often metrics are pushed with the otlp
 	// exporter (default 1 minute).
 	MetricsInterval time.Duration
@@ -82,7 +91,7 @@ func defaultTelemetry() Telemetry {
 		OTLPTimeout:      defaultOTLPTimeout,
 		OTLPCompression:  "none",
 		SampleRatio:      1,
-		TrustTraceparent: true,
+		TrustTraceparent: false,
 		MetricsInterval:  defaultMetricsInterval,
 	}
 }
@@ -103,6 +112,7 @@ func loadTelemetry(lookup func(string) (string, bool), cfg *Telemetry) error {
 		"FORGE_TELEMETRY_ENABLED":              &cfg.Enabled,
 		"FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT": &cfg.OTLPAllowPlaintext,
 		"FORGE_TELEMETRY_TRUST_TRACEPARENT":    &cfg.TrustTraceparent,
+		"FORGE_TELEMETRY_METRICS_PUBLIC":       &cfg.MetricsPublic,
 	} {
 		if value, ok := lookup(key); ok {
 			parsed, err := strconv.ParseBool(value)
@@ -155,6 +165,9 @@ func (t Telemetry) validate(environment Environment, httpAddress string) error {
 		if t.MetricsAddress == httpAddress {
 			return errors.New("FORGE_TELEMETRY_METRICS_ADDR must differ from FORGE_HTTP_ADDR: metrics are never served on the application listener")
 		}
+		if environment == Production && !t.MetricsLoopback() && !t.MetricsPublic {
+			return errors.New("FORGE_TELEMETRY_METRICS_ADDR is not a loopback address and the metrics listener has no authentication: bind it to 127.0.0.1, or set FORGE_TELEMETRY_METRICS_PUBLIC=true when only a private network can reach it")
+		}
 	}
 	switch t.Exporter {
 	case TelemetryExporterNone:
@@ -196,6 +209,21 @@ func (t Telemetry) validateOTLP(environment Environment) error {
 	}
 	_, err = t.OTLPHeaderMap()
 	return err
+}
+
+// MetricsLoopback reports whether MetricsAddress binds only to loopback
+// (localhost, 127.0.0.0/8 or ::1). An empty host, 0.0.0.0 and any other
+// address are reachable from the network.
+func (t Telemetry) MetricsLoopback() bool {
+	host, _, err := net.SplitHostPort(t.MetricsAddress)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // OTLPHeaderMap parses OTLPHeaders: "name1=value1,name2=value2" with

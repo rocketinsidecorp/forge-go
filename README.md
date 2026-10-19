@@ -512,7 +512,8 @@ cannot exceed `FORGE_HTTP_MAX_BODY_BYTES`.
 ## Observability
 
 Telemetry is on by default and exports nothing: logs carry `trace_id`, and
-incoming `traceparent` headers are continued. Pick an export path with
+incoming `traceparent` headers are ignored unless you opt in with
+`FORGE_TELEMETRY_TRUST_TRACEPARENT=true` behind a proxy that sanitizes them. Pick an export path with
 environment variables:
 
 ```bash
@@ -524,6 +525,9 @@ curl -s http://127.0.0.1:9464/metrics | grep http_server_request_duration_second
 docker run --rm -p 4318:4318 -v "$PWD/otel-collector.yaml:/etc/otelcol/config.yaml:ro" otel/opentelemetry-collector:0.111.0
 FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318 \
   FORGE_TELEMETRY_SERVICE_NAME=myapp forge dev
+
+# In a container: bind to all interfaces and confirm it (never publish the port)
+FORGE_TELEMETRY_METRICS_ADDR=0.0.0.0:9464 FORGE_TELEMETRY_METRICS_PUBLIC=true forge dev
 
 # Spans in the development log, or no telemetry at all
 FORGE_TELEMETRY_EXPORTER=log forge dev

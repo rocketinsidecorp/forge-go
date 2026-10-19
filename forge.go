@@ -353,6 +353,9 @@ func (a *App) serveMetrics() (func() error, error) {
 	if a.telemetry == nil || address == "" {
 		return func() error { return nil }, nil
 	}
+	if !a.config.Telemetry.MetricsLoopback() && !a.config.Telemetry.MetricsPublic {
+		a.logger.Warn("the metrics listener has no authentication and is not bound to loopback; keep its port off public networks and set FORGE_TELEMETRY_METRICS_PUBLIC=true to confirm (production refuses to start otherwise)", "address", address)
+	}
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("listen for metrics: %w", err)

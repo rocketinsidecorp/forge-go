@@ -24,8 +24,10 @@ Forge implements the needed subset of OpenTelemetry in the core package
 standard protocols instead of the SDK:
 
 - **Propagation:** W3C `traceparent`/`tracestate`, strictly parsed and
-  fuzz-tested; incoming context is honored unless
-  `FORGE_TELEMETRY_TRUST_TRACEPARENT=false`.
+  fuzz-tested. Incoming context is untrusted by default: each request starts
+  a new root trace unless `FORGE_TELEMETRY_TRUST_TRACEPARENT=true`, because a
+  trusted sampled parent lets any client force recording past the sample
+  ratio, choose trace IDs and forward `tracestate`.
 - **Tracing:** a minimal tracer (kind, attributes, events, status), IDs from
   `crypto/rand`, parent-based `TraceIdRatioBased` sampling compatible with
   other OpenTelemetry services. Spans are recorded only when sampled and an
@@ -41,7 +43,9 @@ standard protocols instead of the SDK:
 - **Metrics:** counters, gauges and explicit-bucket histograms with label
   names fixed at registration and a per-instrument series cap (1000, then an
   `_overflow` series and a counter). Exposed in the Prometheus text format on
-  a **separate listener** (`FORGE_TELEMETRY_METRICS_ADDR`, off by default)
+  a **separate listener** (`FORGE_TELEMETRY_METRICS_ADDR`, off by default;
+  a non-loopback address needs `FORGE_TELEMETRY_METRICS_PUBLIC=true` in
+  production)
   and pushed with OTLP when that exporter is selected.
 - **Configuration:** `FORGE_TELEMETRY_*`, validated at startup; telemetry is
   enabled with exporter `none` by default. `FORGE_TELEMETRY_ENABLED=false`

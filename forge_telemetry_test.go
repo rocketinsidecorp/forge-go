@@ -245,3 +245,55 @@ func (b *safeBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+func TestIncomingTraceContextIsIgnoredUnlessTrusted(t *testing.T) {
+	t.Parallel()
+	const incoming = "4bf92f3577b34da6a3ce929d0e0e4736"
+	for _, trust := range []bool{false, true} {
+		cfg := config.Default()
+		cfg.Telemetry.TrustTraceparent = trust
+		app, err := forge.New(forge.WithConfig(cfg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var seen telemetry.SpanContext
+		if err := app.HandleFunc("GET /x", func(_ http.ResponseWriter, r *http.Request) {
+			seen = telemetry.SpanContextFromContext(r.Context())
+		}); err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodGet, "/x", nil)
+		// A sampled parent would force recording past the sample ratio.
+		request.Header.Set("traceparent", "00-"+incoming+"-00f067aa0ba902b7-01")
+		request.Header.Set("tracestate", "evil=1")
+		app.Handler().ServeHTTP(httptest.NewRecorder(), request)
+		continued := seen.TraceID.String() == incoming
+		if continued != trust || (!trust && seen.TraceState != "") || !seen.IsValid() {
+			t.Fatalf("trust=%v: span context %+v", trust, seen)
+		}
+	}
+}
+
+func TestPublicMetricsAddressWithoutOptInLogsAWarning(t *testing.T) {
+	t.Parallel()
+	var logs safeBuffer
+	cfg := config.Default()
+	cfg.HTTP.Address = freeAddress(t)
+	_, port, _ := net.SplitHostPort(freeAddress(t))
+	cfg.Telemetry.MetricsAddress = "0.0.0.0:" + port
+	app, err := forge.New(forge.WithConfig(cfg), forge.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- app.Run(ctx) }()
+	waitFor(t, func() bool { return strings.Contains(logs.String(), "serving metrics") })
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "FORGE_TELEMETRY_METRICS_PUBLIC") {
+		t.Fatalf("no warning for a non-loopback metrics listener:\n%s", logs.String())
+	}
+}

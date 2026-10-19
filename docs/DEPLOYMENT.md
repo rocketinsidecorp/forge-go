@@ -155,8 +155,9 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_TELEMETRY_OTLP_COMPRESSION`  | `none`           | `none` or `gzip` |
 | `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT` | `false`       | Permit an `http://` collector in `production` |
 | `FORGE_TELEMETRY_SAMPLE_RATIO`      | `1`              | Fraction of new traces sampled |
-| `FORGE_TELEMETRY_TRUST_TRACEPARENT` | `true`           | Continue incoming traces; `false` for internet-facing services |
+| `FORGE_TELEMETRY_TRUST_TRACEPARENT` | `false`          | Continue incoming traces; enable only behind a proxy that sets or sanitizes `traceparent`/`tracestate` |
 | `FORGE_TELEMETRY_METRICS_ADDR`      | (empty: off)     | Separate Prometheus listener (`GET /metrics`, no authentication); never publish it |
+| `FORGE_TELEMETRY_METRICS_PUBLIC`    | `false`          | Confirms a non-loopback metrics address; required in `production`, a warning elsewhere |
 | `FORGE_TELEMETRY_METRICS_INTERVAL`  | `1m`             | OTLP metric push interval |
 
 Test-only variables, read by the adapters' test packages:
@@ -291,8 +292,9 @@ pooler in front of the server.
 ## Observability
 
 Telemetry is on with nothing exported. To scrape metrics from a container,
-set `FORGE_TELEMETRY_METRICS_ADDR=0.0.0.0:9464` and let Prometheus reach that
-port on the internal network only; to ship traces, point
+set `FORGE_TELEMETRY_METRICS_ADDR=0.0.0.0:9464` with
+`FORGE_TELEMETRY_METRICS_PUBLIC=true` and let Prometheus reach that port on
+the internal network only; to ship traces, point
 `FORGE_TELEMETRY_OTLP_ENDPOINT` at an OpenTelemetry Collector. Details,
 collector and Prometheus configuration: [OBSERVABILITY.md](OBSERVABILITY.md).
 
