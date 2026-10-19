@@ -30,9 +30,14 @@ forge generate migration create_orders --dry-run
 forge generate view orders --dry-run
 forge generate job cleanup --dry-run
 forge generate resource product name:string 'summary:text?' price_cents:int --tenant-scoped --dry-run
+forge generate scaffold product name:string 'summary:text?' price_cents:int --tenant-scoped --dry-run
 ```
 
-For `forge generate resource`, always run `--dry-run` first and show the user
+`forge generate scaffold` takes the same arguments as `generate resource` and
+adds HTML pages (`app/adapters/htmlui`, `app/views/<plural>`); everything below
+about resources applies to it, and its pages are guarded like the JSON routes.
+
+For `forge generate resource` and `forge generate scaffold`, always run `--dry-run` first and show the user
 the planned files and the wiring it prints. Choose the scope deliberately:
 `--tenant-scoped` for data that belongs to one tenant, `--global` only for data
 shared by all tenants; the command refuses to guess. Money is an `int` in

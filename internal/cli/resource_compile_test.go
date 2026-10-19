@@ -65,6 +65,13 @@ func reservedWordResources() [][]string {
 // or recompiled), and generates every matrix resource into it.
 func matrixApplication(t *testing.T, database string, resources [][]string) string {
 	t.Helper()
+	return matrixApplicationFor(t, database, "resource", resources)
+}
+
+// matrixApplicationFor is matrixApplication for any generator that takes a
+// resource command line: "resource" or "scaffold".
+func matrixApplicationFor(t *testing.T, database, command string, resources [][]string) string {
+	t.Helper()
 	frameworkPath, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +100,7 @@ func matrixApplication(t *testing.T, database string, resources [][]string) stri
 	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 	for _, resource := range resources {
 		var output bytes.Buffer
-		if err := runGenerateEnv(append([]string{"resource"}, resource...), &output, dir, env, now); err != nil {
+		if err := runGenerateEnv(append([]string{command}, resource...), &output, dir, env, now); err != nil {
 			t.Fatalf("generate %v: %v", resource, err)
 		}
 	}

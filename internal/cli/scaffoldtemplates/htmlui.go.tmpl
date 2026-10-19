@@ -1,0 +1,431 @@
+package htmlui
+
+import (
+	"errors"
+	"net/http"
+[[- if .NeedsStrconv]]
+	"strconv"
+[[- end]]
+	"strings"
+[[- if .HasTime]]
+	"time"
+[[- end]]
+
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/pagination"
+	"github.com/rocketinsidecorp/forge-go/router"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/views"
+	"github.com/rocketinsidecorp/forge-go/web"
+)
+
+const (
+	[[.PluralCamel]]Path            = "/[[.Plural]]"
+	[[.PluralCamel]]ReadPermission  = "[[.Plural]]:read"
+	[[.PluralCamel]]WritePermission = "[[.Plural]]:write"
+
+	// [[.Camel]]DisplayTime is how the pages print timestamps (always UTC).
+	[[.Camel]]DisplayTime = "2006-01-02 15:04 UTC"
+[[- if .HasTime]]
+	// [[.Camel]]InputTime is the value of a datetime-local input: microseconds
+	// survive a round trip through an edit form.
+	[[.Camel]]InputTime = "2006-01-02T15:04:05.999999"
+[[- end]]
+)
+
+// [[.Title]]Router is where Register[[.PluralTitle]] mounts the pages; *forge.App satisfies it.
+type [[.Title]]Router interface {
+	Resources(path string, handler any, middleware ...router.ResourceMiddleware) error
+}
+
+// [[.Title]]Protect wraps next so that only callers holding permission reach it.
+// The application decides how: with Forge identity it authenticates the
+// session cookie and requires the permission. Register[[.PluralTitle]] never mounts
+// a page without it, so these pages cannot be public by accident.
+type [[.Title]]Protect func(permission string, next http.Handler) (http.Handler, error)
+
+// Register[[.PluralTitle]] mounts the HTML pages of [[.Plural]]: index, new, create, show,
+// edit, update and destroy. Index and show require "[[.Plural]]:read"; the
+// forms (new and edit) and every change require "[[.Plural]]:write".
+//
+// The application must install web.MethodOverride, csrf.Protection and
+// web.Flash (forge new does): the forms rely on them for PATCH and DELETE, for
+// CSRF protection and for the notices shown after a redirect.
+func Register[[.PluralTitle]](routes [[.Title]]Router, service *application.[[.Title]]Service, renderer *views.Renderer, protect [[.Title]]Protect) error {
+	if routes == nil || service == nil || renderer == nil {
+		return errors.New("htmlui: router, [[.Name]] service and view renderer are required")
+	}
+	if protect == nil {
+		return errors.New("htmlui: a protect function is required: [[.Name]] pages are never public")
+	}
+	pages := [[.Camel]]Pages{service: service, renderer: renderer}
+	// The literal path lets `forge routes` list these routes.
+	return routes.Resources("/[[.Plural]]", pages, func(action router.Action, next http.Handler) (http.Handler, error) {
+		// New and edit are forms for writing, so they need the write permission too.
+		permission := [[.PluralCamel]]WritePermission
+		if action == router.ActionIndex || action == router.ActionShow {
+			permission = [[.PluralCamel]]ReadPermission
+		}
+		return protect(permission, next)
+	})
+}
+
+type [[.Camel]]Pages struct {
+	service  *application.[[.Title]]Service
+	renderer *views.Renderer
+}
+
+// [[.Camel]]Item is a [[.Name]] as the pages show it: every value is text.
+type [[.Camel]]Item struct {
+	ID uuid.UUID
+[[- range .Fields]]
+	[[.Title]] string
+[[- end]]
+	Version   int
+	CreatedAt string
+	UpdatedAt string
+}
+
+// [[.Camel]]Values are the form's values as the browser shows them: the text that
+// was submitted, so a rejected form comes back as it was typed, or the stored
+// values when editing. Only a checkbox is not text.
+type [[.Camel]]Values struct {
+[[- range .Fields]]
+	[[.Title]] [[.ValuesType]]
+[[- end]]
+}
+
+// [[.Camel]]Page is the data of every page of the resource; each page reads only
+// what it needs.
+type [[.Camel]]Page struct {
+	Path       string // where the pages are served
+	Items      [][[.Camel]]Item // index
+	NextCursor string // index: the next page, empty on the last one
+	Item       [[.Camel]]Item // show
+
+	// The form (new and edit).
+	ID       uuid.UUID // zero for a new [[.Name]]
+	Action   string
+	Method   string // PATCH when editing, empty when creating
+	Version  int    // the version the edit form was loaded from
+	Values   [[.Camel]]Values
+	Errors   web.FormErrors
+	Conflict bool // another request changed the [[.Name]] since the form was loaded
+}
+
+// [[.Camel]]Form is a submitted new [[.Name]]. Only tagged fields can be set from a request.
+type [[.Camel]]Form struct {
+[[- range .Fields]]
+	[[.Title]] [[.FieldType]] `form:"[[.Name]]"`
+[[- end]]
+}
+
+// [[.Camel]]UpdateForm is a submitted edit form: the fields and the version they were loaded from.
+type [[.Camel]]UpdateForm struct {
+[[- range .Fields]]
+	[[.Title]] [[.FieldType]] `form:"[[.Name]]"`
+[[- end]]
+	Version int `form:"version"`
+}
+
+// [[.Camel]]DestroyForm carries the version the [[.Name]] was last seen at.
+type [[.Camel]]DestroyForm struct {
+	Version int `form:"version"`
+}
+
+func (f [[.Camel]]Form) input() domain.[[.Title]]Input {
+	return domain.[[.Title]]Input{
+[[- range .Fields]]
+		[[.Title]]: f.[[.Title]],
+[[- end]]
+	}
+}
+
+// changes sets every field: a form always submits all of them, and an empty
+// optional field clears the stored value.
+func (f [[.Camel]]UpdateForm) changes() domain.[[.Title]]Changes {
+	return domain.[[.Title]]Changes{
+[[- range .Fields]]
+[[- if .Optional]]
+		[[.Title]]:      f.[[.Title]],
+		Clear[[.Title]]: f.[[.Title]] == nil,
+[[- else]]
+		[[.Title]]: &f.[[.Title]],
+[[- end]]
+[[- end]]
+	}
+}
+
+func new[[.Title]]Item(entity domain.[[.Title]]) [[.Camel]]Item {
+	item := [[.Camel]]Item{
+		ID:        entity.ID,
+		Version:   entity.Version,
+		CreatedAt: entity.CreatedAt.UTC().Format([[.Camel]]DisplayTime),
+		UpdatedAt: entity.UpdatedAt.UTC().Format([[.Camel]]DisplayTime),
+	}
+[[- range .Fields]]
+	[[.ShowStatement]]
+[[- end]]
+	return item
+}
+
+// new[[.Title]]Values is what the edit form starts from.
+func new[[.Title]]Values(entity domain.[[.Title]]) [[.Camel]]Values {
+	var values [[.Camel]]Values
+[[- range .Fields]]
+	[[.FormStatement]]
+[[- end]]
+	return values
+}
+
+// [[.Camel]]SubmittedValues reads back what the browser submitted, for a form
+// that is shown again. web.DecodeForm has already parsed the body.
+func [[.Camel]]SubmittedValues(r *http.Request) [[.Camel]]Values {
+	var values [[.Camel]]Values
+[[- range .Fields]]
+	[[.EchoStatement]]
+[[- end]]
+	return values
+}
+
+[[- if .HasBool]]
+
+func [[.Camel]]YesNo(value bool) string {
+	if value {
+		return "Yes"
+	}
+	return "No"
+}
+[[- end]]
+
+// [[.Camel]]FieldError reports the field a domain validation error is about, with
+// the domain's own message, so the form and the JSON API never disagree.
+func [[.Camel]]FieldError(err error) (web.FieldError, bool) {
+	for _, candidate := range []struct {
+		field   string
+		invalid *fault.Error
+	}{
+[[- range .Fields]]
+		{"[[.Name]]", domain.[[.Err]]},
+[[- end]]
+		{"version", domain.ErrInvalid[[.Title]]Version},
+	} {
+		if errors.Is(err, candidate.invalid) {
+			return web.FieldError{
+				Field:   candidate.field,
+				Code:    candidate.invalid.Code,
+				Message: strings.TrimPrefix(candidate.invalid.Message, candidate.field+" "),
+			}, true
+		}
+	}
+	return web.FieldError{}, false
+}
+
+// decode[[.Title]]Form reads the submitted form into dst. Values that do not
+// convert come back as problems to show beside their fields. Any other error
+// is a transport problem (unknown field, wrong content type, body too large)
+// that web.Error reports.
+func decode[[.Title]]Form(r *http.Request, dst any) (web.FormErrors, error) {
+	err := web.DecodeForm(r, dst)
+	var problems web.FormErrors
+	if errors.As(err, &problems) {
+		return problems, nil
+	}
+	return nil, err
+}
+
+// [[.Camel]]Redirect shows message on the next page, then sends the browser there
+// with 303 See Other, so a reload does not submit the form again.
+func [[.Camel]]Redirect(w http.ResponseWriter, r *http.Request, target string, kind web.FlashKind, message string) {
+	if err := web.SetFlash(w, r, kind, message); err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	if err := web.Redirect(w, target); err != nil {
+		web.Error(w, r, err)
+	}
+}
+
+func (h [[.Camel]]Pages) render(w http.ResponseWriter, r *http.Request, page string, status int, data [[.Camel]]Page) {
+	data.Path = [[.PluralCamel]]Path
+	if err := h.renderer.RenderRequest(w, r, "[[.Plural]]/"+page, status, data); err != nil {
+		web.Error(w, r, err)
+	}
+}
+
+// fail answers an error that is not a problem with the form: a [[.Name]] that
+// does not exist (or is not visible to the caller) gets the 404 page,
+// anything else the framework's error response.
+func (h [[.Camel]]Pages) fail(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, domain.Err[[.Title]]NotFound) || errors.Is(err, domain.ErrInvalid[[.Title]]ID) {
+		h.render(w, r, "not_found", http.StatusNotFound, [[.Camel]]Page{})
+		return
+	}
+	web.Error(w, r, err)
+}
+
+// find loads the [[.Name]] the path names. When ok is false the response is written.
+func (h [[.Camel]]Pages) find(w http.ResponseWriter, r *http.Request) (entity domain.[[.Title]], ok bool) {
+	id, err := domain.Parse[[.Title]]ID(r.PathValue("id"))
+	if err == nil {
+		entity, err = h.service.Get(r.Context(), id)
+	}
+	if err != nil {
+		h.fail(w, r, err)
+		return domain.[[.Title]]{}, false
+	}
+	return entity, true
+}
+
+// Index lists the [[.Plural]], newest first, one page at a time.
+func (h [[.Camel]]Pages) Index(w http.ResponseWriter, r *http.Request) {
+	request, err := pagination.FromQuery(r.URL.Query())
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	page, err := h.service.List(r.Context(), request)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	items := make([][[.Camel]]Item, len(page.Items))
+	for i, entity := range page.Items {
+		items[i] = new[[.Title]]Item(entity)
+	}
+	h.render(w, r, "index", http.StatusOK, [[.Camel]]Page{Items: items, NextCursor: page.NextCursor})
+}
+
+// New shows the empty form.
+func (h [[.Camel]]Pages) New(w http.ResponseWriter, r *http.Request) {
+	h.render(w, r, "new", http.StatusOK, [[.Camel]]Page{Action: [[.PluralCamel]]Path})
+}
+
+// Create saves the form. Success redirects to the new [[.Name]] with a notice;
+// invalid input shows the form again with 422 and the problems.
+func (h [[.Camel]]Pages) Create(w http.ResponseWriter, r *http.Request) {
+	var form [[.Camel]]Form
+	problems, err := decode[[.Title]]Form(r, &form)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	if len(problems) == 0 {
+		entity, err := h.service.Create(r.Context(), form.input())
+		if err == nil {
+			[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path+"/"+entity.ID.String(), web.FlashNotice, "[[.HumanTitle]] was created.")
+			return
+		}
+		problem, isField := [[.Camel]]FieldError(err)
+		if !isField {
+			h.fail(w, r, err)
+			return
+		}
+		problems = append(problems, problem)
+	}
+	h.render(w, r, "new", http.StatusUnprocessableEntity, [[.Camel]]Page{
+		Action: [[.PluralCamel]]Path,
+		Values: [[.Camel]]SubmittedValues(r),
+		Errors: problems,
+	})
+}
+
+// Show displays one [[.Name]].
+func (h [[.Camel]]Pages) Show(w http.ResponseWriter, r *http.Request) {
+	entity, ok := h.find(w, r)
+	if !ok {
+		return
+	}
+	h.render(w, r, "show", http.StatusOK, [[.Camel]]Page{Item: new[[.Title]]Item(entity)})
+}
+
+// Edit shows the form filled with the stored values and the version they have.
+func (h [[.Camel]]Pages) Edit(w http.ResponseWriter, r *http.Request) {
+	entity, ok := h.find(w, r)
+	if !ok {
+		return
+	}
+	h.render(w, r, "edit", http.StatusOK, [[.Camel]]Page{
+		ID:      entity.ID,
+		Action:  [[.PluralCamel]]Path + "/" + entity.ID.String(),
+		Method:  http.MethodPatch,
+		Version: entity.Version,
+		Values:  new[[.Title]]Values(entity),
+	})
+}
+
+// Update saves the form. It is optimistic: the version the form was loaded
+// from must still be the stored one. When another request got there first
+// nothing is written and the form is shown again with 409 Conflict, so the
+// person can copy their input before reloading.
+func (h [[.Camel]]Pages) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := domain.Parse[[.Title]]ID(r.PathValue("id"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	var form [[.Camel]]UpdateForm
+	problems, err := decode[[.Title]]Form(r, &form)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	status, conflict := http.StatusUnprocessableEntity, false
+	if len(problems) == 0 {
+		_, err := h.service.Update(r.Context(), id, form.Version, form.changes())
+		if err == nil {
+			[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path+"/"+id.String(), web.FlashNotice, "[[.HumanTitle]] was updated.")
+			return
+		}
+		problem, isField := [[.Camel]]FieldError(err)
+		switch {
+		case isField:
+			problems = append(problems, problem)
+		case errors.Is(err, domain.ErrStale[[.Title]]Version):
+			status, conflict = http.StatusConflict, true
+		default:
+			h.fail(w, r, err)
+			return
+		}
+	}
+	h.render(w, r, "edit", status, [[.Camel]]Page{
+		ID:       id,
+		Action:   [[.PluralCamel]]Path + "/" + id.String(),
+		Method:   http.MethodPatch,
+		Version:  form.Version,
+		Values:   [[.Camel]]SubmittedValues(r),
+		Errors:   problems,
+		Conflict: conflict,
+	})
+}
+
+// Destroy deletes the [[.Name]] if it is still at the version the page showed.
+// Otherwise it is kept, and the person is sent back to look at it.
+func (h [[.Camel]]Pages) Destroy(w http.ResponseWriter, r *http.Request) {
+	id, err := domain.Parse[[.Title]]ID(r.PathValue("id"))
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	var form [[.Camel]]DestroyForm
+	problems, err := decode[[.Title]]Form(r, &form)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	if len(problems) == 0 {
+		err = h.service.Delete(r.Context(), id, form.Version)
+		switch {
+		case err == nil:
+			[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path, web.FlashNotice, "[[.HumanTitle]] was deleted.")
+			return
+		case errors.Is(err, domain.ErrStale[[.Title]]Version), errors.Is(err, domain.ErrInvalid[[.Title]]Version):
+		default:
+			h.fail(w, r, err)
+			return
+		}
+	}
+	[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path+"/"+id.String(), web.FlashAlert, "[[.HumanTitle]] was not deleted because it changed since you opened it. Review it and try again.")
+}

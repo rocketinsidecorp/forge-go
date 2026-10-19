@@ -124,7 +124,23 @@ forge migrate
 forge test
 ```
 
-Generate a server-rendered HTML view (templates use Go's contextual HTML
+Generate a working HTML CRUD (index, show, new, edit, create, update and
+destroy with forms, validation errors, flash notices and CSRF-protected forms)
+together with the migration, domain, application, persistence and JSON API of
+the resource:
+
+```sh
+forge generate scaffold post title:string body:text published:bool --global --dry-run
+forge generate scaffold post title:string body:text published:bool --global
+forge migrate
+forge test
+```
+
+The command prints the wiring to paste into `app/bootstrap/bootstrap.go`; the
+pages are served at `/posts` and are never public (see
+[docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud)).
+
+Generate a single server-rendered page (templates use Go's contextual HTML
 escaping and are embedded into the application binary):
 
 ```sh
@@ -134,10 +150,13 @@ forge generate job cleanup --dry-run   # preview job and test files
 forge generate job cleanup
 ```
 
-The generator creates `app/views/welcome.gohtml` and, on the first view,
-`app/views/renderer.go`. Build one renderer during application composition
-with `views.NewRenderer()`, then call `renderer.Render(w, "welcome.gohtml",
-http.StatusOK, data)` from an HTTP handler. Execution errors happen before
+The generator creates `app/views/pages/welcome.gohtml` (or
+`app/views/DIR/NAME.gohtml` for `forge generate view DIR/NAME`) and, for an
+application that has no views package, the base `forge new` generates:
+`app/views/views.go`, `layouts/application.gohtml` and `shared/_flash.gohtml`.
+Build the renderer once during application composition with `views.New()`, then
+call `renderer.RenderRequest(w, r, "pages/welcome", http.StatusOK, data)` from an
+HTTP handler (`data` needs `Title` and `Content`). Execution errors happen before
 response headers or body bytes are written.
 
 `forge new myapp` generates:
@@ -183,9 +202,10 @@ configured for production behind a TLS-terminating proxy. See
 | `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command |
 | `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step) |
 | `forge generate migration NAME [--dry-run]` | Create or preview `db/migrations/<UTC timestamp>_NAME.{up,down}.sql` |
-| `forge generate view NAME [--dry-run]` | Create or preview an embedded server-rendered Go HTML template with contextual escaping |
+| `forge generate view [DIR/]NAME [--dry-run]` | Create or preview a server-rendered page, `app/views/DIR/NAME.gohtml` (DIR defaults to `pages`), in the layout `forge new` generates |
 | `forge generate job NAME [--dry-run]` | Create or preview a cancellation-aware recurring job stub and tests; registration and schedule remain explicit |
 | `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
+| `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests. Never public: see below |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes` | Read-only table of the routes found in the source (including `Resources` routes) and Forge's health routes |
@@ -269,6 +289,28 @@ printed guard denies every request until you replace it with your own
 authentication and authorization. The generated integration tests need the test
 database (`FORGE_TEST_DATABASE_URL`, set by `.env.development`) and fail instead
 of skipping when `FORGE_TEST_REQUIRE_DATABASE=true`.
+
+`forge generate scaffold NAME field:type... (--tenant-scoped | --global)
+[--plural PLURAL] [--dry-run]` is `forge generate resource` plus the HTML
+pages, the equivalent of `rails g scaffold`. It takes exactly the same
+arguments, writes exactly the same resource files, and adds:
+
+- `app/adapters/htmlui/<name>.go` and `<name>_test.go`: thin handlers for
+  index, new, create, show, edit, update and destroy, and
+  `Register<Plural>(app, service, renderer, protect)`;
+- `app/views/<plural>/{index,show,new,edit,_form,not_found}.gohtml`;
+- the views base (`app/views/views.go`, `layouts/application.gohtml`,
+  `shared/_flash.gohtml`) when the application lacks it.
+
+The pages live at `/<plural>` (the JSON API stays at `/v1/<plural>`). Forms
+carry the CSRF token and use `_method` for `PATCH` and `DELETE`; invalid input
+re-renders the form with `422` and a message beside each field, success sets a
+flash notice and answers `303 See Other`, a missing record shows a `404` page,
+and an edit based on a stale version shows the form again with `409` instead
+of overwriting the other change. The pages use the same guard as the JSON
+routes (`<plural>:read` for index and show, `<plural>:write` for forms and
+changes); with Forge identity the printed wiring authenticates the session
+cookie rather than a bearer token. See [docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud).
 
 ### Development environment files
 

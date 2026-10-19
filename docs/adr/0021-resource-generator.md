@@ -83,3 +83,74 @@ Rules:
   `--plural`.
 - Relationships, decimal types, soft delete and audit columns are future
   work; `field:uuid` gives an unconstrained reference until then.
+
+## Addendum (2026-10-19): `forge generate scaffold`
+
+`forge generate scaffold NAME field:type... (--tenant-scoped | --global)
+[--plural PLURAL] [--dry-run]` is the resource generator plus a server-rendered
+HTML adapter ([ADR 0025](0025-server-rendered-html.md)), as `rails g scaffold`
+is to `rails g model`. It is not a second implementation: it parses, validates,
+names, renders SQL and generates every resource file through the same code, and
+its plan is checked for conflicts together with the resource's files
+(all-or-nothing, refuse-to-overwrite, `--dry-run`). The resource files are
+byte-identical to those of `generate resource` (a test compares them).
+
+Extra files:
+
+- `app/adapters/htmlui/<name>.go` and `_test.go`: `Register<Plural>(app,
+  service, renderer, protect)` mounts `Router.Resources("/<plural>", ...)`.
+  The adapter depends on `application`, `domain` and framework packages only.
+- `app/views/<plural>/{index,show,new,edit,_form,not_found}.gohtml`, rendered in
+  `layouts/application`.
+- The views base `forge new` generates (`app/views/views.go`, the layout, the
+  flash partial) when the application has none. `forge generate view` shares
+  it: a view is `app/views/DIR/NAME.gohtml` (DIR defaults to `pages`), so
+  `forge new`, `generate view` and `generate scaffold` agree on one layout.
+
+Decisions:
+
+1. **Forms.** `string` is a text input, `text` a textarea, `int` a number
+   input, `time` a `datetime-local` input, `uuid` a text input with a UUIDv7
+   pattern, a required `bool` a checkbox. An optional `bool` is a select
+   (not set / yes / no): an unchecked box cannot tell "no" from "not set".
+   Optional fields are not `required` and may be left empty (empty clears the
+   stored value). The `pattern`, `maxlength` and `required` attributes are
+   conveniences; the domain stays the authority.
+2. **Errors.** Values that do not convert (`web.DecodeForm`) are all reported
+   together. A domain validation error is mapped to its field with the
+   domain's own message, so the form and the JSON API cannot disagree; the
+   domain reports the first invalid field per submission. Both re-render the
+   form with `422` and the submitted text. Unknown fields (`id`, `tenant_id`,
+   a version on create) are `400`, so nothing can be mass-assigned.
+3. **Success.** A flash notice and `303 See Other` to the show page (create,
+   update) or the index (destroy).
+4. **Optimistic locking.** The edit form and the delete button carry the
+   version they were loaded from. A stale update re-renders the edit form with
+   `409 Conflict` (not `422`: the input is valid, the request conflicts with
+   the stored state), keeps what the person typed, writes nothing and links to
+   the latest version. A stale delete keeps the record and redirects to it with
+   an alert.
+5. **Not found.** A missing record, a malformed id and, for tenant-scoped
+   resources, another tenant's record all render the `404` page. Other errors
+   use the framework's JSON error response (there is no generic HTML error
+   page yet).
+6. **Access.** The pages are never public. `Register<Plural>` requires the
+   same `protect` function as the JSON routes: `<plural>:read` for index and
+   show, `<plural>:write` for new, edit, create, update and destroy (a form
+   needs the permission of the request that saves it). With Forge identity the
+   printed wiring defines `protectCookie`, which authenticates the session
+   cookie (`Middleware.AuthenticateCookie`) before the same audited permission
+   check; the forms are protected by the CSRF middleware, so `auth.RequireCSRF`
+   (a header check) is not added. A global scaffold keeps every write,
+   including the new and edit forms, behind `protectPlatformWrite`; without
+   identity the same deny-all guard serves both. Forge has no login page, so a
+   browser without a session receives the `401` JSON error.
+7. **Browser pipeline.** The pages rely on `web.MethodOverride`,
+   `csrf.Protection` and `web.Flash`, which `forge new` installs. The command
+   warns when `app/bootstrap/bootstrap.go` does not appear to install them.
+8. **Names.** The plural becomes a path (`/posts`), so `assets`, `auth`,
+   `health`, `v1`, `layouts` and `shared` are refused as plurals.
+
+Limits: no multipart forms, no per-page layout, no relationships; the index
+shows up to four non-text fields and the next-page link of the keyset
+pagination.

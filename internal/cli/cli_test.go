@@ -131,8 +131,9 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		}
 		commandsSeen[command.Name] = true
 		if command.Name == "generate" {
-			generateDeclaresJob = strings.Contains(command.Usage, "|job|resource>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
-				containsString(command.Examples, "forge generate resource category name:string --global --plural categories")
+			generateDeclaresJob = strings.Contains(command.Usage, "|job|resource|scaffold>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
+				containsString(command.Examples, "forge generate resource category name:string --global --plural categories") &&
+				containsString(command.Examples, "forge generate scaffold post title:string body:text published:bool --global --dry-run")
 		}
 		commandExitCodesSeen := make(map[int]bool, len(command.ExitCodes))
 		for _, exitCode := range command.ExitCodes {
@@ -541,6 +542,12 @@ func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 		}
 		if parts.PlatformGuard != "" && !strings.Contains(guard, "protectPlatformWrite :=") {
 			guard += "\n" + parts.PlatformGuard
+		}
+		if parts.CookieGuard != "" && !strings.Contains(guard, "protectCookie :=") {
+			guard += "\n" + parts.CookieGuard
+		}
+		if parts.Renderer != "" && !strings.Contains(guard, "renderer, err :=") {
+			guard += "\n" + parts.Renderer
 		}
 		for _, importPath := range parts.Imports {
 			if !strings.Contains(source, `"`+importPath+`"`) && !strings.Contains(imports.String(), `"`+importPath+`"`) {

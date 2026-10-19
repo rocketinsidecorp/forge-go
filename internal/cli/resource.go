@@ -73,6 +73,10 @@ type resourceRequest struct {
 	Fields       []resourceField
 	TenantScoped bool
 	DryRun       bool
+	// Scaffold is set by `forge generate scaffold`: the resource plus its
+	// server-rendered HTML pages. It changes only what is generated around
+	// the resource, never the resource itself.
+	Scaffold bool
 }
 
 // resourceField is one user-declared column.
@@ -88,6 +92,10 @@ type resourceSpec struct {
 	Module   string
 	Database string // postgres, mysql (also MariaDB) or sqlite
 	Identity bool   // Forge identity (permissions table) is available
+	// BrowserPipeline reports that app/bootstrap/bootstrap.go appears to
+	// install the CSRF, method-override and flash middleware server-rendered
+	// forms rely on. Only scaffolds look.
+	BrowserPipeline bool
 }
 
 func runGenerateResource(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
@@ -105,8 +113,14 @@ func runGenerateResource(args []string, stdout io.Writer, root string, env []str
 			return err
 		}
 	}
+	return reportGenerated(stdout, spec, files)
+}
+
+// reportGenerated lists the files (planned, for --dry-run) and prints the
+// wiring the application owner adds to bootstrap.go.
+func reportGenerated(stdout io.Writer, spec resourceSpec, files []generatedFile) error {
 	verb := "create"
-	if request.DryRun {
+	if spec.DryRun {
 		verb = "would create"
 	}
 	for _, file := range files {
@@ -114,13 +128,19 @@ func runGenerateResource(args []string, stdout io.Writer, root string, env []str
 			return err
 		}
 	}
-	_, err = io.WriteString(stdout, resourceWiring(spec))
+	_, err := io.WriteString(stdout, resourceWiring(spec))
 	return err
 }
 
 // parseResourceArgs reads `NAME field:type... --tenant-scoped|--global
 // [--plural P] [--dry-run]`. Flags may appear anywhere. It touches no files.
 func parseResourceArgs(args []string) (resourceRequest, error) {
+	return parseGeneratorArgs(args, resourceUsage)
+}
+
+// parseGeneratorArgs is parseResourceArgs for any generator that takes the
+// resource command line; usage is what a malformed one is answered with.
+func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 	var request resourceRequest
 	var tenantScoped, global, plural bool
 	var positional []string
@@ -151,7 +171,7 @@ func parseResourceArgs(args []string) (resourceRequest, error) {
 				return resourceRequest{}, errors.New("--plural needs a value")
 			}
 		case strings.HasPrefix(arg, "-"):
-			return resourceRequest{}, fmt.Errorf("unknown flag %q\n%s", arg, resourceUsage)
+			return resourceRequest{}, fmt.Errorf("unknown flag %q\n%s", arg, usage)
 		default:
 			positional = append(positional, arg)
 		}
@@ -164,7 +184,7 @@ func parseResourceArgs(args []string) (resourceRequest, error) {
 	}
 	request.TenantScoped = tenantScoped
 	if len(positional) == 0 {
-		return resourceRequest{}, errors.New(resourceUsage)
+		return resourceRequest{}, errors.New(usage)
 	}
 	request.Name = positional[0]
 	if err := validateResourceName(request.Name); err != nil {
@@ -345,6 +365,15 @@ func exportedName(name string) string {
 // planResource resolves request against the application in root and renders
 // every file. Nothing is written.
 func planResource(root string, request resourceRequest, env []string, now time.Time) (resourceSpec, []generatedFile, error) {
+	return planResourceWith(root, request, env, now, nil)
+}
+
+// planExtension adds files to a plan before it is checked for conflicts, so
+// they are covered by the same all-or-nothing, refuse-to-overwrite rules as
+// the resource's own files. It may complete the spec.
+type planExtension func(projectRoot *os.Root, spec *resourceSpec) ([]generatedFile, error)
+
+func planResourceWith(root string, request resourceRequest, env []string, now time.Time, extend planExtension) (resourceSpec, []generatedFile, error) {
 	projectRoot, err := os.OpenRoot(root)
 	if err != nil {
 		return resourceSpec{}, nil, errors.New("go.mod not found: run this inside a Forge application")
@@ -402,6 +431,13 @@ func planResource(root string, request resourceRequest, env []string, now time.T
 			return resourceSpec{}, nil, fmt.Errorf("format generated %s: %w", path, err)
 		}
 		files = append(files, generatedFile{path: path, content: string(formatted)})
+	}
+	if extend != nil {
+		extra, err := extend(projectRoot, &spec)
+		if err != nil {
+			return resourceSpec{}, nil, err
+		}
+		files = append(files, extra...)
 	}
 
 	paths := make([]string, 0, len(files))

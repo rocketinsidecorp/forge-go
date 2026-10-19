@@ -310,8 +310,17 @@ otherwise):
 - [x] `forge generate job NAME`: cancellation-aware job stub and generated
   tests; docs cover bounded scheduler concurrency, shutdown context,
   idempotency across replicas, and the absence of automatic retries.
-- [x] `forge generate view NAME`: embedded server-rendered Go HTML template
-  with contextual escaping and buffered execution; no database write semantics.
+- [x] `forge generate view [DIR/]NAME`: server-rendered Go HTML page in the
+  shared view tree (`app/views/DIR/NAME.gohtml`, rendered inside the
+  application layout) with contextual escaping and buffered execution; adds
+  the views base `forge new` generates when the application has none; no
+  database write semantics.
+- [x] `forge generate scaffold NAME field:type...`: the resource plus
+  server-rendered HTML CRUD (index/show/new/edit/create/update/destroy), forms
+  mapped from field types, `422` field errors, flash notices, `303`
+  redirects, CSRF, `_method`, optimistic-lock `409`, and generated handler,
+  CSRF, permission and template tests; guarded like the JSON routes, never
+  public ([ADR 0021](adr/0021-resource-generator.md), addendum).
 - [ ] SQL view generators remain separate from server-rendered HTML and need
   explicit database-dialect and tenant-isolation contracts.
 - [ ] Generated applications compile, vet, test and pass database/Docker
@@ -338,7 +347,9 @@ Rails-style HTML CRUD on the standard-library core
   generates the layout, flash partial, stylesheet, views package and
   middleware wiring for every database option, and a test compiles, vets,
   lints and tests generated applications.
-- [ ] G1b: `forge generate scaffold` (HTML resource on top of the above).
+- [x] G1b: `forge generate scaffold` (HTML resource on top of the above); a
+  test generates a tenant-scoped and a global scaffold per database, wires
+  them as printed, and vets, builds, lints and tests the application.
 - [ ] Multipart forms and file uploads, per-page layout selection,
   fingerprinted assets, Turbo/Hotwire.
 

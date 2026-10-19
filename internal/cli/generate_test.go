@@ -41,48 +41,51 @@ func TestGenerateMigration(t *testing.T) {
 	}
 }
 
-func TestGenerateViewEmbedsTemplatesAndRefusesOverwrite(t *testing.T) {
+func TestGenerateViewAddsAPageToTheSharedViewTree(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\n")
 
+	// The application has no views package yet: the base `forge new` generates
+	// comes with the first view.
 	paths, err := generateView(root, "welcome")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 2 || paths[0] != filepath.Join("app", "views", "welcome.gohtml") || paths[1] != filepath.Join("app", "views", "renderer.go") {
-		t.Fatalf("generated paths = %v", paths)
+	want := []string{
+		filepath.Join("app", "views", "pages", "welcome.gohtml"),
+		filepath.Join("app", "views", "views.go"),
+		filepath.Join("app", "views", "views_test.go"),
+		filepath.Join("app", "views", "layouts", "application.gohtml"),
+		filepath.Join("app", "views", "shared", "_flash.gohtml"),
 	}
-	templatePath := filepath.Join(root, filepath.FromSlash(paths[0]))
-	templateBody, err := os.ReadFile(templatePath)
-	if err != nil {
-		t.Fatal(err)
+	if strings.Join(paths, "|") != strings.Join(want, "|") {
+		t.Fatalf("generated paths = %v, want %v", paths, want)
 	}
-	if !strings.Contains(string(templateBody), "{{.Title}}") || !strings.Contains(string(templateBody), "{{.Content}}") {
-		t.Fatalf("generated template missing data fields: %s", templateBody)
+	page := readFile(t, filepath.Join(root, paths[0]))
+	for _, fragment := range []string{`{{define "title"}}{{.Title}}{{end}}`, `{{define "content"}}`, "{{.Content}}"} {
+		if !strings.Contains(page, fragment) {
+			t.Fatalf("generated page is missing %q: %s", fragment, page)
+		}
 	}
-	rendererPath := filepath.Join(root, filepath.FromSlash(paths[1]))
-	rendererBefore, err := os.ReadFile(rendererPath)
-	if err != nil {
-		t.Fatal(err)
+	viewsGo := readFile(t, filepath.Join(root, paths[1]))
+	if !strings.Contains(viewsGo, "//go:embed */*.gohtml") || !strings.Contains(viewsGo, "func New()") {
+		t.Fatalf("views package does not embed the view tree: %s", viewsGo)
 	}
-	if !strings.Contains(string(rendererBefore), "//go:embed *.gohtml") {
-		t.Fatalf("renderer does not embed templates: %s", rendererBefore)
+	if layout := readFile(t, filepath.Join(root, paths[3])); !strings.Contains(layout, `{{block "content" .}}`) || !strings.Contains(layout, "<title>{{block \"title\" .}}shop{{end}}</title>") {
+		t.Fatalf("layout = %s", layout)
 	}
 
-	paths, err = generateView(root, "dashboard")
+	// A second view, also in another directory, adds only its page and leaves the base alone.
+	paths, err = generateView(root, "posts/archive")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 1 || paths[0] != filepath.Join("app", "views", "dashboard.gohtml") {
-		t.Fatalf("second view should only add its template, got %v", paths)
+	if len(paths) != 1 || paths[0] != filepath.Join("app", "views", "posts", "archive.gohtml") {
+		t.Fatalf("second view should only add its page, got %v", paths)
 	}
-	rendererAfter, err := os.ReadFile(rendererPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(rendererAfter) != string(rendererBefore) {
-		t.Fatal("second view generation modified the existing renderer")
+	if after := readFile(t, filepath.Join(root, "app", "views", "views.go")); after != viewsGo {
+		t.Fatal("second view generation modified the views package")
 	}
 	if _, err := generateView(root, "welcome"); err == nil {
 		t.Fatal("existing view was overwritten")
@@ -92,7 +95,7 @@ func TestGenerateViewEmbedsTemplatesAndRefusesOverwrite(t *testing.T) {
 func TestGenerateViewValidatesNamesAndApplicationRoot(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	for _, name := range []string{"", "Welcome", "../escape", "x-y", strings.Repeat("a", 65)} {
+	for _, name := range []string{"", "Welcome", "../escape", "x-y", strings.Repeat("a", 65), "a/b/c", "layouts/home", "posts/", "/home", "_partial"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			if _, err := generateView(root, name); err == nil {
@@ -105,17 +108,26 @@ func TestGenerateViewValidatesNamesAndApplicationRoot(t *testing.T) {
 	}
 }
 
-func TestGenerateViewRefusesUnknownRendererWrapper(t *testing.T) {
+func TestGenerateViewRefusesUnknownViewsPackage(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\n")
-	rendererPath := filepath.Join(root, "app", "views", "renderer.go")
-	writeFile(t, rendererPath, "package views\n// application-owned renderer\n")
+	writeFile(t, filepath.Join(root, "app", "views", "views.go"), "package views\n// application-owned views package\n")
 	if _, err := generateView(root, "welcome"); err == nil {
-		t.Fatal("expected renderer collision to be rejected")
+		t.Fatal("expected the views package collision to be rejected")
 	}
-	if _, err := os.Stat(filepath.Join(root, "app", "views", "welcome.gohtml")); !os.IsNotExist(err) {
-		t.Fatalf("view was created despite renderer collision: %v", err)
+	if _, err := os.Stat(filepath.Join(root, "app", "views", "pages", "welcome.gohtml")); !os.IsNotExist(err) {
+		t.Fatalf("view was created despite the collision: %v", err)
+	}
+}
+
+func TestGenerateViewNeedsTheLayoutOfTheGeneratedViewsPackage(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/shop\n")
+	writeFile(t, filepath.Join(root, "app", "views", "views.go"), "package views\n//go:embed */*.gohtml\nfunc New() {}\n")
+	if _, err := generateView(root, "welcome"); err == nil || !strings.Contains(err.Error(), "layouts") {
+		t.Fatalf("err = %v, want a complaint about the missing layout", err)
 	}
 }
 
@@ -237,7 +249,7 @@ func TestRunGenerateViewReportsCreatedFiles(t *testing.T) {
 	if err := runGenerateAt([]string{"view", "landing_page"}, &output, root); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"app/views/landing_page.gohtml", "app/views/renderer.go"} {
+	for _, path := range []string{"app/views/pages/landing_page.gohtml", "app/views/views.go", "app/views/layouts/application.gohtml"} {
 		if !strings.Contains(output.String(), path) {
 			t.Errorf("output does not report %s: %s", path, output.String())
 		}
@@ -252,7 +264,7 @@ func TestRunGenerateDryRunViewDoesNotWriteFiles(t *testing.T) {
 	if err := runGenerateAt([]string{"view", "welcome", "--dry-run"}, &output, root); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"app/views/welcome.gohtml", "app/views/renderer.go"} {
+	for _, path := range []string{"app/views/pages/welcome.gohtml", "app/views/views.go"} {
 		if !strings.Contains(output.String(), "would create") || !strings.Contains(output.String(), path) {
 			t.Errorf("dry-run output missing planned path %s: %s", path, output.String())
 		}

@@ -1,0 +1,11 @@
+{{define "title"}}Edit [[.Human]]{{end}}
+{{define "content"}}
+<h1>Edit [[.Human]]</h1>
+{{if .Conflict}}
+<div class="flash flash-alert" role="alert">
+	<p>This [[.Human]] was changed by someone else after you opened it, so your changes were not saved. <a href="{{.Action}}/edit">Load the latest version</a> and apply them again.</p>
+</div>
+{{end}}
+{{template "[[.Plural]]/_form" .}}
+<p><a href="{{.Action}}">Back to [[.Human]]</a> | <a href="{{.Path}}">Back to [[.PluralHuman]]</a></p>
+{{end}}

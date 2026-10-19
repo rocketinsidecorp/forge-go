@@ -55,7 +55,7 @@ forge test                               # go test ./... with .env.development l
 forge build                              # static binary in bin/{{.Name}}
 docker build -t {{.Name}} .                  # production image
 forge generate view welcome --dry-run     # preview files without writing
-forge generate view welcome              # embedded, auto-escaped HTML template
+forge generate view welcome              # a page in app/views/pages/, auto-escaped
 forge generate job cleanup --dry-run      # preview a job stub and its tests
 forge generate job cleanup               # create files under app/jobs/
 forge routes                             # list the routes found in app/ and cmd/
