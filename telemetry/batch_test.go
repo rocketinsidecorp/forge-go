@@ -96,10 +96,97 @@ func TestShutdownRespectsItsDeadlineAndStopsTheGoroutine(t *testing.T) {
 		t.Fatalf("second Shutdown must return the first result, got %v", again)
 	}
 	endSpans(tel, 2)
+	waitForGoroutines(t, before)
 	if stats := tel.Stats(); stats.Dropped != 5 {
 		t.Fatalf("spans after shutdown and at the deadline are dropped: %+v", stats)
 	}
-	waitForGoroutines(t, before)
+}
+
+// hangingExporter blocks until released, ignoring its context: the worst
+// case of a hung collector behind a broken client.
+type hangingExporter struct {
+	release chan struct{}
+	calls   chan struct{}
+}
+
+func (e *hangingExporter) ExportSpans(context.Context, Resource, []SpanData) error {
+	select {
+	case e.calls <- struct{}{}:
+	default:
+	}
+	<-e.release
+	return errors.New("collector hung")
+}
+
+func (e *hangingExporter) ExportMetrics(context.Context, Resource, []MetricData) error {
+	<-e.release
+	return errors.New("collector hung")
+}
+
+func (e *hangingExporter) Shutdown(context.Context) error { return nil }
+
+func TestShutdownWithAHungCollectorAndAFullQueueMeetsItsDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		exporter func(*hangingExporter) Options
+	}{
+		{"exporter ignoring its context", func(e *hangingExporter) Options {
+			return Options{SpanExporter: e, MetricExporter: e}
+		}},
+		{"exporter honoring its context", func(*hangingExporter) Options {
+			return Options{SpanExporter: &recordingExporter{block: make(chan struct{})}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exporter := &hangingExporter{release: make(chan struct{}), calls: make(chan struct{}, 1)}
+			defer close(exporter.release)
+			opts := tc.exporter(exporter)
+			opts.ServiceName = "s"
+			opts.SampleRatio = 1
+			opts.MaxQueueSize = 16
+			opts.MaxExportBatch = 4
+			opts.BatchTimeout = time.Hour
+			opts.ExportTimeout = 3 * time.Second
+			tel, err := New(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			endSpans(tel, 4) // a full batch: the exporter starts and hangs
+			time.Sleep(20 * time.Millisecond)
+			endSpans(tel, 30) // fills the queue and overflows it
+
+			const budget = 300 * time.Millisecond
+			ctx, cancel := context.WithTimeout(context.Background(), budget)
+			defer cancel()
+			start := time.Now()
+			result := make(chan error, 1)
+			go func() { result <- tel.Shutdown(ctx) }()
+			select {
+			case err = <-result:
+			case <-time.After(budget + time.Second):
+				t.Fatalf("Shutdown with a %s budget did not return", budget)
+			}
+			elapsed := time.Since(start)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Shutdown = %v, want a wrapped deadline error", err)
+			}
+			if elapsed > budget+200*time.Millisecond {
+				t.Fatalf("Shutdown took %s with a %s budget", elapsed, budget)
+			}
+			// Everything not exported is counted as dropped once the
+			// in-flight export gives up.
+			if _, ok := opts.SpanExporter.(*hangingExporter); ok {
+				exporter.release <- struct{}{}
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for tel.Stats().Dropped != 34 {
+				if time.Now().After(deadline) {
+					t.Fatalf("stats %+v, want all 34 spans dropped", tel.Stats())
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		})
+	}
 }
 
 func TestForceFlushExportsQueuedSpans(t *testing.T) {

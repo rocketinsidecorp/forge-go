@@ -104,7 +104,9 @@ type Telemetry struct {
 	metrics       *Registry
 
 	metricExporter MetricExporter
-	metricsStop    chan context.Context
+	metricsRun     context.Context
+	metricsCancel  context.CancelFunc
+	metricsStop    chan struct{}
 	metricsDone    chan struct{}
 	exportTimeout  time.Duration
 
@@ -189,7 +191,8 @@ func New(opts Options) (*Telemetry, error) {
 		t.spans = newBatcher(opts.SpanExporter, t.resource, opts.Logger, opts.MaxQueueSize, opts.MaxExportBatch, opts.BatchTimeout, opts.ExportTimeout, onError)
 	}
 	if opts.MetricExporter != nil {
-		t.metricsStop = make(chan context.Context)
+		t.metricsRun, t.metricsCancel = context.WithCancel(context.Background())
+		t.metricsStop = make(chan struct{})
 		t.metricsDone = make(chan struct{})
 		go t.exportMetricsLoop(opts.MetricsInterval)
 	}
@@ -281,18 +284,29 @@ func (t *Telemetry) Shutdown(ctx context.Context) error {
 			errs = append(errs, t.spans.shutdown(ctx))
 		}
 		if t.metricExporter != nil {
-			select {
-			case t.metricsStop <- ctx:
-			case <-t.metricsDone:
-			}
-			<-t.metricsDone
-			errs = append(errs, t.metricExporter.Shutdown(ctx))
+			errs = append(errs, t.stopMetrics(ctx))
 		}
 		if err := errors.Join(errs...); err != nil {
 			t.shutdownErr = fmt.Errorf("telemetry shutdown: %w", err)
 		}
 	})
 	return t.shutdownErr
+}
+
+// stopMetrics asks the metrics goroutine for a final export and waits for it
+// at most until ctx ends, cancelling the export in progress at that point.
+func (t *Telemetry) stopMetrics(ctx context.Context) error {
+	stopCancel := context.AfterFunc(ctx, t.metricsCancel)
+	defer stopCancel()
+	close(t.metricsStop)
+	select {
+	case <-t.metricsDone:
+		t.metricsCancel()
+		return t.metricExporter.Shutdown(ctx)
+	case <-ctx.Done():
+		t.metricsCancel()
+		return fmt.Errorf("telemetry: metric export did not finish before the shutdown deadline: %w", ctx.Err())
+	}
 }
 
 func (t *Telemetry) exportMetricsLoop(interval time.Duration) {
@@ -302,14 +316,12 @@ func (t *Telemetry) exportMetricsLoop(interval time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), t.exportTimeout)
-			if err := t.exportMetrics(ctx); err != nil {
+			if err := t.exportMetrics(t.metricsRun); err != nil {
 				t.logger.Warn("telemetry: metric export failed", "error_type", ErrorType(err), "error", err)
 			}
-			cancel()
-		case ctx := <-t.metricsStop:
+		case <-t.metricsStop:
 			// The final snapshot carries the counts of the last interval.
-			if err := t.exportMetrics(ctx); err != nil {
+			if err := t.exportMetrics(t.metricsRun); err != nil {
 				t.logger.Warn("telemetry: final metric export failed", "error_type", ErrorType(err), "error", err)
 			}
 			return
