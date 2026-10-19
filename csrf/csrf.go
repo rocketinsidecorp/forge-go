@@ -150,6 +150,10 @@ type stateKey struct{}
 type state struct {
 	mu    sync.Mutex
 	token string
+	// verified is set when this request's submitted token was compared with
+	// the cookie token and matched. It is never set for safe methods,
+	// exempt routes, or bearer and JSON requests that skip the token check.
+	verified bool
 }
 
 // Handler protects next.
@@ -184,10 +188,12 @@ func (p *Protection) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		current := &state{token: cookieToken(r)}
 		if !safeMethod(r.Method) && !p.exempted(r) {
-			if err := p.verify(r, current.token); err != nil {
+			verified, err := p.verify(r, current.token)
+			if err != nil {
 				reject(w, r, err)
 				return
 			}
+			current.verified = verified
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), stateKey{}, current)))
 	})
@@ -218,24 +224,42 @@ func overridesMethod(r *http.Request) bool {
 	return present
 }
 
-func (p *Protection) verify(r *http.Request, cookie string) error {
+// verify reports whether the token was checked (and matched) or the request
+// passed without a token check because it is a bearer or JSON request.
+func (p *Protection) verify(r *http.Request, cookie string) (bool, error) {
 	if err := p.origins.Check(r); err != nil {
-		return ErrCrossOrigin.WithCause(err)
+		return false, ErrCrossOrigin.WithCause(err)
 	}
 	if bearerRequest(r) || jsonRequest(r) {
-		return nil
+		return false, nil
 	}
 	if cookie == "" {
-		return ErrInvalid
+		return false, ErrInvalid
 	}
 	submitted, err := submittedToken(r)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !Match(cookie, submitted) {
-		return ErrInvalid
+		return false, ErrInvalid
 	}
-	return nil
+	return true, nil
+}
+
+// Verified reports whether Protection checked this request's CSRF token and
+// it matched the cookie token. It is false for safe methods, for exempt
+// routes, for bearer and JSON requests (which skip the token check), and
+// when the middleware is not installed. Handlers that create or destroy
+// ambient browser credentials, such as sign-in and sign-out forms, call it
+// to fail closed even if a route is exempted or the middleware is missing.
+func Verified(r *http.Request) bool {
+	current, ok := r.Context().Value(stateKey{}).(*state)
+	if !ok {
+		return false
+	}
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	return current.verified
 }
 
 func submittedToken(r *http.Request) (string, error) {

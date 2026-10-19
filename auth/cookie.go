@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"net/http"
@@ -35,22 +36,66 @@ func (m *Middleware) AuthenticateCookie(next http.Handler) http.Handler {
 		panic("auth: nil handler")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookies := r.CookiesNamed(SessionCookieName)
-		if len(cookies) == 0 {
-			web.Error(w, r, ErrCredentialsRequired)
-			return
-		}
-		if len(cookies) != 1 || cookies[0].Value == "" {
-			web.Error(w, r, ErrCredentialsInvalid)
-			return
-		}
-		ctx, err := m.authenticateContext(r, cookies[0].Value)
+		ctx, err := m.cookieContext(r)
 		if err != nil {
 			web.Error(w, r, err)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// AuthenticateBrowser is AuthenticateCookie for server-rendered pages. When
+// the session cookie is missing, invalid, revoked or expired and the client
+// prefers HTML (web.PrefersHTML: browser navigations and form submissions),
+// the request is answered with 303 See Other to signInPath instead of the
+// JSON 401. For GET and HEAD the requested path and query travel in the
+// ReturnToParameter query parameter, so the sign-in form can send the user
+// back; the sign-in handler must validate it again with ReturnPath. Other
+// methods are redirected without a return path, because the submitted form
+// cannot be replayed. JSON and API clients keep AuthenticateCookie's 401, and
+// resolver failures stay 500. signInPath must be a local path without a query
+// or fragment, such as "/session/new".
+func (m *Middleware) AuthenticateBrowser(signInPath string, next http.Handler) (http.Handler, error) {
+	if next == nil {
+		return nil, errors.New("auth: browser handler is required")
+	}
+	if !web.IsLocalPath(signInPath) || strings.ContainsAny(signInPath, "?#") {
+		return nil, errors.New("auth: sign-in path must be a local path without query or fragment")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, err := m.cookieContext(r)
+		if err == nil {
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		if !web.PrefersHTML(r) || (!errors.Is(err, ErrCredentialsRequired) && !errors.Is(err, ErrCredentialsInvalid)) {
+			web.Error(w, r, err)
+			return
+		}
+		target := signInPath
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			if requested := r.URL.RequestURI(); web.IsLocalPath(requested) {
+				target += "?" + url.Values{ReturnToParameter: {requested}}.Encode()
+			}
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		if err := web.Redirect(w, target); err != nil {
+			web.Error(w, r, err)
+		}
+	}), nil
+}
+
+// cookieContext authenticates exactly one non-empty session cookie.
+func (m *Middleware) cookieContext(r *http.Request) (context.Context, error) {
+	cookies := r.CookiesNamed(SessionCookieName)
+	if len(cookies) == 0 {
+		return nil, ErrCredentialsRequired
+	}
+	if len(cookies) != 1 || cookies[0].Value == "" {
+		return nil, ErrCredentialsInvalid
+	}
+	return m.authenticateContext(r, cookies[0].Value)
 }
 
 // NewCookieLoginHandler authenticates a password login and delivers the
@@ -100,12 +145,11 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 			})
 			return
 		}
-		csrfToken, err := newCSRFToken()
+		csrfToken, err := startCookieSession(w, result)
 		if err != nil {
 			web.Error(w, r, err)
 			return
 		}
-		setSessionCookies(w, result.Token.Reveal(), csrfToken, result.ExpiresAt)
 		web.JSON(w, http.StatusOK, cookieLoginResponse{CSRFToken: csrfToken, ExpiresAt: result.ExpiresAt})
 	}), nil
 }
@@ -142,12 +186,11 @@ func NewCookieMFACompletionHandler(service *MFAService) (http.Handler, error) {
 			web.Error(w, r, err)
 			return
 		}
-		csrfToken, err := newCSRFToken()
+		csrfToken, err := startCookieSession(w, result)
 		if err != nil {
 			web.Error(w, r, err)
 			return
 		}
-		setSessionCookies(w, result.Token.Reveal(), csrfToken, result.ExpiresAt)
 		web.JSON(w, http.StatusOK, cookieLoginResponse{
 			CSRFToken: csrfToken,
 			ExpiresAt: result.ExpiresAt,
@@ -193,33 +236,62 @@ func newCookieLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (ht
 		return nil, errors.New("session revoker is required")
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookies := r.CookiesNamed(SessionCookieName)
-		if len(cookies) == 1 && cookies[0].Value != "" {
-			token, err := ParseToken(cookies[0].Value)
-			if err == nil {
-				if err := revoker.RevokeSession(r.Context(), token); err != nil {
-					web.Error(w, r, err)
-					return
-				}
-				if auditor != nil {
-					if err := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-						Kind:             SecuritySessionRevoked,
-						Outcome:          SecurityOutcomeSucceeded,
-						CredentialDigest: token.Digest(),
-					}); err != nil {
-						web.Logger(r.Context()).Error("security audit failed",
-							"method", r.Method,
-							"path", r.URL.Path,
-							"error", err,
-						)
-					}
-				}
-			}
+		if err := endCookieSession(w, r, revoker, auditor); err != nil {
+			web.Error(w, r, err)
+			return
 		}
-		clearSessionCookies(w)
 		w.WriteHeader(http.StatusNoContent)
 	})
 	return RequireCSRF(handler)
+}
+
+// startCookieSession delivers a completed login (password or MFA) to the
+// browser: the session token in the HttpOnly session cookie and a fresh CSRF
+// token, which replaces any token issued before authentication. Every cookie
+// login path goes through it, so the cookies are identical whichever handler
+// signed the user in.
+func startCookieSession(w http.ResponseWriter, result LoginResult) (csrfToken string, err error) {
+	if result.MFARequired {
+		return "", errors.New("auth: an MFA challenge is not a session")
+	}
+	csrfToken, err = newCSRFToken()
+	if err != nil {
+		return "", err
+	}
+	setSessionCookies(w, result.Token.Reveal(), csrfToken, result.ExpiresAt)
+	return csrfToken, nil
+}
+
+// endCookieSession revokes the request's session cookie when it holds a
+// syntactically valid token, records the revocation when auditor is set, and
+// clears both browser cookies. Unknown or already-revoked tokens stay
+// idempotent at the repository layer. Only a failed revocation is an error;
+// the cookies are then left in place so the user can retry.
+func endCookieSession(w http.ResponseWriter, r *http.Request, revoker SessionRevoker, auditor SecurityAuditor) error {
+	cookies := r.CookiesNamed(SessionCookieName)
+	if len(cookies) == 1 && cookies[0].Value != "" {
+		token, err := ParseToken(cookies[0].Value)
+		if err == nil {
+			if err := revoker.RevokeSession(r.Context(), token); err != nil {
+				return err
+			}
+			if auditor != nil {
+				if err := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
+					Kind:             SecuritySessionRevoked,
+					Outcome:          SecurityOutcomeSucceeded,
+					CredentialDigest: token.Digest(),
+				}); err != nil {
+					web.Logger(r.Context()).Error("security audit failed",
+						"method", r.Method,
+						"path", r.URL.Path,
+						"error", err,
+					)
+				}
+			}
+		}
+	}
+	clearSessionCookies(w)
+	return nil
 }
 
 func validateCSRF(r *http.Request) error {

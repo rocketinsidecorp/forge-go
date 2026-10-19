@@ -282,6 +282,16 @@ func (s *LoginService) recordLoginEvent(
 	return nil
 }
 
+// NormalizeIdentity returns email and tenantSlug exactly as LoginService and
+// RecoveryService look them up: surrounding whitespace trimmed and case
+// folded. ok is false when the email is not a single-@ address without
+// spaces or control characters (at most 320 bytes) or the slug does not
+// match ^[a-z][a-z0-9-]{1,62}$. Provisioning code uses it so every stored
+// identity can sign in.
+func NormalizeIdentity(email, tenantSlug string) (normalizedEmail, normalizedTenant string, ok bool) {
+	return normalizeLogin(email, tenantSlug)
+}
+
 func normalizeLogin(email, tenant string) (string, string, bool) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	tenant = strings.ToLower(strings.TrimSpace(tenant))

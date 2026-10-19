@@ -470,3 +470,65 @@ func TestParseTokenAcceptsOnlyCanonicalTokens(t *testing.T) {
 		}
 	}
 }
+
+// TestVerifiedReportsOnlyCheckedTokens: handlers that issue or revoke
+// browser credentials rely on Verified to fail closed, so it must be true
+// only when a submitted token was compared and matched.
+func TestVerifiedReportsOnlyCheckedTokens(t *testing.T) {
+	t.Parallel()
+	protection, err := csrf.New(csrf.Options{Exempt: []string{"POST /hooks"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen bool
+	handler := protection.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = csrf.Verified(r)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	token := newToken(t)
+	cookie := &http.Cookie{Name: csrf.CookieName, Value: token}
+	run := func(request *http.Request) bool {
+		t.Helper()
+		seen = false
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("%s %s status=%d", request.Method, request.URL.Path, recorder.Code)
+		}
+		return seen
+	}
+
+	withToken := formPost("/session", url.Values{csrf.FormField: {token}}.Encode())
+	withToken.AddCookie(cookie)
+	if !run(withToken) {
+		t.Fatal("a form POST with a matching token must be verified")
+	}
+	header := httptest.NewRequest(http.MethodDelete, site+"/session", nil)
+	header.AddCookie(cookie)
+	header.Header.Set(csrf.HeaderName, token)
+	if !run(header) {
+		t.Fatal("a DELETE with a matching header token must be verified")
+	}
+	safe := httptest.NewRequest(http.MethodGet, site+"/session/new", nil)
+	safe.AddCookie(cookie)
+	if run(safe) {
+		t.Fatal("a safe request is never verified")
+	}
+	exempt := formPost("/hooks", "a=b")
+	if run(exempt) {
+		t.Fatal("an exempt request is never verified")
+	}
+	bearer := formPost("/session", "a=b")
+	bearer.Header.Set("Authorization", "Bearer abc")
+	if run(bearer) {
+		t.Fatal("a bearer request skips the token check and is never verified")
+	}
+	jsonRequest := httptest.NewRequest(http.MethodPost, site+"/session", strings.NewReader("{}"))
+	jsonRequest.Header.Set("Content-Type", "application/json")
+	if run(jsonRequest) {
+		t.Fatal("a JSON request skips the token check and is never verified")
+	}
+	if csrf.Verified(httptest.NewRequest(http.MethodPost, site+"/session", nil)) {
+		t.Fatal("without the middleware nothing is verified")
+	}
+}
