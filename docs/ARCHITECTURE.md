@@ -236,7 +236,10 @@ header or `authenticity_token` form field does not match the
 `__Host-forge_csrf` cookie, the token cookie login also issues
 ([ADR 0012](adr/0012-cookie-sessions-and-csrf.md)). Requests with a bearer
 token or a JSON body skip the token check. `csrf.Token` issues the cookie
-when a page first embeds a token.
+when a page first embeds a token. `csrf.Verified` reports that a request's
+token was actually checked; `auth.Browser` (the HTML sign-in, sign-out and
+password-reset flows, [ADR 0026](adr/0026-authentication-pages-and-setup.md))
+refuses any request for which it is false.
 
 ### views
 
@@ -540,6 +543,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0020](adr/0020-background-jobs-scheduling.md) | Background jobs and scheduling |
 | [0021](adr/0021-resource-generator.md) | Resource generator |
 | [0025](adr/0025-server-rendered-html.md) | Server-rendered HTML |
+| [0026](adr/0026-authentication-pages-and-setup.md) | Authentication pages, sign-in redirects and first-owner setup |
 
 ## Not yet implemented
 

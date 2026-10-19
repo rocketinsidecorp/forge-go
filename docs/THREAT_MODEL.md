@@ -169,7 +169,14 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | Session token stolen from persistence | S, E | Tokens contain 256 random bits; persistence stores only the SHA-256 digest. `Token` exposes the plaintext only through explicit `Reveal`. |
 | Browser session token read by JavaScript | I, E | Cookie sessions use the fixed `__Host-forge_session` cookie with `Secure`, `HttpOnly`, `Path=/`, no `Domain`, and `SameSite=Lax`. Cookie login never returns the session token in its body. |
 | Cross-site request forgery | T, E | Unsafe cookie-authenticated requests require the fixed `__Host-forge_csrf` 256-bit token to match exactly one `X-CSRF-Token` header in constant time. Cookie logout includes the CSRF check by default. HTML forms use the same token through `csrf.Protection` (see HTTP edge). Safe methods bypass the check and therefore must not mutate state. |
-| Login CSRF | S, T | Cookie login requires exactly one HTTPS `Origin` whose host equals `Request.Host`. The bearer login surface remains available for non-browser clients. |
+| Login CSRF | S, T | Cookie login requires exactly one HTTPS `Origin` whose host equals `Request.Host`. The HTML sign-in form carries the CSRF token the sign-in page issues, and `auth.Browser` requires `csrf.Verified`, so an exempted route, a missing middleware or a JSON body cannot sign a victim into the attacker's account. The bearer login surface remains available for non-browser clients. |
+| CSRF token fixation across sign-in | S, T | Every browser sign-in (JSON cookie login, HTML form, MFA completion) sets a fresh `__Host-forge_csrf` token through one helper, so a token planted or observed before authentication does not survive it. |
+| Open redirect after sign-in | S, I | `return_to` is accepted only when `web.IsLocalPath` holds (no scheme, host, `//` or `/\` prefix, backslash, control, space or non-ASCII byte, at most 2048 bytes), and it is re-validated when rendered, when posted and before the `303`. `AuthenticateBrowser` adds it only for GET and HEAD. |
+| Account or tenant enumeration through the HTML forms | I | A failed sign-in shows one message at `422` for any wrong organization, email or password (with the dummy-hash timing path); reset requests answer the same `303` and notice for known, unknown and malformed accounts and for delivery or audit failures; throttling keys do not depend on account existence. |
+| MFA challenge leaked from the browser | S, I | The pending challenge lives only in the `HttpOnly`, `Secure`, `SameSite=Strict` `__Host-forge_mfa` cookie that expires with it; it never appears in a URL, page or script, and no session exists until the second factor succeeds. |
+| Reset token leaked from the emailed link | I | `GET /passwords/edit` moves the token into a `no-store` form; Forge sends `Referrer-Policy: no-referrer` and pages load no third-party resources. Tokens are one-time, digest-only and expire (ADR 0013). |
+| First-owner provisioning abused to add or take over an account | S, E | `setup` refuses once any tenant exists (checked under an advisory lock in the provisioning transaction), creates the tenant, owner and role atomically with an `auth.identity.provisioned` audit event, and is an operator command, not an HTTP route. |
+| Owner password exposed during setup | I | The password is read from a terminal with echo off, one line of standard input, or `FORGE_SETUP_PASSWORD`; it is never an argument (visible in process lists and shell history), never printed or logged, and must be at least 12 characters. Prefer the prompt or `--password-stdin` over the variable, which other processes of the same user can read. |
 | Password guessing and spraying | S, D | Login is throttled independently by hashed tenant+account and source keys. The default process-local limiter is bounded; PostgreSQL deployments can share counters across replicas. Unknown accounts take the same throttle path and perform a dummy PBKDF2 verification. |
 | Stale or forged role claims | S, E | Tokens carry no claims. The resolver contract requires current user, membership, expiration and permissions on every request. Bearer and cookie transports are explicit and do not fall back to one another; query and tenant headers are not authentication fallbacks. |
 | Missing authorization check | E | `auth.Require` denies without a principal and denies a principal without the exact permission. Permissions have no wildcard semantics. Application route coverage remains the application's responsibility. |
@@ -198,6 +205,13 @@ disclosure, **D**enial of service, **E**levation of privilege.
   check and must authenticate requests themselves, for example by signature.
 - Browsers that send neither `Sec-Fetch-Site` nor `Origin` get only the token
   check against cross-origin form posts.
+- The `owner` role receives every permission, including those later
+  migrations register; members who should not hold all of them need other
+  roles. A tenant administrator who can create roles can already grant any
+  permission within the tenant.
+- A reset link that reaches the wrong person (forwarded email, shared
+  mailbox) lets them choose the password until it expires or is used; the
+  reset form cannot show which account the token belongs to.
 
 - Direct network exposure of a `trusted-proxy` deployment.
 - `sslmode=require` or `verify-ca` without host name verification, or

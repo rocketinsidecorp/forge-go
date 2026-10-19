@@ -11,7 +11,8 @@ Pre-release. Phases 1 (core runtime, configuration, CLI, lifecycle, HTTP) and
 2 (databases, migrations, transactions, repositories) are implemented,
 including support for several databases. Phase 3 provides an identity and
 tenancy foundation with PostgreSQL persistence, password and browser-session
-flows, recovery and MFA primitives, and security auditing. Phase 4 adds
+flows, recovery and MFA primitives, security auditing, generated sign-in
+pages and a `setup` command for the first owner. Phase 4 adds
 background jobs, a transactional outbox with bounded concurrent dispatch,
 dead-letter replay, and an in-process scheduler. Its remaining scope and
 adapter boundaries are listed in the roadmap. APIs may change
@@ -43,7 +44,7 @@ Core packages import only the standard library and each other; a test
 | Package      | Purpose |
 | ------------ | ------- |
 | `forge`      | `forge.Main` entrypoint, `App` composition, shutdown hooks, binary subcommands, health routes |
-| `auth`       | Opaque bearer-session tokens, current-session resolver middleware, principals and deny-by-default permissions |
+| `auth`       | Opaque bearer-session tokens, current-session resolver middleware, principals and deny-by-default permissions; browser sign-in, sign-out, MFA and password-reset flows (`auth.Browser`) and sign-in redirects for HTML pages |
 | `agent`      | Provider-neutral allowlisted action pipeline with policy, validation, principal permissions, explicit approval and mandatory journaling |
 | `tenancy`    | Fail-closed tenant context; used by authentication and tenant-aware database transactions |
 | `config`     | Environment configuration with fail-fast validation; database selection by URL scheme; `config.Secret` for redacted values |
@@ -115,6 +116,65 @@ forge dev
 With SQLite, `forge migrate` and `forge dev` use `storage/development.db`
 directly.
 
+### Sign in (PostgreSQL)
+
+PostgreSQL applications come with Rails-style sign-in, sign-out, two-factor
+and password-reset pages. End to end, from a new application to a signed-in
+owner using a scaffold:
+
+```sh
+forge new myapp && cd myapp
+docker compose up -d postgres
+forge migrate                   # identity tables and the application's migrations
+forge setup --tenant acme --email you@example.com --organization "Acme Inc"
+                                # prompts twice for the owner password (12+ characters)
+forge seed                      # optional: loads db/seeds.go (idempotent)
+forge dev
+```
+
+Open `http://localhost:8080/session/new` and sign in with organization `acme`,
+your email and password (use `localhost`: the `__Host-` cookies need a secure
+context, which browsers grant to `http://localhost`). Then add pages and use
+them as the owner:
+
+```sh
+forge generate scaffold post title:string body:text --tenant-scoped
+# paste the printed wiring into app/bootstrap/bootstrap.go
+forge migrate                   # also grants posts:read and posts:write to the owner role
+forge dev                       # http://localhost:8080/posts (signed-out visitors go to /session/new and back)
+```
+
+| URL | Page |
+| --- | ---- |
+| `/session/new` | sign in (organization, email, password) |
+| `/session/mfa` | authenticator or backup code, when `FORGE_AUTH_MFA_KEY` is set |
+| `/passwords/new` | forgot password (needs a configured `RecoverySender` to send email) |
+| `/passwords/edit?token=...` | choose a new password from the emailed link |
+
+Sign out with a `DELETE /session` form: include
+`{{template "sessions/_sign_out" .}}` in a page. `forge setup` refuses once a
+tenant exists. The same commands exist in the application binary, for
+containers and production (the password is never an argument):
+
+```sh
+docker compose run --rm app setup --tenant acme --email you@example.com
+printf '%s\n' "$OWNER_PASSWORD" | myapp setup --tenant acme --email you@example.com --password-stdin
+myapp seed
+```
+
+An application created before the sign-in pages existed gets them with:
+
+```sh
+forge generate authentication --dry-run   # preview files and the wiring to paste
+forge generate authentication             # app/adapters/htmlauth, app/views/{sessions,passwords}
+```
+
+MySQL, MariaDB and SQLite applications are refused: Forge persists identities
+only in PostgreSQL. They still get `db/seeds.go` and `forge seed`. See
+[docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#server-rendered-sign-in-pages).
+
+### Tables, pages and jobs
+
 Adding a table:
 
 ```sh
@@ -138,7 +198,9 @@ forge test
 
 The command prints the wiring to paste into `app/bootstrap/bootstrap.go`; the
 pages are served at `/posts` and are never public (see
-[docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud)).
+[docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud)). In a PostgreSQL application a
+signed-out browser visiting `/posts` is sent to the sign-in page and back; once
+signed in as the owner, the pages work.
 
 Generate a single server-rendered page (templates use Go's contextual HTML
 escaping and are embedded into the application binary):
@@ -164,10 +226,13 @@ response headers or body bytes are written.
 ```text
 myapp/
   go.mod
-  cmd/myapp/main.go            # forge.Main(bootstrap.Configure, <adapter>.Commands(db.Migrations())...)
+  cmd/myapp/main.go            # forge.Main(bootstrap.Configure, <adapter> migrate/rollback, seed (and setup) commands)
   app/bootstrap/bootstrap.go   # opens the database, readiness check "database", GET /v1/status
   app/bootstrap/bootstrap_test.go
+  app/adapters/htmlauth/       # PostgreSQL: sign-in, sign-out, two-factor and password-reset pages
+  app/views/                   # layout, flash partial (and, with PostgreSQL, sessions/ and passwords/)
   db/db.go                     # embeds db/migrations into the binary
+  db/seeds.go                  # db.Seed: idempotent seed data for `seed`
   db/migrations/.keep
   .env.development             # committed development settings; no secrets
   Dockerfile                   # multi-stage, distroless, nonroot
@@ -201,11 +266,14 @@ configured for production behind a TLS-terminating proxy. See
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
 | `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command |
 | `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step) |
+| `forge setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | PostgreSQL: create the first organization, tenant and owner account; the password is prompted for (or piped, or `FORGE_SETUP_PASSWORD`), never an argument; refuses once a tenant exists |
+| `forge seed` | Run the application's `seed` command: `db.Seed` in one transaction |
 | `forge generate migration NAME [--dry-run]` | Create or preview `db/migrations/<UTC timestamp>_NAME.{up,down}.sql` |
 | `forge generate view [DIR/]NAME [--dry-run]` | Create or preview a server-rendered page, `app/views/DIR/NAME.gohtml` (DIR defaults to `pages`), in the layout `forge new` generates |
 | `forge generate job NAME [--dry-run]` | Create or preview a cancellation-aware recurring job stub and tests; registration and schedule remain explicit |
 | `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
 | `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests. Never public: see below |
+| `forge generate authentication [--dry-run]` | PostgreSQL: add the sign-in, sign-out, two-factor and password-reset pages `forge new` generates to an application that lacks them, and print their wiring; other databases are refused (identity persistence is PostgreSQL-only) |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes` | Read-only table of the routes found in the source (including `Resources` routes) and Forge's health routes |
@@ -214,7 +282,7 @@ configured for production behind a TLS-terminating proxy. See
 | `forge version` | Print CLI version, commit, and build date |
 
 `NAME` for `dev` and `build` is needed only if `cmd/` has several commands.
-`migrate` and `rollback` require exactly one.
+`migrate`, `rollback`, `setup` and `seed` require exactly one.
 
 Flags for `forge new`:
 
@@ -310,7 +378,9 @@ and an edit based on a stale version shows the form again with `409` instead
 of overwriting the other change. The pages use the same guard as the JSON
 routes (`<plural>:read` for index and show, `<plural>:write` for forms and
 changes); with Forge identity the printed wiring authenticates the session
-cookie rather than a bearer token. See [docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud).
+cookie rather than a bearer token and sends signed-out browsers to the
+sign-in page. On PostgreSQL the migration also grants the new permissions to
+the `owner` role `forge setup` creates. See [docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud).
 
 ### Development environment files
 
@@ -339,6 +409,8 @@ Binaries built with `forge.Main` accept:
 | `healthcheck` | Probe `/health/live` on loopback; used by the Docker `HEALTHCHECK` |
 | `help` | List the available commands |
 | `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database) |
+| `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |
+| `setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | Added by `authpostgres.SetupCommand()` (PostgreSQL): the first tenant and owner, once |
 
 Exit status is `0` on success, `1` on failure (including invalid
 configuration), and `2` for an unknown command or invalid arguments.

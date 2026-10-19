@@ -143,8 +143,11 @@ Decisions:
    check; the forms are protected by the CSRF middleware, so `auth.RequireCSRF`
    (a header check) is not added. A global scaffold keeps every write,
    including the new and edit forms, behind `protectPlatformWrite`; without
-   identity the same deny-all guard serves both. Forge has no login page, so a
-   browser without a session receives the `401` JSON error.
+   identity the same deny-all guard serves both. Forge had no login page then,
+   so a browser without a session received the `401` JSON error;
+   [ADR 0026](0026-authentication-pages-and-setup.md) adds the sign-in pages,
+   and the printed guard now uses `Middleware.AuthenticateBrowser`, which
+   redirects signed-out browsers to them.
 7. **Browser pipeline.** The pages rely on `web.MethodOverride`,
    `csrf.Protection` and `web.Flash`, which `forge new` installs. The command
    warns when `app/bootstrap/bootstrap.go` does not appear to install them.

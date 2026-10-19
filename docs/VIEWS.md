@@ -16,6 +16,19 @@ app/views/shared/_flash.gohtml        flash messages, included by the layout
 app/bootstrap/assets/application.css  the stylesheet, served at /assets/application.css
 ```
 
+A PostgreSQL application also gets the sign-in pages (see
+[Authentication pages](#authentication-pages)):
+
+```text
+app/adapters/htmlauth/htmlauth.go      sign-in, sign-out, two-factor and password-reset handlers
+app/adapters/htmlauth/htmlauth_test.go drives them through the middleware
+app/views/sessions/new.gohtml          sign-in form
+app/views/sessions/mfa.gohtml          authenticator or backup code
+app/views/sessions/_sign_out.gohtml    a sign-out button to include where wanted
+app/views/passwords/new.gohtml         forgot-password form
+app/views/passwords/edit.gohtml        choose a new password
+```
+
 `bootstrap.Configure` installs three middleware before routing, for every
 route:
 
@@ -142,11 +155,10 @@ protectCookie := func(permission string, next http.Handler) (http.Handler, error
 	// ...
 	guarded, err := auth.RequireAudited(required, next, repository)
 	// ...
-	return middleware.AuthenticateCookie(guarded), nil
+	return middleware.AuthenticateBrowser("/session/new", guarded)
 }
 
-renderer, err := views.New()
-// ...
+// forge new already builds the renderer for the sign-in pages; reuse it.
 if err := htmlui.RegisterPosts(app, postService, renderer, protectCookie); err != nil {
 	return err
 }
@@ -157,9 +169,10 @@ serves the pages until you write your own authentication and authorization.
 The pages are never public: `RegisterPosts` refuses a missing guard, index and
 show need `posts:read`, and new, edit, create, update and destroy need
 `posts:write`. A `--global` scaffold keeps all of those writes (the forms
-included) behind `protectPlatformWrite`, as the JSON routes do. Forge has no
-login page; the pages authenticate the cookie that `POST /auth/cookie/login`
-sets, and a browser without it receives the `401` JSON error. The forms are
+included) behind `protectPlatformWrite`, as the JSON routes do. The pages
+authenticate the session cookie the sign-in page sets; a signed-out browser
+is redirected to `/session/new` and back after signing in, while JSON clients
+get the `401` error. The forms are
 protected by the CSRF middleware from `bootstrap.go`; the command warns if
 that file does not install `csrf.Protection`, `web.MethodOverride` and
 `web.Flash`.
@@ -364,6 +377,39 @@ delete button is a small form:
 	<button>Delete</button>
 </form>
 ```
+
+## Authentication pages
+
+`forge new -d postgresql` generates the sign-in, sign-out, two-factor and
+password-reset pages and wires them in `bootstrap.Configure`; in an older
+PostgreSQL application, `forge generate authentication` adds the same files
+and prints the wiring (other databases are refused: Forge persists identities
+only in PostgreSQL). Create the first account with `forge setup`, then sign
+in at `/session/new`:
+
+```sh
+forge migrate
+forge setup --tenant acme --email you@example.com
+forge dev     # http://localhost:8080/session/new
+```
+
+The handlers in `app/adapters/htmlauth` decode the forms, choose the
+messages and render `sessions/*` and `passwords/*`; edit them like any
+other page. `auth.Browser` does the security work (CSRF verification, the
+session cookies, uniform failures, throttling with `429` and `Retry-After`,
+the second-factor challenge cookie) and `auth.ReturnPath` keeps `return_to`
+local. To show a sign-out button, include the partial on pages people see
+while signed in:
+
+```gotemplate
+{{template "sessions/_sign_out" .}}
+```
+
+Protect your own pages with `middleware.AuthenticateBrowser(htmlauth.SignInPath, page)`
+so signed-out browsers land on the sign-in page. The flow, its security
+properties and `setup` are described in
+[AUTHENTICATION.md](AUTHENTICATION.md#server-rendered-sign-in-pages) and
+[ADR 0026](adr/0026-authentication-pages-and-setup.md).
 
 ## Forms
 

@@ -190,15 +190,123 @@ password step from accidentally creating an authenticated browser session.
 
 See [ADR 0012](adr/0012-cookie-sessions-and-csrf.md) and [MFA.md](MFA.md).
 
+## Server-rendered sign-in pages
+
+Generated PostgreSQL applications serve HTML sign-in, sign-out, second-factor
+and password-reset pages, the equivalent of `rails generate authentication`
+([ADR 0026](adr/0026-authentication-pages-and-setup.md)). The pages are
+application code in `app/adapters/htmlauth` and `app/views/sessions`,
+`app/views/passwords`; every security decision is made by `auth.Browser`:
+
+```go
+browser, err := auth.NewBrowser(auth.BrowserOptions{
+	Login:    login,           // *auth.LoginService (required)
+	Sessions: repository,      // auth.SessionRevoker (required)
+	MFA:      mfaService,      // optional: accounts with TOTP
+	Recovery: recoveryService, // optional: password reset forms
+	Auditor:  repository,      // records sign-outs
+})
+// ...
+if err := htmlauth.Register(app, browser, renderer); err != nil {
+	return err
+}
+```
+
+| Method | Route | Result |
+| ------ | ----- | ------ |
+| `GET` | `/session/new` | form: organization (tenant slug), email, password |
+| `POST` | `/session` | `303` to the validated `return_to` (default `/`) with a notice; `422` with one message for any wrong field; `429` with `Retry-After` when throttled; an account with TOTP goes to `/session/mfa` |
+| `DELETE` | `/session` | revoke the session, clear the cookies, `303` to the sign-in page |
+| `GET`, `POST` | `/session/mfa` | authenticator or backup code (with an MFA service) |
+| `GET`, `POST` | `/passwords/new`, `/passwords` | request a reset: the same `303` and notice whether or not the account exists |
+| `GET`, `PATCH` | `/passwords/edit?token=`, `/passwords` | choose a new password (12 characters or more); every session of the account is revoked |
+
+How the flow stays safe:
+
+- **Same cookies as cookie login.** `SignIn` and `CompleteMFA` set
+  `__Host-forge_session` and a fresh `__Host-forge_csrf` through the helper
+  `NewCookieLoginHandler` uses; the CSRF token is rotated at every sign-in.
+  Redirect after they succeed: a page rendered in the same response would
+  embed the old token.
+- **CSRF fails closed.** Every `Browser` method requires `csrf.Verified(r)`,
+  true only when `csrf.Protection` compared the form's
+  `authenticity_token` (or `X-CSRF-Token`) with the cookie. An exempted
+  route, a missing middleware or a JSON body is `403 csrf_invalid`. The
+  sign-in page issues the token, which also prevents login CSRF.
+- **Uniform failures.** A wrong organization, email or password and an
+  inactive account, membership, tenant or organization are all
+  `ErrCredentialsInvalid`; the generated page shows "That organization, email
+  and password do not match an account." and never echoes the password.
+  Reset requests answer the same for known, unknown and malformed accounts
+  and for delivery failures.
+- **Throttling.** The login, MFA and recovery throttles apply unchanged;
+  throttled calls return `*LoginThrottledError` or `*RecoveryThrottledError`
+  and set `Retry-After`, and the pages answer `429`.
+- **Second factor.** The pending challenge lives only in
+  `__Host-forge_mfa` (`HttpOnly`, `Secure`, `SameSite=Strict`, expiring with
+  the challenge); no session exists until the code is accepted.
+- **Tenant selection.** The organization field holds the tenant slug,
+  prefilled from `?tenant=`: logins always name their tenant and there is no
+  default tenant. Forge does not derive the tenant from `Host`.
+
+### Sending signed-out browsers to the sign-in page
+
+Guard HTML pages with `Middleware.AuthenticateBrowser` instead of
+`AuthenticateCookie`:
+
+```go
+page, err := auth.RequireAudited("reports:read", reportsPage, repository)
+// ...
+guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
+```
+
+A request without a valid session that prefers HTML (`web.PrefersHTML`) is
+answered `303 /session/new?return_to=%2Freports` (GET and HEAD keep the
+path; other methods go to the sign-in page without one). JSON and API
+clients keep the `401`. `auth.ReturnPath(candidate, fallback)` accepts only
+local paths (`web.IsLocalPath`: no scheme, host, `//` or `/\` prefix,
+backslash, control, space or non-ASCII byte), so `return_to` cannot redirect
+off the site. The wiring `forge generate scaffold` prints uses this guard.
+
+## Creating the first owner: `setup`
+
+```bash
+forge migrate
+forge setup --tenant acme --email owner@example.com --organization "Acme Inc"
+```
+
+`setup` (`authpostgres.SetupCommand()`, registered by generated
+`main.go`) calls `Repository.ProvisionOwner`, which creates the organization,
+tenant, user, active membership and an `owner` role with every permission in
+`forge_permissions`, in one transaction under an advisory lock, with UUIDv7
+IDs generated in Go and an `auth.identity.provisioned` audit event. It
+refuses with `ErrAlreadyProvisioned` once any tenant exists, so it cannot add
+an account to, or take over, a running installation; run it again and
+nothing changes.
+
+The password is read from `FORGE_SETUP_PASSWORD`, from one line of standard
+input with `--password-stdin`, or from a terminal prompt (twice, echo off);
+it is never an argument, never printed and must be at least 12 characters.
+In a container: `docker compose run --rm app setup --tenant acme --email ...`.
+
+The `owner` role holds every permission: setup grants all registered
+permissions, and migrations from `forge generate resource` and
+`forge generate scaffold` grant their new permissions to every role named
+`owner`. Grant narrower roles to other members.
+
+`forge seed` runs the application's idempotent `db.Seed`
+(`postgres.SeedCommand`) in one transaction; it is not for accounts.
+
 ## Remaining Phase 3 work
 
 Generated PostgreSQL applications wire the identity repository, login,
-logout, current-session, and (when `FORGE_AUTH_MFA_KEY` is set) MFA challenge
-completion. The key must be canonical unpadded base64url for 32 random bytes;
-use a secret manager in deployed environments.
+logout, current-session, the HTML pages above, `setup`, and (when
+`FORGE_AUTH_MFA_KEY` is set) MFA challenge completion. The key must be
+canonical unpadded base64url for 32 random bytes; use a secret manager in
+deployed environments.
 
-Account provisioning, recovery delivery, browser-cookie route selection, and
-MFA enrollment/rotation step-up policy remain application-specific. Framework
+Inviting users and creating further tenants, recovery delivery, and MFA
+enrollment/rotation step-up policy remain application-specific. Framework
 services support structured auditing; configure an auditor when composing
 recovery and MFA services outside the generated defaults. PostgreSQL is the
 only built-in identity persistence adapter. Other database adapters follow
