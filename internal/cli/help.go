@@ -140,6 +140,7 @@ func currentCommandCatalog() commandCatalog {
 		{Name: "version", Usage: "forge version", Summary: "Print the Forge version.", SideEffects: []string{"read_only"}, Examples: []string{"forge version"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}},
 		{Name: "help", Usage: "forge help [--json]", Summary: "Show human-readable help or the versioned command catalog.", SideEffects: []string{"read_only"}, Examples: []string{"forge help", "forge help --json"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}, Flags: []flagDetail{{Name: "--json", Description: "Print the stable machine-readable command catalog."}}},
 	}
+	commands = append(commands, deployCommandDetails()...)
 	for i := range commands {
 		if commands[i].Examples == nil {
 			commands[i].Examples = []string{}
@@ -150,21 +151,21 @@ func currentCommandCatalog() commandCatalog {
 		if commands[i].Environment.Variables == nil {
 			commands[i].Environment.Variables = []string{}
 		}
-		commands[i].ExitCodes = []exitCodeDetail{
+		commands[i].ExitCodes = append([]exitCodeDetail{
 			{Code: 0, Meaning: "The command completed successfully."},
 			{Code: 1, Meaning: "The command failed, its arguments or configuration were invalid, or delegated application work failed."},
-		}
+		}, commands[i].ExitCodes...)
 	}
 	return commandCatalog{
 		SchemaVersion: 1,
 		Name:          "forge",
 		Version:       version.Version,
 		GlobalOptions: []flagDetail{{Name: jsonErrorFormatFlag, Description: "Emit schema-versioned, secret-safe errors on stderr when a command fails."}},
-		ProcessExitCodes: []exitCodeDetail{
+		ProcessExitCodes: append([]exitCodeDetail{
 			{Code: 0, Meaning: "The requested command completed successfully."},
 			{Code: 1, Meaning: "A command failed or its arguments/configuration were invalid."},
 			{Code: 2, Meaning: "No command was supplied or the top-level command is unknown."},
-		},
+		}, deployExitCodes...),
 		Commands: commands,
 	}
 }

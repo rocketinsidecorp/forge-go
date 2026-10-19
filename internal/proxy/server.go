@@ -575,4 +575,3 @@ func (r *statusRecorder) Flush() {
 		flusher.Flush()
 	}
 }
-

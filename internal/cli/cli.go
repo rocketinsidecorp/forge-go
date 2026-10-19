@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/deploy"
 	"github.com/rocketinsidecorp/forge-go/internal/version"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
@@ -69,6 +70,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runSeed(args[1:], stdout, commandStderr)
 	case "generate":
 		err = runGenerate(args[1:], stdout)
+	case "deploy":
+		err = deploy.RunDeploy(args[1:], stdout, commandStderr)
+	case "logs":
+		err = deploy.RunLogs(args[1:], stdout, commandStderr)
+	case "app":
+		err = deploy.RunApp(args[1:], stdout, commandStderr)
 	case "help":
 		err = runHelp(args[1:], stdout)
 	case "-h", "--help":
@@ -90,12 +97,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, errInspectIncomplete) {
 			return 1
 		}
+		code := 1
+		var coded interface{ ExitCode() int }
+		if errors.As(err, &coded) {
+			code = coded.ExitCode()
+		}
 		if jsonErrors {
-			writeCLIError(stderr, "command.failed", "Command failed.", 1, args[0])
-			return 1
+			writeCLIError(stderr, "command.failed", "Command failed.", code, args[0])
+			return code
 		}
 		fmt.Fprintf(stderr, "forge: %v\n", err)
-		return 1
+		return code
 	}
 	return 0
 }
@@ -299,6 +311,11 @@ commands:
   generate authentication [--dry-run]
                       add the sign-in, sign-out, two-factor and password-reset
                       pages forge new generates (PostgreSQL)
+  deploy [init|setup|rollback VERSION|prune|details|lock|maintenance]
+                      deploy containers to hosts over SSH behind forge-proxy;
+                      --dry-run prints the remote commands, secrets redacted
+  logs [-f]           stream container logs from every host (host| prefix)
+  app exec|shell      run a command or a shell next to the deployed app
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
   routes              list the routes found in the source, as a table
