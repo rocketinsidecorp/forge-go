@@ -30,6 +30,9 @@ const (
 	SecurityMFARotationStarted    SecurityEventKind = "auth.mfa.rotation_started"
 	SecurityMFARotated            SecurityEventKind = "auth.mfa.rotated"
 	SecurityMFADisabled           SecurityEventKind = "auth.mfa.disabled"
+	// SecurityIdentityProvisioned records the first tenant and owner account
+	// created by the setup command.
+	SecurityIdentityProvisioned SecurityEventKind = "auth.identity.provisioned"
 )
 
 type SecurityOutcome string

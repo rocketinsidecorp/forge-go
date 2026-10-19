@@ -24,6 +24,25 @@ func ViewBase(name string) ([]BaseFile, error) {
 	if err != nil {
 		return nil, err
 	}
+	return renderSelected(opts, isViewBase)
+}
+
+// AuthenticationFiles returns the sign-in, sign-out, two-factor and
+// password-reset pages `forge new` generates for a PostgreSQL application:
+// app/adapters/htmlauth (handlers and tests) and app/views/sessions and
+// app/views/passwords. `forge generate authentication` adds them to an
+// application that lacks them, so both produce the same files. name is the
+// application name and module its Go module path.
+func AuthenticationFiles(name, module string) ([]BaseFile, error) {
+	opts, err := Normalize(Options{Name: name, Module: module, Database: "postgresql"})
+	if err != nil {
+		return nil, err
+	}
+	return renderSelected(opts, func(f file) bool { return f.scope == withIdentity })
+}
+
+// renderSelected renders the files keep selects, formatting Go sources.
+func renderSelected(opts Options, keep func(file) bool) ([]BaseFile, error) {
 	data := templateData{Options: opts}
 	plain, err := parseTemplates(false)
 	if err != nil {
@@ -35,7 +54,7 @@ func ViewBase(name string) ([]BaseFile, error) {
 	}
 	var result []BaseFile
 	for _, f := range files {
-		if !isViewBase(f) {
+		if !keep(f) {
 			continue
 		}
 		set := plain
@@ -58,7 +77,8 @@ func ViewBase(name string) ([]BaseFile, error) {
 	return result, nil
 }
 
-// isViewBase selects the files under app/views.
+// isViewBase selects the files under app/views that every application has;
+// the authentication pages belong to AuthenticationFiles.
 func isViewBase(f file) bool {
-	return strings.HasPrefix(f.path(""), filepath.Join("app", "views")+string(filepath.Separator))
+	return f.scope == everyApplication && strings.HasPrefix(f.path(""), filepath.Join("app", "views")+string(filepath.Separator))
 }

@@ -313,6 +313,8 @@ func renderMigration(v resourceView) (up, down string) {
 	if v.Identity {
 		fmt.Fprintf(&sql, "\n-- Permissions that guard the HTTP routes (the protect argument of Register%s).\n", v.PluralTitle)
 		fmt.Fprintf(&sql, "INSERT INTO forge_permissions (name) VALUES ('%s:read'), ('%s:write')\nON CONFLICT (name) DO NOTHING;\n", table, table)
+		sql.WriteString("\n-- The owner role (created by `setup`) holds every permission.\n")
+		fmt.Fprintf(&sql, "INSERT INTO forge_role_permissions (role_id, permission)\nSELECT r.id, p.name FROM forge_roles r CROSS JOIN (VALUES ('%s:read'), ('%s:write')) AS p (name)\nWHERE r.name = 'owner'\nON CONFLICT (role_id, permission) DO NOTHING;\n", table, table)
 	}
 	up = sql.String()
 

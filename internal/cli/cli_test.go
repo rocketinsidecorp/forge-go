@@ -113,7 +113,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
 		t.Fatalf("decode command catalog: %v\n%s", err, stdout.String())
 	}
-	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 13 || len(catalog.ProcessExitCodes) != 3 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
+	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 15 || len(catalog.ProcessExitCodes) != 3 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
 		t.Fatalf("unexpected catalog header: %+v", catalog)
 	}
 	rollbackDeclaredDestructive := false
@@ -122,7 +122,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	commandsSeen := make(map[string]bool, len(catalog.Commands))
 	processExitCodesSeen := make(map[int]bool, len(catalog.ProcessExitCodes))
 	expectedCommands := map[string]bool{
-		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true,
+		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true, "setup": true, "seed": true,
 		"generate": true, "doctor": true, "inspect": true, "routes": true, "uuid": true, "version": true, "help": true,
 	}
 	for _, command := range catalog.Commands {
@@ -131,7 +131,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		}
 		commandsSeen[command.Name] = true
 		if command.Name == "generate" {
-			generateDeclaresJob = strings.Contains(command.Usage, "|job|resource|scaffold>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
+			generateDeclaresJob = strings.Contains(command.Usage, "|job|resource|scaffold|authentication>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
 				containsString(command.Examples, "forge generate resource category name:string --global --plural categories") &&
 				containsString(command.Examples, "forge generate scaffold post title:string body:text published:bool --global --dry-run")
 		}

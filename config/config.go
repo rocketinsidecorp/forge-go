@@ -4,6 +4,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -47,6 +49,27 @@ type Auth struct {
 	// MFAKey is the canonical unpadded base64url encoding of 32 random bytes
 	// used by the built-in AES-256-GCM TOTP secret cipher.
 	MFAKey Secret
+	// PasswordResetURL is the absolute URL of the page password-reset emails
+	// link to, such as https://app.example.com/passwords/edit
+	// (FORGE_AUTH_PASSWORD_RESET_URL). It must be https, or http on a
+	// loopback host for development. Empty disables reset emails.
+	PasswordResetURL string
+}
+
+func (a Auth) validate() error {
+	if a.PasswordResetURL == "" {
+		return nil
+	}
+	parsed, err := url.Parse(a.PasswordResetURL)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Opaque != "" || parsed.Fragment != "" || parsed.RawQuery != "" {
+		return errors.New("FORGE_AUTH_PASSWORD_RESET_URL must be an absolute URL without credentials, query or fragment")
+	}
+	host := parsed.Hostname()
+	loopback := host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".localhost")
+	if parsed.Scheme != "https" && (parsed.Scheme != "http" || !loopback) {
+		return errors.New("FORGE_AUTH_PASSWORD_RESET_URL must use https (http is allowed only for localhost)")
+	}
+	return nil
 }
 
 type Database struct {
@@ -128,6 +151,9 @@ func (c Config) Validate() error {
 		return errors.New("HTTP size limits must be positive")
 	}
 	if err := c.Database.validate(c.Environment); err != nil {
+		return err
+	}
+	if err := c.Auth.validate(); err != nil {
 		return err
 	}
 	return c.Mail.validate(c.Environment)

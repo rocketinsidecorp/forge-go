@@ -401,10 +401,17 @@ func TestResourcePermissionsAreOnlySeededWithForgeIdentity(t *testing.T) {
 	}
 	up := readFile(t, firstMatch(t, root, "*_create_products.up.sql"))
 	down := readFile(t, firstMatch(t, root, "*_create_products.down.sql"))
-	for _, want := range []string{"INSERT INTO forge_permissions", "'products:read'", "'products:write'", "ON CONFLICT (name) DO NOTHING"} {
+	for _, want := range []string{
+		"INSERT INTO forge_permissions", "'products:read'", "'products:write'", "ON CONFLICT (name) DO NOTHING",
+		// The owner role `setup` creates holds every permission, new ones too.
+		"INSERT INTO forge_role_permissions (role_id, permission)", "WHERE r.name = 'owner'", "ON CONFLICT (role_id, permission) DO NOTHING",
+	} {
 		if !strings.Contains(up, want) {
 			t.Errorf("up migration is missing %q:\n%s", want, up)
 		}
+	}
+	if strings.Index(up, "INSERT INTO forge_role_permissions") < strings.Index(up, "INSERT INTO forge_permissions") {
+		t.Errorf("owner grants must follow the permissions they reference:\n%s", up)
 	}
 	// Grants go before the permissions they reference, and both before the table.
 	grants := strings.Index(down, "DELETE FROM forge_role_permissions")

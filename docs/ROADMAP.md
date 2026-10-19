@@ -189,9 +189,26 @@ Implemented foundation:
   valid token can cause a database write; deployments should limit request
   volume and plan retention/capacity.
 
-Remaining boundaries: generated applications do not provision the first user
-or tenant; password-recovery delivery needs a configured sender; and MFA
-enrollment/rotation still requires an application-specific step-up policy.
+- Milestone M3, authentication you can see
+  ([ADR 0026](adr/0026-authentication-pages-and-setup.md)): generated
+  PostgreSQL applications ship Rails-style sign-in, sign-out, two-factor and
+  password-reset pages (`app/adapters/htmlauth`, `app/views/sessions`,
+  `app/views/passwords`) on top of `auth.Browser`, which keeps CSRF
+  verification (`csrf.Verified`, fail closed), uniform failures, throttling,
+  cookies and return-path validation in the framework;
+  `Middleware.AuthenticateBrowser` redirects signed-out browsers to the
+  sign-in page while API clients keep `401`; `forge generate authentication`
+  adds the pages to older PostgreSQL applications and refuses other
+  databases; `app setup` / `forge setup` provisions the first organization,
+  tenant and owner role once, audited, with the password never in argv; and
+  `app seed` / `forge seed` runs an idempotent `db.Seed` in one transaction
+  for every database.
+
+Remaining boundaries: inviting further users and creating more tenants are
+application features; password-recovery delivery needs a configured sender;
+MFA enrollment/rotation still requires an application-specific step-up policy
+and has no generated pages; and tenants are chosen with an explicit field,
+not by host name.
 Those framework primitives require application-specific decisions and are documented in
 [AUTHENTICATION.md](AUTHENTICATION.md) and [MFA.md](MFA.md). PostgreSQL is the
 only built-in identity persistence adapter and the only adapter with a

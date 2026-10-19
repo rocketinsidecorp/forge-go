@@ -66,9 +66,21 @@ type templateData struct {
 type file struct {
 	template string
 	path     func(name string) string
-	// databaseOnly files are generated only with Options.Database.
-	databaseOnly bool
+	scope    fileScope
 }
+
+// fileScope selects the applications a file is generated for.
+type fileScope int
+
+const (
+	everyApplication fileScope = iota
+	// withDatabase files are generated only with Options.Database.
+	withDatabase
+	// withIdentity files are generated only for databases with Forge
+	// identity (PostgreSQL): the HTML sign-in, sign-out and password pages.
+	// `forge generate authentication` renders the same files.
+	withIdentity
+)
 
 type asset struct {
 	source string
@@ -78,26 +90,34 @@ type asset struct {
 func fixed(path string) func(string) string { return func(string) string { return path } }
 
 var files = []file{
-	{"go.mod.tmpl", fixed("go.mod"), false},
-	{"main.go.tmpl", func(name string) string { return filepath.Join("cmd", name, "main.go") }, false},
-	{"bootstrap.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap.go")), false},
-	{"bootstrap_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap_test.go")), false},
-	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), false},
-	{"views.go.tmpl", fixed(filepath.Join("app", "views", "views.go")), false},
-	{"views_test.go.tmpl", fixed(filepath.Join("app", "views", "views_test.go")), false},
-	{"application.gohtml.tmpl", fixed(filepath.Join("app", "views", "layouts", "application.gohtml")), false},
-	{"flash.gohtml.tmpl", fixed(filepath.Join("app", "views", "shared", "_flash.gohtml")), false},
-	{"Dockerfile.tmpl", fixed("Dockerfile"), false},
-	{"dockerignore.tmpl", fixed(".dockerignore"), false},
-	{"compose.yaml.tmpl", fixed("compose.yaml"), false},
-	{"gitignore.tmpl", fixed(".gitignore"), false},
-	{"ci.yml.tmpl", fixed(filepath.Join(".github", "workflows", "ci.yml")), false},
-	{"dependabot.yml.tmpl", fixed(filepath.Join(".github", "dependabot.yml")), false},
-	{"README.md.tmpl", fixed("README.md"), false},
-	{"env.development.tmpl", fixed(".env.development"), false},
-	{"env.local.tmpl", fixed(".env.local"), true},
-	{"db.go.tmpl", fixed(filepath.Join("db", "db.go")), true},
-	{"keep.tmpl", fixed(filepath.Join("db", "migrations", ".keep")), true},
+	{"go.mod.tmpl", fixed("go.mod"), everyApplication},
+	{"main.go.tmpl", func(name string) string { return filepath.Join("cmd", name, "main.go") }, everyApplication},
+	{"bootstrap.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap.go")), everyApplication},
+	{"bootstrap_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap_test.go")), everyApplication},
+	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), everyApplication},
+	{"views.go.tmpl", fixed(filepath.Join("app", "views", "views.go")), everyApplication},
+	{"views_test.go.tmpl", fixed(filepath.Join("app", "views", "views_test.go")), everyApplication},
+	{"application.gohtml.tmpl", fixed(filepath.Join("app", "views", "layouts", "application.gohtml")), everyApplication},
+	{"flash.gohtml.tmpl", fixed(filepath.Join("app", "views", "shared", "_flash.gohtml")), everyApplication},
+	{"htmlauth.go.tmpl", fixed(filepath.Join("app", "adapters", "htmlauth", "htmlauth.go")), withIdentity},
+	{"htmlauth_test.go.tmpl", fixed(filepath.Join("app", "adapters", "htmlauth", "htmlauth_test.go")), withIdentity},
+	{"sessions_new.gohtml.tmpl", fixed(filepath.Join("app", "views", "sessions", "new.gohtml")), withIdentity},
+	{"sessions_mfa.gohtml.tmpl", fixed(filepath.Join("app", "views", "sessions", "mfa.gohtml")), withIdentity},
+	{"sessions_sign_out.gohtml.tmpl", fixed(filepath.Join("app", "views", "sessions", "_sign_out.gohtml")), withIdentity},
+	{"passwords_new.gohtml.tmpl", fixed(filepath.Join("app", "views", "passwords", "new.gohtml")), withIdentity},
+	{"passwords_edit.gohtml.tmpl", fixed(filepath.Join("app", "views", "passwords", "edit.gohtml")), withIdentity},
+	{"Dockerfile.tmpl", fixed("Dockerfile"), everyApplication},
+	{"dockerignore.tmpl", fixed(".dockerignore"), everyApplication},
+	{"compose.yaml.tmpl", fixed("compose.yaml"), everyApplication},
+	{"gitignore.tmpl", fixed(".gitignore"), everyApplication},
+	{"ci.yml.tmpl", fixed(filepath.Join(".github", "workflows", "ci.yml")), everyApplication},
+	{"dependabot.yml.tmpl", fixed(filepath.Join(".github", "dependabot.yml")), everyApplication},
+	{"README.md.tmpl", fixed("README.md"), everyApplication},
+	{"env.development.tmpl", fixed(".env.development"), everyApplication},
+	{"env.local.tmpl", fixed(".env.local"), withDatabase},
+	{"db.go.tmpl", fixed(filepath.Join("db", "db.go")), withDatabase},
+	{"seeds.go.tmpl", fixed(filepath.Join("db", "seeds.go")), withDatabase},
+	{"keep.tmpl", fixed(filepath.Join("db", "migrations", ".keep")), withDatabase},
 }
 
 var assets = []asset{{
@@ -241,11 +261,18 @@ func render(opts Options) (map[string][]byte, error) {
 }
 
 func selectedFiles(opts Options) []file {
+	identity := false
+	if profile := profileFor(opts.Database, "", ""); profile != nil {
+		identity = profile.Identity
+	}
 	selected := make([]file, 0, len(files))
 	for _, f := range files {
-		if !f.databaseOnly || opts.Database != "" {
-			selected = append(selected, f)
+		switch {
+		case f.scope == withDatabase && opts.Database == "",
+			f.scope == withIdentity && !identity:
+			continue
 		}
+		selected = append(selected, f)
 	}
 	return selected
 }

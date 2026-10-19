@@ -42,6 +42,15 @@ type CommandEnv struct {
 	Logger *slog.Logger
 	Stdout io.Writer
 	Stderr io.Writer
+	// Stdin is the process's standard input (os.Stdin under Main), for
+	// commands that read a secret piped to them or typed at a terminal.
+	// Secrets never belong in arguments, which other local users can list.
+	// It is nil when the caller of Execute provides none.
+	Stdin io.Reader
+	// LookupEnv reads the process environment, like os.LookupEnv, for
+	// command-specific variables that are not part of Config. It is never
+	// nil.
+	LookupEnv func(string) (string, bool)
 }
 
 const healthcheckTimeout = 2 * time.Second
@@ -58,7 +67,7 @@ var reservedCommands = map[string]bool{"serve": true, "healthcheck": true, "help
 // the process.
 func Main(configure Configure, commands ...Command) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := Execute(ctx, os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr, configure, commands...)
+	code := execute(ctx, os.Args[1:], os.LookupEnv, os.Stdin, os.Stdout, os.Stderr, configure, commands...)
 	stop()
 	os.Exit(code)
 }
@@ -67,7 +76,14 @@ func Main(configure Configure, commands ...Command) {
 // success, 1 on failure, 2 on misuse. Cancelling ctx triggers a graceful
 // shutdown of "serve". It exists so the full startup path can be tested
 // without touching process state.
+//
+// Commands run by Execute receive no standard input (CommandEnv.Stdin is
+// nil); Main passes os.Stdin.
 func Execute(ctx context.Context, args []string, lookup func(string) (string, bool), stdout, stderr io.Writer, configure Configure, commands ...Command) int {
+	return execute(ctx, args, lookup, nil, stdout, stderr, configure, commands...)
+}
+
+func execute(ctx context.Context, args []string, lookup func(string) (string, bool), stdin io.Reader, stdout, stderr io.Writer, configure Configure, commands ...Command) int {
 	if ctx == nil || lookup == nil || stdout == nil || stderr == nil || configure == nil {
 		if stderr != nil {
 			fmt.Fprintln(stderr, "forge: context, environment lookup, outputs and configure function are required")
@@ -107,7 +123,8 @@ func Execute(ctx context.Context, args []string, lookup func(string) (string, bo
 	logger := newLogger(cfg.Environment, stdout)
 	switch {
 	case isExtra:
-		if err := command.Run(ctx, CommandEnv{Config: cfg, Logger: logger, Stdout: stdout, Stderr: stderr}, args); err != nil {
+		env := CommandEnv{Config: cfg, Logger: logger, Stdout: stdout, Stderr: stderr, Stdin: stdin, LookupEnv: lookup}
+		if err := command.Run(ctx, env, args); err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", name, err)
 			if errors.Is(err, ErrUsage) {
 				return 2

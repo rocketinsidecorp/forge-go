@@ -96,6 +96,10 @@ type resourceSpec struct {
 	// install the CSRF, method-override and flash middleware server-rendered
 	// forms rely on. Only scaffolds look.
 	BrowserPipeline bool
+	// ViewRenderer reports that bootstrap.go already builds the view
+	// renderer (renderer, err := views.New()), as PostgreSQL applications
+	// from `forge new` do for the sign-in pages. Only scaffolds look.
+	ViewRenderer bool
 }
 
 func runGenerateResource(args []string, stdout io.Writer, root string, env []string, now time.Time) error {

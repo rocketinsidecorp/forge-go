@@ -16,7 +16,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
-const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]"
+const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate authentication [--dry-run]"
 
 var migrationName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,99}$`)
 var viewName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -47,6 +47,9 @@ func runGenerateEnv(args []string, stdout io.Writer, root string, env []string, 
 	}
 	if len(args) > 0 && args[0] == "scaffold" {
 		return runGenerateScaffold(args[1:], stdout, root, env, now)
+	}
+	if len(args) > 0 && args[0] == "authentication" {
+		return runGenerateAuthentication(args[1:], stdout, root, env)
 	}
 	dryRun := len(args) == 3 && args[2] == "--dry-run"
 	if (len(args) != 2 && !dryRun) || (len(args) == 3 && !dryRun) {

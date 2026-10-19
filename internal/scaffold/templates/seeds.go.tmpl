@@ -1,0 +1,32 @@
+package db
+
+import (
+	"context"
+{{- if eq .DB.Adapter "postgres"}}
+
+	"github.com/jackc/pgx/v5"
+{{- else}}
+	"database/sql"
+{{- end}}
+)
+
+// Seed loads the rows every environment of {{.Name}} needs, such as lookup
+// tables or default settings. `{{.Name}} seed` (`forge seed` in development)
+// runs it after the migrations, in one transaction that commits only when it
+// returns nil.
+//
+// Keep it idempotent: seeding is meant to run again, for example after every
+// deploy, so insert only the rows that are missing and never delete
+// ({{if eq .DB.Adapter "mysql"}}INSERT IGNORE{{else}}INSERT ... ON CONFLICT DO NOTHING{{end}}).
+{{- if .DB.Identity}} Seeds are not accounts: create the first
+// tenant and its owner with `{{.Name}} setup`.
+{{- else}} Keep credentials and personal data out of
+// seeds.
+{{- end}}
+{{- if eq .DB.Adapter "postgres"}}
+func Seed(ctx context.Context, tx pgx.Tx) error {
+{{- else}}
+func Seed(ctx context.Context, tx *sql.Tx) error {
+{{- end}}
+	return nil
+}

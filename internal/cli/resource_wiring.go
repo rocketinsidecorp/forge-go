@@ -133,12 +133,17 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 	title := exportedName(spec.Name)
 	plural := exportedName(spec.Plural)
-	parts.Imports = append(parts.Imports, spec.Module+"/app/adapters/htmlui", spec.Module+"/app/views")
-	parts.Renderer = `	renderer, err := views.New()
+	parts.Imports = append(parts.Imports, spec.Module+"/app/adapters/htmlui")
+	if spec.ViewRenderer {
+		parts.Notes = append(parts.Notes, "The pages reuse the renderer that bootstrap.go already builds with views.New().")
+	} else {
+		parts.Imports = append(parts.Imports, spec.Module+"/app/views")
+		parts.Renderer = `	renderer, err := views.New()
 	if err != nil {
 		return err
 	}
 `
+	}
 	guard := "protect"
 	if spec.Identity {
 		guard = "protectCookie"
@@ -151,10 +156,12 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 		if err != nil {
 			return nil, err
 		}
-		return middleware.AuthenticateCookie(guarded), nil
+		// Signed-out browsers go to the sign-in page and come back; API
+		// clients get the 401 JSON error.
+		return middleware.AuthenticateBrowser("/session/new", guarded)
 	}
 `
-		parts.Notes = append(parts.Notes, "The pages authenticate the session cookie that POST /auth/cookie/login sets; a browser without it receives the 401 JSON error, because Forge ships no login page. Their forms are protected by the CSRF middleware that bootstrap.go installs.")
+		parts.Notes = append(parts.Notes, "The pages authenticate the session cookie the sign-in page (/session/new) and POST /auth/cookie/login set; a signed-out browser is redirected to /session/new and back, while API clients get the 401 JSON error. forge new generates the sign-in page; run `forge generate authentication` in an application that lacks it. Their forms are protected by the CSRF middleware that bootstrap.go installs.")
 	}
 	if spec.Identity && !spec.TenantScoped {
 		parts.Usage += fmt.Sprintf(`	if err := htmlui.Register%[1]s(app, %[2]sService, renderer, func(permission string, next http.Handler) (http.Handler, error) {

@@ -14,6 +14,7 @@ through a `Sender` port, and the defaults are the safe ones. The design is in
 | `FORGE_MAIL_TIMEOUT` | `30s` | Bounds one delivery attempt (maximum 10m). |
 | `FORGE_MAIL_PREVIEW` | `false` | `true` enables the preview handler. Only valid when `FORGE_ENV` is `development` or `test`. |
 | `FORGE_MAIL_TLS_CA_FILE` | empty | PEM file with extra trusted roots for a private relay. There is no setting to skip certificate verification. |
+| `FORGE_AUTH_PASSWORD_RESET_URL` | empty | Absolute URL of the reset page (`https://app.example.com/passwords/edit`; http only on localhost). Generated PostgreSQL applications send reset emails, and show the reset pages, only when it and `FORGE_MAIL_URL` are set. |
 
 `production` refuses `file://` and starts only with a valid URL. The SMTP
 sender always verifies the server certificate and refuses a server without
@@ -141,6 +142,11 @@ recovery, err := recoverymail.New(sender, recoverymail.Config{
 })
 service, err := auth.NewRecoveryService(store, recovery)
 ```
+
+Generated PostgreSQL applications do exactly this in
+`bootstrap.passwordRecoveryDelivery` when `FORGE_MAIL_URL`, `FORGE_MAIL_FROM`
+and `FORGE_AUTH_PASSWORD_RESET_URL` are set, with the sender `FromConfig`
+builds (inline SMTP).
 
 `recoverymail.Sender` implements `auth.RecoverySender`. Give it a queue-backed
 `mail.Sender` in production: SMTP inline makes the response time reveal whether

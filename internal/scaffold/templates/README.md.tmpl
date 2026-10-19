@@ -80,7 +80,78 @@ protection (`{{"{{"}}csrfField{{"}}"}}` in every form) and flash messages
 for all routes. See the Forge views guide (`docs/VIEWS.md`).
 {{- if and .DB .DB.Identity}}
 
-## Authentication (generated with PostgreSQL)
+## Sign in
+
+Create the first organization, tenant and owner account once, after the
+migrations (the password is prompted for twice, never passed as an argument):
+
+```bash
+forge migrate
+forge setup --tenant acme --email you@example.com --organization "Acme Inc"
+forge dev
+```
+
+Then open `http://localhost:8080/session/new` and sign in with organization
+`acme`. The owner holds every permission: `setup` grants all registered
+permissions to the tenant's `owner` role, and the migrations of
+`forge generate resource` and `forge generate scaffold` grant their new
+permissions to it. `setup` refuses once a tenant exists. In a container, run
+`docker compose run --rm app setup --tenant acme --email you@example.com`, or
+pipe the password with `--password-stdin` (or set `FORGE_SETUP_PASSWORD` for
+that one command) where there is no terminal.
+
+The pages live in `app/adapters/htmlauth` and `app/views/sessions` and
+`app/views/passwords`; change their markup and wording freely. `auth.Browser`
+in the framework makes every security decision: CSRF verification, uniform
+failures, throttling (429 with `Retry-After`), the session cookies and
+validated return paths.
+
+| Method | Path | Page |
+| ------ | ---- | ---- |
+| `GET` | `/session/new` | Sign-in form (organization, email, password) |
+| `POST` | `/session` | Sign in; 303 to the validated `return_to` or `/` |
+| `DELETE` | `/session` | Sign out (`_method=DELETE` form, `sessions/_sign_out` partial) |
+| `GET`, `POST` | `/session/mfa` | Authenticator or backup code, when `FORGE_AUTH_MFA_KEY` is set |
+| `GET` | `/passwords/new` | Forgot-password form (only when reset emails are configured, see below) |
+| `POST` | `/passwords` | Send reset instructions (same answer whether or not the account exists) |
+| `GET` | `/passwords/edit?token=...` | Choose a new password from the emailed link |
+| `PATCH` | `/passwords` | Change the password; signs every session out |
+
+Guard pages with `middleware.AuthenticateBrowser(htmlauth.SignInPath, page)`
+(the wiring `forge generate scaffold` prints does): a signed-out browser is
+sent to the sign-in page and back, while JSON clients still get `401`.
+
+### Password-reset emails
+
+The reset pages, and the "Forgot your password?" link, appear only when
+outgoing mail is configured; nothing pretends to send otherwise. In
+development, write the emails to files (in `.env.local`, or uncomment the
+lines in `.env.development`):
+
+```bash
+FORGE_MAIL_URL=file:tmp/mail
+FORGE_MAIL_FROM="{{.Name}} <no-reply@example.com>"
+FORGE_AUTH_PASSWORD_RESET_URL=http://localhost:8080/passwords/edit
+```
+
+Restart `forge dev`, request a reset at `/passwords/new` and open the link in
+the newest `tmp/mail/*.eml`. In production use your SMTP server (STARTTLS on
+587 with `smtp://`, implicit TLS on 465 with `smtps://`) and the public URL:
+
+```bash
+FORGE_MAIL_URL=smtps://user:password@smtp.example.com:465
+FORGE_MAIL_FROM="{{.Name}} <no-reply@example.com>"
+FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit
+```
+
+`bootstrap.passwordRecoveryDelivery` wires `auth/recoverymail` from these
+variables; `FORGE_MAIL_URL` without `FORGE_AUTH_PASSWORD_RESET_URL` stops the
+application at startup. See the Forge mail guide (`docs/MAIL.md`).
+
+`db/seeds.go` holds `db.Seed`, which `forge seed` (`{{.Name}} seed`) runs in
+one transaction. Keep it idempotent.
+
+## Authentication API (generated with PostgreSQL)
 
 The following endpoints are registered by `bootstrap.Configure`:
 
@@ -99,20 +170,25 @@ registered at `/auth/mfa/complete` and `/auth/cookie/mfa/complete`. Browser
 cookie routes require a secure same-origin HTTPS `Origin` and unsafe cookie
 requests require CSRF validation.
 
-Password recovery primitives and routes are generated, but delivery is
-intentionally fail-closed until the application wires a `RecoverySender`.
-Requests still return the same accepted response to avoid account enumeration;
-the application logs a generic configuration error and invalidates the token.
-No recovery token or recipient is written to logs. Configure a delivery
-adapter before advertising password recovery to users.
+Password recovery emails are sent through `auth/recoverymail` once
+`FORGE_MAIL_URL`, `FORGE_MAIL_FROM` and `FORGE_AUTH_PASSWORD_RESET_URL` are set
+(see Password-reset emails). Until then the JSON recovery routes stay
+fail-closed: they return the same accepted response to avoid account
+enumeration, log a generic configuration error and invalidate the token, and
+the HTML reset pages are not mounted. No recovery token or recipient is
+written to logs.
 {{- end}}
 
 | Path | Purpose |
 | --- | --- |
-| `cmd/{{.Name}}` | Process entrypoint: `serve` (default), `healthcheck`{{if .DB}}, `migrate`, `rollback`{{end}} |
+| `cmd/{{.Name}}` | Process entrypoint: `serve` (default), `healthcheck`{{if .DB}}, `migrate`, `rollback`, `seed`{{end}}{{if and .DB .DB.Identity}}, `setup`{{end}} |
 | `app/bootstrap` | Composition root: dependencies, readiness checks, routes |
+{{- if and .DB .DB.Identity}}
+| `app/adapters/htmlauth` | Sign-in, sign-out, two-factor and password-reset pages |
+{{- end}}
 {{- if .DB}}
 | `db/migrations` | SQL migrations, embedded in the binary |
+| `db/seeds.go` | Idempotent seed data for `seed` |
 {{- end}}
 | `Dockerfile` | Production image: static binary, distroless, non-root |
 | `compose.yaml` | Local stack running the same image in development mode |
@@ -148,12 +224,13 @@ exactly 32 random bytes and belongs in `.env.local` during development or a
 secret manager in deployed environments. It is never stored in the identity
 database.
 
-Run `migrate` before serving so the Forge identity tables exist. Account
-provisioning and MFA enrollment/rotation remain application opt-ins because
-they require application policy and step-up authorization. Browser-cookie
-routes are available for HTTPS applications. Password recovery delivery must
-be configured by the application; it can use a self-hosted SMTP server and
-does not require a particular email SaaS provider.
+Run `migrate` before serving so the Forge identity tables exist, then
+`setup` once to create the first owner. Inviting further users and MFA
+enrollment/rotation remain application opt-ins because they require
+application policy and step-up authorization. Browser-cookie
+routes are available for HTTPS applications. Password recovery delivery is
+enabled by the `FORGE_MAIL_*` and `FORGE_AUTH_PASSWORD_RESET_URL` settings
+above; any SMTP server works, self-hosted included.
 {{- end}}
 
 ## Deploy

@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -12,6 +14,16 @@ import (
 var _ auth.SecurityAuditor = (*Repository)(nil)
 
 func (r *Repository) RecordSecurityEvent(ctx context.Context, event auth.SecurityEvent) error {
+	return recordSecurityEvent(ctx, r.db, event)
+}
+
+// execer is satisfied by *postgres.DB and pgx.Tx, so an event can be written
+// inside the transaction whose change it records.
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+func recordSecurityEvent(ctx context.Context, db execer, event auth.SecurityEvent) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
@@ -28,7 +40,7 @@ func (r *Repository) RecordSecurityEvent(ctx context.Context, event auth.Securit
 		nullableString(web.RequestID(ctx)),
 	}
 	if event.OccurredAt.IsZero() {
-		_, err := r.db.Exec(ctx, `
+		_, err := db.Exec(ctx, `
 			INSERT INTO forge_security_audit_events
 				(kind, outcome, actor_id, subject_id, membership_id,
 				 account_digest, source_digest, credential_digest, request_id, occurred_at)
@@ -38,7 +50,7 @@ func (r *Repository) RecordSecurityEvent(ctx context.Context, event auth.Securit
 	}
 
 	args = append(args, event.OccurredAt.UTC())
-	_, err := r.db.Exec(ctx, `
+	_, err := db.Exec(ctx, `
 		INSERT INTO forge_security_audit_events
 			(kind, outcome, actor_id, subject_id, membership_id,
 			 account_digest, source_digest, credential_digest, request_id, occurred_at)

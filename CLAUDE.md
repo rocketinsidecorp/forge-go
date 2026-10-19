@@ -437,6 +437,8 @@ A task is complete only when applicable items are satisfied:
 -   [ ] Relevant project instructions followed.
 -   [ ] Implementation complete.
 -   [ ] Relevant tests/checks executed.
+-   [ ] README.md carries copyable commands to create, run and use every
+    user-facing feature (owner decision, 2026-10-19).
 -   [ ] Type/lint/static checks pass where applicable.
 -   [ ] Build passes where applicable.
 -   [ ] Final diff reviewed.

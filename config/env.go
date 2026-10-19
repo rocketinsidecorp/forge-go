@@ -26,6 +26,7 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 	if value, ok := lookup("FORGE_AUTH_MFA_KEY"); ok {
 		cfg.Auth.MFAKey = NewSecret(value)
 	}
+	setString(lookup, "FORGE_AUTH_PASSWORD_RESET_URL", &cfg.Auth.PasswordResetURL)
 	if value, ok := lookup("FORGE_DATABASE_URL"); ok {
 		cfg.Database.URL = NewSecret(value)
 	}

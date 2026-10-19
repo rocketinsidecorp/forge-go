@@ -5,6 +5,10 @@
 {{- if .DB}}
 //	{{.Name}} migrate      apply database migrations ("migrate status" lists them)
 //	{{.Name}} rollback     revert the latest migration
+//	{{.Name}} seed         load db.Seed's data in one transaction
+{{- end}}
+{{- if and .DB .DB.Identity}}
+//	{{.Name}} setup        create the first tenant and its owner account, once
 {{- end}}
 package main
 
@@ -35,14 +39,22 @@ func main() {
 			}
 			return bootstrap.JobsConfigure(app)
 		},
-		postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations())...,
+		append(
+			postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations()),
+			authpostgres.SetupCommand(),
+			postgres.SeedCommand(db.Seed),
+		)...,
 	)
 }
 {{- else if and .DB .DB.Identity -}}
 func main() {
 	forge.Main(
 		bootstrap.Configure,
-		postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations())...,
+		append(
+			postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations()),
+			authpostgres.SetupCommand(),
+			postgres.SeedCommand(db.Seed),
+		)...,
 	)
 }
 {{- else if and .DB .DB.Jobs -}}
@@ -54,11 +66,13 @@ func main() {
 			}
 			return bootstrap.JobsConfigure(app)
 		},
-		{{.DB.Adapter}}.Commands(db.Migrations())...,
+		append({{.DB.Adapter}}.Commands(db.Migrations()), {{.DB.Adapter}}.SeedCommand(db.Seed))...,
 	)
 }
 {{- else if .DB -}}
-func main() { forge.Main(bootstrap.Configure, {{.DB.Adapter}}.Commands(db.Migrations())...) }
+func main() {
+	forge.Main(bootstrap.Configure, append({{.DB.Adapter}}.Commands(db.Migrations()), {{.DB.Adapter}}.SeedCommand(db.Seed))...)
+}
 {{- else -}}
 func main() { forge.Main(bootstrap.Configure) }
 {{- end}}

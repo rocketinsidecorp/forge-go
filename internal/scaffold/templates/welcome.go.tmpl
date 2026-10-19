@@ -60,7 +60,12 @@ const welcomePage = `<!doctype html>
 					<h1 id="welcome-title">Welcome to {{.Name}}</h1>
 					<p class="lede">Your Go service is ready. Replace this welcome page as you add the routes and capabilities your application needs.</p>
 					<div class="actions">
+{{- if and .DB .DB.Identity}}
+						<a class="button button-primary" href="/session/new">Sign in <span aria-hidden="true">→</span></a>
+						<a class="button button-secondary" href="/v1/status">View service status</a>
+{{- else}}
 						<a class="button button-primary" href="/v1/status">View service status <span aria-hidden="true">→</span></a>
+{{- end}}
 						<a class="button button-secondary" href="https://github.com/rocketinsidecorp/forge-go">Forge documentation</a>
 					</div>
 					<nav aria-label="Service health endpoints">
