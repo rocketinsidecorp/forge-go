@@ -83,7 +83,9 @@ type source struct {
 // Template names are the file paths without ".gohtml". Each page is parsed
 // into its own copy of the layouts and partials, so the "content" and
 // "title" blocks of different pages never collide. Escaping problems are
-// reported here rather than at the first request.
+// reported here rather than at the first request: Load executes each page
+// once with nil data into a discarding writer, so application functions in
+// Options.Funcs must not have side effects.
 //
 // Pages may use these helpers:
 //

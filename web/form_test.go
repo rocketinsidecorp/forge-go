@@ -159,6 +159,8 @@ func TestDecodeFormRejectsMalformedRequests(t *testing.T) {
 		code    string
 	}{
 		{name: "unknown field", request: formsWithBody("title=x&admin=true"), status: 400, code: "invalid_form"},
+		{name: "untagged field", request: formsWithBody("title=x&Internal=true"), status: 400, code: "invalid_form"},
+		{name: "long unknown field", request: formsWithBody(strings.Repeat("x", 100) + "=1"), status: 400, code: "invalid_form"},
 		{name: "duplicate scalar", request: formsWithBody("title=a&title=b"), status: 400, code: "invalid_form"},
 		{name: "duplicate checkbox", request: formsWithBody("published=0&published=1"), status: 400, code: "invalid_form"},
 		{name: "semicolon separator", request: formsWithBody("title=a;rank=1"), status: 400, code: "invalid_form"},
@@ -186,6 +188,21 @@ func TestDecodeFormRejectsMalformedRequests(t *testing.T) {
 				t.Fatalf("error = %v, want %d %s", err, tt.status, tt.code)
 			}
 		})
+	}
+}
+
+func TestDecodeFormDoesNotReuseAnotherBodyParse(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodPost, "/posts", strings.NewReader(`{"title":"x"}`))
+	request.Header.Set("Content-Type", "application/json")
+	_ = request.ParseForm() // leaves an empty PostForm behind
+	var form postForm
+	if public := fault.From(web.DecodeForm(request, &form)); public == nil || public.Status() != http.StatusUnsupportedMediaType {
+		t.Fatalf("fault = %+v", public)
+	}
+	long := formRequest(strings.Repeat("x", 100) + "=1")
+	if err := web.DecodeForm(long, &form); err == nil || strings.Contains(err.Error(), strings.Repeat("x", 100)) {
+		t.Fatalf("error echoes a long field name: %v", err)
 	}
 }
 

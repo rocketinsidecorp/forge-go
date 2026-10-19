@@ -39,6 +39,9 @@ const (
 
 const formMediaType = "application/x-www-form-urlencoded"
 
+// maxEchoedFieldName bounds the client-supplied field name an error repeats.
+const maxEchoedFieldName = 64
+
 // ErrInvalidFields is the fault behind FormErrors, so web.Error answers a
 // FormErrors value with 422 invalid_fields.
 var ErrInvalidFields = fault.New("invalid_fields", "one or more fields are invalid", fault.CategoryInvalid, http.StatusUnprocessableEntity)
@@ -56,11 +59,11 @@ func IsForm(r *http.Request) bool {
 // are faults: 415 unsupported_media_type, 413 body_too_large, 400
 // invalid_form or unreadable_body.
 func ParseForm(r *http.Request) (url.Values, error) {
-	if r.PostForm != nil {
-		return r.PostForm, nil
-	}
 	if !IsForm(r) {
 		return nil, fault.New("unsupported_media_type", "request body must be application/x-www-form-urlencoded", fault.CategoryInvalid, http.StatusUnsupportedMediaType)
+	}
+	if r.PostForm != nil {
+		return r.PostForm, nil
 	}
 	var body []byte
 	if r.Body != nil {
@@ -197,6 +200,9 @@ func DecodeForm(r *http.Request, dst any) error {
 		}
 		index, known := plan.byName[name]
 		if !known {
+			if len(name) > maxEchoedFieldName {
+				return invalidForm("request body has an unknown field", nil)
+			}
 			return invalidForm(fmt.Sprintf("unknown field %q", name), nil)
 		}
 		if len(submitted) > 1 && plan.fields[index].kind != kindStrings {
