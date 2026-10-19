@@ -136,6 +136,15 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_DATABASE_CONNECT_TIMEOUT`    | `5s`             | Per connection attempt; also bounds the startup ping; SQLite `busy_timeout` |
 | `FORGE_DATABASE_STATEMENT_TIMEOUT`  | `30s`            | Server-side statement bound, at least `1ms`: every statement on PostgreSQL and MariaDB, `SELECT` only on MySQL, none on SQLite. Migrations lift it. |
 | `FORGE_DATABASE_ALLOW_PLAINTEXT`    | `false`          | `true` permits a `production` PostgreSQL or MySQL connection without the required TLS setting |
+| `FORGE_RATE_LIMIT_MAX_KEYS`         | `100000`         | Buckets held by the in-memory rate limiter, `1`-`10000000` ([RATE_LIMITING.md](RATE_LIMITING.md)) |
+| `FORGE_CACHE_MAX_ENTRIES`           | `10000`          | Entry bound of every cache ([CACHING.md](CACHING.md)) |
+| `FORGE_CACHE_MAX_BYTES`             | `67108864`       | Memory bound of the in-memory cache |
+| `FORGE_CACHE_MAX_VALUE_BYTES`       | `1048576`        | Largest cached value, at most `8388608` |
+| `FORGE_CACHE_DEFAULT_TTL`           | `1h`             | ttl used when a cache write passes `0` |
+| `FORGE_STORAGE_ROOT`                | (empty)          | Directory of the disk storage adapter; `production` needs an absolute path on a persistent volume ([STORAGE.md](STORAGE.md)) |
+| `FORGE_STORAGE_SIGNING_KEY`         | (empty)          | HMAC key of signed file links: unpadded base64url of 32-1024 random bytes. Secret. **Required in `production` when `FORGE_STORAGE_ROOT` is set.** |
+| `FORGE_STORAGE_MAX_UPLOAD_BYTES`    | `524288`         | Largest uploaded file; cannot exceed `FORGE_HTTP_MAX_BODY_BYTES` when storage is configured |
+| `FORGE_STORAGE_LINK_TTL`            | `15m`            | Default lifetime of signed links, `1s`-`168h` |
 
 Test-only variables, read by the adapters' test packages:
 

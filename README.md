@@ -56,6 +56,9 @@ Core packages import only the standard library and each other; a test
 | `pagination` | Keyset pagination over UUIDv7 with opaque cursors |
 | `events`     | Versioned event envelope with bounded JSON payloads |
 | `jobs`       | In-process scheduler with bounded concurrency, fixed-rate, daily, and numeric 5-field cron schedules |
+| `ratelimit`  | Rails-style `rate_limit`: fixed-window limiter, per-route 429/`Retry-After` middleware, bounded in-memory store; shared stores in `ratelimit/postgres`, `/mysql`, `/sqlite` |
+| `cache`      | Solid Cache equivalent: `Cache` with `Fetch` stampede protection, bounded LRU+TTL memory cache, typed JSON helpers; shared stores in `cache/postgres`, `/mysql`, `/sqlite` |
+| `storage`    | Active Storage equivalent for local disk: `Storage` port, HMAC-signed expiring links, safe serving handler, strict multipart upload; `storage/disk` adapter |
 | `health`     | Readiness check registry; `/health`, `/health/live`, `/health/ready` |
 | `uuid`       | RFC 9562 UUIDv7 (default identifier), monotonic generator, JSON/text/SQL support |
 | `fault`      | Typed application errors (code, message, category, cause, metadata, retryable, HTTP status) |
@@ -72,6 +75,7 @@ Adapter packages (third-party dependencies allowed):
 | `agent/postgres`        | Tenant-RLS-protected PostgreSQL journal with replay refusal, bounded reconciliation listing, and one-time operator decisions |
 | `mysql`                 | MySQL and MariaDB on go-sql-driver/mysql: hardened session, error translation, migrations |
 | `sqlite`                | SQLite on the pure-Go modernc.org/sqlite: enforced pragmas, error translation, migrations with a file lock |
+| `ratelimit/{postgres,mysql,sqlite}`, `cache/{postgres,mysql,sqlite}` | Shared rate limit buckets and application cache in the database, with embedded migrations |
 | `postgres/postgrestest`, `mysql/mysqltest`, `sqlite/sqlitetest` | A fresh database per test |
 
 An application links only the adapter it imports. The `forge` CLI lives in
@@ -440,6 +444,69 @@ when the command fails. Error messages intentionally omit underlying error
 details and input values; `doctor --json` and `inspect --json` keep their
 command-specific diagnostic reports on stdout.
 
+## Rate limiting, cache and file storage
+
+Rails 8's `rate_limit`, Solid Cache and Active Storage, on the standard-library
+core. Details: [RATE_LIMITING](docs/RATE_LIMITING.md), [CACHING](docs/CACHING.md),
+[STORAGE](docs/STORAGE.md).
+
+Configure (all optional; invalid values stop the process at startup):
+
+```sh
+export FORGE_RATE_LIMIT_MAX_KEYS=100000        # in-memory limiter buckets
+export FORGE_CACHE_MAX_ENTRIES=10000 FORGE_CACHE_DEFAULT_TTL=1h
+export FORGE_STORAGE_ROOT=/var/lib/app/storage # enables disk storage
+export FORGE_STORAGE_SIGNING_KEY=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')  # required in production
+```
+
+Rate limit one route (`rate_limit to: 10, within: 3.minutes, only: :create`);
+behind a proxy key by something authenticated, not the client address:
+
+```go
+limiter, _ := ratelimit.NewMemory(ratelimit.MemoryOptionsFromConfig(app.Config().RateLimit))
+create, err := ratelimit.Middleware(limiter, ratelimit.ByRemoteAddr, ratelimit.Limit{N: 10, Per: 3 * time.Minute})
+err = r.Handle("POST /comments", create(http.HandlerFunc(h.Create))) // 429 + Retry-After over the limit
+```
+
+Cache (memory, or shared in the database; stampede-protected `Fetch`):
+
+```go
+c, _ := cache.NewMemory(cache.MemoryOptionsFromConfig(cfg.Cache))
+price, err := cache.FetchJSON(ctx, c, cache.Key("price", sku), 10*time.Minute, loadPrice)
+```
+
+Shared stores for several replicas (PostgreSQL shown; `mysql` and `sqlite` work
+the same). Compose their migrations, then run `app migrate`:
+
+```go
+forge.Main(bootstrap.Configure, postgres.CommandsFromSets(db.Migrations(),
+    ratelimitpostgres.Migrations(), cachepostgres.Migrations())...)
+limiter, _ := ratelimitpostgres.NewLimiter(db, ratelimit.StoreOptions{})
+c, _ := cachepostgres.NewStore(db, cache.StoreOptions{})
+```
+
+```sh
+app migrate   # creates forge_rate_limits and forge_cache_entries
+```
+
+File storage: uploads with size and type limits, signed expiring links, safe
+serving (only raster images inline, everything else a download):
+
+```go
+store, _ := disk.NewFromConfig(cfg.Storage)
+signer, _ := storage.NewSignerFromConfig(cfg.Storage)
+files, _ := storage.NewHandler(store, signer, storage.HandlerOptions{})
+_ = r.Handle("GET /files/{key...}", files)
+
+got, err := storage.Receive(w, r, store, storage.UploadOptions{
+    Field: "avatar", AllowedTypes: []string{"image/png", "image/jpeg"},
+    MaxFileBytes: cfg.Storage.EffectiveMaxUploadBytes(), Prefix: "avatars"})
+url, _ := signer.URL("/files", got.Files[0].Key, storage.SignOptions{Inline: true})
+```
+
+There is no S3 adapter yet (see the [roadmap](docs/ROADMAP.md)). The upload limit
+cannot exceed `FORGE_HTTP_MAX_BODY_BYTES`.
+
 ## Example
 
 [`examples/basic-api`](examples/basic-api) is the reference service: a task
@@ -496,6 +563,7 @@ CI (`.github/workflows/ci.yml`):
 - [AI agent guide and current authorization boundaries](docs/AI_AGENT_GUIDE.md)
 - [Database](docs/DATABASE.md)
 - [Server-rendered HTML](docs/VIEWS.md)
+- [Rate limiting](docs/RATE_LIMITING.md), [caching](docs/CACHING.md) and [file storage](docs/STORAGE.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Threat model](docs/THREAT_MODEL.md)
@@ -511,3 +579,6 @@ CI (`.github/workflows/ci.yml`):
   - [0007 PostgreSQL adapter with pgx, in the main module](docs/adr/0007-postgresql-adapter-with-pgx.md)
   - [0008 SQL migrations embedded in the application binary](docs/adr/0008-sql-migrations-embedded-in-the-binary.md)
   - [0009 Multiple databases: PostgreSQL, MySQL, MariaDB and SQLite](docs/adr/0009-multiple-databases.md)
+  - [0026 Rate limiting](docs/adr/0026-rate-limiting.md)
+  - [0027 Application cache](docs/adr/0027-cache.md)
+  - [0028 File storage](docs/adr/0028-file-storage.md)

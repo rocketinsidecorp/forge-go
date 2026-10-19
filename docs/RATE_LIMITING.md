@@ -1,0 +1,150 @@
+# Rate limiting
+
+Forge's `ratelimit` package is Rails' `rate_limit` with safe defaults: a
+fixed-window limiter, HTTP middleware that answers `429` with `Retry-After`, a
+bounded in-memory store, and shared stores for PostgreSQL, MySQL/MariaDB and
+SQLite. The design is in [ADR 0026](adr/0026-rate-limiting.md).
+
+(Password login has its own two-key throttle, [ADR 0011](adr/0011-login-throttling.md);
+use `ratelimit` for everything else.)
+
+## Protect a route
+
+Rails:
+
+```ruby
+rate_limit to: 10, within: 3.minutes, only: :create
+```
+
+Forge:
+
+```go
+limiter, err := ratelimit.NewMemory(ratelimit.MemoryOptionsFromConfig(app.Config().RateLimit))
+if err != nil { return err }
+
+create, err := ratelimit.Middleware(limiter, ratelimit.ByRemoteAddr,
+    ratelimit.Limit{N: 10, Per: 3 * time.Minute})
+if err != nil { return err }
+
+err = r.Handle("POST /comments", create(http.HandlerFunc(h.Create))) // only this route
+```
+
+For the whole application, use `app.Use(create)`; the default scope is then
+shared by all routes. `Middleware` returns `func(http.Handler) http.Handler`,
+the `httpserver.Middleware` type, so it also works with
+`forge.WithHTTPMiddleware`.
+
+Over the limit the client gets `429` and `Retry-After: <seconds>`:
+
+```json
+{"error":{"code":"rate_limited","message":"too many requests","request_id":"..."}}
+```
+
+Browsers (`Accept: text/html`) get a minimal static HTML page instead; both
+carry `Cache-Control: no-store`. Place the middleware **after** authentication
+when it keys by principal, and before expensive work (password hashing, mail,
+uploads): requests are counted before the handler runs, whatever its outcome.
+
+### Scopes
+
+The counter of a request is identified by (scope, window length, client key).
+The scope defaults to the matched route pattern (`POST /comments`), so the same
+`create` middleware value applied to two routes counts them separately. Use
+`ratelimit.WithScope("writes")` to share one counter across routes on purpose.
+
+### When the limiter fails
+
+If the limiter returns an error (the database is down), the middleware fails
+**closed** with `503 rate_limit_unavailable`; an attacker who can make the
+limiter fail must not become unlimited. `ratelimit.FailOpen()` lets requests
+through (and logs a warning) for routes where availability matters more.
+
+## Who is the client? Proxy caveats
+
+`ratelimit.KeyFunc` is `func(*http.Request) string`; the result is hashed
+before it reaches a store (no addresses or identifiers at rest).
+
+`ratelimit.ByRemoteAddr` uses the **TCP peer address** only. IPv4 addresses are
+used whole; IPv6 addresses are reduced to their `/64`, because one subscriber
+controls the whole prefix and could otherwise rotate addresses at will. It
+**never reads `X-Forwarded-For`, `X-Real-IP` or `Forwarded`**: those headers are
+client-controlled unless a proxy overwrites them, and Forge has no trusted-proxy
+policy yet (see the [roadmap](ROADMAP.md)).
+
+Consequences by deployment:
+
+| Deployment | `ByRemoteAddr` | What to do |
+| ---------- | -------------- | ---------- |
+| Direct (TLS in the application) | the client | nothing |
+| Behind a proxy / load balancer (`trusted-proxy`) | **the proxy**: every client shares one bucket | key by an authenticated value, or by a header your proxy sets |
+
+Key by something the application has authenticated whenever possible:
+
+```go
+byUser := func(r *http.Request) string {
+    if p, ok := auth.FromContext(r.Context()); ok {
+        return p.SubjectID().String()
+    }
+    return "" // anonymous clients share one bucket: limited, never exempt
+}
+// several values: ratelimit.Join(p.Tenant().ID.String(), p.SubjectID().String())
+```
+
+If you must key by client address behind a proxy, write the `KeyFunc`
+yourself, read the single header your proxy **overwrites** (not appends), and
+only do so when the proxy is the only network path to the application
+(firewall the container port). A `KeyFunc` that trusts a header the client
+can set lets one client use unlimited keys and bypass the limit entirely.
+
+An empty key is not "unlimited": unidentifiable clients share one bucket.
+
+## Stores
+
+| Store | Package | Shared across replicas | Notes |
+| ----- | ------- | ---------------------- | ----- |
+| Memory | `ratelimit` | no | bounded by `MaxKeys`, no goroutines; the limit is multiplied by the number of replicas |
+| PostgreSQL | `ratelimit/postgres` | yes | one atomic upsert per hit, database clock |
+| MySQL, MariaDB | `ratelimit/mysql` | yes | one short transaction per hit, database clock |
+| SQLite | `ratelimit/sqlite` | processes of one host | application clock |
+
+Shared limiter setup (PostgreSQL shown; use `mysql.CommandsFromSets` and
+`sqlite.CommandsFromSets` with `ratelimitmysql` / `ratelimitsqlite` otherwise):
+
+```go
+forge.Main(bootstrap.Configure,
+    postgres.CommandsFromSets(db.Migrations(), ratelimitpostgres.Migrations())...)
+
+limiter, err := ratelimitpostgres.NewLimiter(db, ratelimit.StoreOptions{})
+```
+
+A new store should pass `limitertest.Run`.
+
+### Memory limits
+
+`FORGE_RATE_LIMIT_MAX_KEYS` (default `100000`) bounds the in-memory buckets.
+When it is full of live buckets, `EvictSoonest` (default) drops the bucket
+closest to expiring so new clients are never refused; `Deny` refuses new keys
+until space frees (no counter is lost, but a flood of distinct keys locks out
+new clients). Pick `MemoryOptions{WhenFull: ratelimit.Deny}` where a bypass is
+worse than an outage.
+
+### Pruning the database tables
+
+Expired rows are removed in bounded batches (`StoreOptions.PruneBatch`, default
+500): inline, at most once per `PruneInterval` (default one minute) after a hit
+has been decided, and by `limiter.Prune(ctx)`, which you can run from
+`jobs.Scheduler` for an explicit cadence. `PruneInterval: -1` disables the
+inline prune. No goroutine is ever started.
+
+## Fixed windows: what to expect
+
+The window of a key starts with its first hit and lasts `Per`. A client that
+spends its allowance at the end of one window and again at the start of the next
+gets up to `2N` requests in `Per`. For a hard ceiling, lower `N`. Denied
+requests count too, so hammering a limited route does not shorten the wait.
+
+## Testing
+
+`limitertest.Run(t, func(t testing.TB) ratelimit.Limiter { ... })` is the
+conformance suite every store passes. The memory limiter takes no clock in its
+public API; use short windows (`Per: 50 * time.Millisecond`) in tests.

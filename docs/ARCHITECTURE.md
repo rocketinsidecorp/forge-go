@@ -40,6 +40,9 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 ├── views        Server-rendered HTML: layouts, partials, request-aware helpers
 ├── pagination   UUIDv7 keyset pagination and cursors
 ├── events       Versioned application-event envelope with bounded JSON payloads
+├── ratelimit    Fixed-window rate limiting: bounded in-memory limiter, HTTP middleware, shared-store interface
+├── cache        Application cache: bounded LRU+TTL memory store, Fetch stampede protection, typed JSON helpers
+├── storage      File storage port, HMAC-signed links, safe serving handler, multipart upload; storage/disk adapter
 ├── health       Readiness check registry
 ├── uuid         UUIDv7 type and generator
 ├── fault        Typed application errors
@@ -51,6 +54,8 @@ Adapters (may use third-party modules)
 postgres               PostgreSQL: pgx v5 pool, transactions, translation, advisory locks, migration dialect
 outbox/postgres        Transactional outbox persistence, leases, and dispatcher
 agent/postgres         Tenant-RLS-protected execution journal for registered agent actions
+ratelimit/{postgres,mysql,sqlite}  Shared rate limit buckets in the database
+cache/{postgres,mysql,sqlite}      Shared application cache (Solid Cache equivalent)
 postgres/postgrestest  Per-test PostgreSQL databases
 mysql                  MySQL and MariaDB: go-sql-driver/mysql pool, translation, migration dialect
 mysql/mysqltest        Per-test MySQL/MariaDB databases
@@ -80,6 +85,13 @@ Dependency direction (imports within the module):
 | `sqldb`                 | `config`, `fault` |
 | `migrate`               | `forge`, `config` |
 | `dbtest`                | `config`, `migrate`, `uuid` |
+| `ratelimit`             | `config`, `fault`, `web` |
+| `cache`                 | `config`, `fault`, `web` |
+| `storage`               | `config`, `fault`, `uuid`, `web` |
+| `storage/disk`          | `config`, `storage` |
+| `ratelimit/postgres`, `cache/postgres` | `ratelimit` or `cache`, `postgres`, pgx v5 |
+| `ratelimit/mysql`, `cache/mysql` | `ratelimit` or `cache`, `mysql`, `sqldb` |
+| `ratelimit/sqlite`, `cache/sqlite` | `ratelimit` or `cache`, `sqlite`, `sqldb` |
 | `config`, `fault`, `health`, `uuid` | standard library only |
 | `postgres`              | `forge`, `config`, `migrate`, `sqldb`, `tenancy`, pgx v5 |
 | `outbox/postgres`       | `events`, `postgres` |
