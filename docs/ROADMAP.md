@@ -384,10 +384,18 @@ Rails-style HTML CRUD on the standard-library core
 - [x] G1b: `forge generate scaffold` (HTML resource on top of the above); a
   test generates a tenant-scoped and a global scaffold per database, wires
   them as printed, and vets, builds, lints and tests the application.
+- [x] M5 Hotwire ([ADR 0029](adr/0029-hotwire-assets-and-live-updates.md)):
+  digested embedded assets and an import map allowed by CSP hash, vendored
+  integrity-pinned Turbo 8.0.23 and Stimulus 3.2.2, `app/javascript` with a
+  hello controller, Turbo Stream responses (`turbo`), real-time broadcasts over
+  Server-Sent Events with HMAC-signed, tenant-scoped, expiring channel names
+  (`broadcast`), PostgreSQL LISTEN/NOTIFY fan-out across replicas
+  (`broadcast/postgres`), and `forge generate scaffold --broadcast`.
+- [ ] Hotwire follow-ups: replay of missed messages, WebSocket transport,
+  Turbo Frame helpers, morphing/page refreshes, a controller generator.
 - [ ] Multipart HTML forms (`csrf.Protection` reads urlencoded bodies only;
   upload routes send the token in `X-CSRF-Token`, see
-  [STORAGE.md](STORAGE.md)), per-page layout selection, fingerprinted assets,
-  Turbo/Hotwire. (The upload helper and file storage themselves are done; see
+  [STORAGE.md](STORAGE.md)), per-page layout selection. (The upload helper and file storage themselves are done; see
   "Runtime services".)
 
 ## Runtime services (Rails 8 parity)

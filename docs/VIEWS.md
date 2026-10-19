@@ -13,8 +13,14 @@ app/views/views.go                    embeds the templates; views.New() builds t
 app/views/views_test.go               renders the layout through the middleware
 app/views/layouts/application.gohtml  the layout every page with a "content" block uses
 app/views/shared/_flash.gohtml        flash messages, included by the layout
-app/bootstrap/assets/application.css  the stylesheet, served at /assets/application.css
+app/assets/assets.go                  embeds the stylesheet and images; builds the digested asset table and import map
+app/assets/application.css            the stylesheet, served as /assets/application-<digest>.css
+app/javascript/application.js         JavaScript entry point (Turbo and the Stimulus controllers)
+app/javascript/controllers/           Stimulus controllers: index.js registers them, hello_controller.js is an example
 ```
+
+Static files and JavaScript are covered in
+[Assets, JavaScript and Hotwire](#assets-javascript-and-hotwire).
 
 A PostgreSQL application also gets the sign-in pages (see
 [Authentication pages](#authentication-pages)):
@@ -108,8 +114,10 @@ The page is executed into a buffer first, so a template error never sends a
 partial response. Pages are sent with
 `views.DefaultContentSecurityPolicy`, which allows same-origin scripts,
 styles, images and fonts, forms posting to the same origin, and nothing
-inline: put styles in `app/bootstrap/assets/` files, not in `style=`
-attributes or `<style>` elements.
+inline: put styles in `app/assets/` files, not in `style=` attributes or
+`<style>` elements. The one inline script a page needs, the import map, is
+allowed by its SHA-256 hash (never `'unsafe-inline'`): `Load` adds the hash to
+the policy.
 
 ## Scaffold a CRUD
 
@@ -207,7 +215,7 @@ CSRF rejection for create, update and delete, unknown form fields, the
 permission split and the refusal to register without a guard.
 
 Edit the templates freely: they are production code in `app/views/posts/`.
-Styles belong in `app/bootstrap/assets/application.css` (the page
+Styles belong in `app/assets/application.css` (the page
 Content-Security-Policy forbids inline styles); the rules the scaffold uses
 (`table`, `.form-errors`, `.muted`, checkbox width) are part of the stylesheet
 `forge new` generates today, and are plain CSS to copy into an older one.
@@ -501,6 +509,220 @@ navigations and form submissions do; `curl`, `fetch()` defaults and API
 clients do not). `web.Negotiate(r, "application/json", "text/html")` returns
 the preferred offer. CSRF rejections use it to answer browsers with an HTML
 page and API clients with the JSON error format.
+
+## Assets, JavaScript and Hotwire
+
+Forge is full-stack like Rails 8 without Node. Static files are embedded in
+the binary, JavaScript is loaded through an import map, and Turbo and Stimulus
+are vendored by Forge ([ADR 0029](adr/0029-hotwire-assets-and-live-updates.md)).
+
+### Digested assets
+
+`assets.New(assets.Options{}, sources...)` reads `fs.FS` values (embedded
+files) once at startup into a table of logical names to digested paths:
+`application.css` is served as `/assets/application-<16 hex of SHA-256>.css`
+with `Cache-Control: public, max-age=31536000, immutable`, an `ETag` (the full
+digest), `X-Content-Type-Options: nosniff` and the right `Content-Type`. Only
+table entries are served: undigested names, directory listings (`/assets/`),
+`..` and encoded separators are `404`. A name the table does not contain
+cannot be linked: `assetPath` and the tag helpers fail `views.Load`.
+
+```go
+bundle, _ := appassets.Load()                      // app/assets: table + import map
+app.Handle("GET /assets/", bundle.Set.Handler()) // bootstrap.go does this
+```
+
+In templates:
+
+| Helper | Output |
+| ------ | ------ |
+| `{{assetPath "forge-go-logo.png"}}` | `/assets/forge-go-logo-<digest>.png` |
+| `{{stylesheetTag "application"}}` | `<link rel="stylesheet" href="...">` |
+| `{{javascriptImportmapTags "application"}}` | the import map, `<link rel="modulepreload">` for each pinned module, and `<script type="module" src="...application-<digest>.js">` |
+
+To publish another file, add its name to the `//go:embed` line in
+`app/assets/assets.go` (only extensions Forge serves are accepted: css, js,
+mjs, map, svg, png, jpg, jpeg, gif, webp, ico, woff2, txt).
+
+### JavaScript: import map, Turbo and Stimulus
+
+`app/javascript/application.js` is the entry point:
+
+```js
+import "@hotwired/turbo"
+import "controllers"
+```
+
+There is no bundler. The browser resolves bare specifiers through the import
+map the layout renders, which `app/assets/assets.go` builds: `@hotwired/turbo`
+and `@hotwired/stimulus` (the vendored files in package `hotwire`, pinned by
+SHA-256 and verified by its test, with their MIT licences retained) and every
+file of `app/javascript/controllers/` by its name without `.js`
+(`controllers/hello_controller`; `controllers/index.js` is also `controllers`).
+Digested URLs mean a deploy invalidates exactly the files that changed.
+
+Add a Stimulus controller:
+
+```sh
+cp app/javascript/controllers/hello_controller.js app/javascript/controllers/clipboard_controller.js
+```
+
+then in `app/javascript/controllers/index.js`:
+
+```js
+import ClipboardController from "controllers/clipboard_controller"
+application.register("clipboard", ClipboardController)
+```
+
+and use `data-controller="clipboard"` in a template. Write controllers with
+`textContent`, not `innerHTML`, for user input. Inline `<script>` blocks and
+`onclick=` attributes are blocked by the policy by design.
+
+The import map is the only inline script. Its SHA-256 goes into
+`script-src` automatically (`views.Options.ImportMap`), and Turbo's progress
+bar `<style>` is allowed by the hash of its exact text
+(`views.Options.StyleHashes`, `hotwire.StyleHashes()`; a test recomputes it
+from `turbo.js`). A custom `Options.ContentSecurityPolicy` replaces the default
+entirely: include `ImportMap.CSPSource()` yourself.
+
+Turbo Drive works with the pages unchanged: forms answer `303` after success
+and `422` (or `409`) with the form re-rendered on failure, which is what Turbo
+requires; the CSRF token reaches Turbo through the `csrf-token` meta tag it
+sends as `X-CSRF-Token`. Pages that are complete documents with their own
+inline styles (the welcome page) declare
+`<meta name="turbo-visit-control" content="reload">` so Turbo loads them with
+a normal page visit.
+
+### Turbo Streams
+
+Package `turbo` builds `<turbo-stream>` elements: `Append`, `Prepend`,
+`Replace`, `Update`, `Remove`, `Before`, `After`. The target is a validated
+DOM id (`[A-Za-z][A-Za-z0-9_:-]*`, at most 128 bytes: it cannot inject
+attributes) and the content is `template.HTML` from `html/template`, so user
+data stays escaped. `turbo.DomID("post", id)` is the same id the `domID`
+helper prints. `Renderer.Fragment` renders a partial (a file named `_NAME.gohtml`)
+as stream content:
+
+```go
+row, err := renderer.Fragment(r, "posts/_post", item)
+stream, err := turbo.Prepend("posts", row)
+if turbo.Requested(r) { // Accept names text/vnd.turbo-stream.html
+	return turbo.Render(w, http.StatusOK, stream)
+}
+return web.Redirect(w, "/posts") // browsers without Turbo, and API clients
+```
+
+`turbo.Requested` ignores wildcard `Accept` values: only a client that asks for
+the stream type gets one. Respond to a failed form with `422` and the form
+HTML (as the scaffold does) or a stream with `turbo.Render(w, 422, ...)`.
+
+### Real-time broadcasts (Server-Sent Events)
+
+Package `broadcast` pushes streams to every open page that subscribed, like
+Rails' `Turbo::StreamsChannel` and `turbo_stream_from`:
+
+```go
+signer, _ := broadcast.NewSigner(broadcast.SignerOptions{Key: key}) // 32+ random bytes, same on every replica
+broker, _ := broadcast.NewMemory(ctx, broadcast.MemoryOptions{})    // ctx: Configure's, cancelled when shutdown begins
+events, _ := broadcast.NewHandler(broadcast.HandlerOptions{
+	Broker: broker, Signer: signer,
+	Authorize: func(r *http.Request, ch broadcast.Channel) error { /* a permission check */ return nil },
+})
+app.Handle("GET /streams", authenticate(events))
+app.OnShutdown(broker.Shutdown)
+
+renderer, _ := views.Load(files, views.Options{Streams: signer /* ... */})
+```
+
+A page subscribes with `{{turboStreamFrom "posts"}}`, which renders
+`<turbo-stream-source src="/streams?stream=TOKEN">` for the request tenant's
+`posts` channel (it fails the render when there is no tenant), or
+`{{turboStreamFromGlobal "banner"}}` for a channel shared by every tenant.
+Server code publishes after the change is stored:
+
+```go
+channel, _ := broadcast.ForTenant(tenant.ID, "posts") // or broadcast.Global
+err := broadcast.Publish(ctx, broker, channel, stream)
+```
+
+- **Authorization.** The token is an HMAC-SHA256 signature over the channel and
+  an expiry (24 hours by default, 7 days at most; keys rotate with
+  `PreviousKeys`). A client cannot subscribe to a channel the server did not
+  render for it. A tenant channel also requires the caller's tenant
+  (`tenancy.FromContext`, set by the authentication middleware you mount the
+  handler behind) to equal the channel's: it fails closed with `403`.
+  `Authorize` adds your rule. Connections are re-authorized every
+  `MaxConnectionAge` (30 minutes): the stream ends and the browser reconnects.
+- **What is broadcast is the same HTML for every subscriber.** Render it with
+  `Fragment`: it cannot render `csrfField`, so a token never leaks into a
+  broadcast. Put nothing per-user in a broadcast partial.
+- **Delivery** is at most once, with no replay: a subscriber that falls behind
+  its bounded queue is dropped (the browser reconnects), and a message
+  published while a client is disconnected is not delivered.
+- **Resources are bounded:** subscribers per process and per channel,
+  per-subscriber queue, message size (1 MiB); the in-memory broker starts no
+  goroutines. Excess connections get `503` with `Retry-After`.
+- **Timeouts.** The handler clears the server's read and write deadlines per
+  connection (`http.ResponseController`) and applies a 10 second deadline to
+  every write, so streams outlive `FORGE_HTTP_WRITE_TIMEOUT` while a stalled
+  client cannot hold a connection. Heartbeat comments (20 seconds) keep
+  proxies from closing idle streams; disable proxy buffering for the route
+  (`X-Accel-Buffering: no` is sent).
+- **Shutdown.** Closing the broker ends open streams, which lets the HTTP
+  server drain. `NewMemory(ctx, ...)` closes itself when `ctx` is cancelled.
+
+#### Several replicas: PostgreSQL LISTEN/NOTIFY
+
+The in-memory broker reaches only its own process. `broadcast/postgres` fans
+messages out through the database:
+
+```go
+local, _ := broadcast.NewMemory(ctx, broadcast.MemoryOptions{})
+broker, _ := bcpostgres.New(ctx, database, local, bcpostgres.Options{})
+app.OnShutdown(broker.Shutdown)
+// events handler: broadcast.NewHandler(broadcast.HandlerOptions{Broker: broker, ...})
+```
+
+`Publish` delivers to local subscribers immediately and sends a `NOTIFY`
+for the others; `PublishTx(ctx, tx, ...)` queues the notification in your
+transaction, so it is delivered only if the transaction commits. `NOTIFY`
+payloads are limited to 8000 bytes, so a message is split into chunks of 4500
+bytes sent as consecutive notifications of one transaction and reassembled by
+the listener (messages are limited to 256 KiB by default; send something
+smaller, or have the client reload, for anything bigger). The listener holds
+one pool connection, reconnects with backoff (messages sent meanwhile are
+lost), does not work through PgBouncer in transaction pooling mode, and
+ignores malformed notifications. The channel is database-wide: anyone who can
+`NOTIFY` on the database can publish, so the database role is the trust
+boundary.
+
+### Live updates in the scaffold
+
+```sh
+forge generate scaffold post title:string body:text --tenant-scoped --broadcast
+```
+
+`--broadcast` is opt-in: it opens a long-lived endpoint and needs a signing
+key, so it is not implied by `scaffold`. It adds:
+
+```text
+app/adapters/htmlstreams/streams.go       signer from FORGE_STREAMS_KEY, in-memory broker, GET /streams (once per application)
+app/adapters/htmlstreams/streams_test.go  tenant, forged name, permission and delivery tests
+app/views/posts/_item.gohtml              the table row, rendered by the index and by broadcasts
+```
+
+and changes the index (a `turboStreamFrom` subscription, `<tbody id="posts">`)
+and the adapter: after a successful create, update or delete it publishes a
+`prepend`, `replace` or `remove` of the row to the `posts` channel of the
+caller's tenant (the global channel for `--global`). Publishing never fails the
+request. The printed wiring defines the signer and mounts `/streams` behind
+`AuthenticateCookie` with a per-channel permission check (`posts:read` for the
+`posts` channel); without Forge identity both are deny-all until you write
+them. Set `FORGE_STREAMS_KEY` (`openssl rand -base64 32`) in staging and
+production; development falls back to a random per-process key.
+
+Rows are prepended, so a person on page two of the list sees new rows at the
+top of that page; reload to page.
 
 ## Testing pages
 

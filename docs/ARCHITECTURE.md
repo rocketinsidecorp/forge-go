@@ -448,7 +448,7 @@ environment taking precedence.
 cmd/<name>/main.go   forge.Main(bootstrap.Configure, <adapter>.Commands(db.Migrations())...)
 app/bootstrap/       composition root: database pool, readiness check "database", routes,
                      method override + CSRF + flash middleware
-                     (generated with GET /v1/status, assets/application.css and tests)
+                     (generated with GET /v1/status, the /assets/ route for app/assets and tests)
 app/views/           embedded HTML: layouts/application.gohtml, shared/_flash.gohtml,
                      views.New() renderer and tests
 db/db.go             embeds db/migrations

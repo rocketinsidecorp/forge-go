@@ -298,7 +298,7 @@ configured for production behind a TLS-terminating proxy. See
 | `forge generate view [DIR/]NAME [--dry-run]` | Create or preview a server-rendered page, `app/views/DIR/NAME.gohtml` (DIR defaults to `pages`), in the layout `forge new` generates |
 | `forge generate job NAME [--dry-run]` | Create or preview a cancellation-aware recurring job stub and tests; registration and schedule remain explicit |
 | `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
-| `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests. Never public: see below |
+| `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--broadcast] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests; `--broadcast` adds live updates over Server-Sent Events. Never public: see below |
 | `forge generate authentication [--dry-run]` | PostgreSQL: add the sign-in, sign-out, two-factor and password-reset pages `forge new` generates to an application that lacks them, and print their wiring; other databases are refused (identity persistence is PostgreSQL-only) |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
@@ -385,7 +385,7 @@ database (`FORGE_TEST_DATABASE_URL`, set by `.env.development`) and fail instead
 of skipping when `FORGE_TEST_REQUIRE_DATABASE=true`.
 
 `forge generate scaffold NAME field:type... (--tenant-scoped | --global)
-[--plural PLURAL] [--dry-run]` is `forge generate resource` plus the HTML
+[--plural PLURAL] [--broadcast] [--dry-run]` is `forge generate resource` plus the HTML
 pages, the equivalent of `rails g scaffold`. It takes exactly the same
 arguments, writes exactly the same resource files, and adds:
 
@@ -407,6 +407,56 @@ changes); with Forge identity the printed wiring authenticates the session
 cookie rather than a bearer token and sends signed-out browsers to the
 sign-in page. On PostgreSQL the migration also grants the new permissions to
 the `owner` role `forge setup` creates. See [docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud).
+
+### Hotwire: JavaScript, Turbo and live updates
+
+Generated applications are full-stack like Rails 8, without Node. Static files
+are embedded and served with digested, immutable URLs; Turbo and Stimulus are
+vendored by Forge (pinned by SHA-256, licences retained) and loaded through an
+import map that the strict Content-Security-Policy allows by hash. Forms and
+links work under Turbo Drive with no changes.
+
+```sh
+forge new myapp && cd myapp
+cat app/javascript/application.js                       # import "@hotwired/turbo"; import "controllers"
+cat app/javascript/controllers/hello_controller.js      # a Stimulus controller
+curl -s localhost:8080/session/new | grep -E 'importmap|modulepreload|stylesheet'   # with forge dev running (PostgreSQL)
+
+# add a Stimulus controller
+cp app/javascript/controllers/hello_controller.js app/javascript/controllers/clipboard_controller.js
+#   in app/javascript/controllers/index.js:
+#     import ClipboardController from "controllers/clipboard_controller"
+#     application.register("clipboard", ClipboardController)
+#   in a template: <div data-controller="clipboard"> ... </div>
+```
+
+Real-time updates: Turbo Streams pushed to every open page over
+Server-Sent Events, with signed, tenant-scoped channel names, and PostgreSQL
+`LISTEN/NOTIFY` to reach every replica:
+
+```sh
+export FORGE_STREAMS_KEY=$(openssl rand -base64 32)     # required in staging and production
+forge generate scaffold post title:string body:text --tenant-scoped --broadcast
+forge migrate
+forge test                                              # includes an end-to-end event stream test on PostgreSQL
+```
+
+Paste the printed wiring into `app/bootstrap/bootstrap.go` (it defines the
+stream signer, mounts `GET /streams` behind the session cookie and the
+`posts:read` permission, and passes the broker to the pages). Open `/posts` in
+two browsers as users of the same organization: creating, editing or deleting a
+post in one updates the other without a reload. In your own code:
+
+```go
+channel, _ := broadcast.ForTenant(tenant.ID, "posts")
+row, _ := renderer.Fragment(nil, "posts/_item", data)      // escaped partial, no request-bound content
+stream, _ := turbo.Prepend("posts", row)
+_ = broadcast.Publish(ctx, broker, channel, stream)         // and {{turboStreamFrom "posts"}} in the page
+```
+
+Details, the multi-replica setup and the delivery guarantees (best effort, at
+most once) are in [docs/VIEWS.md](docs/VIEWS.md#assets-javascript-and-hotwire)
+and [ADR 0029](docs/adr/0029-hotwire-assets-and-live-updates.md).
 
 ### Development environment files
 
