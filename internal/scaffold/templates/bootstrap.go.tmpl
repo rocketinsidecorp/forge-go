@@ -14,10 +14,14 @@ import (
 {{- if and .DB .DB.Identity}}
 	"github.com/rocketinsidecorp/forge-go/auth"
 	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
+	"github.com/rocketinsidecorp/forge-go/auth/recoverymail"
 {{- end}}
 	"github.com/rocketinsidecorp/forge-go/csrf"
 {{- if and .DB .DB.Jobs}}
 	"github.com/rocketinsidecorp/forge-go/jobs"
+{{- end}}
+{{- if and .DB .DB.Identity}}
+	"github.com/rocketinsidecorp/forge-go/mail"
 {{- end}}
 {{- if .DB}}
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
@@ -206,8 +210,15 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 		}
 	}
 
-	// Password recovery routes (public, non-enumerating)
-	recoveryService, err := auth.NewRecoveryService(repository, recoveryDeliveryNotConfigured{logger: app.Logger()}, auth.WithRecoveryThrottler(throttler), auth.WithRecoveryAuditor(repository))
+	// Password recovery routes (public, non-enumerating). Reset links are
+	// emailed only when outgoing mail is configured (see
+	// passwordRecoveryDelivery); until then the JSON routes fail closed with
+	// their uniform answer and the HTML reset pages are not mounted.
+	delivery, mailConfigured, err := passwordRecoveryDelivery(app)
+	if err != nil {
+		return err
+	}
+	recoveryService, err := auth.NewRecoveryService(repository, delivery, auth.WithRecoveryThrottler(throttler), auth.WithRecoveryAuditor(repository))
 	if err != nil {
 		return err
 	}
@@ -254,13 +265,18 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 	// HTML sign-in, sign-out, two-factor and password-reset pages
 	// (app/adapters/htmlauth). They set the same session cookies as the
 	// cookie routes above; auth.Browser verifies the CSRF token of every form.
-	browser, err := auth.NewBrowser(auth.BrowserOptions{
+	// The reset pages and the "Forgot your password?" link exist only when
+	// reset emails can actually be sent.
+	browserOptions := auth.BrowserOptions{
 		Login:    login,
 		Sessions: repository,
 		MFA:      mfaService,
-		Recovery: recoveryService,
 		Auditor:  repository,
-	})
+	}
+	if mailConfigured {
+		browserOptions.Recovery = recoveryService
+	}
+	browser, err := auth.NewBrowser(browserOptions)
 	if err != nil {
 		return err
 	}
@@ -282,8 +298,49 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 	return app.Handle("GET /v1/auth/session", middleware.Authenticate(http.HandlerFunc(currentSession)))
 }
 
-// recoveryDeliveryNotConfigured fails closed until the application installs a
-// delivery adapter. It never logs recipient addresses, tokens, or reset URLs.
+// passwordRecoveryDelivery emails reset links through auth/recoverymail when
+// outgoing mail is configured:
+//
+//	FORGE_MAIL_URL=smtps://user:password@smtp.example.com:465   (file:///tmp/{{.Name}}-mail in development)
+//	FORGE_MAIL_FROM="{{.Name}} <no-reply@example.com>"
+//	FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit
+//
+// Without FORGE_MAIL_URL it returns recoveryDeliveryNotConfigured and false.
+// The SMTP sender delivers inline, so a reset request for an existing account
+// takes longer than one for an unknown account; in production put a
+// queue-backed mail.Sender in front of recoverymail (docs/MAIL.md).
+// FORGE_MAIL_URL without FORGE_AUTH_PASSWORD_RESET_URL is a startup error, so
+// a half-configured deployment never advertises a reset it cannot send.
+func passwordRecoveryDelivery(app *forge.App) (auth.RecoverySender, bool, error) {
+	cfg := app.Config()
+	sender, err := mail.FromConfig(cfg, mail.WithLogger(app.Logger()))
+	if errors.Is(err, mail.ErrNotConfigured) {
+		return recoveryDeliveryNotConfigured{logger: app.Logger()}, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if cfg.Auth.PasswordResetURL == "" {
+		return nil, false, errors.New("FORGE_MAIL_URL is set but FORGE_AUTH_PASSWORD_RESET_URL is not: reset emails need the public URL of /passwords/edit")
+	}
+	from, err := mail.DefaultFrom(cfg)
+	if err != nil {
+		return nil, false, err
+	}
+	delivery, err := recoverymail.New(sender, recoverymail.Config{
+		From:     from,
+		AppName:  "{{.Name}}",
+		ResetURL: cfg.Auth.PasswordResetURL,
+		Logger:   app.Logger(),
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return delivery, true, nil
+}
+
+// recoveryDeliveryNotConfigured fails closed until outgoing mail is
+// configured. It never logs recipient addresses, tokens, or reset URLs.
 type recoveryDeliveryNotConfigured struct{ logger *slog.Logger }
 
 func (s recoveryDeliveryNotConfigured) SendPasswordRecovery(ctx context.Context, _ auth.PasswordRecoveryMessage) error {

@@ -174,6 +174,8 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | Open redirect after sign-in | S, I | `return_to` is accepted only when `web.IsLocalPath` holds (no scheme, host, `//` or `/\` prefix, backslash, control, space or non-ASCII byte, at most 2048 bytes), and it is re-validated when rendered, when posted and before the `303`. `AuthenticateBrowser` adds it only for GET and HEAD. |
 | Account or tenant enumeration through the HTML forms | I | A failed sign-in shows one message at `422` for any wrong organization, email or password (with the dummy-hash timing path); reset requests answer the same `303` and notice for known, unknown and malformed accounts and for delivery or audit failures; throttling keys do not depend on account existence. |
 | MFA challenge leaked from the browser | S, I | The pending challenge lives only in the `HttpOnly`, `Secure`, `SameSite=Strict` `__Host-forge_mfa` cookie that expires with it; it never appears in a URL, page or script, and no session exists until the second factor succeeds. |
+| Signed-in page served from a cache after sign-out | I | `AuthenticateBrowser` marks authenticated responses `Cache-Control: no-store`. |
+| Reset flow that promises an email nobody sends | R, D | Generated applications mount the reset pages and link only when `auth/recoverymail` is configured from `FORGE_MAIL_*` and `FORGE_AUTH_PASSWORD_RESET_URL`; half-configured mail stops startup. |
 | Reset token leaked from the emailed link | I | `GET /passwords/edit` moves the token into a `no-store` form; Forge sends `Referrer-Policy: no-referrer` and pages load no third-party resources. Tokens are one-time, digest-only and expire (ADR 0013). |
 | First-owner provisioning abused to add or take over an account | S, E | `setup` refuses once any tenant exists (checked under an advisory lock in the provisioning transaction), creates the tenant, owner and role atomically with an `auth.identity.provisioned` audit event, and is an operator command, not an HTTP route. |
 | Owner password exposed during setup | I | The password is read from a terminal with echo off, one line of standard input, or `FORGE_SETUP_PASSWORD`; it is never an argument (visible in process lists and shell history), never printed or logged, and must be at least 12 characters. Prefer the prompt or `--password-stdin` over the variable, which other processes of the same user can read. |
@@ -209,6 +211,9 @@ disclosure, **D**enial of service, **E**levation of privilege.
   migrations register; members who should not hold all of them need other
   roles. A tenant administrator who can create roles can already grant any
   permission within the tenant.
+- Generated applications send reset emails over SMTP inline, so response
+  time can reveal whether an account exists; production deployments should
+  put a queue-backed `mail.Sender` in front of `recoverymail` (ADR 0013).
 - A reset link that reaches the wrong person (forwarded email, shared
   mailbox) lets them choose the password until it expires or is used; the
   reset form cannot show which account the token belongs to.

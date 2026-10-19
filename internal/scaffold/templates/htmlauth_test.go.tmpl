@@ -265,6 +265,33 @@ func TestSignInPageKeepsOnlyLocalReturnPaths(t *testing.T) {
 	}
 }
 
+// TestNoResetPagesWithoutRecovery: an application that cannot send reset
+// emails (no recovery service) must not offer or mount the reset pages.
+func TestNoResetPagesWithoutRecovery(t *testing.T) {
+	t.Parallel()
+	identity := newMemoryIdentity(t)
+	login, err := auth.NewLoginService(identity, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: identity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visitor := newClient(t, serve(t, browser))
+	if page := visitor.do(http.MethodGet, htmlauth.SignInPath, nil); page.Code != http.StatusOK || strings.Contains(page.Body.String(), "/passwords/new") {
+		t.Fatalf("status=%d; the sign-in page must not link to a reset that cannot be sent:\n%s", page.Code, page.Body)
+	}
+	for _, path := range []string{"/passwords/new", "/passwords/edit?token=" + strings.Repeat("A", 43)} {
+		if page := visitor.do(http.MethodGet, path, nil); page.Code != http.StatusNotFound {
+			t.Errorf("GET %s without recovery: status=%d", path, page.Code)
+		}
+	}
+	if request := visitor.submit("/passwords", url.Values{"tenant": {testTenant}, "email": {testEmail}}); request.Code != http.StatusNotFound && request.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /passwords without recovery: status=%d", request.Code)
+	}
+}
+
 func TestSignInRedirectsOnlyToLocalPaths(t *testing.T) {
 	t.Parallel()
 	handler, identity, _ := memoryPages(t)

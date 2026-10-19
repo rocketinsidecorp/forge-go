@@ -218,7 +218,7 @@ if err := htmlauth.Register(app, browser, renderer); err != nil {
 | `POST` | `/session` | `303` to the validated `return_to` (default `/`) with a notice; `422` with one message for any wrong field; `429` with `Retry-After` when throttled; an account with TOTP goes to `/session/mfa` |
 | `DELETE` | `/session` | revoke the session, clear the cookies, `303` to the sign-in page |
 | `GET`, `POST` | `/session/mfa` | authenticator or backup code (with an MFA service) |
-| `GET`, `POST` | `/passwords/new`, `/passwords` | request a reset: the same `303` and notice whether or not the account exists |
+| `GET`, `POST` | `/passwords/new`, `/passwords` | request a reset: the same `303` and notice whether or not the account exists (mounted only with a recovery service) |
 | `GET`, `PATCH` | `/passwords/edit?token=`, `/passwords` | choose a new password (12 characters or more); every session of the account is revoked |
 
 How the flow stays safe:
@@ -249,6 +249,17 @@ How the flow stays safe:
   prefilled from `?tenant=`: logins always name their tenant and there is no
   default tenant. Forge does not derive the tenant from `Host`.
 
+### Password-reset emails
+
+Generated applications pass a recovery service to `auth.Browser` only when
+outgoing mail is configured, so the reset pages and the "Forgot your
+password?" link never promise an email that cannot be sent.
+`bootstrap.passwordRecoveryDelivery` builds `auth/recoverymail` from
+`FORGE_MAIL_URL`, `FORGE_MAIL_FROM` and `FORGE_AUTH_PASSWORD_RESET_URL` (the
+absolute URL of `/passwords/edit`: https, or http on localhost); mail without
+the reset URL is a startup error. Without mail the JSON recovery routes keep
+their fail-closed, uniform behavior. See [MAIL.md](MAIL.md).
+
 ### Sending signed-out browsers to the sign-in page
 
 Guard HTML pages with `Middleware.AuthenticateBrowser` instead of
@@ -260,8 +271,9 @@ page, err := auth.RequireAudited("reports:read", reportsPage, repository)
 guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
 ```
 
-A request without a valid session that prefers HTML (`web.PrefersHTML`) is
-answered `303 /session/new?return_to=%2Freports` (GET and HEAD keep the
+Authenticated responses are marked `Cache-Control: no-store` (a handler may
+still set its own value). A request without a valid session that prefers HTML
+(`web.PrefersHTML`) is answered `303 /session/new?return_to=%2Freports` (GET and HEAD keep the
 path; other methods go to the sign-in page without one). JSON and API
 clients keep the `401`. `auth.ReturnPath(candidate, fallback)` accepts only
 local paths (`web.IsLocalPath`: no scheme, host, `//` or `/\` prefix,
@@ -305,7 +317,7 @@ logout, current-session, the HTML pages above, `setup`, and (when
 canonical unpadded base64url for 32 random bytes; use a secret manager in
 deployed environments.
 
-Inviting users and creating further tenants, recovery delivery, and MFA
+Inviting users and creating further tenants, and MFA
 enrollment/rotation step-up policy remain application-specific. Framework
 services support structured auditing; configure an auditor when composing
 recovery and MFA services outside the generated defaults. PostgreSQL is the

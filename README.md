@@ -148,8 +148,27 @@ forge dev                       # http://localhost:8080/posts (signed-out visito
 | --- | ---- |
 | `/session/new` | sign in (organization, email, password) |
 | `/session/mfa` | authenticator or backup code, when `FORGE_AUTH_MFA_KEY` is set |
-| `/passwords/new` | forgot password (needs a configured `RecoverySender` to send email) |
+| `/passwords/new` | forgot password (only when reset emails are configured, below) |
 | `/passwords/edit?token=...` | choose a new password from the emailed link |
+
+Password-reset emails are off until outgoing mail is configured, and so are
+the reset pages and the "Forgot your password?" link. To try them locally,
+add to `.env.local` (or uncomment the same lines in `.env.development`),
+restart `forge dev`, request a reset at `http://localhost:8080/passwords/new`
+and open the link in the newest `tmp/mail/*.eml`:
+
+```sh
+cat >> .env.local <<'ENV'
+FORGE_MAIL_URL=file:tmp/mail
+FORGE_MAIL_FROM="myapp <no-reply@example.com>"
+FORGE_AUTH_PASSWORD_RESET_URL=http://localhost:8080/passwords/edit
+ENV
+```
+
+In production set `FORGE_MAIL_URL=smtps://user:password@smtp.example.com:465`
+(or `smtp://...:587` for STARTTLS), `FORGE_MAIL_FROM` and
+`FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit`; see
+[docs/MAIL.md](docs/MAIL.md).
 
 Sign out with a `DELETE /session` form: include
 `{{template "sessions/_sign_out" .}}` in a page. `forge setup` refuses once a

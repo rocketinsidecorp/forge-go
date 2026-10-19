@@ -170,9 +170,13 @@ guard now uses `AuthenticateBrowser("/session/new", ...)`.
   sign-in fails closed with `403`.
 - `forge.CommandEnv` gains `Stdin` and `LookupEnv`; `Execute` passes no
   standard input, `Main` passes `os.Stdin`.
-- Password-reset delivery is still fail-closed in generated applications
-  until a `RecoverySender` (for example `auth/recoverymail`) is wired; the
-  page answers uniformly either way.
+- Generated applications send reset emails through `auth/recoverymail` when
+  `FORGE_MAIL_URL`, `FORGE_MAIL_FROM` and `FORGE_AUTH_PASSWORD_RESET_URL` are
+  set; otherwise `BrowserOptions.Recovery` is left empty, so the reset pages
+  and the "Forgot your password?" link are not offered (security review
+  follow-up). Mail without the reset URL fails at startup.
+- `AuthenticateBrowser` marks authenticated responses `Cache-Control:
+  no-store` before the handler runs.
 - Not provided: user invitations and management pages, MFA enrollment
   pages, "remember me", host-based tenant selection, a signed-in indicator in
   the layout (the `sessions/_sign_out` partial is included where wanted), and
