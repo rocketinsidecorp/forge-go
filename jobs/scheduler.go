@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/telemetry"
 )
 
 // Job is a unit of background work. It receives a context that is canceled
@@ -96,6 +98,8 @@ type Scheduler struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	concurrent chan struct{}
+	tracer     *telemetry.Tracer
+	duration   *telemetry.Histogram
 	started    bool
 	stopped    bool
 }
@@ -114,6 +118,11 @@ type SchedulerOptions struct {
 	// OnError receives job failures. When nil, failures are sent to the
 	// standard structured logger. The callback may be invoked concurrently.
 	OnError func(jobName string, err error)
+	// Telemetry traces each run with a span (the root of a new trace) and
+	// records forge.scheduler.job.duration by job name and outcome
+	// (succeeded, failed, timeout). Error messages are never recorded. Nil
+	// disables it.
+	Telemetry *telemetry.Telemetry
 }
 
 // NewScheduler creates a scheduler with the given options. Zero or negative
@@ -131,13 +140,48 @@ func NewScheduler(opts SchedulerOptions) *Scheduler {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Scheduler{
+	s := &Scheduler{
 		jobs:       make(map[string]scheduledJob),
 		opts:       opts,
 		ctx:        ctx,
 		cancel:     cancel,
 		concurrent: make(chan struct{}, opts.MaxConcurrentJobs),
 	}
+	if opts.Telemetry != nil {
+		s.tracer = opts.Telemetry.Tracer(telemetry.ScopeName + "/jobs")
+		duration, err := opts.Telemetry.Metrics().Histogram(MetricJobDuration, "Duration of scheduled job runs.", "s", telemetry.DurationBuckets,
+			"forge.scheduler.job", "forge.scheduler.outcome")
+		if err != nil {
+			// Only a conflicting metric definition fails; tracing still works.
+			opts.OnError("telemetry", err)
+		}
+		s.duration = duration
+	}
+	return s
+}
+
+// MetricJobDuration is the histogram of scheduled job runs.
+const MetricJobDuration = "forge.scheduler.job.duration"
+
+// run executes one scheduled run with its telemetry.
+func (s *Scheduler) run(ctx context.Context, name string, job Job) error {
+	started := time.Now()
+	ctx, span := s.tracer.Start(ctx, "job "+name, telemetry.SpanKindInternal, telemetry.String("forge.scheduler.job", name))
+	err := job(ctx)
+	outcome := "succeeded"
+	switch {
+	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
+		outcome = "timeout"
+	case err != nil:
+		outcome = "failed"
+	}
+	if span.IsRecording() {
+		span.SetAttributes(telemetry.String("forge.scheduler.outcome", outcome))
+		span.RecordError(err)
+	}
+	span.End()
+	s.duration.Record(time.Since(started).Seconds(), name, outcome)
+	return err
 }
 
 // Register adds a job with a unique name and schedule. It must be called
@@ -247,7 +291,7 @@ func (s *Scheduler) runJob(name string, sj scheduledJob) {
 			return
 		}
 		jobCtx, cancel := context.WithTimeout(s.ctx, jobTimeout(sj.spec))
-		if err := sj.job(jobCtx); err != nil {
+		if err := s.run(jobCtx, name, sj.job); err != nil {
 			s.opts.OnError(name, err)
 		}
 		cancel()

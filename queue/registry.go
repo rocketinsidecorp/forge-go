@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/telemetry"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
@@ -362,5 +363,16 @@ func Enqueue[T any](ctx context.Context, in Inserter, r *Registry, kind string, 
 	if err != nil {
 		return InsertResult{}, err
 	}
-	return in.Insert(ctx, job)
+	// Inside a traced operation the insert gets a producer span carrying
+	// the job ID, which the worker's processing span also records.
+	ctx, span := startEnqueue(ctx, job)
+	result, err := in.Insert(ctx, job)
+	if span.IsRecording() {
+		if err == nil {
+			span.SetAttributes(telemetry.String("messaging.message.id", result.ID.String()), telemetry.Bool("forge.job.duplicate", result.Duplicate))
+		}
+		span.RecordError(err)
+	}
+	span.End()
+	return result, err
 }

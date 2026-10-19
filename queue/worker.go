@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/telemetry"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
@@ -125,6 +126,11 @@ type WorkerOptions struct {
 	MaintenanceInterval time.Duration // default 1 minute
 	Logger              *slog.Logger
 	Hooks               Hooks
+	// Telemetry traces each attempt with a consumer span (the root of a new
+	// trace, so database spans of the handler nest under it) and records
+	// forge.queue.job.duration by queue, kind and outcome. Payloads and
+	// error messages are never recorded. Nil disables it.
+	Telemetry *telemetry.Telemetry
 }
 
 // Worker claims jobs from a Store and runs them with the handlers of a
@@ -135,6 +141,7 @@ type Worker struct {
 	registry *Registry
 	opts     WorkerOptions
 	logger   *slog.Logger
+	tel      *workerTelemetry
 
 	mu       sync.Mutex
 	state    workerState
@@ -185,10 +192,15 @@ func NewWorker(store Store, registry *Registry, opts WorkerOptions) (*Worker, er
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	tel, err := newWorkerTelemetry(opts.Telemetry)
+	if err != nil {
+		return nil, err
+	}
 	return &Worker{
 		store:    store,
 		registry: registry,
 		opts:     opts,
+		tel:      tel,
 		logger:   logger.With("component", "queue", "worker_id", opts.WorkerID),
 		inflight: make(map[uuid.UUID]*running),
 		done:     make(chan struct{}),
@@ -596,6 +608,7 @@ func (w *Worker) process(claimed Claimed, claimStarted time.Time) {
 	}()
 
 	started := time.Now()
+	span := w.tel.start(job)
 	var outcome attempt
 	reg, ok := w.registry.lookup(job.Kind)
 	if !ok {
@@ -606,9 +619,11 @@ func (w *Worker) process(claimed Claimed, claimStarted time.Time) {
 				w.opts.Hooks.Started(job)
 			}
 		})
-		outcome = w.invoke(reg, claimed, claimStarted)
+		outcome = w.invoke(reg, claimed, claimStarted, span)
 	}
 	duration := time.Since(started)
+	final := OutcomeLeaseLost
+	defer func() { w.tel.finish(span, job, duration, final, outcome.err) }()
 	// From here the job is only being acknowledged. The counters change in
 	// this order so Shutdown never sees a job in neither phase.
 	w.settling.Add(1)
@@ -621,16 +636,16 @@ func (w *Worker) process(claimed Claimed, claimStarted time.Time) {
 		w.logger.Warn("job lease lost; result discarded", "job_id", job.ID, "kind", job.Kind, "queue", job.Queue, "attempt", job.Attempt)
 		w.finished(Result{Job: job, Outcome: OutcomeLeaseLost, Duration: duration})
 	case outcome.err == nil:
-		w.settle(in, duration, OutcomeSucceeded, "", 0, func(ctx context.Context) error { return w.store.Complete(ctx, claimed.Lease) })
+		final = w.settle(in, duration, OutcomeSucceeded, "", 0, func(ctx context.Context) error { return w.store.Complete(ctx, claimed.Lease) })
 	case outcome.shutdown:
-		w.settle(in, duration, OutcomeReleased, "", 0, func(ctx context.Context) error { return w.store.Release(ctx, claimed.Lease) })
+		final = w.settle(in, duration, OutcomeReleased, "", 0, func(ctx context.Context) error { return w.store.Release(ctx, claimed.Lease) })
 	default:
 		failure, message := w.classify(reg, job, claimed.Payload, outcome.err)
 		result := OutcomeRetry
 		if failure.Dead {
 			result = OutcomeDead
 		}
-		w.settle(in, duration, result, message, failure.RetryIn, func(ctx context.Context) error { return w.store.Fail(ctx, claimed.Lease, failure) })
+		final = w.settle(in, duration, result, message, failure.RetryIn, func(ctx context.Context) error { return w.store.Fail(ctx, claimed.Lease, failure) })
 	}
 }
 
@@ -672,20 +687,21 @@ func inspect(err error) (permanent bool, after *retryAfterError) {
 	return permanent, after
 }
 
-// settle persists the outcome, logs it and notifies the hook.
-func (w *Worker) settle(in *running, duration time.Duration, outcome Outcome, message string, retryIn time.Duration, write func(context.Context) error) {
+// settle persists the outcome, logs it and notifies the hook. It returns the
+// outcome that took effect, for telemetry.
+func (w *Worker) settle(in *running, duration time.Duration, outcome Outcome, message string, retryIn time.Duration, write func(context.Context) error) Outcome {
 	job := in.job
 	err := w.persist(write)
 	switch {
 	case errors.Is(err, ErrLeaseLost):
 		w.logger.Warn("job lease lost before acknowledgement; result discarded", "job_id", job.ID, "kind", job.Kind, "queue", job.Queue, "attempt", job.Attempt, "outcome", outcome)
 		w.finished(Result{Job: job, Outcome: OutcomeLeaseLost, Duration: duration})
-		return
+		return OutcomeLeaseLost
 	case err != nil:
 		// The job stays leased; it is reclaimed when the lease expires and
 		// runs again. At-least-once delivery covers this window.
 		w.logger.Error("store job outcome failed; the job will be reclaimed after its lease expires", "job_id", job.ID, "kind", job.Kind, "queue", job.Queue, "attempt", job.Attempt, "outcome", outcome, "error", err)
-		return
+		return outcomeStoreFailed
 	}
 	attrs := []any{"job_id", job.ID, "kind", job.Kind, "queue", job.Queue, "attempt", job.Attempt, "max_attempts", job.MaxAttempts, "outcome", outcome, "duration", duration}
 	switch outcome {
@@ -699,6 +715,7 @@ func (w *Worker) settle(in *running, duration time.Duration, outcome Outcome, me
 		w.logger.Error("job failed permanently", append(attrs, "error", message)...)
 	}
 	w.finished(Result{Job: job, Outcome: outcome, Duration: duration, Error: message, RetryIn: retryIn})
+	return outcome
 }
 
 func (w *Worker) finished(result Result) {
@@ -750,11 +767,12 @@ func (e *panicError) Error() string { return "handler panicked with " + e.typeNa
 
 // invoke runs the handler with a context that carries the job, ends on
 // timeout, shutdown or a lost lease, and keeps the lease renewed.
-func (w *Worker) invoke(reg *registration, claimed Claimed, claimStarted time.Time) attempt {
+func (w *Worker) invoke(reg *registration, claimed Claimed, claimStarted time.Time, span *telemetry.Span) attempt {
 	job := claimed.Job
 	ctx, cancel := context.WithCancelCause(w.jobCtx)
 	defer cancel(nil)
 	ctx = context.WithValue(ctx, jobContextKey{}, job)
+	ctx = telemetry.ContextWithSpan(ctx, span)
 	if reg.settings.timeout > 0 {
 		var stop context.CancelFunc
 		ctx, stop = context.WithTimeoutCause(ctx, reg.settings.timeout, errHandlerTimeout)
