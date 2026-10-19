@@ -5,7 +5,8 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>{{block "title" .}}[[.Name]]{{end}}</title>
 	{{csrfMeta}}
-	<link rel="stylesheet" href="/assets/application.css">
+	{{stylesheetTag "application"}}
+	{{javascriptImportmapTags "application"}}
 </head>
 <body>
 	<a class="skip-link" href="#main">Skip to content</a>

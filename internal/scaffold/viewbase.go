@@ -16,15 +16,29 @@ type BaseFile struct {
 
 // ViewBase returns the files `forge new` generates for server-rendered HTML:
 // the embedding views package, its test, the application layout and the flash
-// partial. `forge generate view` and `forge generate scaffold` add them to an
+// partial, plus what the layout loads: the asset bundle (app/assets, the
+// stylesheet and logo), the JavaScript (app/javascript) and their Go packages.
+// `forge generate view` and `forge generate scaffold` add them to an
 // application that lacks them, so both agree with `forge new` on one layout.
-// name is the application name, used in the default page title.
-func ViewBase(name string) ([]BaseFile, error) {
-	opts, err := Normalize(Options{Name: name})
+// name is the application name, used in the default page title; module is
+// its Go module path, which app/assets imports app/javascript through.
+func ViewBase(name, module string) ([]BaseFile, error) {
+	opts, err := Normalize(Options{Name: name, Module: module})
 	if err != nil {
 		return nil, err
 	}
-	return renderSelected(opts, isViewBase)
+	rendered, err := renderSelected(opts, isViewBase)
+	if err != nil {
+		return nil, err
+	}
+	for _, asset := range assets {
+		content, err := templateFS.ReadFile(asset.source)
+		if err != nil {
+			return nil, fmt.Errorf("read asset %s: %w", asset.source, err)
+		}
+		rendered = append(rendered, BaseFile{Path: asset.target, Content: content})
+	}
+	return rendered, nil
 }
 
 // AuthenticationFiles returns the sign-in, sign-out, two-factor and
@@ -77,8 +91,18 @@ func renderSelected(opts Options, keep func(file) bool) ([]BaseFile, error) {
 	return result, nil
 }
 
-// isViewBase selects the files under app/views that every application has;
-// the authentication pages belong to AuthenticationFiles.
+// isViewBase selects the files under app/views, app/assets and app/javascript
+// that every application has; the authentication pages belong to
+// AuthenticationFiles.
 func isViewBase(f file) bool {
-	return f.scope == everyApplication && strings.HasPrefix(f.path(""), filepath.Join("app", "views")+string(filepath.Separator))
+	if f.scope != everyApplication {
+		return false
+	}
+	path := f.path("")
+	for _, dir := range []string{"views", "assets", "javascript"} {
+		if strings.HasPrefix(path, filepath.Join("app", dir)+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }

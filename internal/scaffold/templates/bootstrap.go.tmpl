@@ -4,8 +4,8 @@ package bootstrap
 
 import (
 	"context"
-	{{- if and .DB .DB.Identity}}
 	"errors"
+	{{- if and .DB .DB.Identity}}
 	"log/slog"
 	{{- end}}
 	"net/http"
@@ -27,8 +27,9 @@ import (
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
 {{- end}}
 	"github.com/rocketinsidecorp/forge-go/web"
-{{- if and .DB .DB.Identity}}
 
+	appassets "{{.Module}}/app/assets"
+{{- if and .DB .DB.Identity}}
 	"{{.Module}}/app/adapters/htmlauth"
 	"{{.Module}}/app/views"
 {{- end}}
@@ -58,7 +59,7 @@ func Configure(ctx context.Context, app *forge.App) error {
 		return err
 	}
 {{- if and .DB .DB.Identity}}
-	return identityRoutes(app, database)
+	return identityRoutes(ctx, app, database)
 {{- else}}
 	return nil
 {{- end}}
@@ -98,11 +99,21 @@ func routes(ctx context.Context, app *forge.App) error {
 	if err := useBrowserPipeline(app); err != nil {
 		return err
 	}
-	// Public routes
-	if err := app.HandleFunc("GET /{$}", welcome); err != nil {
+	// Digested, immutable static files: the stylesheet, the logo, the
+	// JavaScript and the vendored Turbo and Stimulus (app/assets).
+	bundle, err := appassets.Load()
+	if err != nil {
 		return err
 	}
-	if err := app.Handle("GET /assets/", brandAssetsHandler()); err != nil {
+	logo, ok := bundle.Set.Path("forge-go-logo.png")
+	if !ok {
+		return errors.New("app/assets does not embed forge-go-logo.png")
+	}
+	// Public routes
+	if err := app.HandleFunc("GET /{$}", welcomeHandler(logo)); err != nil {
+		return err
+	}
+	if err := app.Handle("GET /assets/", bundle.Set.Handler()); err != nil {
 		return err
 	}
 	if err := app.HandleFunc("GET /v1/status", status); err != nil {
@@ -137,7 +148,7 @@ func status(w http.ResponseWriter, _ *http.Request) {
 
 {{- if and .DB .DB.Identity}}
 
-func identityRoutes(app *forge.App, database *postgres.DB) error {
+func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB) error {
 	repository, err := authpostgres.New(database)
 	if err != nil {
 		return err

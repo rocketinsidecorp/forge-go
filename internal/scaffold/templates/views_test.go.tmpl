@@ -11,6 +11,8 @@ import (
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	forgeviews "github.com/rocketinsidecorp/forge-go/views"
 	"github.com/rocketinsidecorp/forge-go/web"
+
+	"{{.Module}}/app/assets"
 )
 
 func TestNewParsesTheEmbeddedTemplates(t *testing.T) {
@@ -38,7 +40,11 @@ func TestLayoutRendersFlashAndCSRF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	renderer, err := forgeviews.Load(tree, forgeviews.Options{})
+	options, err := Options()
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := forgeviews.Load(tree, options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,9 +77,17 @@ func TestLayoutRendersFlashAndCSRF(t *testing.T) {
 			token = cookie.Value
 		}
 	}
+	bundle, err := assets.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stylesheet, _ := bundle.Set.Path("application.css")
+	entry, _ := bundle.Set.Path("application.js")
 	for _, want := range []string{
 		"<title>Example</title>",
-		`<link rel="stylesheet" href="/assets/application.css">`,
+		`<link rel="stylesheet" href="` + stylesheet + `">`,
+		string(bundle.ImportMap.Tag()),
+		`<script type="module" src="` + entry + `"></script>`,
 		`<meta name="csrf-token" content="` + token + `">`,
 		`<input type="hidden" name="authenticity_token" value="` + token + `">`,
 		`<p class="flash flash-notice" role="status">Saved &lt;b&gt;draft&lt;/b&gt;</p>`,
@@ -82,10 +96,13 @@ func TestLayoutRendersFlashAndCSRF(t *testing.T) {
 			t.Fatalf("missing %q in:\n%s", want, body)
 		}
 	}
-	if recorder.Header().Get("Content-Security-Policy") != forgeviews.DefaultContentSecurityPolicy {
-		t.Fatalf("Content-Security-Policy = %q", recorder.Header().Get("Content-Security-Policy"))
+	// The import map is the one inline script, allowed by its hash alone.
+	policy := recorder.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "script-src 'self' "+bundle.ImportMap.CSPSource()+";") || strings.Contains(policy, "unsafe-") {
+		t.Fatalf("Content-Security-Policy = %q", policy)
 	}
-	if strings.Contains(body, "<script") || strings.Contains(body, " style=") || strings.Contains(body, "<style") {
-		t.Fatalf("the layout must not need inline scripts or styles:\n%s", body)
+	scripts := strings.Count(body, "<script")
+	if scripts != 2 || strings.Count(body, `<script type="importmap">`) != 1 || strings.Contains(body, " style=") || strings.Contains(body, "<style") {
+		t.Fatalf("the layout must have only the import map and the module script, and no inline styles:\n%s", body)
 	}
 }

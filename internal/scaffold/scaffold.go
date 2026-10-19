@@ -95,6 +95,9 @@ var files = []file{
 	{"bootstrap.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap.go")), everyApplication},
 	{"bootstrap_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap_test.go")), everyApplication},
 	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), everyApplication},
+	{"app_assets.go.tmpl", fixed(filepath.Join("app", "assets", "assets.go")), everyApplication},
+	{"app_assets_test.go.tmpl", fixed(filepath.Join("app", "assets", "assets_test.go")), everyApplication},
+	{"javascript.go.tmpl", fixed(filepath.Join("app", "javascript", "javascript.go")), everyApplication},
 	{"views.go.tmpl", fixed(filepath.Join("app", "views", "views.go")), everyApplication},
 	{"views_test.go.tmpl", fixed(filepath.Join("app", "views", "views_test.go")), everyApplication},
 	{"application.gohtml.tmpl", fixed(filepath.Join("app", "views", "layouts", "application.gohtml")), everyApplication},
@@ -120,13 +123,14 @@ var files = []file{
 	{"keep.tmpl", fixed(filepath.Join("db", "migrations", ".keep")), withDatabase},
 }
 
-var assets = []asset{{
-	source: "templates/assets/forge-go-logo.png",
-	target: filepath.Join("app", "bootstrap", "assets", "forge-go-logo.png"),
-}, {
-	source: "templates/assets/application.css",
-	target: filepath.Join("app", "bootstrap", "assets", "application.css"),
-}}
+var assets = []asset{
+	{source: "templates/assets/forge-go-logo.png", target: filepath.Join("app", "assets", "forge-go-logo.png")},
+	{source: "templates/assets/application.css", target: filepath.Join("app", "assets", "application.css")},
+	{source: "templates/javascript/application.js", target: filepath.Join("app", "javascript", "application.js")},
+	{source: "templates/javascript/controllers/application.js", target: filepath.Join("app", "javascript", "controllers", "application.js")},
+	{source: "templates/javascript/controllers/index.js", target: filepath.Join("app", "javascript", "controllers", "index.js")},
+	{source: "templates/javascript/controllers/hello_controller.js", target: filepath.Join("app", "javascript", "controllers", "hello_controller.js")},
+}
 
 // viewTemplateSuffix marks templates that produce Go HTML templates. They are
 // parsed with [[ ]] delimiters so the {{ }} actions pass through unchanged.

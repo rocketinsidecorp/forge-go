@@ -1,0 +1,54 @@
+// Package assets holds {{.Name}}'s static files and builds the digested
+// asset table every page and the /assets/ route share: the stylesheet and
+// images embedded here, the JavaScript of app/javascript, and the vendored
+// Turbo and Stimulus modules. Files are served as
+// /assets/NAME-<digest>.EXT with immutable caching, so a changed file gets a
+// new URL.
+package assets
+
+import (
+	"embed"
+	"sync"
+
+	forgeassets "github.com/rocketinsidecorp/forge-go/assets"
+	"github.com/rocketinsidecorp/forge-go/hotwire"
+
+	"{{.Module}}/app/javascript"
+)
+
+// files holds the stylesheet and images. Add a file name to the pattern to
+// publish another one; every embedded file must have an extension Forge
+// serves (css, js, svg, png, jpg, gif, webp, ico, woff2, txt).
+//
+//go:embed application.css forge-go-logo.png
+var files embed.FS
+
+// Bundle is the asset table and the import map built from it.
+type Bundle struct {
+	// Set maps logical names ("application.css") to digested URLs and serves
+	// them: app.Handle("GET /assets/", bundle.Set.Handler()).
+	Set *forgeassets.Set
+	// ImportMap resolves the bare module names JavaScript imports. Its inline
+	// script is allowed by a Content-Security-Policy hash.
+	ImportMap *forgeassets.ImportMap
+}
+
+var load = sync.OnceValues(build)
+
+// Load returns the bundle, building it on first use. It is immutable and safe
+// for concurrent use; every caller gets the same one.
+func Load() (*Bundle, error) { return load() }
+
+func build() (*Bundle, error) {
+	set, err := forgeassets.New(forgeassets.Options{}, files, javascript.Files(), hotwire.Files())
+	if err != nil {
+		return nil, err
+	}
+	// Turbo and Stimulus, then every file in app/javascript/controllers.
+	pins := append(hotwire.Pins(), forgeassets.PinAllFrom(set, "controllers")...)
+	imports, err := forgeassets.NewImportMap(set, pins...)
+	if err != nil {
+		return nil, err
+	}
+	return &Bundle{Set: set, ImportMap: imports}, nil
+}
