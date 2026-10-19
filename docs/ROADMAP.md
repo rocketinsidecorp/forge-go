@@ -119,7 +119,9 @@ Core changes made alongside:
 Not scheduled in a specific phase unless noted.
 
 - `X-Forwarded-For` / `X-Forwarded-Proto` are not interpreted; handlers see
-  the proxy's address behind `trusted-proxy`.
+  the proxy's address behind `trusted-proxy`. `ratelimit.ByRemoteAddr`
+  therefore puts every client behind a proxy in one bucket: key by an
+  authenticated value instead ([RATE_LIMITING.md](RATE_LIMITING.md)).
 - Readiness results are not cached; every probe runs the checks.
 - Matched requests are looked up in `ServeMux` twice (once to detect
   unmatched routes); tracked for Phase 9.
@@ -367,8 +369,44 @@ Rails-style HTML CRUD on the standard-library core
 - [x] G1b: `forge generate scaffold` (HTML resource on top of the above); a
   test generates a tenant-scoped and a global scaffold per database, wires
   them as printed, and vets, builds, lints and tests the application.
-- [ ] Multipart forms and file uploads, per-page layout selection,
-  fingerprinted assets, Turbo/Hotwire.
+- [ ] Multipart HTML forms (`csrf.Protection` reads urlencoded bodies only;
+  upload routes send the token in `X-CSRF-Token`, see
+  [STORAGE.md](STORAGE.md)), per-page layout selection, fingerprinted assets,
+  Turbo/Hotwire. (The upload helper and file storage themselves are done; see
+  "Runtime services".)
+
+## Runtime services (Rails 8 parity)
+
+Rate limiting, application cache and file storage on the standard-library core,
+each with shared stores for PostgreSQL, MySQL/MariaDB and SQLite (rate limit and
+cache) and a conformance suite
+([ADR 0031](adr/0031-rate-limiting.md), [ADR 0032](adr/0032-cache.md),
+[ADR 0033](adr/0033-file-storage.md)).
+
+- [x] `ratelimit`: fixed-window `Limiter`, bounded in-memory store with no
+  background goroutines, HTTP middleware (`429`, `Retry-After`, JSON or HTML),
+  per-route and per-scope use, fail-closed by default; shared
+  `ratelimit/postgres`, `ratelimit/mysql`, `ratelimit/sqlite` with bounded
+  pruning ([RATE_LIMITING.md](RATE_LIMITING.md)).
+- [x] `cache`: `Cache` interface with `Fetch` stampede protection, bounded LRU +
+  TTL memory cache, typed JSON helpers; Solid Cache equivalent in
+  `cache/postgres`, `cache/mysql`, `cache/sqlite` with expiry pruning and entry
+  bounds ([CACHING.md](CACHING.md)).
+- [x] `storage`: `Storage` port, `storage/disk` (traversal-safe, atomic,
+  private), HMAC-signed expiring links, safe serving handler, strict multipart
+  `Receive` ([STORAGE.md](STORAGE.md)).
+- [x] `FORGE_RATE_LIMIT_*`, `FORGE_CACHE_*`, `FORGE_STORAGE_*` configuration with
+  fail-fast validation; production requires a storage signing key.
+- [ ] S3-compatible `storage.Storage` adapter (needs a reviewed SigV4
+  implementation verified against a real service). The port is documented for
+  it; there is no placeholder.
+- [ ] Per-route request body limits: `FORGE_HTTP_MAX_BODY_BYTES` caps every
+  route and an upload route cannot raise it, so uploads are bounded by the
+  global limit.
+- [ ] Trusted-proxy policy for client addresses (limiter keys, audit sources).
+- [ ] Generated-application wiring (`forge new` options for cache, storage and
+  rate limit, a `forge generate` attachment helper), image variants, malware
+  scanning hook, cache tags/pattern invalidation, a distributed cache lock.
 
 ## Phase 9 - Performance
 

@@ -35,6 +35,10 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 	}
 	setString(lookup, "FORGE_MAIL_FROM", &cfg.Mail.From)
 	setString(lookup, "FORGE_MAIL_TLS_CA_FILE", &cfg.Mail.CAFile)
+	setString(lookup, "FORGE_STORAGE_ROOT", &cfg.Storage.Root)
+	if value, ok := lookup("FORGE_STORAGE_SIGNING_KEY"); ok {
+		cfg.Storage.SigningKey = NewSecret(value)
+	}
 
 	durations := []struct {
 		key    string
@@ -50,6 +54,8 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 		{"FORGE_DATABASE_CONNECT_TIMEOUT", &cfg.Database.ConnectTimeout},
 		{"FORGE_DATABASE_STATEMENT_TIMEOUT", &cfg.Database.StatementTimeout},
 		{"FORGE_MAIL_TIMEOUT", &cfg.Mail.Timeout},
+		{"FORGE_CACHE_DEFAULT_TTL", &cfg.Cache.DefaultTTL},
+		{"FORGE_STORAGE_LINK_TTL", &cfg.Storage.LinkTTL},
 	}
 	for _, item := range durations {
 		if value, ok := lookup(item.key); ok {
@@ -84,6 +90,35 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 				return Config{}, invalidValue(key, "an integer")
 			}
 			*target = int32(parsed)
+		}
+	}
+	positive := []struct {
+		key    string
+		target any
+	}{
+		{"FORGE_RATE_LIMIT_MAX_KEYS", &cfg.RateLimit.MaxKeys},
+		{"FORGE_CACHE_MAX_ENTRIES", &cfg.Cache.MaxEntries},
+		{"FORGE_CACHE_MAX_VALUE_BYTES", &cfg.Cache.MaxValueBytes},
+		{"FORGE_CACHE_MAX_BYTES", &cfg.Cache.MaxBytes},
+		{"FORGE_STORAGE_MAX_UPLOAD_BYTES", &cfg.Storage.MaxUploadBytes},
+	}
+	for _, item := range positive {
+		value, ok := lookup(item.key)
+		if !ok {
+			continue
+		}
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed < 1 {
+			return Config{}, invalidValue(item.key, "a positive integer")
+		}
+		switch target := item.target.(type) {
+		case *int:
+			if int64(int(parsed)) != parsed {
+				return Config{}, invalidValue(item.key, "a positive integer")
+			}
+			*target = int(parsed)
+		case *int64:
+			*target = parsed
 		}
 	}
 	if value, ok := lookup("FORGE_DATABASE_ALLOW_PLAINTEXT"); ok {

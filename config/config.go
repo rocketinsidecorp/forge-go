@@ -96,6 +96,9 @@ type Config struct {
 	Auth        Auth
 	Database    Database
 	Mail        Mail
+	RateLimit   RateLimit
+	Cache       Cache
+	Storage     Storage
 }
 
 func Default() Config {
@@ -120,6 +123,14 @@ func Default() Config {
 			ConnectTimeout:   5 * time.Second,
 			StatementTimeout: 30 * time.Second,
 		},
+		RateLimit: RateLimit{MaxKeys: defaultRateLimitMax},
+		Cache: Cache{
+			MaxEntries:    10_000,
+			MaxBytes:      64 << 20,
+			MaxValueBytes: 1 << 20,
+			DefaultTTL:    time.Hour,
+		},
+		Storage: Storage{MaxUploadBytes: defaultStorageBytes, LinkTTL: defaultStorageTTL},
 	}
 }
 
@@ -156,5 +167,14 @@ func (c Config) Validate() error {
 	if err := c.Auth.validate(); err != nil {
 		return err
 	}
-	return c.Mail.validate(c.Environment)
+	if err := c.Mail.validate(c.Environment); err != nil {
+		return err
+	}
+	if err := c.RateLimit.validate(); err != nil {
+		return err
+	}
+	if err := c.Cache.validate(); err != nil {
+		return err
+	}
+	return c.Storage.validate(c.Environment, c.HTTP.MaxBodyBytes)
 }
