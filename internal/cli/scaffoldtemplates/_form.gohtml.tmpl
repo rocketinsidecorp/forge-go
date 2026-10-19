@@ -1,0 +1,35 @@
+<form method="post" action="{{.Action}}" id="{{domID "[[.Name]]" .ID}}">
+	{{csrfField}}
+	{{with .Method}}{{methodField .}}{{end}}
+	{{if .Version}}<input type="hidden" name="version" value="{{.Version}}">{{end}}
+	{{if .Errors}}
+	<div class="form-errors" role="alert">
+		<p>This [[.Human]] could not be saved:</p>
+		<ul>
+			{{range .Errors}}<li>{{.Field}} {{.Message}}</li>{{end}}
+		</ul>
+	</div>
+	{{end}}
+[[- range .Fields]]
+	<div class="field">
+[[- if .IsCheckbox]]
+		<label for="[[$.Name]]_[[.Name]]"><input type="checkbox" id="[[$.Name]]_[[.Name]]" name="[[.Name]]" value="on"{{if .Values.[[.Title]]}} checked{{end}}{{if .Errors.Has "[[.Name]]"}} aria-invalid="true" aria-describedby="[[$.Name]]_[[.Name]]_error"{{end}}> [[.Label]]</label>
+[[- else if .IsText]]
+		<label for="[[$.Name]]_[[.Name]]">[[.Label]]</label>
+		<textarea id="[[$.Name]]_[[.Name]]" name="[[.Name]]" rows="6"[[if not .Optional]] required[[end]]{{if .Errors.Has "[[.Name]]"}} aria-invalid="true" aria-describedby="[[$.Name]]_[[.Name]]_error"{{end}}>{{.Values.[[.Title]]}}</textarea>
+[[- else if .IsBool]]
+		<label for="[[$.Name]]_[[.Name]]">[[.Label]]</label>
+		<select id="[[$.Name]]_[[.Name]]" name="[[.Name]]"{{if .Errors.Has "[[.Name]]"}} aria-invalid="true" aria-describedby="[[$.Name]]_[[.Name]]_error"{{end}}>
+			<option value=""{{if eq .Values.[[.Title]] ""}} selected{{end}}>Not set</option>
+			<option value="true"{{if eq .Values.[[.Title]] "true"}} selected{{end}}>Yes</option>
+			<option value="false"{{if eq .Values.[[.Title]] "false"}} selected{{end}}>No</option>
+		</select>
+[[- else]]
+		<label for="[[$.Name]]_[[.Name]]">[[.Label]]</label>
+		<input [[.InputAttributes]] id="[[$.Name]]_[[.Name]]" name="[[.Name]]" value="{{.Values.[[.Title]]}}"[[if not .Optional]] required[[end]]{{if .Errors.Has "[[.Name]]"}} aria-invalid="true" aria-describedby="[[$.Name]]_[[.Name]]_error"{{end}}>
+[[- end]]
+		{{with .Errors.Message "[[.Name]]"}}<p class="field-error" id="[[$.Name]]_[[.Name]]_error">{{.}}</p>{{end}}
+	</div>
+[[- end]]
+	<button type="submit">Save [[.Human]]</button>
+</form>

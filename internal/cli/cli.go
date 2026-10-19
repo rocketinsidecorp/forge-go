@@ -278,13 +278,16 @@ commands:
   rollback [-steps N] revert the latest migrations
   generate migration NAME [--dry-run]
                       create or preview db/migrations/<timestamp>_NAME.{up,down}.sql
-  generate view NAME [--dry-run]
-                      create or preview an embedded, auto-escaped HTML template
+  generate view [DIR/]NAME [--dry-run]
+                      create or preview an auto-escaped page in app/views
   generate job NAME [--dry-run]
                       create or preview a cancellation-aware job stub and tests
   generate resource NAME field:type... (--tenant-scoped | --global) [--plural P] [--dry-run]
                       create or preview a migration, domain, application,
                       persistence and HTTP layers with tests; never public
+  generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural P] [--dry-run]
+                      a resource plus HTML CRUD pages: forms, 422 errors,
+                      flash notices, CSRF; never public
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
   routes              list the routes found in the source, as a table

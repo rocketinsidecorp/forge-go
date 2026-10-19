@@ -1,0 +1,615 @@
+package htmlui_test
+
+import (
+	"cmp"
+	"context"
+	"io"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	forge "github.com/rocketinsidecorp/forge-go"
+	"[[.Module]]/app/adapters/htmlui"
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	appviews "[[.Module]]/app/views"
+	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/pagination"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/web"
+)
+
+// [[.Camel]]MemoryRepository keeps the page tests independent of any database.
+type [[.Camel]]MemoryRepository struct {
+	mu   sync.Mutex
+	rows map[uuid.UUID]domain.[[.Title]]
+}
+
+var _ application.[[.Title]]Repository = (*[[.Camel]]MemoryRepository)(nil)
+
+func (r *[[.Camel]]MemoryRepository) Create(_ context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rows[entity.ID] = entity
+	return entity, nil
+}
+
+func (r *[[.Camel]]MemoryRepository) Get(_ context.Context, id uuid.UUID) (domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entity, ok := r.rows[id]
+	if !ok {
+		return domain.[[.Title]]{}, domain.Err[[.Title]]NotFound
+	}
+	return entity, nil
+}
+
+func (r *[[.Camel]]MemoryRepository) List(_ context.Context, after uuid.UUID, limit int) ([]domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	newestFirst := slices.SortedFunc(maps.Values(r.rows), func(a, b domain.[[.Title]]) int { return cmp.Compare(0, a.ID.Compare(b.ID)) })
+	var page []domain.[[.Title]]
+	for _, entity := range newestFirst {
+		if after != (uuid.UUID{}) && entity.ID.Compare(after) >= 0 {
+			continue
+		}
+		if len(page) == limit {
+			break
+		}
+		page = append(page, entity)
+	}
+	return page, nil
+}
+
+func (r *[[.Camel]]MemoryRepository) Update(_ context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored, ok := r.rows[entity.ID]
+	switch {
+	case !ok:
+		return domain.[[.Title]]{}, domain.Err[[.Title]]NotFound
+	case stored.Version != entity.Version:
+		return domain.[[.Title]]{}, domain.ErrStale[[.Title]]Version
+	}
+	entity.Version++
+	r.rows[entity.ID] = entity
+	return entity, nil
+}
+
+func (r *[[.Camel]]MemoryRepository) Delete(_ context.Context, id uuid.UUID, version int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	stored, ok := r.rows[id]
+	switch {
+	case !ok:
+		return domain.Err[[.Title]]NotFound
+	case stored.Version != version:
+		return domain.ErrStale[[.Title]]Version
+	}
+	delete(r.rows, id)
+	return nil
+}
+
+// [[.Camel]]AllowAll stands in for the application's guard: it lets every request
+// through. It exists only in tests.
+func [[.Camel]]AllowAll(_ string, next http.Handler) (http.Handler, error) { return next, nil }
+
+// [[.Camel]]Grant returns a guard that lets through only the named permissions.
+func [[.Camel]]Grant(granted ...string) htmlui.[[.Title]]Protect {
+	return func(permission string, next http.Handler) (http.Handler, error) {
+		if slices.Contains(granted, permission) {
+			return next, nil
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			web.Error(w, r, fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0))
+		}), nil
+	}
+}
+
+// new[[.Title]]Service builds the use cases over an in-memory store with a clock
+// that advances one second per reading.
+func new[[.Title]]Service(t *testing.T) *application.[[.Title]]Service {
+	t.Helper()
+	repo := &[[.Camel]]MemoryRepository{rows: make(map[uuid.UUID]domain.[[.Title]])}
+	var mu sync.Mutex
+	ticks := 0
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		ticks++
+		return time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC).Add(time.Duration(ticks) * time.Second)
+	}
+	service, err := application.New[[.Title]]Service(repo, clock, uuid.New)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+// [[.Camel]]Browser is a minimal browser: it keeps cookies between requests, so a
+// CSRF token and a flash message travel as they do in real use.
+type [[.Camel]]Browser struct {
+	t       *testing.T
+	service *application.[[.Title]]Service
+	handler http.Handler
+	cookies map[string]*http.Cookie
+}
+
+// new[[.Title]]Browser serves the pages from a forge.App with the middleware
+// bootstrap installs (method override, CSRF protection, flash messages) and
+// the application's own templates.
+func new[[.Title]]Browser(t *testing.T, protect htmlui.[[.Title]]Protect) *[[.Camel]]Browser {
+	t.Helper()
+	renderer, err := appviews.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	protection, err := csrf.New(csrf.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, middleware := range []func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash} {
+		if err := app.Use(middleware); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := new[[.Title]]Service(t)
+	if err := htmlui.Register[[.PluralTitle]](app, service, renderer, protect); err != nil {
+		t.Fatal(err)
+	}
+	return &[[.Camel]]Browser{t: t, service: service, handler: app.Handler(), cookies: make(map[string]*http.Cookie)}
+}
+
+// request sends form (url-encoded) as the body when it is not nil.
+func (b *[[.Camel]]Browser) request(method, target string, form url.Values) *httptest.ResponseRecorder {
+	b.t.Helper()
+	var body io.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
+	}
+	request := httptest.NewRequest(method, target, body)
+	request.Header.Set("Accept", "text/html")
+	if form != nil {
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	for _, cookie := range b.cookies {
+		request.AddCookie(cookie)
+	}
+	recorder := httptest.NewRecorder()
+	b.handler.ServeHTTP(recorder, request)
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.MaxAge < 0 || cookie.Value == "" {
+			delete(b.cookies, cookie.Name)
+		} else {
+			b.cookies[cookie.Name] = cookie
+		}
+	}
+	return recorder
+}
+
+func (b *[[.Camel]]Browser) get(target string) *httptest.ResponseRecorder {
+	b.t.Helper()
+	return b.request(http.MethodGet, target, nil)
+}
+
+// token opens page, which sets the CSRF cookie, and returns the form token.
+func (b *[[.Camel]]Browser) token(page string) string {
+	b.t.Helper()
+	[[.Camel]]Expect(b.t, b.get(page), http.StatusOK)
+	cookie := b.cookies[csrf.CookieName]
+	if cookie == nil {
+		b.t.Fatal("the page did not set the CSRF cookie")
+	}
+	return cookie.Value
+}
+
+// submit does what a browser does with a form on page: it sends values, with
+// the page's CSRF token, to target. A method other than POST travels as the
+// _method field.
+func (b *[[.Camel]]Browser) submit(page, method, target string, values url.Values) *httptest.ResponseRecorder {
+	b.t.Helper()
+	submitted := maps.Clone(values)
+	if submitted == nil {
+		submitted = url.Values{}
+	}
+	submitted.Set(csrf.FormField, b.token(page))
+	if method != http.MethodPost {
+		submitted.Set("_method", method)
+	}
+	return b.request(http.MethodPost, target, submitted)
+}
+
+func [[.Camel]]Expect(t *testing.T, recorder *httptest.ResponseRecorder, status int) {
+	t.Helper()
+	if recorder.Code != status {
+		t.Fatalf("status %d, want %d; body %s", recorder.Code, status, recorder.Body)
+	}
+}
+
+// [[.Camel]]Contains fails unless the page has every fragment.
+func [[.Camel]]Contains(t *testing.T, recorder *httptest.ResponseRecorder, fragments ...string) {
+	t.Helper()
+	for _, fragment := range fragments {
+		if !strings.Contains(recorder.Body.String(), fragment) {
+			t.Errorf("the page does not contain %q:\n%s", fragment, recorder.Body)
+		}
+	}
+}
+
+// [[.Camel]]Redirected checks for 303 See Other and returns where to.
+func [[.Camel]]Redirected(t *testing.T, recorder *httptest.ResponseRecorder) string {
+	t.Helper()
+	[[.Camel]]Expect(t, recorder, http.StatusSeeOther)
+	return recorder.Header().Get("Location")
+}
+
+// [[.Camel]]FirstValues is a submission every field accepts, all fields set.
+func [[.Camel]]FirstValues() url.Values {
+	values := url.Values{}
+[[.FormSetters 1 true]]	return values
+}
+
+// [[.Camel]]SecondValues differs from the first in every field.
+func [[.Camel]]SecondValues() url.Values {
+	values := url.Values{}
+[[.FormSetters 2 true]]	return values
+}
+[[- if .HasOptional]]
+
+// [[.Camel]]RequiredValues sets only the required fields: optional fields may be left empty.
+func [[.Camel]]RequiredValues() url.Values {
+	values := url.Values{}
+[[.FormSetters 2 false]]	return values
+}
+[[- end]]
+
+// [[.Camel]]WithVersion returns values with the version an edit form carries.
+func [[.Camel]]WithVersion(values url.Values, version string) url.Values {
+	values.Set("version", version)
+	return values
+}
+
+// seed stores a [[.Name]] directly through the use cases.
+func (b *[[.Camel]]Browser) seed() domain.[[.Title]] {
+	b.t.Helper()
+	entity, err := b.service.Create(context.Background(), domain.[[.Title]]Input{
+		[[.SampleInput 1 true]]
+	})
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return entity
+}
+
+// changeBehindTheirBack updates the [[.Name]] as another person would, so a form
+// loaded earlier is stale.
+func (b *[[.Camel]]Browser) changeBehindTheirBack(entity domain.[[.Title]]) domain.[[.Title]] {
+	b.t.Helper()
+	changed, err := b.service.Update(context.Background(), entity.ID, entity.Version, domain.[[.Title]]Changes{
+		[[.SampleChanges 3]]
+	})
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return changed
+}
+
+func (b *[[.Camel]]Browser) count() int {
+	b.t.Helper()
+	page, err := b.service.List(context.Background(), pagination.Request{})
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return len(page.Items)
+}
+
+// stored returns the only [[.Name]] there is.
+func (b *[[.Camel]]Browser) stored() domain.[[.Title]] {
+	b.t.Helper()
+	page, err := b.service.List(context.Background(), pagination.Request{})
+	if err != nil || len(page.Items) != 1 {
+		b.t.Fatalf("want exactly one [[.Name]], got %d (%v)", len(page.Items), err)
+	}
+	return page.Items[0]
+}
+
+func Test[[.Title]]PagesRenderTheirForms(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+
+	index := browser.get("/[[.Plural]]")
+	[[.Camel]]Expect(t, index, http.StatusOK)
+	[[.Camel]]Contains(t, index, "No [[.PluralHuman]] yet.", `href="/[[.Plural]]/new"`)
+	if got := index.Header().Get("Content-Security-Policy"); !strings.Contains(got, "script-src 'self'") {
+		t.Errorf("Content-Security-Policy = %q", got)
+	}
+
+	form := browser.get("/[[.Plural]]/new")
+	[[.Camel]]Expect(t, form, http.StatusOK)
+	[[.Camel]]Contains(t, form,
+		`<form method="post" action="/[[.Plural]]" id="new_[[.Name]]">`,
+		`name="`+csrf.FormField+`"`,
+[[- range .Fields]]
+		`name="[[.Name]]"`,
+[[- end]]
+	)
+	if strings.Contains(form.Body.String(), `name="_method"`) || strings.Contains(form.Body.String(), `name="version"`) {
+		t.Errorf("the new form must not carry a method override or a version:\n%s", form.Body)
+	}
+
+	entity := browser.seed()
+	listed := browser.get("/[[.Plural]]")
+	[[.Camel]]Expect(t, listed, http.StatusOK)
+	[[.Camel]]Contains(t, listed, `id="[[.Name]]_`+entity.ID.String()+`"`, `href="/[[.Plural]]/`+entity.ID.String()+`"`, `href="/[[.Plural]]/`+entity.ID.String()+`/edit"`)
+}
+
+func Test[[.Title]]PagesLifecycle(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+
+	location := [[.Camel]]Redirected(t, browser.submit("/[[.Plural]]/new", http.MethodPost, "/[[.Plural]]", [[.Camel]]FirstValues()))
+	entity := browser.stored()
+	if location != "/[[.Plural]]/"+entity.ID.String() {
+		t.Fatalf("Location = %q, want the new [[.Name]]", location)
+	}
+	if entity.Version != 1 {
+		t.Errorf("version = %d, want 1", entity.Version)
+	}
+
+	// The redirect lands on the [[.Name]], with the notice shown once.
+	shown := browser.get(location)
+	[[.Camel]]Expect(t, shown, http.StatusOK)
+	[[.Camel]]Contains(t, shown, "[[.HumanTitle]] was created.", `class="flash flash-notice"`[[with .Marker]], [[.First]][[end]])
+	if again := browser.get(location); strings.Contains(again.Body.String(), "was created") {
+		t.Error("the notice was shown twice")
+	}
+
+	// The edit form is filled in and carries the version.
+	edit := browser.get(location + "/edit")
+	[[.Camel]]Expect(t, edit, http.StatusOK)
+	[[.Camel]]Contains(t, edit, `action="`+location+`"`, `name="_method" value="PATCH"`, `name="version" value="1"`[[with .Marker]], [[.First]][[end]])
+
+	// PATCH, sent as a POST with _method like a browser form.
+	updated := [[.Camel]]Redirected(t, browser.submit(location+"/edit", http.MethodPatch, location, [[.Camel]]WithVersion([[.Camel]]SecondValues(), "1")))
+	if updated != location {
+		t.Fatalf("Location = %q, want %q", updated, location)
+	}
+	if got := browser.stored().Version; got != 2 {
+		t.Errorf("version = %d after the update, want 2", got)
+	}
+	shown = browser.get(location)
+	[[.Camel]]Contains(t, shown, "[[.HumanTitle]] was updated."[[with .Marker]], [[.Second]][[end]])
+[[- with .Marker]]
+	if strings.Contains(shown.Body.String(), [[.First]]) {
+		t.Error("the old value is still shown")
+	}
+[[- end]]
+
+	// DELETE, with the version the page showed.
+	deleted := [[.Camel]]Redirected(t, browser.submit(location, http.MethodDelete, location, url.Values{"version": {"2"}}))
+	if deleted != "/[[.Plural]]" {
+		t.Fatalf("Location = %q, want the index", deleted)
+	}
+	if browser.count() != 0 {
+		t.Error("the [[.Name]] was not deleted")
+	}
+	[[.Camel]]Contains(t, browser.get(deleted), "[[.HumanTitle]] was deleted.")
+	gone := browser.get(location)
+	[[.Camel]]Expect(t, gone, http.StatusNotFound)
+	[[.Camel]]Contains(t, gone, "[[.HumanTitle]] not found")
+}
+[[- if .HasOptional]]
+
+func Test[[.Title]]PagesAllowOptionalFieldsToBeEmpty(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+
+	[[.Camel]]Redirected(t, browser.submit("/[[.Plural]]/new", http.MethodPost, "/[[.Plural]]", [[.Camel]]RequiredValues()))
+	entity := browser.stored()
+[[- range .OptionalFields]]
+	if entity.[[.Title]] != nil {
+		t.Errorf("[[.Name]] = %v, want it empty", *entity.[[.Title]])
+	}
+[[- end]]
+
+	// Emptying a stored optional value clears it.
+	browser = new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	seeded := browser.seed()
+	target := "/[[.Plural]]/" + seeded.ID.String()
+	[[.Camel]]Redirected(t, browser.submit(target+"/edit", http.MethodPatch, target, [[.Camel]]WithVersion([[.Camel]]RequiredValues(), "1")))
+	entity = browser.stored()
+[[- range .OptionalFields]]
+	if entity.[[.Title]] != nil {
+		t.Errorf("[[.Name]] = %v after clearing it, want it empty", *entity.[[.Title]])
+	}
+[[- end]]
+}
+[[- end]]
+
+func Test[[.Title]]PagesCreateShowsProblemsWith422(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+
+	values := [[.Camel]]FirstValues()
+	values.Set("[[.InvalidField.Name]]", [[.InvalidValue]])
+	rejected := browser.submit("/[[.Plural]]/new", http.MethodPost, "/[[.Plural]]", values)
+	[[.Camel]]Expect(t, rejected, http.StatusUnprocessableEntity)
+	[[.Camel]]Contains(t, rejected,
+		"This [[.Human]] could not be saved",
+		`id="[[.Name]]_[[.InvalidField.Name]]_error"`,
+		`aria-invalid="true"`,
+		`<form method="post" action="/[[.Plural]]"`,
+		`name="`+csrf.FormField+`"`,
+	)
+	if browser.count() != 0 {
+		t.Error("an invalid form created a [[.Name]]")
+	}
+}
+
+func Test[[.Title]]PagesUpdateShowsProblemsWith422(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	entity := browser.seed()
+	target := "/[[.Plural]]/" + entity.ID.String()
+
+	values := [[.Camel]]WithVersion([[.Camel]]SecondValues(), "1")
+	values.Set("[[.InvalidField.Name]]", [[.InvalidValue]])
+	rejected := browser.submit(target+"/edit", http.MethodPatch, target, values)
+	[[.Camel]]Expect(t, rejected, http.StatusUnprocessableEntity)
+	[[.Camel]]Contains(t, rejected,
+		`id="[[.Name]]_[[.InvalidField.Name]]_error"`,
+		`aria-invalid="true"`,
+		`name="_method" value="PATCH"`,
+		`name="version" value="1"`,
+	)
+	if after := browser.stored(); !reflect.DeepEqual(after, entity) {
+		t.Errorf("an invalid form changed the [[.Name]]: %+v, want %+v", after, entity)
+	}
+}
+
+// A form loaded before someone else saved must not overwrite their change.
+func Test[[.Title]]PagesRejectAStaleUpdateWith409(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	loaded := browser.seed()
+	target := "/[[.Plural]]/" + loaded.ID.String()
+	current := browser.changeBehindTheirBack(loaded)
+
+	conflict := browser.submit(target+"/edit", http.MethodPatch, target, [[.Camel]]WithVersion([[.Camel]]SecondValues(), "1"))
+	[[.Camel]]Expect(t, conflict, http.StatusConflict)
+	[[.Camel]]Contains(t, conflict, "was changed by someone else", `href="`+target+`/edit"`[[with .Marker]], [[.Second]][[end]])
+	if after := browser.stored(); !reflect.DeepEqual(after, current) {
+		t.Errorf("a stale form changed the [[.Name]]: %+v, want %+v", after, current)
+	}
+}
+
+func Test[[.Title]]PagesKeepAStaleDelete(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	loaded := browser.seed()
+	target := "/[[.Plural]]/" + loaded.ID.String()
+	browser.changeBehindTheirBack(loaded)
+
+	location := [[.Camel]]Redirected(t, browser.submit(target, http.MethodDelete, target, url.Values{"version": {"1"}}))
+	if location != target {
+		t.Fatalf("Location = %q, want %q", location, target)
+	}
+	if browser.count() != 1 {
+		t.Fatal("a stale delete removed the [[.Name]]")
+	}
+	[[.Camel]]Contains(t, browser.get(location), "was not deleted", `class="flash flash-alert"`)
+}
+
+func Test[[.Title]]PagesAnswerMissingRecordsWith404(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	for _, id := range []string{uuid.MustNew().String(), "not-a-uuid"} {
+		target := "/[[.Plural]]/" + id
+		for _, path := range []string{target, target + "/edit"} {
+			missing := browser.get(path)
+			[[.Camel]]Expect(t, missing, http.StatusNotFound)
+			[[.Camel]]Contains(t, missing, "[[.HumanTitle]] not found", `href="/[[.Plural]]"`)
+		}
+		[[.Camel]]Expect(t, browser.submit("/[[.Plural]]/new", http.MethodPatch, target, [[.Camel]]WithVersion([[.Camel]]SecondValues(), "1")), http.StatusNotFound)
+		[[.Camel]]Expect(t, browser.submit("/[[.Plural]]/new", http.MethodDelete, target, url.Values{"version": {"1"}}), http.StatusNotFound)
+	}
+}
+
+func Test[[.Title]]PagesRequireTheCSRFToken(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	entity := browser.seed()
+	target := "/[[.Plural]]/" + entity.ID.String()
+	browser.token("/[[.Plural]]/new") // the browser holds the cookie but the form lacks the field
+
+	withMethod := func(method string, values url.Values) url.Values {
+		values.Set("_method", method)
+		return values
+	}
+	for name, values := range map[string]url.Values{
+		"create": [[.Camel]]FirstValues(),
+		"update": withMethod(http.MethodPatch, [[.Camel]]WithVersion([[.Camel]]SecondValues(), "1")),
+		"delete": withMethod(http.MethodDelete, url.Values{"version": {"1"}}),
+	} {
+		path := target
+		if name == "create" {
+			path = "/[[.Plural]]"
+		}
+		forged := maps.Clone(values)
+		forged.Set(csrf.FormField, "forged")
+		for label, submitted := range map[string]url.Values{"missing": values, "wrong": forged} {
+			[[.Camel]]Expect(t, browser.request(http.MethodPost, path, submitted), http.StatusForbidden)
+			if got := browser.stored(); !reflect.DeepEqual(got, entity) {
+				t.Fatalf("%s with a %s token changed the [[.Name]]: %+v", name, label, got)
+			}
+		}
+	}
+}
+
+func Test[[.Title]]PagesRejectFieldsTheFormDoesNotHave(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	for _, extra := range []string{"id", "version", "tenant_id", "created_at"} {
+		values := [[.Camel]]FirstValues()
+		values.Set(extra, "1")
+		[[.Camel]]Expect(t, browser.submit("/[[.Plural]]/new", http.MethodPost, "/[[.Plural]]", values), http.StatusBadRequest)
+	}
+	if browser.count() != 0 {
+		t.Error("a form with unknown fields created a [[.Name]]")
+	}
+}
+
+func Test[[.Title]]PagesRequirePermissions(t *testing.T) {
+	t.Parallel()
+	readOnly := new[[.Title]]Browser(t, [[.Camel]]Grant("[[.Plural]]:read"))
+	entity := readOnly.seed()
+	target := "/[[.Plural]]/" + entity.ID.String()
+	[[.Camel]]Expect(t, readOnly.get("/[[.Plural]]"), http.StatusOK)
+	[[.Camel]]Expect(t, readOnly.get(target), http.StatusOK)
+	// The forms need the write permission, like the requests that save them.
+	[[.Camel]]Expect(t, readOnly.get("/[[.Plural]]/new"), http.StatusForbidden)
+	[[.Camel]]Expect(t, readOnly.get(target+"/edit"), http.StatusForbidden)
+	[[.Camel]]Expect(t, readOnly.submit("/[[.Plural]]", http.MethodPost, "/[[.Plural]]", [[.Camel]]FirstValues()), http.StatusForbidden)
+	[[.Camel]]Expect(t, readOnly.submit("/[[.Plural]]", http.MethodPatch, target, [[.Camel]]WithVersion([[.Camel]]SecondValues(), "1")), http.StatusForbidden)
+	[[.Camel]]Expect(t, readOnly.submit("/[[.Plural]]", http.MethodDelete, target, url.Values{"version": {"1"}}), http.StatusForbidden)
+	if got := readOnly.stored(); !reflect.DeepEqual(got, entity) {
+		t.Errorf("a caller without the write permission changed the [[.Name]]: %+v", got)
+	}
+
+	nothing := new[[.Title]]Browser(t, [[.Camel]]Grant())
+	[[.Camel]]Expect(t, nothing.get("/[[.Plural]]"), http.StatusForbidden)
+}
+
+func Test[[.Title]]PagesAreNeverPublic(t *testing.T) {
+	t.Parallel()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := appviews.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := new[[.Title]]Service(t)
+	if err := htmlui.Register[[.PluralTitle]](app, service, renderer, nil); err == nil {
+		t.Error("Register[[.PluralTitle]] accepted a missing guard")
+	}
+	if err := htmlui.Register[[.PluralTitle]](app, nil, renderer, [[.Camel]]AllowAll); err == nil {
+		t.Error("Register[[.PluralTitle]] accepted a missing service")
+	}
+	if err := htmlui.Register[[.PluralTitle]](app, service, nil, [[.Camel]]AllowAll); err == nil {
+		t.Error("Register[[.PluralTitle]] accepted a missing renderer")
+	}
+}

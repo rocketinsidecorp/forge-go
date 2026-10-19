@@ -61,6 +61,7 @@ type fieldView struct {
 	Err        string // ErrInvalidProductPriceCents
 	Message    string // public error message
 	Resource   string // Product
+	Camel      string // product: the resource in lower camel case, for identifiers
 }
 
 func (f fieldView) IsString() bool { return f.Type == "string" }
@@ -120,7 +121,7 @@ func newResourceView(spec resourceSpec) resourceView {
 	for _, field := range spec.Fields {
 		fieldTitle := exportedName(field.Name)
 		item := fieldView{
-			resourceField: field, Title: fieldTitle, Resource: title,
+			resourceField: field, Title: fieldTitle, Resource: title, Camel: lowerCamel(spec.Name),
 			Normalizer: "normalize" + title + fieldTitle,
 			Err:        "ErrInvalid" + title + fieldTitle,
 		}
@@ -431,7 +432,13 @@ var resourceTemplateFuncs = template.FuncMap{
 }
 
 func renderTemplate(name string, data any) (string, error) {
-	text, err := resourceTemplates.ReadFile("resourcetemplates/" + name)
+	return renderEmbedded(resourceTemplates, "resourcetemplates/"+name, data)
+}
+
+// renderEmbedded renders the template at path in files.
+func renderEmbedded(files embed.FS, path string, data any) (string, error) {
+	name := path[strings.LastIndex(path, "/")+1:]
+	text, err := files.ReadFile(path)
 	if err != nil {
 		return "", err
 	}

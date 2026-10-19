@@ -1,0 +1,28 @@
+{{define "title"}}[[.HumanTitle]]{{end}}
+{{define "content"}}
+<h1>[[.HumanTitle]]</h1>
+<dl id="{{domID "[[.Name]]" .Item.ID}}">
+[[- range .Fields]]
+	<dt>[[.Label]]</dt>
+[[- if .Optional]]
+	<dd>{{with .Item.[[.Title]]}}[[if .IsText]]<pre>{{.}}</pre>[[else]]{{.}}[[end]]{{else}}<span class="muted">Not set</span>{{end}}</dd>
+[[- else]]
+	<dd>[[if .IsText]]<pre>{{.Item.[[.Title]]}}</pre>[[else]]{{.Item.[[.Title]]}}[[end]]</dd>
+[[- end]]
+[[- end]]
+	<dt>Created</dt>
+	<dd>{{.Item.CreatedAt}}</dd>
+	<dt>Updated</dt>
+	<dd>{{.Item.UpdatedAt}}</dd>
+</dl>
+<p class="actions">
+	<a href="{{.Path}}/{{.Item.ID}}/edit">Edit</a>
+	<a href="{{.Path}}">Back to [[.PluralHuman]]</a>
+</p>
+<form method="post" action="{{.Path}}/{{.Item.ID}}">
+	{{csrfField}}
+	{{methodField "DELETE"}}
+	<input type="hidden" name="version" value="{{.Item.Version}}">
+	<button type="submit">Delete [[.Human]]</button>
+</form>
+{{end}}
