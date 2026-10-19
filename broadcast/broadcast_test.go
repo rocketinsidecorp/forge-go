@@ -271,3 +271,18 @@ func TestPublishRendersStreams(t *testing.T) {
 		t.Error("the zero channel was accepted")
 	}
 }
+
+func TestRandomKeysAreUsable(t *testing.T) {
+	t.Parallel()
+	first, err := broadcast.RandomKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := broadcast.RandomKey()
+	if len(first) != broadcast.MinKeyBytes || string(first) == string(second) {
+		t.Fatal("keys must be 32 bytes and differ")
+	}
+	if _, err := broadcast.NewSigner(broadcast.SignerOptions{Key: first}); err != nil {
+		t.Fatal(err)
+	}
+}

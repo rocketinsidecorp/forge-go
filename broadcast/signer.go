@@ -2,6 +2,7 @@ package broadcast
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -93,6 +94,17 @@ func NewSignerFromBase64(key string, opts SignerOptions) (*Signer, error) {
 	}
 	opts.Key = decoded
 	return NewSigner(opts)
+}
+
+// RandomKey returns MinKeyBytes of random data for a signer that only needs
+// to live as long as the process (development and tests). Production keys
+// come from configuration so every replica shares them.
+func RandomKey() ([]byte, error) {
+	key := make([]byte, MinKeyBytes)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("broadcast: generate a key: %w", err)
+	}
+	return key, nil
 }
 
 // DecodeKey decodes a base64 signing key. The error never contains the key.
