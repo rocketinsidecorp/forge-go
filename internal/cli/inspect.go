@@ -66,7 +66,7 @@ func inspectProject(rootPath string, baseEnv []string) projectInspection {
 		Commands:      []string{},
 		Migrations:    []string{},
 		Routes:        []string{},
-		RouteScope:    "literal first arguments to Handle and HandleFunc calls in app/ and cmd/; dynamically composed routes are not included",
+		RouteScope:    routeScope,
 		Modules:       []string{},
 		Diagnostics:   []doctorDiagnostic{},
 	}
@@ -104,7 +104,12 @@ func inspectProject(rootPath string, baseEnv []string) projectInspection {
 	inspectEnvironment(rootPath, baseEnv, &report)
 	fileCount := 0
 	for _, directory := range []string{"app", "cmd"} {
-		inspectSourceTree(root, directory, imports, routeSet, &fileCount, &report)
+		inspectSourceTree(root, directory, &fileCount, &report, func(_ string, fileSet *token.FileSet, file *ast.File) {
+			inspectImports(file, imports)
+			for _, route := range discoverRoutes(fileSet, file) {
+				routeSet[route.pattern] = struct{}{}
+			}
+		})
 	}
 	for imported := range imports {
 		report.Modules = append(report.Modules, imported)
@@ -216,7 +221,10 @@ func databaseAdapter(root string, baseEnv []string) (string, error) {
 	}
 }
 
-func inspectSourceTree(root *os.Root, directory string, imports, routes map[string]struct{}, fileCount *int, report *projectInspection) {
+// sourceVisitor receives every Go file inspectSourceTree parses.
+type sourceVisitor func(name string, fileSet *token.FileSet, file *ast.File)
+
+func inspectSourceTree(root *os.Root, directory string, fileCount *int, report *projectInspection, visit sourceVisitor) {
 	if _, err := root.Stat(directory); errors.Is(err, fs.ErrNotExist) {
 		return
 	} else if err != nil {
@@ -247,13 +255,13 @@ func inspectSourceTree(root *os.Root, directory string, imports, routes map[stri
 			addInspectDiagnostic(report, "project.source_unreadable", "Application source could not be inspected.", "Check permissions on app/ and cmd/.")
 			return nil
 		}
-		file, err := parser.ParseFile(token.NewFileSet(), name, source, parser.ParseComments)
+		fileSet := token.NewFileSet()
+		file, err := parser.ParseFile(fileSet, name, source, parser.ParseComments)
 		if err != nil {
 			addInspectDiagnostic(report, "project.source_parse_error", "Some Go files could not be parsed; the inventory is partial.", "Fix source syntax errors and run forge inspect again.")
 			return nil
 		}
-		inspectImports(file, imports)
-		inspectRoutes(file, routes)
+		visit(name, fileSet, file)
 		return nil
 	})
 	if err != nil {
@@ -279,28 +287,6 @@ func inspectImports(file *ast.File, modules map[string]struct{}) {
 		module, _, _ := strings.Cut(rest, "/")
 		modules[module] = struct{}{}
 	}
-}
-
-func inspectRoutes(file *ast.File, routes map[string]struct{}) {
-	ast.Inspect(file, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok || len(call.Args) == 0 {
-			return true
-		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || (selector.Sel.Name != "Handle" && selector.Sel.Name != "HandleFunc") {
-			return true
-		}
-		pattern, ok := call.Args[0].(*ast.BasicLit)
-		if !ok || pattern.Kind != token.STRING {
-			return true
-		}
-		value, err := strconv.Unquote(pattern.Value)
-		if err == nil && strings.TrimSpace(value) != "" {
-			routes[value] = struct{}{}
-		}
-		return true
-	})
 }
 
 func addInspectDiagnostic(report *projectInspection, code, summary, remediation string) {
