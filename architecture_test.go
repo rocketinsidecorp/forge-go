@@ -16,6 +16,8 @@ var corePackages = []string{
 	modulePath,
 	modulePath + "/auth",
 	modulePath + "/auth/recoverymail",
+	modulePath + "/cache",
+	modulePath + "/cache/cachetest",
 	modulePath + "/agent",
 	modulePath + "/config",
 	modulePath + "/csrf",
