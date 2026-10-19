@@ -31,6 +31,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 // Limit allows N hits per window of length Per.
@@ -159,4 +161,10 @@ func Key(scope string, parts ...string) string {
 		write(part)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// MemoryOptionsFromConfig returns the Memory options FORGE_RATE_LIMIT_MAX_KEYS
+// selects.
+func MemoryOptionsFromConfig(cfg config.RateLimit) MemoryOptions {
+	return MemoryOptions{MaxKeys: cfg.EffectiveMaxKeys()}
 }

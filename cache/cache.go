@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/fault"
 )
 
@@ -201,4 +202,15 @@ func Key(namespace string, parts ...string) string {
 		b.WriteString(part)
 	}
 	return b.String()
+}
+
+// OptionsFromConfig returns the Options the FORGE_CACHE_* variables select.
+func OptionsFromConfig(cfg config.Cache) Options {
+	return Options{MaxEntries: cfg.MaxEntries, MaxValueBytes: cfg.MaxValueBytes, DefaultTTL: cfg.DefaultTTL}
+}
+
+// MemoryOptionsFromConfig returns the MemoryOptions the FORGE_CACHE_*
+// variables select.
+func MemoryOptionsFromConfig(cfg config.Cache) MemoryOptions {
+	return MemoryOptions{Options: OptionsFromConfig(cfg), MaxBytes: cfg.MaxBytes}
 }
