@@ -90,7 +90,7 @@ func (s *serverInstrumentation) wrap(next http.Handler) http.Handler {
 			if recovered != nil {
 				status = http.StatusInternalServerError
 			}
-			s.finish(span, start, method, route.Pattern, status)
+			s.finish(span, start, method, route.Pattern(), status)
 			if recovered != nil {
 				panic(recovered)
 			}
