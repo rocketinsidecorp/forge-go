@@ -128,6 +128,7 @@ type DeployOptions struct {
 type boot struct {
 	host, role string
 	name       string
+	version    string
 	// existing is true for rollback: the container already exists and is
 	// started rather than created.
 	existing bool
@@ -202,7 +203,7 @@ func (d *Deployer) Deploy(ctx context.Context, opts DeployOptions) (*Report, err
 	for _, host := range hosts {
 		for _, role := range d.Config.RolesOn(host) {
 			plan[host] = append(plan[host], &boot{
-				host: host, role: role,
+				host: host, role: role, version: version,
 				name:     d.cmds.containerName(role, version, d.Suffix()),
 				previous: running(inventories[host], role, ""),
 			})
@@ -402,7 +403,7 @@ func applyBoot(containers []Container, b *boot, now time.Time) []Container {
 			return containers
 		}
 	}
-	return append([]Container{{Name: b.name, Role: b.role, State: "running", Created: now}}, containers...)
+	return append([]Container{{Name: b.name, Role: b.role, Version: b.version, State: "running", Created: now}}, containers...)
 }
 
 // pruneHost removes stopped containers beyond retain per role, and the
@@ -504,7 +505,7 @@ func (d *Deployer) Rollback(ctx context.Context, version string) (*Report, error
 				d.logf(host, "%s already runs %s", role, version)
 				continue
 			}
-			plan[host] = append(plan[host], &boot{host: host, role: role, name: target.Name, existing: true, previous: others})
+			plan[host] = append(plan[host], &boot{host: host, role: role, version: version, name: target.Name, existing: true, previous: others})
 		}
 	}
 	if len(missing) > 0 {

@@ -248,22 +248,6 @@ retain: 2
 stop_timeout: 5s
 `
 
-type recordingLocal struct {
-	mu    sync.Mutex
-	calls [][]string
-}
-
-func (l *recordingLocal) Output(_ context.Context, _ string, argv []string) (string, error) {
-	return "", fmt.Errorf("unexpected local query %v", argv)
-}
-
-func (l *recordingLocal) Run(_ context.Context, _ string, argv []string, _ []byte, _ []string) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.calls = append(l.calls, argv)
-	return nil
-}
-
 func (c *sshCluster) deployer(t *testing.T, performer string) (*Deployer, *syncBuffer) {
 	t.Helper()
 	cfg, err := ParseConfig([]byte(integrationConfig))
