@@ -42,10 +42,23 @@ var _ DBTX = (*DB)(nil)
 // Open creates a connection pool from validated configuration and verifies
 // connectivity within cfg.ConnectTimeout, so misconfiguration fails at
 // startup rather than on the first request.
-func Open(ctx context.Context, cfg config.Database) (*DB, error) {
+func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error) {
+	var settings openOptions
+	for _, option := range opts {
+		if option != nil {
+			option(&settings)
+		}
+	}
+	observer, err := sqldb.NewObserver(settings.telemetry, "postgresql", classify)
+	if err != nil {
+		return nil, err
+	}
 	poolConfig, err := parseConfig(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if observer != nil {
+		poolConfig.ConnConfig.Tracer = &queryTracer{observer: observer}
 	}
 	poolConfig.MaxConns = cfg.MaxConns
 	poolConfig.MinConns = cfg.MinConns

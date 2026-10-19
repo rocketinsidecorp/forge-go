@@ -327,7 +327,7 @@ func (t *Telemetry) exportMetrics(ctx context.Context) error {
 	return err
 }
 
-func (t *Telemetry) newSpan(tracer *Tracer, parent SpanContext, name string, kind SpanKind, attrs []Attribute) *Span {
+func (t *Telemetry) newSpan(tracer *Tracer, parent SpanContext, start time.Time, name string, kind SpanKind, attrs []Attribute) *Span {
 	span := &Span{tracer: tracer}
 	if parent.IsValid() {
 		span.sc = SpanContext{TraceID: parent.TraceID, SpanID: newSpanID(), Flags: parent.Flags, TraceState: parent.TraceState}
@@ -346,7 +346,7 @@ func (t *Telemetry) newSpan(tracer *Tracer, parent SpanContext, name string, kin
 	span.recording = true
 	span.name = name
 	span.kind = kind
-	span.start = time.Now()
+	span.start = start
 	span.attrs = make([]Attribute, 0, len(attrs)+8)
 	span.addAttributes(attrs)
 	return span

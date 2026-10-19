@@ -69,12 +69,16 @@ const (
 // creating the file and its directory when missing, and verifies it within
 // cfg.ConnectTimeout, so misconfiguration fails at startup rather than on the
 // first request.
-func Open(ctx context.Context, cfg config.Database) (*sqldb.DB, error) {
+func Open(ctx context.Context, cfg config.Database, opts ...Option) (*sqldb.DB, error) {
+	obs, err := observer(opts)
+	if err != nil {
+		return nil, err
+	}
 	path, err := prepareFile(cfg)
 	if err != nil {
 		return nil, err
 	}
-	db, err := openDB(path, cfg.ConnectTimeout)
+	db, err := openDB(path, cfg.ConnectTimeout, obs)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +144,7 @@ func createFile(path string) (string, error) {
 }
 
 // openDB returns a pool whose every connection carries Forge's settings.
-func openDB(path string, busyTimeout time.Duration) (*sql.DB, error) {
+func openDB(path string, busyTimeout time.Duration, obs *sqldb.Observer) (*sql.DB, error) {
 	params := url.Values{}
 	params.Set("_busy_timeout", strconv.FormatInt(max(busyTimeout.Milliseconds(), 1), 10))
 	params.Set("_foreign_keys", "1")
@@ -151,18 +155,18 @@ func openDB(path string, busyTimeout time.Duration) (*sql.DB, error) {
 	params.Set("_timezone", "UTC")
 	params.Set("_defensive", "1")
 	params.Set("_dqs", "0")
-	return connect(path, params)
+	return connect(path, params, obs)
 }
 
 // connect opens path through a file: URI. The path is percent-encoded, so
 // characters such as '?' and '#' in a file name stay part of the name and can
 // never inject connection parameters.
-func connect(path string, params url.Values) (*sql.DB, error) {
+func connect(path string, params url.Values, obs *sqldb.Observer) (*sql.DB, error) {
 	base, err := driver.NewConnector(fileURI(path, params))
 	if err != nil {
 		return nil, fmt.Errorf("configure database connection: %w", err)
 	}
-	return sql.OpenDB(connector{base: base}), nil
+	return sql.OpenDB(sqldb.InstrumentConnector(connector{base: base}, obs)), nil
 }
 
 func fileURI(path string, params url.Values) string {

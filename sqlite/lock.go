@@ -63,7 +63,7 @@ func (l *migrationLock) tryLock(ctx context.Context, session *sql.Conn) (bool, e
 	params := url.Values{}
 	params.Set("_busy_timeout", "0")
 	params.Set("_txlock", "immediate")
-	db, err := connect(l.path, params)
+	db, err := connect(l.path, params, nil)
 	if err != nil {
 		return false, err
 	}

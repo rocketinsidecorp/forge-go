@@ -39,7 +39,7 @@ func NewMigrator(cfg config.Database, migrations []migrate.Migration, logger *sl
 	if err != nil {
 		return nil, err
 	}
-	pool, err := openPool(cfg, true)
+	pool, err := openPool(cfg, true, nil)
 	if err != nil {
 		return nil, err
 	}

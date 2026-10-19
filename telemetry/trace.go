@@ -108,7 +108,17 @@ func (tr *Tracer) Start(ctx context.Context, name string, kind SpanKind, attrs .
 	if tr == nil || tr.telemetry == nil {
 		return ctx, nil
 	}
-	span := tr.telemetry.newSpan(tr, SpanContextFromContext(ctx), name, kind, attrs)
+	return tr.StartAt(ctx, time.Now(), name, kind, attrs...)
+}
+
+// StartAt is Start with an explicit start time, for instrumentation that
+// learns only after an operation whether it deserves a span (a database
+// driver answering driver.ErrSkip, for example).
+func (tr *Tracer) StartAt(ctx context.Context, start time.Time, name string, kind SpanKind, attrs ...Attribute) (context.Context, *Span) {
+	if tr == nil || tr.telemetry == nil {
+		return ctx, nil
+	}
+	span := tr.telemetry.newSpan(tr, SpanContextFromContext(ctx), start, name, kind, attrs)
 	return context.WithValue(ctx, spanKey, span), span
 }
 
