@@ -20,9 +20,15 @@ import (
 	"[[.Module]]/app/application"
 	"[[.Module]]/app/domain"
 	appviews "[[.Module]]/app/views"
+[[- if .Broadcast]]
+	"github.com/rocketinsidecorp/forge-go/broadcast"
+[[- end]]
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/fault"
 	"github.com/rocketinsidecorp/forge-go/pagination"
+[[- if and .Broadcast .Tenant]]
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+[[- end]]
 	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -141,6 +147,12 @@ type [[.Camel]]Browser struct {
 	service *application.[[.Title]]Service
 	handler http.Handler
 	cookies map[string]*http.Cookie
+[[- if .Broadcast]]
+	broker  *broadcast.Memory
+[[- if .Tenant]]
+	tenant  uuid.UUID
+[[- end]]
+[[- end]]
 }
 
 // new[[.Title]]Browser serves the pages from a forge.App with the middleware
@@ -148,7 +160,19 @@ type [[.Camel]]Browser struct {
 // the application's own templates.
 func new[[.Title]]Browser(t *testing.T, protect htmlui.[[.Title]]Protect) *[[.Camel]]Browser {
 	t.Helper()
+[[- if .Broadcast]]
+	signerKey, err := broadcast.RandomKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := broadcast.NewSigner(broadcast.SignerOptions{Key: signerKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := appviews.New(appviews.WithStreams(signer))
+[[- else]]
 	renderer, err := appviews.New()
+[[- end]]
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,16 +184,43 @@ func new[[.Title]]Browser(t *testing.T, protect htmlui.[[.Title]]Protect) *[[.Ca
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, middleware := range []func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash} {
+	middlewares := []func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash}
+[[- if and .Broadcast .Tenant]]
+	// The application's authentication puts the caller's tenant in the
+	// request context; the pages publish to and subscribe on that tenant's channel.
+	tenant := uuid.MustNew()
+	middlewares = append(middlewares, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, err := tenancy.WithContext(r.Context(), tenancy.Tenant{ID: tenant})
+			if err != nil {
+				t.Error(err)
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+[[- end]]
+	for _, middleware := range middlewares {
 		if err := app.Use(middleware); err != nil {
 			t.Fatal(err)
 		}
 	}
 	service := new[[.Title]]Service(t)
+[[- if .Broadcast]]
+	broker, err := broadcast.NewMemory(context.Background(), broadcast.MemoryOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(broker.Close)
+	if err := htmlui.Register[[.PluralTitle]](app, service, renderer, protect, htmlui.With[[.Title]]Broadcast(broker)); err != nil {
+		t.Fatal(err)
+	}
+	return &[[.Camel]]Browser{t: t, service: service, handler: app.Handler(), cookies: make(map[string]*http.Cookie), broker: broker[[if .Tenant]], tenant: tenant[[end]]}
+[[- else]]
 	if err := htmlui.Register[[.PluralTitle]](app, service, renderer, protect); err != nil {
 		t.Fatal(err)
 	}
 	return &[[.Camel]]Browser{t: t, service: service, handler: app.Handler(), cookies: make(map[string]*http.Cookie)}
+[[- end]]
 }
 
 // request sends form (url-encoded) as the body when it is not nil.
@@ -613,3 +664,167 @@ func Test[[.Title]]PagesAreNeverPublic(t *testing.T) {
 		t.Error("Register[[.PluralTitle]] accepted a missing renderer")
 	}
 }
+[[- if .Broadcast]]
+
+// channel is where the pages publish: the tenant's "[[.Plural]]" channel, or the global one.
+func (b *[[.Camel]]Browser) channel() broadcast.Channel {
+	b.t.Helper()
+[[- if .Tenant]]
+	channel, err := broadcast.ForTenant(b.tenant, "[[.Plural]]")
+[[- else]]
+	channel, err := broadcast.Global("[[.Plural]]")
+[[- end]]
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return channel
+}
+
+// subscribe listens like an open index page does.
+func (b *[[.Camel]]Browser) subscribe() broadcast.Subscription {
+	b.t.Helper()
+	subscription, err := b.broker.Subscribe(context.Background(), b.channel())
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	b.t.Cleanup(subscription.Close)
+	return subscription
+}
+
+// next returns the message just published.
+func [[.Camel]]Next(t *testing.T, subscription broadcast.Subscription) string {
+	t.Helper()
+	select {
+	case message, ok := <-subscription.Messages():
+		if !ok {
+			t.Fatal("the subscription ended")
+		}
+		return message.Data
+	case <-time.After(5 * time.Second):
+		t.Fatal("no update was published")
+		return ""
+	}
+}
+
+// [[.Camel]]Silent fails if anything was published.
+func [[.Camel]]Silent(t *testing.T, subscription broadcast.Subscription) {
+	t.Helper()
+	select {
+	case message := <-subscription.Messages():
+		t.Fatalf("unexpected update: %s", message.Data)
+	default:
+	}
+}
+
+func Test[[.Title]]IndexSubscribesToLiveUpdates(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	index := browser.get("/[[.Plural]]")
+	[[.Camel]]Expect(t, index, http.StatusOK)
+	[[.Camel]]Contains(t, index,
+		`<turbo-stream-source src="/streams?stream=`,
+		`<tbody id="[[.Plural]]">`,
+		`id="[[.Plural]]_empty"`,
+		"No [[.PluralHuman]] yet.",
+	)
+	if strings.Contains(index.Body.String(), "unsafe-inline") {
+		t.Error("the page must stay CSP-strict")
+	}
+}
+
+func Test[[.Title]]PagesBroadcastChanges(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	updates := browser.subscribe()
+
+	// A form that fails validation changes nothing and publishes nothing.
+	invalid := [[.Camel]]FirstValues()
+	invalid.Set("[[.InvalidField.Name]]", [[.InvalidValue]])
+	[[.Camel]]Expect(t, browser.submit("/[[.Plural]]/new", http.MethodPost, "/[[.Plural]]", invalid), http.StatusUnprocessableEntity)
+	[[.Camel]]Silent(t, updates)
+
+	// Create: the row appears at the top of every open list.
+	location := [[.Camel]]Redirected(t, browser.submit("/[[.Plural]]/new", http.MethodPost, "/[[.Plural]]", [[.Camel]]FirstValues()))
+	entity := browser.stored()
+	row := `<tr id="[[.Name]]_` + entity.ID.String() + `">`
+	created := [[.Camel]]Next(t, updates)
+	for _, want := range []string{
+		`<turbo-stream action="remove" target="[[.Plural]]_empty"></turbo-stream>`,
+		`<turbo-stream action="prepend" target="[[.Plural]]"><template>` + row,
+		`href="/[[.Plural]]/` + entity.ID.String() + `"`,
+[[- with .Marker]]
+		[[.First]],
+[[- end]]
+	} {
+		if !strings.Contains(created, want) {
+			t.Errorf("the create update does not contain %q:\n%s", want, created)
+		}
+	}
+	if strings.Contains(created, csrf.FormField) || strings.Contains(created, "<form") {
+		t.Errorf("a broadcast must carry nothing specific to the person who made the change:\n%s", created)
+	}
+
+	// Update: the row is replaced.
+	[[.Camel]]Redirected(t, browser.submit(location+"/edit", http.MethodPatch, location, [[.Camel]]WithVersion([[.Camel]]SecondValues(), "1")))
+	replaced := [[.Camel]]Next(t, updates)
+	if !strings.Contains(replaced, `<turbo-stream action="replace" target="[[.Name]]_`+entity.ID.String()+`"><template>`+row) {
+		t.Errorf("the update is not a replace of the row:\n%s", replaced)
+	}
+[[- with .Marker]]
+	if !strings.Contains(replaced, [[.Second]]) || strings.Contains(replaced, [[.First]]) {
+		t.Errorf("the replaced row does not show the new values:\n%s", replaced)
+	}
+[[- end]]
+
+	// A stale delete changes nothing and publishes nothing.
+	[[.Camel]]Redirected(t, browser.submit(location, http.MethodDelete, location, url.Values{"version": {"1"}}))
+	[[.Camel]]Silent(t, updates)
+
+	// Delete: the row is removed.
+	[[.Camel]]Redirected(t, browser.submit(location, http.MethodDelete, location, url.Values{"version": {"2"}}))
+	if removed := [[.Camel]]Next(t, updates); removed != `<turbo-stream action="remove" target="[[.Name]]_`+entity.ID.String()+`"></turbo-stream>`+"\n" {
+		t.Errorf("the delete update = %q", removed)
+	}
+}
+[[- if .Tenant]]
+
+// Test...BroadcastsStayInTheirTenant: the channel belongs to the caller's tenant, so
+// a subscriber of another tenant's channel never receives the change.
+func Test[[.Title]]BroadcastsStayInTheirTenant(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	elsewhere, err := broadcast.ForTenant(uuid.MustNew(), "[[.Plural]]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := browser.broker.Subscribe(context.Background(), elsewhere)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := browser.subscribe()
+	[[.Camel]]Redirected(t, browser.submit("/[[.Plural]]/new", http.MethodPost, "/[[.Plural]]", [[.Camel]]FirstValues()))
+	[[.Camel]]Next(t, own)
+	[[.Camel]]Silent(t, foreign)
+	global, err := broadcast.Global("[[.Plural]]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := browser.broker.Publish(context.Background(), global, broadcast.Message{Data: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	[[.Camel]]Silent(t, own)
+}
+[[- end]]
+
+// Publishing happens after the change is stored, so a broker that fails (here:
+// shut down) is logged and never turns a saved change into an error page.
+func Test[[.Title]]PagesSucceedWhenPublishingFails(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
+	browser.broker.Close()
+	[[.Camel]]Redirected(t, browser.submit("/[[.Plural]]/new", http.MethodPost, "/[[.Plural]]", [[.Camel]]FirstValues()))
+	if browser.count() != 1 {
+		t.Fatal("the [[.Name]] was not stored while publishing failed")
+	}
+}
+[[- end]]

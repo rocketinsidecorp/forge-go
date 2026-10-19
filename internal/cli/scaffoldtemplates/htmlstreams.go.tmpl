@@ -1,0 +1,111 @@
+// Package htmlstreams serves real-time page updates to browsers: Turbo
+// Streams published by the HTML adapters (for example the scaffold pages
+// generated with --broadcast) reach every open page that subscribed with
+// {{"{{"}}turboStreamFrom "NAME"{{"}}"}}, over Server-Sent Events at GET /streams.
+//
+// Who may subscribe is decided three times: the channel name in the page is
+// signed by the server (a browser cannot ask for a channel it was not
+// rendered), a tenant channel requires the caller's tenant to match, and
+// Options.Authorize applies the application's own rule, such as a permission.
+//
+// Delivery is best effort and at most once. One process keeps subscribers in
+// memory; with several replicas replace the in-memory broker with
+// forge-go's broadcast/postgres package (LISTEN/NOTIFY), which fans messages
+// out across replicas (docs/VIEWS.md).
+package htmlstreams
+
+import (
+	"context"
+	"errors"
+	"net/http"
+
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/broadcast"
+	"github.com/rocketinsidecorp/forge-go/config"
+)
+
+// Path is where the event stream handler is mounted; it is the default of the
+// views renderer's streams path, so pages need no extra configuration.
+const Path = "/streams"
+
+// KeyEnvironment names the environment variable bootstrap reads the signing
+// key from.
+const KeyEnvironment = "FORGE_STREAMS_KEY"
+
+// NewSigner builds the signer for channel names. key is the base64 encoding
+// of at least 32 random bytes (`openssl rand -base64 32`), the same on every
+// replica; rotate it by adding the old one to PreviousKeys of a
+// broadcast.SignerOptions. Production and staging refuse an empty key. In
+// development and tests an empty key makes a random one for this process, so
+// streams work without setup but do not survive a restart or reach another
+// replica.
+func NewSigner(environment config.Environment, key string, logger interface{ Warn(string, ...any) }) (*broadcast.Signer, error) {
+	if key != "" {
+		return broadcast.NewSignerFromBase64(key, broadcast.SignerOptions{})
+	}
+	if environment == config.Production || environment == config.Staging {
+		return nil, errors.New(KeyEnvironment + " is required: set it to `openssl rand -base64 32` so every replica signs stream names alike")
+	}
+	random, err := broadcast.RandomKey()
+	if err != nil {
+		return nil, err
+	}
+	if logger != nil {
+		logger.Warn(KeyEnvironment + " is not set: using a random key for this process; live updates work only until a restart")
+	}
+	return broadcast.NewSigner(broadcast.SignerOptions{Key: random})
+}
+
+// Options configures Register.
+type Options struct {
+	// Authenticate wraps the stream handler so that only signed-in callers
+	// reach it, and attaches the caller's principal and tenant to the request
+	// context (with Forge identity: auth.Middleware.AuthenticateCookie).
+	Authenticate func(http.Handler) http.Handler
+	// Authorize decides whether the caller may read a channel, for example by
+	// requiring the "NAME:read" permission of a resource whose pages publish
+	// to channel NAME. Tenant channels are already limited to the caller's
+	// tenant. A stream is never open to every signed-in caller by default, so
+	// this is required.
+	Authorize broadcast.Authorizer
+}
+
+// Streams is what the HTML adapters publish to.
+type Streams struct {
+	// Broker takes published messages: htmlui.WithXBroadcast(streams.Broker).
+	Broker broadcast.Broker
+}
+
+// Register mounts GET /streams. The in-memory broker stops accepting and ends
+// every open stream when ctx is cancelled, which happens as shutdown begins,
+// so open connections do not hold up the HTTP server's drain; it is also
+// closed by an application shutdown hook.
+func Register(ctx context.Context, app *forge.App, signer *broadcast.Signer, opts Options) (*Streams, error) {
+	if app == nil || signer == nil {
+		return nil, errors.New("htmlstreams: an application and a signer are required")
+	}
+	if opts.Authenticate == nil || opts.Authorize == nil {
+		return nil, errors.New("htmlstreams: Authenticate and Authorize are required: streams are never open to everyone")
+	}
+	broker, err := broadcast.NewMemory(ctx, broadcast.MemoryOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if err := app.OnShutdown(broker.Shutdown); err != nil {
+		broker.Close()
+		return nil, err
+	}
+	events, err := broadcast.NewHandler(broadcast.HandlerOptions{
+		Broker:    broker,
+		Signer:    signer,
+		Authorize: opts.Authorize,
+		Logger:    app.Logger(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := app.Handle("GET "+Path, opts.Authenticate(events)); err != nil {
+		return nil, err
+	}
+	return &Streams{Broker: broker}, nil
+}

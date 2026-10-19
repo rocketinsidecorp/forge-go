@@ -122,6 +122,7 @@ func currentCommandCatalog() commandCatalog {
 				{Name: "--dry-run", Description: "Read-only: print exact planned paths without creating directories or files."},
 				{Name: "--tenant-scoped", Description: "resource and scaffold: rows belong to one tenant (tenant_id bound in every statement; PostgreSQL also enables row-level security)."},
 				{Name: "--global", Description: "resource and scaffold: rows are shared by all tenants."},
+				{Name: "--broadcast", Description: "scaffold only: publish created, updated and deleted rows to open index pages as Turbo Streams over Server-Sent Events (adds app/adapters/htmlstreams, the _item partial and the live-update wiring)."},
 				{Name: "--plural", Value: "PLURAL", Description: "resource and scaffold: snake_case plural used for the table and routes (default: built-in English rules)."},
 			},
 		},

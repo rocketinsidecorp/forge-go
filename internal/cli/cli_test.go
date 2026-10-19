@@ -540,6 +540,15 @@ func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 		if i == 0 {
 			guard = parts.Guard
 		}
+		// Live updates: the signer comes before the view renderer.
+		if parts.StreamSigner != "" && !strings.Contains(source, "streamSigner, err :=") && !strings.Contains(guard, "streamSigner, err :=") {
+			const identityRenderer = "\trenderer, err := views.New()\n"
+			if strings.Contains(source, identityRenderer) {
+				source = strings.Replace(source, identityRenderer, parts.StreamSigner+"\trenderer, err := views.New(views.WithStreams(streamSigner))\n", 1)
+			} else {
+				guard += "\n" + parts.StreamSigner
+			}
+		}
 		if parts.PlatformGuard != "" && !strings.Contains(guard, "protectPlatformWrite :=") {
 			guard += "\n" + parts.PlatformGuard
 		}
@@ -548,6 +557,9 @@ func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 		}
 		if parts.Renderer != "" && !strings.Contains(guard, "renderer, err :=") {
 			guard += "\n" + parts.Renderer
+		}
+		if parts.StreamsRegister != "" && !strings.Contains(guard, "streams, err :=") {
+			guard += "\n" + parts.StreamsRegister
 		}
 		for _, importPath := range parts.Imports {
 			if !strings.Contains(source, `"`+importPath+`"`) && !strings.Contains(imports.String(), `"`+importPath+`"`) {

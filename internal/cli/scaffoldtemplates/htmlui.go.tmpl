@@ -2,6 +2,9 @@ package htmlui
 
 import (
 	"errors"
+[[- if .Broadcast]]
+	"html/template"
+[[- end]]
 	"net/http"
 [[- if .NeedsStrconv]]
 	"strconv"
@@ -13,9 +16,18 @@ import (
 
 	"[[.Module]]/app/application"
 	"[[.Module]]/app/domain"
+[[- if .Broadcast]]
+	"github.com/rocketinsidecorp/forge-go/broadcast"
+[[- end]]
 	"github.com/rocketinsidecorp/forge-go/fault"
 	"github.com/rocketinsidecorp/forge-go/pagination"
 	"github.com/rocketinsidecorp/forge-go/router"
+[[- if and .Broadcast .Tenant]]
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+[[- end]]
+[[- if .Broadcast]]
+	"github.com/rocketinsidecorp/forge-go/turbo"
+[[- end]]
 	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/views"
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -46,6 +58,21 @@ type [[.Title]]Router interface {
 // a page without it, so these pages cannot be public by accident.
 type [[.Title]]Protect func(permission string, next http.Handler) (http.Handler, error)
 
+[[- if .Broadcast]]
+
+// [[.Title]]Option customizes Register[[.PluralTitle]].
+type [[.Title]]Option func(*[[.Camel]]Pages)
+
+// With[[.Title]]Broadcast makes the pages publish every created, updated and deleted
+// [[.Name]] to the "[[.Plural]]" channel[[if .Tenant]] of the caller's tenant[[end]], so open index pages (which
+// subscribe with turboStreamFrom) update without a reload. broker comes from
+// htmlstreams.Register. Publishing happens after the change is stored and
+// never fails the request.
+func With[[.Title]]Broadcast(broker broadcast.Broker) [[.Title]]Option {
+	return func(p *[[.Camel]]Pages) { p.broker = broker }
+}
+[[- end]]
+
 // Register[[.PluralTitle]] mounts the HTML pages of [[.Plural]]: index, new, create, show,
 // edit, update and destroy. Index and show require "[[.Plural]]:read"; the
 // forms (new and edit) and every change require "[[.Plural]]:write".
@@ -53,7 +80,7 @@ type [[.Title]]Protect func(permission string, next http.Handler) (http.Handler,
 // The application must install web.MethodOverride, csrf.Protection and
 // web.Flash (forge new does): the forms rely on them for PATCH and DELETE, for
 // CSRF protection and for the notices shown after a redirect.
-func Register[[.PluralTitle]](routes [[.Title]]Router, service *application.[[.Title]]Service, renderer *views.Renderer, protect [[.Title]]Protect) error {
+func Register[[.PluralTitle]](routes [[.Title]]Router, service *application.[[.Title]]Service, renderer *views.Renderer, protect [[.Title]]Protect[[if .Broadcast]], options ...[[.Title]]Option[[end]]) error {
 	if routes == nil || service == nil || renderer == nil {
 		return errors.New("htmlui: router, [[.Name]] service and view renderer are required")
 	}
@@ -61,6 +88,11 @@ func Register[[.PluralTitle]](routes [[.Title]]Router, service *application.[[.T
 		return errors.New("htmlui: a protect function is required: [[.Name]] pages are never public")
 	}
 	pages := [[.Camel]]Pages{service: service, renderer: renderer}
+[[- if .Broadcast]]
+	for _, option := range options {
+		option(&pages)
+	}
+[[- end]]
 	// The literal path lets `forge routes` list these routes.
 	return routes.Resources("/[[.Plural]]", pages, func(action router.Action, next http.Handler) (http.Handler, error) {
 		// New and edit are forms for writing, so they need the write permission too.
@@ -75,6 +107,9 @@ func Register[[.PluralTitle]](routes [[.Title]]Router, service *application.[[.T
 type [[.Camel]]Pages struct {
 	service  *application.[[.Title]]Service
 	renderer *views.Renderer
+[[- if .Broadcast]]
+	broker   broadcast.Broker // nil: no live updates
+[[- end]]
 }
 
 // [[.Camel]]Item is a [[.Name]] as the pages show it: every value is text.
@@ -315,6 +350,9 @@ func (h [[.Camel]]Pages) Create(w http.ResponseWriter, r *http.Request) {
 	if len(problems) == 0 {
 		entity, err := h.service.Create(r.Context(), form.input())
 		if err == nil {
+[[- if .Broadcast]]
+			h.publishCreated(r, entity)
+[[- end]]
 			[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path+"/"+entity.ID.String(), web.FlashNotice, "[[.HumanTitle]] was created.")
 			return
 		}
@@ -374,8 +412,11 @@ func (h [[.Camel]]Pages) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	status, conflict := http.StatusUnprocessableEntity, false
 	if len(problems) == 0 {
-		_, err := h.service.Update(r.Context(), id, form.Version, form.changes())
+		updated, err := h.service.Update(r.Context(), id, form.Version, form.changes())
 		if err == nil {
+[[- if .Broadcast]]
+			h.publishUpdated(r, updated)
+[[- end]]
 			[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path+"/"+id.String(), web.FlashNotice, "[[.HumanTitle]] was updated.")
 			return
 		}
@@ -419,6 +460,9 @@ func (h [[.Camel]]Pages) Destroy(w http.ResponseWriter, r *http.Request) {
 		err = h.service.Delete(r.Context(), id, form.Version)
 		switch {
 		case err == nil:
+[[- if .Broadcast]]
+			h.publishDeleted(r, id)
+[[- end]]
 			[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path, web.FlashNotice, "[[.HumanTitle]] was deleted.")
 			return
 		case errors.Is(err, domain.ErrStale[[.Title]]Version), errors.Is(err, domain.ErrInvalid[[.Title]]Version):
@@ -429,3 +473,106 @@ func (h [[.Camel]]Pages) Destroy(w http.ResponseWriter, r *http.Request) {
 	}
 	[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path+"/"+id.String(), web.FlashAlert, "[[.HumanTitle]] was not deleted because it changed since you opened it. Review it and try again.")
 }
+[[- if .Broadcast]]
+
+// [[.Camel]]Channel is where the [[.Plural]] pages publish and subscribe: the
+// "[[.Plural]]" channel[[if .Tenant]] of the caller's tenant, so another tenant's pages never hear of
+// the change. Without a tenant in the request context it fails closed[[else]] shared by everyone who may read [[.Plural]][[end]].
+func [[.Camel]]Channel(r *http.Request) (broadcast.Channel, error) {
+[[- if .Tenant]]
+	tenant, err := tenancy.Require(r.Context())
+	if err != nil {
+		return broadcast.Channel{}, err
+	}
+	return broadcast.ForTenant(tenant.ID, "[[.Plural]]")
+[[- else]]
+	return broadcast.Global("[[.Plural]]")
+[[- end]]
+}
+
+// [[.Camel]]Row is the data of the "[[.Plural]]/_item" partial.
+type [[.Camel]]Row struct {
+	Item [[.Camel]]Item
+	Path string
+}
+
+// publishCreated shows a new [[.Name]] at the top of every open list, which is
+// newest first, and removes the "no [[.PluralHuman]] yet" row.
+func (h [[.Camel]]Pages) publishCreated(r *http.Request, entity domain.[[.Title]]) {
+	h.publish(r, func() ([]turbo.Stream, error) {
+		row, err := h.row(entity)
+		if err != nil {
+			return nil, err
+		}
+		prepend, err := turbo.Prepend("[[.Plural]]", row)
+		if err != nil {
+			return nil, err
+		}
+		empty, err := turbo.Remove("[[.Plural]]_empty")
+		if err != nil {
+			return nil, err
+		}
+		return []turbo.Stream{empty, prepend}, nil
+	})
+}
+
+// publishUpdated replaces the [[.Name]]'s row.
+func (h [[.Camel]]Pages) publishUpdated(r *http.Request, entity domain.[[.Title]]) {
+	h.publish(r, func() ([]turbo.Stream, error) {
+		row, err := h.row(entity)
+		if err != nil {
+			return nil, err
+		}
+		target, err := turbo.DomID("[[.Name]]", entity.ID)
+		if err != nil {
+			return nil, err
+		}
+		replace, err := turbo.Replace(target, row)
+		if err != nil {
+			return nil, err
+		}
+		return []turbo.Stream{replace}, nil
+	})
+}
+
+// publishDeleted removes the [[.Name]]'s row.
+func (h [[.Camel]]Pages) publishDeleted(r *http.Request, id uuid.UUID) {
+	h.publish(r, func() ([]turbo.Stream, error) {
+		target, err := turbo.DomID("[[.Name]]", id)
+		if err != nil {
+			return nil, err
+		}
+		remove, err := turbo.Remove(target)
+		if err != nil {
+			return nil, err
+		}
+		return []turbo.Stream{remove}, nil
+	})
+}
+
+// row renders the "[[.Plural]]/_item" partial without a request: the same HTML
+// goes to every subscriber, so it must hold nothing specific to the caller (no
+// CSRF token, no per-user content). Fragment fails the render if it does.
+func (h [[.Camel]]Pages) row(entity domain.[[.Title]]) (template.HTML, error) {
+	return h.renderer.Fragment(nil, "[[.Plural]]/_item", [[.Camel]]Row{Item: new[[.Title]]Item(entity), Path: [[.PluralCamel]]Path})
+}
+
+// publish sends the streams build returns to the channel's subscribers. The
+// change is already stored, so a failure is logged and the person still sees
+// their redirect.
+func (h [[.Camel]]Pages) publish(r *http.Request, build func() ([]turbo.Stream, error)) {
+	if h.broker == nil {
+		return
+	}
+	channel, err := [[.Camel]]Channel(r)
+	if err == nil {
+		var streams []turbo.Stream
+		if streams, err = build(); err == nil {
+			err = broadcast.Publish(r.Context(), h.broker, channel, streams...)
+		}
+	}
+	if err != nil {
+		web.Logger(r.Context()).Warn("could not publish a [[.Name]] update", "error", err)
+	}
+}
+[[- end]]

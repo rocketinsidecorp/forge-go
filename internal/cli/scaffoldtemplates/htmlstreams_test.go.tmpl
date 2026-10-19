@@ -1,0 +1,198 @@
+package htmlstreams_test
+
+import (
+	"context"
+	"bufio"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/broadcast"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+	"github.com/rocketinsidecorp/forge-go/turbo"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+
+	"[[.Module]]/app/adapters/htmlstreams"
+)
+
+// signedIn stands in for the application's authentication: the X-Test-Tenant
+// header becomes the request's tenant.
+func signedIn(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw := r.Header.Get("X-Test-Tenant")
+		if raw == "" {
+			http.Error(w, "unauthenticated", http.StatusUnauthorized)
+			return
+		}
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			http.Error(w, "bad tenant", http.StatusBadRequest)
+			return
+		}
+		ctx, err := tenancy.WithContext(r.Context(), tenancy.Tenant{ID: id})
+		if err != nil {
+			http.Error(w, "bad tenant", http.StatusBadRequest)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func mustRemove(t *testing.T) turbo.Stream {
+	t.Helper()
+	stream, err := turbo.Remove("post_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stream
+}
+
+func onlyPosts(_ *http.Request, channel broadcast.Channel) error {
+	if channel.Name != "posts" {
+		return fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0)
+	}
+	return nil
+}
+
+func TestSignerRequiresAKeyInProduction(t *testing.T) {
+	t.Parallel()
+	for _, environment := range []config.Environment{config.Production, config.Staging} {
+		if _, err := htmlstreams.NewSigner(environment, "", nil); err == nil {
+			t.Errorf("%s accepted an empty key", environment)
+		}
+	}
+	if _, err := htmlstreams.NewSigner(config.Development, "", nil); err != nil {
+		t.Errorf("development without a key: %v", err)
+	}
+	if _, err := htmlstreams.NewSigner(config.Production, "too-short", nil); err == nil {
+		t.Error("a short key was accepted")
+	}
+	key := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+	if _, err := htmlstreams.NewSigner(config.Production, key, nil); err != nil {
+		t.Errorf("a valid key: %v", err)
+	}
+}
+
+func TestRegisterRequiresAuthenticationAndAuthorization(t *testing.T) {
+	t.Parallel()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := htmlstreams.NewSigner(config.Development, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, opts := range map[string]htmlstreams.Options{
+		"nothing":        {},
+		"no authorize":   {Authenticate: signedIn},
+		"no authenticate": {Authorize: onlyPosts},
+	} {
+		if _, err := htmlstreams.Register(context.Background(), app, signer, opts); err == nil {
+			t.Errorf("%s: Register succeeded", name)
+		}
+	}
+}
+
+// TestStreamsDeliverOnlyToTheirTenant drives the whole path: a signed
+// channel name, authentication, the tenant check, the permission hook and the
+// event stream itself.
+func TestStreamsDeliverOnlyToTheirTenant(t *testing.T) {
+	t.Parallel()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := htmlstreams.NewSigner(config.Development, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	streams, err := htmlstreams.Register(ctx, app, signer, htmlstreams.Options{Authenticate: signedIn, Authorize: onlyPosts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.Close(context.Background()) })
+	server := httptest.NewServer(app.Handler())
+	// Cleanups run last to first: the open event streams must end (cancel)
+	// before the server can close, which waits for its connections.
+	t.Cleanup(server.Close)
+	t.Cleanup(cancel)
+
+	mine, theirs := uuid.MustNew(), uuid.MustNew()
+	channel, err := broadcast.ForTenant(mine, "posts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := signer.SourceURL(htmlstreams.Path, channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connect := func(path string, tenant string) *http.Response {
+		t.Helper()
+		request, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+path, nil)
+		if tenant != "" {
+			request.Header.Set("X-Test-Tenant", tenant)
+		}
+		response, err := server.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = response.Body.Close() })
+		return response
+	}
+
+	if got := connect(source, "").StatusCode; got != http.StatusUnauthorized {
+		t.Errorf("signed-out status = %d", got)
+	}
+	if got := connect(source, theirs.String()).StatusCode; got != http.StatusForbidden {
+		t.Errorf("another tenant's status = %d", got)
+	}
+	if got := connect(htmlstreams.Path+"?stream=forged", mine.String()).StatusCode; got != http.StatusForbidden {
+		t.Errorf("forged name status = %d", got)
+	}
+	other, _ := broadcast.ForTenant(mine, "invoices")
+	otherSource, _ := signer.SourceURL(htmlstreams.Path, other)
+	if got := connect(otherSource, mine.String()).StatusCode; got != http.StatusForbidden {
+		t.Errorf("a channel without permission: status = %d", got)
+	}
+
+	response := connect(source, mine.String())
+	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("status=%d type=%q", response.StatusCode, response.Header.Get("Content-Type"))
+	}
+	lines := make(chan string, 16)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(response.Body)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+	}()
+	deadline := time.After(10 * time.Second)
+	published := false
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatal("the stream ended")
+			}
+			if line == ": connected" && !published {
+				published = true
+				if err := broadcast.Publish(ctx, streams.Broker, channel, mustRemove(t)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if strings.HasPrefix(line, "data: <turbo-stream action=\"remove\"") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no message arrived")
+		}
+	}
+}

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const scaffoldUsage = "usage: forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]"
+const scaffoldUsage = "usage: forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--broadcast] [--dry-run]"
 
 // scaffoldReservedPlurals are the first path segments the application or the
 // view tree already owns: /assets and /health are routes Forge registers,
@@ -53,10 +53,25 @@ func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFil
 	spec.ViewRenderer = hasViewRenderer(projectRoot)
 	view := newScaffoldView(*spec)
 	var files []generatedFile
-	for _, source := range []struct{ path, template string }{
+	sources := []struct{ path, template string }{
 		{filepath.Join("app", "adapters", "htmlui", spec.Name+".go"), "htmlui.go.tmpl"},
 		{filepath.Join("app", "adapters", "htmlui", spec.Name+"_test.go"), "htmlui_test.go.tmpl"},
-	} {
+	}
+	if spec.Broadcast {
+		// The live-update transport is shared by every broadcasting scaffold:
+		// the first one adds it, later ones reuse it.
+		streams := filepath.Join("app", "adapters", "htmlstreams", "streams.go")
+		if _, err := projectRoot.Lstat(streams); errors.Is(err, os.ErrNotExist) {
+			spec.AddsStreams = true
+			sources = append(sources,
+				struct{ path, template string }{streams, "htmlstreams.go.tmpl"},
+				struct{ path, template string }{filepath.Join("app", "adapters", "htmlstreams", "streams_test.go"), "htmlstreams_test.go.tmpl"},
+			)
+		} else if err != nil {
+			return nil, err
+		}
+	}
+	for _, source := range sources {
 		content, err := renderScaffoldTemplate(source.template, view)
 		if err != nil {
 			return nil, err
@@ -68,16 +83,25 @@ func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFil
 		files = append(files, generatedFile{path: source.path, content: string(formatted)})
 	}
 	for _, page := range scaffoldPages {
+		if page.broadcastOnly && !spec.Broadcast {
+			continue
+		}
 		content, err := renderScaffoldTemplate(page.template, view)
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, generatedFile{path: filepath.Join("app", "views", spec.Plural, page.name+".gohtml"), content: content})
 	}
+	if spec.Broadcast {
+		if err := checkLiveUpdateBase(projectRoot); err != nil {
+			return nil, err
+		}
+	}
 	base, err := viewBaseFiles(projectRoot, spec.Module)
 	if err != nil {
 		return nil, errors.Join(errors.New("the pages need the application's views package"), err)
 	}
+	spec.AddsViewBase = len(base) > 0
 	return append(files, base...), nil
 }
 
@@ -97,4 +121,21 @@ func hasBrowserPipeline(projectRoot *os.Root) bool {
 func hasViewRenderer(projectRoot *os.Root) bool {
 	source, err := projectRoot.ReadFile(filepath.Join("app", "bootstrap", "bootstrap.go"))
 	return err == nil && strings.Contains(string(source), "renderer, err := views.New()")
+}
+
+// checkLiveUpdateBase refuses --broadcast in an application whose views
+// package predates live updates: its pages could not sign stream names, and
+// the renderer would stop at startup.
+func checkLiveUpdateBase(projectRoot *os.Root) error {
+	source, err := projectRoot.ReadFile(filepath.Join("app", "views", "views.go"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // the views base is generated with it
+	}
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(string(source), "func WithStreams(") || !strings.Contains(string(source), "Assets:") {
+		return errors.New("--broadcast needs the asset bundle and the WithStreams option that `forge new` now generates in app/views/views.go (and app/assets, app/javascript), but this application's views package predates them: see \"Live updates\" in docs/VIEWS.md to add them, or generate a new application and compare")
+	}
+	return nil
 }
