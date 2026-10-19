@@ -70,8 +70,9 @@ func (c *commonFlags) deployer(stdout, stderr io.Writer) (*Deployer, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A dry-run plan is the command's output, unless stdout carries JSON.
 	log := stderr
-	if c.dryRun {
+	if c.dryRun && !c.json {
 		log = stdout
 	}
 	return &Deployer{
