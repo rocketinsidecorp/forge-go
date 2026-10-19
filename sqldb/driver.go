@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"io"
 )
 
 // InstrumentConnector returns a connector whose connections report every
@@ -36,6 +37,15 @@ func (c *instrumentedConnector) Connect(ctx context.Context) (driver.Conn, error
 }
 
 func (c *instrumentedConnector) Driver() driver.Driver { return c.base.Driver() }
+
+// Close forwards to the base connector when it implements io.Closer, which
+// sql.DB.Close calls; a connector without Close needs nothing.
+func (c *instrumentedConnector) Close() error {
+	if closer, ok := c.base.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
 
 type instrumentedConn struct {
 	base driver.Conn

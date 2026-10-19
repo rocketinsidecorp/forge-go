@@ -122,8 +122,8 @@ func TestExtractAndInject(t *testing.T) {
 	}
 
 	Inject(context.Background(), out)
-	if out.Get(TraceparentHeader) != "" || out.Get(TracestateHeader) != "" {
-		t.Fatalf("Inject without a span must clear stale headers: %v", out)
+	if out.Get(TraceparentHeader) != validTraceparent || out.Get(TracestateHeader) != "rojo=1,congo=2" {
+		t.Fatalf("Inject without a span must leave existing headers alone: %v", out)
 	}
 }
 

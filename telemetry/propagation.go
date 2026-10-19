@@ -132,12 +132,11 @@ func Extract(ctx context.Context, header http.Header) context.Context {
 
 // Inject writes the traceparent and tracestate of ctx's active span into
 // header, replacing values already there. Without a valid span context it
-// removes them, so a reused header never carries a stale trace.
+// leaves header unchanged, so a traceparent the caller set deliberately is
+// kept.
 func Inject(ctx context.Context, header http.Header) {
 	sc := SpanContextFromContext(ctx)
 	if !sc.IsValid() {
-		header.Del(TraceparentHeader)
-		header.Del(TracestateHeader)
 		return
 	}
 	header.Set(TraceparentHeader, FormatTraceparent(sc))

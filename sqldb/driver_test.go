@@ -138,3 +138,29 @@ func TestInstrumentedConnectorFollowsDatabaseSQLFallbacks(t *testing.T) {
 		t.Fatalf("spans %v", names)
 	}
 }
+
+type closingConnector struct {
+	skipConnector
+	closed *int
+}
+
+func (c closingConnector) Close() error {
+	*c.closed++
+	return nil
+}
+
+func TestInstrumentedConnectorForwardsClose(t *testing.T) {
+	tel, _ := telemetrytest.New(t)
+	observer, err := sqldb.NewObserver(tel, "mysql", func(error) sqldb.Classification { return sqldb.Classification{} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := 0
+	db := sql.OpenDB(sqldb.InstrumentConnector(closingConnector{skipConnector: skipConnector{driver: &skipDriver{}}, closed: &closed}, observer))
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if closed != 1 {
+		t.Fatalf("connector closed %d times, want 1", closed)
+	}
+}
