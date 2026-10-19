@@ -378,3 +378,57 @@ func TestRootAppNameDoesNotCollideWithDatabaseRoot(t *testing.T) {
 		}
 	}
 }
+
+// TestGenerateServerRenderedHTML checks the HTML layer every application
+// gets, with and without a database: the layout, the flash partial, the
+// stylesheet, the embedded views package and the middleware wiring.
+func TestGenerateServerRenderedHTML(t *testing.T) {
+	t.Parallel()
+	for _, database := range []string{"", "sqlite", "postgresql"} {
+		t.Run("database "+database, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "shop")
+			paths, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: database})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, required := range []string{"app/views/views.go", "app/views/views_test.go", "app/views/layouts/application.gohtml", "app/views/shared/_flash.gohtml", "app/bootstrap/assets/application.css"} {
+				if !contains(paths, filepath.FromSlash(required)) {
+					t.Fatalf("missing %s in %v", required, paths)
+				}
+			}
+			assertContains(t, dir, map[string][]string{
+				"app/views/layouts/application.gohtml": {
+					`<html lang="en">`,
+					`<title>{{block "title" .}}shop{{end}}</title>`,
+					"{{csrfMeta}}",
+					`<link rel="stylesheet" href="/assets/application.css">`,
+					`<a class="skip-link" href="#main">`,
+					`{{template "shared/_flash" .}}`,
+					`{{block "content" .}}{{end}}`,
+				},
+				"app/views/shared/_flash.gohtml": {"{{range flashes}}", `role="{{if eq .Kind "alert"}}alert{{else}}status{{end}}"`, "{{.Text}}"},
+				"app/views/views.go":             {"//go:embed */*.gohtml", "forgeviews.Load(files, forgeviews.Options{})"},
+				"app/bootstrap/welcome.go":       {"//go:embed assets/forge-go-logo.png assets/application.css"},
+				"app/bootstrap/bootstrap.go": {
+					"if err := useBrowserPipeline(app); err != nil {",
+					"csrf.New(csrf.Options{})",
+					"[]func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash}",
+					"app.Use(middleware)",
+				},
+				"app/bootstrap/bootstrap_test.go": {"func TestBrowserPipelineRequiresCSRFToken(t *testing.T) {"},
+			})
+			for _, path := range []string{"app/views/layouts/application.gohtml", "app/views/shared/_flash.gohtml"} {
+				content, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, forbidden := range []string{"<script", "<style", " style=", " on", "http://", "https://", "[["} {
+					if strings.Contains(string(content), forbidden) {
+						t.Errorf("%s contains %q: views must be CSP-compatible and use no external resources", path, forbidden)
+					}
+				}
+			}
+		})
+	}
+}

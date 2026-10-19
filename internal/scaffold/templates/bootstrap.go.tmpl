@@ -15,6 +15,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/auth"
 	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
 {{- end}}
+	"github.com/rocketinsidecorp/forge-go/csrf"
 {{- if and .DB .DB.Jobs}}
 	"github.com/rocketinsidecorp/forge-go/jobs"
 {{- end}}
@@ -33,7 +34,12 @@ func Configure(ctx context.Context, app *forge.App) error {
 		return err
 	}
 	if err := app.OnShutdown(database.Shutdown); err != nil {
+{{- if eq .DB.Adapter "postgres"}}
 		database.Close()
+{{- else}}
+		// The registration error is the one to report.
+		_ = database.Close()
+{{- end}}
 		return err
 	}
 	if err := app.Readiness("database", database.Ping); err != nil {
@@ -79,6 +85,9 @@ func JobsConfigure(app *forge.App) error {
 {{- end}}
 
 func routes(ctx context.Context, app *forge.App) error {
+	if err := useBrowserPipeline(app); err != nil {
+		return err
+	}
 	// Public routes
 	if err := app.HandleFunc("GET /{$}", welcome); err != nil {
 		return err
@@ -88,6 +97,26 @@ func routes(ctx context.Context, app *forge.App) error {
 	}
 	if err := app.HandleFunc("GET /v1/status", status); err != nil {
 		return err
+	}
+	return nil
+}
+
+// useBrowserPipeline installs the middleware server-rendered HTML relies on,
+// ahead of routing: HTML forms reach PUT, PATCH and DELETE routes through a
+// _method field; unsafe requests need the CSRF token (csrfField in a form,
+// the X-CSRF-Token header in scripts) and must not come from another
+// origin; flash messages survive one redirect. Bearer-token and JSON API
+// requests are not affected by the token check. List webhook routes that
+// authenticate by signature in csrf.Options.Exempt.
+func useBrowserPipeline(app *forge.App) error {
+	protection, err := csrf.New(csrf.Options{})
+	if err != nil {
+		return err
+	}
+	for _, middleware := range []func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash} {
+		if err := app.Use(middleware); err != nil {
+			return err
+		}
 	}
 	return nil
 }

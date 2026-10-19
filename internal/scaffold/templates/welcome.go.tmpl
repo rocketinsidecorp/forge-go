@@ -6,7 +6,10 @@ import (
 	"net/http"
 )
 
-//go:embed assets/forge-go-logo.png
+// brandAssets are served under /assets/: the welcome page's logo and the
+// stylesheet app/views/layouts/application.gohtml links.
+//
+//go:embed assets/forge-go-logo.png assets/application.css
 var brandAssets embed.FS
 
 const welcomePage = `<!doctype html>

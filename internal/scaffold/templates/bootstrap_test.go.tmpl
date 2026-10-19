@@ -7,12 +7,16 @@ import (
 	"github.com/rocketinsidecorp/forge-go/auth"
 	{{- end}}
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/web"
 {{- if .DB}}
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}/{{.DB.TestPackage}}"
@@ -55,7 +59,93 @@ func TestRoutes(t *testing.T) {
 	if logo.Code != http.StatusOK || logo.Header().Get("Content-Type") != "image/png" || len(logo.Body.Bytes()) < 8 {
 		t.Fatalf("GET logo status=%d content-type=%q bytes=%d", logo.Code, logo.Header().Get("Content-Type"), logo.Body.Len())
 	}
+
+	stylesheet := httptest.NewRecorder()
+	app.Handler().ServeHTTP(stylesheet, httptest.NewRequest(http.MethodGet, "/assets/application.css", nil))
+	if stylesheet.Code != http.StatusOK || !strings.HasPrefix(stylesheet.Header().Get("Content-Type"), "text/css") || stylesheet.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("GET stylesheet status=%d headers=%v", stylesheet.Code, stylesheet.Header())
+	}
 {{- end}}
+}
+
+// TestBrowserPipelineRequiresCSRFToken drives the middleware Configure
+// installs: a form POST without the CSRF token is rejected, the same POST
+// with it succeeds and leaves a flash message, a cross-site POST is rejected
+// even with the token, and _method reaches DELETE routes.
+func TestBrowserPipelineRequiresCSRFToken(t *testing.T) {
+	t.Parallel()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := useBrowserPipeline(app); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.HandleFunc("GET /items/new", func(w http.ResponseWriter, r *http.Request) {
+		token, err := csrf.Token(w, r)
+		if err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		_, _ = io.WriteString(w, token)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.HandleFunc("POST /items", func(w http.ResponseWriter, r *http.Request) {
+		if err := web.SetFlash(w, r, web.FlashNotice, "Item was created."); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+		if err := web.Redirect(w, "/items/new"); err != nil {
+			web.Error(w, r, err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.HandleFunc("DELETE /items/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	form := httptest.NewRecorder()
+	app.Handler().ServeHTTP(form, httptest.NewRequest(http.MethodGet, "/items/new", nil))
+	cookies := form.Result().Cookies()
+	if form.Code != http.StatusOK || len(cookies) != 1 || cookies[0].Name != csrf.CookieName || cookies[0].Value != form.Body.String() {
+		t.Fatalf("form status=%d cookies=%v body=%q", form.Code, cookies, form.Body.String())
+	}
+	token := form.Body.String()
+	post := func(target string, values url.Values, origin string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, target, strings.NewReader(values.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		request.AddCookie(cookies[0])
+		if origin != "" {
+			request.Header.Set("Origin", origin)
+		}
+		recorder := httptest.NewRecorder()
+		app.Handler().ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	if rejected := post("/items", url.Values{"name": {"x"}}, ""); rejected.Code != http.StatusForbidden || !strings.Contains(rejected.Body.String(), "csrf_invalid") {
+		t.Fatalf("POST without token status=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+	if rejected := post("/items", url.Values{"name": {"x"}, csrf.FormField: {"forged"}}, ""); rejected.Code != http.StatusForbidden {
+		t.Fatalf("POST with a wrong token status=%d", rejected.Code)
+	}
+	if rejected := post("/items", url.Values{"name": {"x"}, csrf.FormField: {token}}, "https://evil.example"); rejected.Code != http.StatusForbidden {
+		t.Fatalf("cross-site POST status=%d", rejected.Code)
+	}
+	accepted := post("/items", url.Values{"name": {"x"}, csrf.FormField: {token}}, "")
+	if accepted.Code != http.StatusSeeOther || accepted.Header().Get("Location") != "/items/new" || !strings.Contains(accepted.Header().Get("Set-Cookie"), web.FlashCookieName+"=") {
+		t.Fatalf("POST with token status=%d headers=%v body=%s", accepted.Code, accepted.Header(), accepted.Body.String())
+	}
+	if deleted := post("/items/1", url.Values{"_method": {"DELETE"}, csrf.FormField: {token}}, ""); deleted.Code != http.StatusNoContent {
+		t.Fatalf("POST _method=DELETE status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	if rejected := post("/items/1", url.Values{"_method": {"DELETE"}}, ""); rejected.Code != http.StatusForbidden {
+		t.Fatalf("overridden DELETE without token status=%d", rejected.Code)
+	}
 }
 {{- if .DB}}
 
