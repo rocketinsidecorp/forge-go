@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1
+# forge-proxy image. Build from the repository root:
+#
+#   docker build -f cmd/forge-proxy/Dockerfile -t registry.example.com/forge-proxy:0.1.0 .
+#
+# Push it to a registry the deploy hosts can pull from and reference it by
+# digest in config/deploy.yml (proxy.image). See docs/DEPLOYMENT.md.
+
+ARG GO_VERSION=1.27
+
+FROM golang:${GO_VERSION}-alpine AS build
+WORKDIR /src
+ENV CGO_ENABLED=0
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags="-s -w" -o /out/forge-proxy ./cmd/forge-proxy
+# Directories the nonroot user (65532) owns: routing state and ACME cache
+# (mount a volume at /var/lib/forge-proxy) and the control socket.
+RUN mkdir -p /out/var/lib/forge-proxy/acme /out/run/forge-proxy && \
+    chmod 0700 /out/var/lib/forge-proxy /out/var/lib/forge-proxy/acme /out/run/forge-proxy
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/forge-proxy /usr/local/bin/forge-proxy
+COPY --from=build --chown=65532:65532 /out/var/lib/forge-proxy /var/lib/forge-proxy
+COPY --from=build --chown=65532:65532 /out/run/forge-proxy /run/forge-proxy
+USER nonroot:nonroot
+# Unprivileged ports; publish them as 80 and 443 on the host.
+EXPOSE 8080 8443
+VOLUME ["/var/lib/forge-proxy"]
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 CMD ["/usr/local/bin/forge-proxy", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/forge-proxy"]
+CMD ["run"]
