@@ -14,6 +14,7 @@ const modulePath = "github.com/rocketinsidecorp/forge-go"
 // a third-party module through Forge.
 var corePackages = []string{
 	modulePath,
+	modulePath + "/assets",
 	modulePath + "/auth",
 	modulePath + "/auth/recoverymail",
 	modulePath + "/cache",
@@ -25,6 +26,7 @@ var corePackages = []string{
 	modulePath + "/events",
 	modulePath + "/fault",
 	modulePath + "/health",
+	modulePath + "/hotwire",
 	modulePath + "/mail",
 	modulePath + "/mail/mailtest",
 	modulePath + "/jobs",
