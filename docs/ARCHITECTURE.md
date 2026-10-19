@@ -560,9 +560,14 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0019](adr/0019-outbox-dispatch.md) | PostgreSQL outbox dispatch |
 | [0020](adr/0020-background-jobs-scheduling.md) | Background jobs and scheduling |
 | [0021](adr/0021-resource-generator.md) | Resource generator |
+| [0022](adr/0022-openapi-from-typed-routes.md) | OpenAPI from typed routes (proposed) |
+| [0023](adr/0023-persistent-job-queue.md) | Persistent database-backed job queue |
+| [0024](adr/0024-mail.md) | Mail |
 | [0025](adr/0025-server-rendered-html.md) | Server-rendered HTML |
 | [0026](adr/0026-authentication-pages-and-setup.md) | Authentication pages, sign-in redirects and first-owner setup |
-| [0026](adr/0026-dependency-free-telemetry.md) | Dependency-free telemetry speaking OpenTelemetry protocols |
+| [0031](adr/0031-rate-limiting.md) | Rate limiting |
+| [0032](adr/0032-cache.md) | Application cache |
+| [0033](adr/0033-file-storage.md) | File storage |
 | [0034](adr/0034-dependency-free-telemetry.md) | Dependency-free telemetry speaking OpenTelemetry protocols |
 
 ## Not yet implemented
