@@ -37,6 +37,8 @@ disclosure, **D**enial of service, **E**levation of privilege.
    application binary, and the development database.
 9. Test process -> the test servers in `FORGE_TEST_POSTGRES_URL`,
    `FORGE_TEST_MYSQL_URL`, or `FORGE_TEST_DATABASE_URL`.
+10. Application process -> telemetry collector (OTLP/HTTP) and metrics
+    scraper -> the process's separate metrics listener.
 
 ## Assumptions
 
@@ -77,8 +79,22 @@ disclosure, **D**enial of service, **E**levation of privilege.
 | Handler panic crashes process or leaks stack | D, I | Recovery middleware logs the stack server-side and returns a generic JSON `500`. |
 | Error logs flooded by disconnecting clients | D, R | `web.Error` logs client cancellations at debug level; real `5xx` failures are logged at error level with their cause. |
 | Internal error details returned to clients | I | `web.Error` serializes only the `code` and `message` of a `*fault.Error`; any other error becomes a generic `500 internal_error`. Causes and metadata are never serialized. `fault.Error.Error()` omits the cause. Readiness responses expose check names and pass/fail only. Router `400`/`404`/`405` use the same format. |
-| Untraceable requests | R | UUIDv7 `X-Request-ID` on every response and in every error body; the request-scoped logger (`web.Logger`) adds `request_id` to log lines. Trace correlation is **Planned** (Phase 5). |
+| Untraceable requests | R | UUIDv7 `X-Request-ID` on every response and in every error body; the request-scoped logger (`web.Logger`) adds `request_id`, `trace_id` and `span_id` to log lines (see [Telemetry](#telemetry)). |
 | Readiness endpoint abused to trigger expensive checks | D | Partial: each check runs with the request context and a 2-second timeout; the generated `database` check is a single ping through the pool. Results are not cached. Keep checks cheap. |
+
+## Telemetry
+
+See [OBSERVABILITY.md](OBSERVABILITY.md) and [ADR 0026](adr/0026-dependency-free-telemetry.md).
+
+| Threat | STRIDE | Mitigation |
+| ------ | ------ | ---------- |
+| Personal data or secrets leaking into traces and metrics | I | Instrumentation records route patterns, methods, status codes, statement verbs, registered job/event names and error *types* only. Raw paths, query strings, headers, cookies, client addresses, bodies, SQL text and arguments, payloads, mail recipients and error messages are never recorded (tests assert this for HTTP, database, queue, outbox, scheduler and mail). String attributes are truncated to 1024 bytes. Attributes added by application code remain the application's responsibility. |
+| Metric cardinality explosion from request input (memory, backend cost) | D | Label sets are fixed at registration; routes are `ServeMux` patterns, unknown methods become `_OTHER`, statuses become classes, SQL becomes an allowlisted verb. Each instrument holds at most 1000 series; beyond that measurements go to an `_overflow` series and `forge_telemetry_metric_overflows_total` counts them. Label values are capped at 128 bytes. |
+| Metrics endpoint exposes operational data | I | Metrics are never served by the application router. The Prometheus listener is off by default, separate (`FORGE_TELEMETRY_METRICS_ADDR`, must differ from `FORGE_HTTP_ADDR`), `GET`/`HEAD /metrics` only, with timeouts. It has no authentication: bind it to loopback or a private interface and never publish the port. |
+| Clients choosing trace IDs or forcing sampling (log poisoning, export amplification) | T, D | `traceparent` parsing is strict and fuzz-tested; repeated or malformed headers are ignored; invalid `tracestate` is dropped. `FORGE_TELEMETRY_TRUST_TRACEPARENT=false` ignores incoming context on internet-facing services. The span queue is bounded (2048) and drops instead of blocking, so forced sampling cannot exhaust memory or stall requests. |
+| Exporter SSRF or credential leak through configuration | S, I | The OTLP endpoint is operator configuration, never request input. It must be `http`/`https` without credentials, query or fragment; `production` requires `https` unless `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT=true`. The exporter never follows redirects, so headers cannot be sent to another host. `FORGE_TELEMETRY_OTLP_HEADERS` is a `config.Secret`, reserved headers and control characters are rejected, and errors name the entry position, never a value. Export errors carry the HTTP status, never the response body. |
+| Telemetry backend outage degrading the application | D | Exports run on one owned goroutine with per-call timeouts and bounded retries; spans are dropped and counted when the queue is full; shutdown flushes within the shutdown budget and then gives up. |
+| Development exporter leaking spans into production logs | I | `FORGE_TELEMETRY_EXPORTER=log` is refused in `production`. |
 
 ## Configuration
 
@@ -248,6 +264,9 @@ See [RATE_LIMITING.md](RATE_LIMITING.md), [CACHING.md](CACHING.md),
   reset form cannot show which account the token belongs to.
 
 - Direct network exposure of a `trusted-proxy` deployment.
+- A published telemetry metrics port, or `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT=true`
+  outside a trusted network. Trace IDs propagate to every service reached
+  through `telemetry.Transport`, including third parties.
 - `sslmode=require` or `verify-ca` without host name verification, or
   `FORGE_DATABASE_ALLOW_PLAINTEXT=true` outside a trusted network.
 - MySQL/MariaDB TLS can only verify against the system certificate pool; a

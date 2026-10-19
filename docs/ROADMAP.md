@@ -10,7 +10,7 @@ branch. Nothing in a phase marked *planned* is implemented.
 | 2     | Databases, migrations, repositories, transactions  | Done    |
 | 3     | Authentication, authorization, tenancy             | In progress |
 | 4     | Jobs, events, outbox, scheduling                   | Done    |
-| 5     | OpenTelemetry                                      | In progress |
+| 5     | OpenTelemetry                                      | Done    |
 | 6     | OpenAPI and tooling                                | Planned |
 | 7     | AI API and CLI subsystem                           | In progress |
 | 8     | Code generation                                    | Planned |
@@ -240,13 +240,28 @@ Foundation:
   `forge.WithHTTPMiddleware`, with request-ID context, body limits, panic
   recovery, and security headers preserved.
 
-Remaining:
+Implemented on the standard library only
+([ADR 0026](adr/0026-dependency-free-telemetry.md), [OBSERVABILITY.md](OBSERVABILITY.md)):
 
-- [ ] OpenTelemetry server spans and trace-context propagation.
-- [ ] Bounded-cardinality HTTP metrics and a documented export path.
-- [ ] Correlate structured logs with active trace/span identifiers.
-- [ ] Add database and background-job instrumentation without coupling the
-  standard-library core to an exporter or external observability service.
+- [x] OpenTelemetry server spans and trace-context propagation: strict,
+  fuzz-tested W3C `traceparent`/`tracestate`, parent-based ratio sampling,
+  route-pattern span names, a propagating `http.Client` transport, and OTLP/HTTP
+  JSON export with bounded batching, retries and shutdown flush.
+- [x] Bounded-cardinality HTTP metrics and a documented export path:
+  `http.server.request.duration` by method, route pattern and status class,
+  in-flight gauge, per-instrument series cap, Prometheus text on a separate
+  listener (`FORGE_TELEMETRY_METRICS_ADDR`) and OTLP metric push.
+- [x] Correlate structured logs with active trace/span identifiers: request
+  loggers and `*Context` log calls carry `trace_id`/`span_id`.
+- [x] Database and background-job instrumentation without coupling the
+  standard-library core to an exporter: `db.client.operation.duration` and
+  statement spans for PostgreSQL (pgx tracer), MySQL/MariaDB and SQLite
+  (`database/sql` driver wrapper), queue worker/enqueue, outbox dispatcher,
+  scheduler and mail spans and histograms; disabled telemetry adds zero
+  allocations.
+
+Not included: OTLP gRPC/protobuf, logs export, baggage, exemplars, and
+stored enqueue context for jobs (linked by job ID instead).
 
 ## Phase 6 - API tooling
 

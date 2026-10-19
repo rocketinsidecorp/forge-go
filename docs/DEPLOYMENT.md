@@ -145,6 +145,19 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_STORAGE_SIGNING_KEY`         | (empty)          | HMAC key of signed file links: unpadded base64url of 32-1024 random bytes. Secret. **Required in `production` when `FORGE_STORAGE_ROOT` is set.** |
 | `FORGE_STORAGE_MAX_UPLOAD_BYTES`    | `524288`         | Largest uploaded file; cannot exceed `FORGE_HTTP_MAX_BODY_BYTES` when storage is configured |
 | `FORGE_STORAGE_LINK_TTL`            | `15m`            | Default lifetime of signed links, `1s`-`168h` |
+| `FORGE_TELEMETRY_ENABLED`           | `true`           | Traces, metrics and log correlation; `false` costs nothing |
+| `FORGE_TELEMETRY_SERVICE_NAME`      | `unknown_service:<binary>` | `service.name` of exported telemetry |
+| `FORGE_TELEMETRY_SERVICE_VERSION`   | (empty)          | `service.version` |
+| `FORGE_TELEMETRY_EXPORTER`          | `none`           | `none`, `otlp`, `log` (`log` refused in `production`) |
+| `FORGE_TELEMETRY_OTLP_ENDPOINT`     | (empty)          | Collector base URL for `otlp`; `production` requires `https` unless `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT=true` |
+| `FORGE_TELEMETRY_OTLP_HEADERS`      | (empty)          | `name=value,...`, percent-encoded values. Secret. |
+| `FORGE_TELEMETRY_OTLP_TIMEOUT`      | `10s`            | Per export, retries included |
+| `FORGE_TELEMETRY_OTLP_COMPRESSION`  | `none`           | `none` or `gzip` |
+| `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT` | `false`       | Permit an `http://` collector in `production` |
+| `FORGE_TELEMETRY_SAMPLE_RATIO`      | `1`              | Fraction of new traces sampled |
+| `FORGE_TELEMETRY_TRUST_TRACEPARENT` | `true`           | Continue incoming traces; `false` for internet-facing services |
+| `FORGE_TELEMETRY_METRICS_ADDR`      | (empty: off)     | Separate Prometheus listener (`GET /metrics`, no authentication); never publish it |
+| `FORGE_TELEMETRY_METRICS_INTERVAL`  | `1m`             | OTLP metric push interval |
 
 Test-only variables, read by the adapters' test packages:
 
@@ -274,6 +287,14 @@ pooler in front of the server.
   contexts (the driver interrupts a statement when its context ends).
 - Back up the file with SQLite's online backup mechanisms (for example
   `VACUUM INTO`), not by copying a file that is being written.
+
+## Observability
+
+Telemetry is on with nothing exported. To scrape metrics from a container,
+set `FORGE_TELEMETRY_METRICS_ADDR=0.0.0.0:9464` and let Prometheus reach that
+port on the internal network only; to ship traces, point
+`FORGE_TELEMETRY_OTLP_ENDPOINT` at an OpenTelemetry Collector. Details,
+collector and Prometheus configuration: [OBSERVABILITY.md](OBSERVABILITY.md).
 
 ## Health checks
 
