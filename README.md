@@ -86,7 +86,9 @@ Adapter packages (third-party dependencies allowed):
 | `postgres/postgrestest`, `mysql/mysqltest`, `sqlite/sqlitetest` | A fresh database per test |
 
 An application links only the adapter it imports. The `forge` CLI lives in
-`cmd/forge`.
+`cmd/forge`; the deploy proxy, forge-proxy, in `cmd/forge-proxy` (its
+`go.yaml.in/yaml/v3` and `golang.org/x/crypto` dependencies are not linked
+into applications, [ADR 0030](docs/adr/0030-forge-deploy.md)).
 
 ## Quickstart
 
@@ -304,6 +306,9 @@ configured for production behind a TLS-terminating proxy. See
 | `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
 | `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--broadcast] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests; `--broadcast` adds live updates over Server-Sent Events. Never public: see below |
 | `forge generate authentication [--dry-run]` | PostgreSQL: add the sign-in, sign-out, two-factor and password-reset pages `forge new` generates to an application that lacks them, and print their wiring; other databases are refused (identity persistence is PostgreSQL-only) |
+| `forge deploy [init\|setup\|rollback VERSION\|prune\|details\|lock\|maintenance] [--dry-run] [--json]` | Deploy the image to your servers over SSH with zero-downtime switches through forge-proxy, Kamal-style: see [Deploy](#deploy) |
+| `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream container logs from every host, prefixed `host\|` |
+| `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...`, `forge app shell [--image IMAGE]` | Run a command or a shell next to the deployed application |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes` | Read-only table of the routes found in the source (including `Resources` routes) and Forge's health routes |
@@ -461,6 +466,39 @@ _ = broadcast.Publish(ctx, broker, channel, stream)         // and {{turboStream
 Details, the multi-replica setup and the delivery guarantees (best effort, at
 most once) are in [docs/VIEWS.md](docs/VIEWS.md#assets-javascript-and-hotwire)
 and [ADR 0029](docs/adr/0029-hotwire-assets-and-live-updates.md).
+
+### Deploy
+
+`forge deploy` ships the application image to servers that have only SSH and
+Docker ([DEPLOYMENT.md](docs/DEPLOYMENT.md#forge-deploy),
+[ADR 0030](docs/adr/0030-forge-deploy.md)). Build the proxy image once from
+this repository and reference it by digest in `proxy.image`:
+
+```sh
+docker build -f cmd/forge-proxy/Dockerfile -t registry.example.com/acme/forge-proxy:0.1.0 .
+docker push registry.example.com/acme/forge-proxy:0.1.0
+```
+
+Then, in the application:
+
+```sh
+forge deploy init                      # config/deploy.yml + .forge/secrets (0600, git-ignored)
+$EDITOR config/deploy.yml .forge/secrets
+forge deploy setup --dry-run           # every remote command, secrets redacted
+forge deploy setup                     # docker check, network, forge-proxy, accessories
+forge deploy                           # build, push, migrate, health-gated switch on every host
+forge deploy details                   # versions per host and role, proxy target, lock
+forge logs -f --grep ERROR             # host|line from every web host
+forge app exec migrate status          # one-off container of the deployed image
+forge app shell --image busybox:1.37   # debug sidecar (distroless has no shell)
+forge deploy rollback 3f2a9c1d07be     # back to a retained version
+forge deploy prune                     # drop stopped versions beyond retain
+```
+
+A deploy migrates before any switch, keeps the previous containers running
+until every host passed its health gate, and routes all hosts back if one
+fails. Exit codes: `3` lock held, `4` unhealthy (reverted), `5` migration
+failed, `6` hook failed, `7` not fully reverted.
 
 ### Development environment files
 
@@ -668,6 +706,7 @@ CI (`.github/workflows/ci.yml`):
   - [0007 PostgreSQL adapter with pgx, in the main module](docs/adr/0007-postgresql-adapter-with-pgx.md)
   - [0008 SQL migrations embedded in the application binary](docs/adr/0008-sql-migrations-embedded-in-the-binary.md)
   - [0009 Multiple databases: PostgreSQL, MySQL, MariaDB and SQLite](docs/adr/0009-multiple-databases.md)
+  - [0030 `forge deploy` and forge-proxy](docs/adr/0030-forge-deploy.md)
   - [0031 Rate limiting](docs/adr/0031-rate-limiting.md)
   - [0032 Application cache](docs/adr/0032-cache.md)
   - [0033 File storage](docs/adr/0033-file-storage.md)

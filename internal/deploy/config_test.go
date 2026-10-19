@@ -232,3 +232,23 @@ func TestDefaultServiceName(t *testing.T) {
 		t.Fatalf("defaultServiceName(42) = %q", got)
 	}
 }
+
+// The configuration documented in docs/DEPLOYMENT.md must stay valid.
+func TestDocumentedConfigIsValid(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "docs", "DEPLOYMENT.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, found := strings.Cut(string(content), "### config/deploy.yml\n\n```yaml\n")
+	if !found {
+		t.Fatal("docs/DEPLOYMENT.md lacks the config/deploy.yml example")
+	}
+	example, _, _ := strings.Cut(rest, "```")
+	cfg, err := ParseConfig([]byte(example))
+	if err != nil {
+		t.Fatalf("documented config is invalid: %v", err)
+	}
+	if cfg.Service != "shop" || len(cfg.Accessories) != 1 || cfg.SSH.ProxyJump == "" {
+		t.Fatalf("documented config parsed unexpectedly: %+v", cfg)
+	}
+}

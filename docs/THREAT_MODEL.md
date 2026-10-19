@@ -3,7 +3,8 @@
 Scope: the Forge framework, the `forge` CLI, and the applications and
 container images that `forge new` generates, including Phase 3 identity work
 through password login, login throttling, opaque sessions, browser-cookie
-sessions, CSRF, recovery, security audit, and PostgreSQL tenancy enforcement.
+sessions, CSRF, recovery, security audit, and PostgreSQL tenancy enforcement,
+and deployment with `forge deploy` and forge-proxy.
 Method: STRIDE per component. Items
 marked **Planned** are not implemented.
 
@@ -39,6 +40,11 @@ disclosure, **D**enial of service, **E**levation of privilege.
    `FORGE_TEST_MYSQL_URL`, or `FORGE_TEST_DATABASE_URL`.
 10. Application process -> telemetry collector (OTLP/HTTP) and metrics
     scraper -> the process's separate metrics listener.
+11. Operator machine -> deploy hosts over SSH (`forge deploy`, `forge logs`,
+    `forge app`), and -> the image registry.
+12. Internet client -> forge-proxy on the deploy hosts; forge-proxy ->
+    application containers on the `forge` Docker network.
+13. Deploy host shell (`docker exec`) -> forge-proxy control socket.
 
 ## Assumptions
 
@@ -175,7 +181,7 @@ See [OBSERVABILITY.md](OBSERVABILITY.md) and [ADR 0034](adr/0034-dependency-free
 
 | Threat | STRIDE | Mitigation |
 | ------ | ------ | ---------- |
-| Compromised or vulnerable dependency | T, E | Core packages have no third-party modules, enforced by `architecture_test.go` ([ADR 0006](adr/0006-zero-dependency-core.md), [ADR 0007](adr/0007-postgresql-adapter-with-pgx.md)). The adapters add their drivers (pgx v5, go-sql-driver/mysql, modernc.org/sqlite) and their transitive modules; an application links only the adapter it imports. The SQLite driver is pure Go, so no C toolchain or cgo enters the build. `govulncheck ./...` runs in framework and generated CI. |
+| Compromised or vulnerable dependency | T, E | Core packages have no third-party modules, enforced by `architecture_test.go` ([ADR 0006](adr/0006-zero-dependency-core.md), [ADR 0007](adr/0007-postgresql-adapter-with-pgx.md)). The adapters add their drivers (pgx v5, go-sql-driver/mysql, modernc.org/sqlite) and their transitive modules; an application links only the adapter it imports. The `forge` CLI links `go.yaml.in/yaml/v3` and forge-proxy links `golang.org/x/crypto` (ACME) and `golang.org/x/net` ([ADR 0030](adr/0030-forge-deploy.md)); applications link neither. The SQLite driver is pure Go, so no C toolchain or cgo enters the build. `govulncheck ./...` runs in framework and generated CI. |
 | Outdated dependencies | T, E | Framework and generated repositories include Dependabot configuration for Go modules, GitHub Actions, and Docker, checked weekly. |
 | Mutable base image tags and CI action tags | T | CI uses `permissions: contents: read`. **Planned**: pin base images by digest and actions by commit SHA (Phase 10). |
 | Unverifiable build provenance | R, T | **Planned**: SBOM and signed images (Phase 10). |
@@ -187,10 +193,35 @@ See [OBSERVABILITY.md](OBSERVABILITY.md) and [ADR 0034](adr/0034-dependency-free
 | `forge new` overwrites existing work | T | Refuses to write into a non-empty directory. A directory created by `forge new` is removed again if generation fails. |
 | `forge generate` overwrites application files | T | Migration and view files are created with `O_EXCL`; generated names are allow-listed and existing files are refused. |
 | Malicious or malformed application name | T | Name must match `^[a-z][a-z0-9-]{0,62}$`; module path is validated and may not contain `..`. Templates fail on missing keys. |
-| Shell injection through arguments | E | Subprocesses (`go get`, `go mod edit`, `go mod tidy`, `go mod vendor`, `go build`, `go test`, and the application binary run by `forge dev`, `forge migrate`, and `forge rollback`) are executed directly via `os/exec`, never through a shell. |
+| Shell injection through arguments | E | Except for the remote commands of `forge deploy` (see Deployment), subprocesses (`go get`, `go mod edit`, `go mod tidy`, `go mod vendor`, `go build`, `go test`, and the application binary run by `forge dev`, `forge migrate`, and `forge rollback`) are executed directly via `os/exec`, never through a shell. |
 | Wrong code vendored via `--framework-path` | T | The path's `go.mod` must declare `github.com/rocketinsidecorp/forge-go`. |
 | Generated files readable by other local users | I | Files are written `0600`, directories `0750`. |
 | Resource exhaustion via `forge uuid` | D | `--count` limited to 1-1000. |
+
+## Deployment (`forge deploy`, forge-proxy)
+
+See [ADR 0030](adr/0030-forge-deploy.md) and
+[DEPLOYMENT.md](DEPLOYMENT.md#forge-deploy).
+
+| Threat | STRIDE | Mitigation |
+| ------ | ------ | ---------- |
+| Man-in-the-middle on SSH | S, T, I | The system `ssh` client is used with the operator's `known_hosts`; `StrictHostKeyChecking` is never relaxed and host keys are never accepted automatically. `BatchMode=yes` prevents password prompts. Multiplexed control sockets live in a fresh `0700` temporary directory and are closed at the end of the command. |
+| Shell injection into remote commands | E | Remote commands are POSIX shell lines run under `sh -c`; they are built only from validated configuration (service, role, host, image, volume, environment-name patterns; control characters rejected in `cmd` arguments) and every word is single-quoted. Host names starting with `-` are rejected and `--` separates ssh options from the host. `forge app exec` arguments are quoted the same way. Golden tests pin the exact command text. |
+| Secrets in process lists, shell history or logs | I | Secrets reach hosts only on stdin (registry password via `docker login --password-stdin`, env files via `cat`), never in argv; an integration test asserts that no secret appears in any remote docker command line. Dry-run plans describe stdin without its content. Progress output, errors from remote stderr, and `forge logs` output pass through a redactor for every secret value (four characters or longer). |
+| Secrets at rest on the operator machine | I | `.forge/secrets` must be mode `0600` or loading fails; `forge deploy init` creates it so and adds it to `.gitignore`, and `.forge` to `.dockerignore` so it cannot enter an image. `NAME=$VAR` passthrough keeps values out of the file; command substitution is not supported. |
+| Secrets at rest on deploy hosts | I | Env files are written with `umask 077` and renamed atomically into `~/.forge/SERVICE/env` (`0700`). Accepted: Docker stores container environment in its configuration (readable with `docker inspect`) and the registry login in `~/.docker/config.json`; anyone with Docker access on the host is root-equivalent. Retained stopped containers keep the environment they were created with. |
+| Direct access to application containers | S, I | Application containers publish no ports; only forge-proxy (80/443) is published. Accessories bind `127.0.0.1` unless an explicit address is configured. Docker-published ports bypass host firewalls such as `ufw`, which the deployment guide states. |
+| Client spoofs its address or scheme | S | forge-proxy uses `ReverseProxy.Rewrite`, which drops inbound `Forwarded` and `X-Forwarded-*` headers; it sets `X-Forwarded-For` to the connecting address only and `X-Forwarded-Proto` from the listener. Forge applications ignore these headers in `trusted-proxy` mode. |
+| Proxy control surface | E, T | Control is a Unix socket inside the container (directory `0700`, socket `0600`, owned by `nonroot`), reachable only through `docker exec`, i.e. by root-equivalent users on the host. There is no network control endpoint. Control requests are size-limited JSON with unknown fields rejected. |
+| Unhealthy or wrong version receives traffic | D, T | A target receives traffic only after `healthy_count` consecutive passing health checks; otherwise the previous target keeps serving and the deploy fails (exit `4`). A failure on any host routes every switched host back to its still-running previous container. A failed revert is reported (exit `7`), never hidden. |
+| Requests dropped during a switch | D | Targets are swapped atomically; requests hold the target they started on, and the previous target is drained (up to `drain_timeout`) before its container is stopped with SIGTERM and `stop_timeout`. A test switches targets 20 times under concurrent load and requires zero failed requests. |
+| Slow or oversized requests exhaust the application | D | `ReadHeaderTimeout` and idle timeout on the proxy; bodies above `max_body_bytes` get `413`; bodies up to 1 MiB are buffered with a 30-second read deadline before the application is contacted; `response_timeout` bounds the wait for response headers. Accepted: large bodies are streamed. |
+| Certificates for unintended names, ACME abuse | S, D | autocert issues certificates only for host names registered with `tls` for a service (IP addresses and wildcards are rejected). Account keys and certificates are kept in the proxy volume. Enabling `ssl` accepts the Let's Encrypt terms. |
+| Concurrent deploys corrupt state | T | A lock (atomic `mkdir` on every host, with holder, time and message) guards setup, deploy, rollback and prune; partial acquisition is released and reported with exit `3`. `lock release` refuses a lock held by another performer without `--force`. Accepted: `--force` and manual removal of `~/.forge/SERVICE/lock` bypass it, and the holder string is self-reported. |
+| Repudiation of deploys | R | Each deploy and rollback appends a JSON line (time, performer, version, containers) to `~/.forge/SERVICE/deploys.log` on every host. Accepted: the performer is `user@hostname` of the operator machine, not an authenticated identity, and the log is writable by the SSH user. |
+| Malicious or mutable proxy image | T, E | The proxy is built from this repository (`cmd/forge-proxy/Dockerfile`: distroless static, `nonroot`, no shell). `forge deploy setup` warns when `proxy.image` is not pinned by digest. Accepted: building, signing and publishing the image is the operator's responsibility until signed images (Phase 10). |
+| Malicious hook or migration | E | Hooks are local executables from the repository, run without a shell and only when executable; they inherit the operator's environment. Migrations run the image's own `migrate` command once, before any switch; a failure aborts before containers change (exit `5`). |
+| Interrupted deploy leaves mixed versions | T | Ctrl-C cancels remote commands; a switch already started inside forge-proxy completes. The command exits `7` and `forge deploy details` shows the state. The lock is still released. |
 
 ## Identity and tenancy
 

@@ -431,6 +431,30 @@ cache) and a conformance suite
   rate limit, a `forge generate` attachment helper), image variants, malware
   scanning hook, cache tags/pattern invalidation, a distributed cache lock.
 
+## Deployment (Kamal parity)
+
+`forge deploy`, `forge logs`, `forge app` and forge-proxy
+([ADR 0030](adr/0030-forge-deploy.md),
+[DEPLOYMENT.md](DEPLOYMENT.md#forge-deploy)).
+
+- [x] Strict `config/deploy.yml`, `.forge/secrets` with environment
+  passthrough, 0600 env files on hosts, redaction of every output.
+- [x] `setup`, `deploy`, `rollback`, `prune`, `details`, `lock`,
+  `maintenance`, `init`; `--dry-run` and `--json`; stable exit codes; hooks.
+- [x] All-or-nothing health-gated switch with automatic revert; migration
+  before any switch; retained versions.
+- [x] forge-proxy: host routing, atomic switch with draining, ACME TLS,
+  body limits, maintenance page, JSON access logs, persisted state; a test
+  switches targets under concurrent load without a failed request.
+- [x] Integration tests over real `sshd` with a docker shim (deploy,
+  migration failure, partial health failure, lock contention, rollback,
+  prune, log streaming and cancellation, exec, dry run).
+- [ ] End-to-end test against a Docker daemon in CI (build and run the
+  forge-proxy image, deploy a generated application).
+- [ ] Static TLS certificates, several proxied roles, accessory
+  upgrade/reboot commands, proxy image upgrade without a restart gap,
+  `destinations` (staging/production files).
+
 ## Phase 9 - Performance
 
 Benchmarks, profiling, and allocation work on hot paths (router, middleware,
@@ -443,5 +467,4 @@ supply-chain hardening (pinned base images and actions, SBOM, signed images).
 
 ## Also planned (unscheduled)
 
-- Kamal-style deploy configuration.
 - Dev container definition.
