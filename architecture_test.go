@@ -32,6 +32,8 @@ var corePackages = []string{
 	modulePath + "/queue",
 	modulePath + "/queue/queuecmd",
 	modulePath + "/queue/storetest",
+	modulePath + "/ratelimit",
+	modulePath + "/ratelimit/limitertest",
 	modulePath + "/router",
 	modulePath + "/sqldb",
 	modulePath + "/tenancy",
