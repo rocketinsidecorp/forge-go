@@ -875,3 +875,30 @@ func TestEndToEndThroughTheForgeRouter(t *testing.T) {
 		t.Fatalf("bad upload = %d %s", w.Code, w.Body)
 	}
 }
+
+func TestReceiveCountsRepeatedFieldNamesAgainstTheFieldBudget(t *testing.T) {
+	opts := defaultOpts()
+	opts.MaxFields = 2
+	opts.MaxFieldBytes = 4 << 10
+	opts.MaxFileBytes = 8 << 20 // a generous file limit also widens the request cap
+	// One name repeated: a per-name count would see a single field and buffer
+	// every value (here 1500 x 4 KiB, within the request cap) in memory.
+	var parts []part
+	for range 1500 {
+		parts = append(parts, part{field: "note", content: bytes.Repeat([]byte("x"), 4<<10)})
+	}
+	parts = append(parts, part{field: "avatar", filename: "a.png", contentType: "image/png", content: pngBytes})
+	store := newDisk(t)
+	if _, err := upload(t, store, opts, parts...); err == nil {
+		t.Fatal("1500 values of one field name were accepted with MaxFields=2")
+	}
+	assertNoBlobs(t, store)
+
+	// Within the budget, repetitions are still fine.
+	got, err := upload(t, store, opts,
+		part{field: "tag", content: []byte("a")}, part{field: "tag", content: []byte("b")},
+		part{field: "avatar", filename: "a.png", contentType: "image/png", content: pngBytes})
+	if err != nil || len(got.Fields["tag"]) != 2 {
+		t.Fatalf("two repeated values = %+v, %v", got, err)
+	}
+}

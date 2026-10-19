@@ -42,7 +42,8 @@ type UploadOptions struct {
 	// Prefix is a key prefix for the stored files (for example "avatars"),
 	// validated like a key. Keys are Prefix + "/" + a fresh UUIDv7.
 	Prefix string
-	// MaxFields bounds the other (text) fields. Zero means 32.
+	// MaxFields bounds the other (text) field values in total, counting every
+	// repetition of a name. Zero means 32.
 	MaxFields int
 	// MaxFieldBytes bounds each text field. Zero means 64 KiB.
 	MaxFieldBytes int64
@@ -67,9 +68,11 @@ const (
 // store, rejecting anything outside opts: wrong content type of the request,
 // too many or too large files or fields, a file in another field, content whose
 // detected type is not allowed, malformed or re-encoded parts. The request
-// body is capped before it is read, the body is streamed (nothing is buffered
-// beyond one 512-byte sniffing window per file), and a rejected upload leaves
-// no stored files behind.
+// body is capped before it is read, files are streamed (only a 512-byte
+// sniffing window of each is held), text fields are held in memory but bounded
+// in count (MaxFields values in total, repeated names included) and in bytes
+// (MaxFields x MaxFieldBytes in total), and a rejected upload leaves no stored
+// files behind.
 //
 // The server-wide FORGE_HTTP_MAX_BODY_BYTES still applies and must be larger
 // than the upload: Receive can lower the limit for this request but not raise
@@ -98,6 +101,7 @@ func Receive(w http.ResponseWriter, r *http.Request, store Storage, opts UploadO
 	reader := multipart.NewReader(r.Body, params["boundary"])
 
 	result := Received{Fields: url.Values{}}
+	fieldCount, fieldBytes := 0, int64(0)
 	fail := func(err error) (Received, error) {
 		cleanup(store, result.Files)
 		return Received{}, translateReadError(err)
@@ -119,14 +123,18 @@ func Receive(w http.ResponseWriter, r *http.Request, store Storage, opts UploadO
 			return fail(invalidUpload("multipart part without a valid field name"))
 		}
 		if part.FileName() == "" {
-			if len(result.Fields) >= cfg.maxFields && result.Fields[name] == nil {
+			// The budget counts values, not distinct names: one name repeated
+			// many times is many fields, and all of them stay in memory.
+			fieldCount++
+			if fieldCount > cfg.maxFields {
 				return fail(invalidUpload("too many form fields"))
 			}
 			value, err := io.ReadAll(io.LimitReader(part, cfg.maxFieldBytes+1))
 			if err != nil {
 				return fail(err)
 			}
-			if int64(len(value)) > cfg.maxFieldBytes {
+			fieldBytes += int64(len(value))
+			if int64(len(value)) > cfg.maxFieldBytes || fieldBytes > int64(cfg.maxFields)*cfg.maxFieldBytes {
 				return fail(ErrTooLarge)
 			}
 			result.Fields.Add(name, string(value))
