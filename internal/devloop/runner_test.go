@@ -11,11 +11,10 @@ import (
 )
 
 type fakeInstance struct {
-	name    string
-	done    chan struct{}
-	once    sync.Once
-	stopped chan struct{}
-	log     func(string)
+	name string
+	done chan struct{}
+	once sync.Once
+	log  func(string)
 }
 
 func (f *fakeInstance) Done() <-chan struct{} { return f.done }
@@ -236,9 +235,14 @@ func TestRunnerDiscardsABuildThatIsStaleBecauseTheTreeChangedMeanwhile(t *testin
 	h.start()
 	h.expect("build 1")
 	// The runner is busy building; the next change waits for it.
-	go h.send(Change{Count: 1})
+	sent := make(chan struct{})
+	go func() {
+		h.changes <- Change{Count: 1}
+		close(sent)
+	}()
 	time.Sleep(50 * time.Millisecond)
 	close(released)
+	<-sent
 
 	// The first build is stale: no process starts from it.
 	h.expect("build 2", "start app-2", "started app-2")
@@ -312,12 +316,13 @@ func TestRunnerRequiresItsFunctions(t *testing.T) {
 
 func TestProcessStopsGracefullyOnSIGTERM(t *testing.T) {
 	t.Parallel()
-	script := writeScript(t, "trap 'exit 0' TERM\nwhile :; do sleep 0.05; done\n")
-	process, err := StartProcess(script, nil, t.TempDir(), os.Environ(), nil, nil)
+	ready := filepath.Join(t.TempDir(), "ready")
+	script := writeScript(t, "trap 'exit 0' TERM\n: > \"$1\"\nwhile :; do sleep 0.05; done\n")
+	process, err := StartProcess(script, []string{ready}, t.TempDir(), os.Environ(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond) // let the trap install
+	waitForFile(t, ready)
 	if err := process.Stop(5 * time.Second); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -328,12 +333,13 @@ func TestProcessStopsGracefullyOnSIGTERM(t *testing.T) {
 
 func TestProcessIsKilledWhenItIgnoresSIGTERM(t *testing.T) {
 	t.Parallel()
-	script := writeScript(t, "trap '' TERM\nwhile :; do sleep 0.05; done\n")
-	process, err := StartProcess(script, nil, t.TempDir(), os.Environ(), nil, nil)
+	ready := filepath.Join(t.TempDir(), "ready")
+	script := writeScript(t, "trap '' TERM\n: > \"$1\"\nwhile :; do sleep 0.05; done\n")
+	process, err := StartProcess(script, []string{ready}, t.TempDir(), os.Environ(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	waitForFile(t, ready)
 	if err := process.Stop(200 * time.Millisecond); err == nil {
 		t.Fatal("want an error reporting the kill")
 	}
@@ -349,6 +355,19 @@ func TestStartProcessReportsAMissingBinary(t *testing.T) {
 	if _, err := StartProcess(filepath.Join(t.TempDir(), "missing"), nil, t.TempDir(), nil, nil, nil); err == nil {
 		t.Fatal("want an error")
 	}
+}
+
+// waitForFile waits until the script reports that its signal handling is set.
+func waitForFile(t *testing.T, name string) {
+	t.Helper()
+	deadline := time.Now().Add(testWait)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(name); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("script never became ready")
 }
 
 func writeScript(t *testing.T, body string) string {
