@@ -355,3 +355,27 @@ func TestRunDeployInit(t *testing.T) {
 		t.Fatalf("stdout = %s", stdout.String())
 	}
 }
+
+// Retention must treat the container just started as the newest even when
+// the host clock that stamped the others is ahead of the local clock.
+func TestApplyBootIsNewestDespiteClockSkew(t *testing.T) {
+	hostAhead := planEpoch.Add(time.Hour)
+	containers := []Container{
+		{Name: "shop-web-v2-b", Role: "web", Version: "v2", State: "running", Created: hostAhead},
+		{Name: "shop-web-v1-a", Role: "web", Version: "v1", State: "exited", Created: hostAhead.Add(-time.Minute)},
+	}
+	b := &boot{role: "web", version: "v3", name: "shop-web-v3-c", previous: containers[:1]}
+	got := applyBoot(containers, b, planEpoch)
+	if got[0].Name != "shop-web-v3-c" || !got[0].Created.After(hostAhead) {
+		t.Fatalf("new container not newest: %+v", got[0])
+	}
+	d, runner, _, _ := planFixture(t, false)
+	d.Config.Retain = 2
+	if err := d.prepare(); err != nil {
+		t.Fatal(err)
+	}
+	pruned, _ := d.pruneHost(t.Context(), "192.0.2.10", got)
+	if len(pruned) == 0 || pruned[0] != "192.0.2.10:shop-web-v1-a" {
+		t.Fatalf("pruned %v, want the oldest version v1; calls %v", pruned, runner.calls)
+	}
+}

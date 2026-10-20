@@ -403,7 +403,15 @@ func applyBoot(containers []Container, b *boot, now time.Time) []Container {
 			return containers
 		}
 	}
-	return append([]Container{{Name: b.name, Role: b.role, Version: b.version, State: "running", Created: now}}, containers...)
+	// The new container is the newest whatever the clocks say: the host's
+	// clock, which stamped the others, may be ahead of the local one.
+	created := now
+	for _, c := range containers {
+		if !c.Created.Before(created) {
+			created = c.Created.Add(time.Second)
+		}
+	}
+	return append([]Container{{Name: b.name, Role: b.role, Version: b.version, State: "running", Created: created}}, containers...)
 }
 
 // pruneHost removes stopped containers beyond retain per role, and the
