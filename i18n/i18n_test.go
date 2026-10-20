@@ -474,8 +474,8 @@ func TestMiddleware(t *testing.T) {
 		if recorder.Body.String() != want {
 			t.Errorf("%s: %q, want %q", target, recorder.Body.String(), want)
 		}
-		if lang := recorder.Header().Get("Content-Language"); lang == "" || !slices.Contains(recorder.Header().Values("Vary"), "Accept-Language") {
-			t.Errorf("%s: headers %v", target, recorder.Header())
+		if recorder.Header().Get("Content-Language") != "" || len(recorder.Header().Values("Vary")) != 0 {
+			t.Errorf("%s: the middleware set headers %v", target, recorder.Header())
 		}
 	}
 	if _, err := translator.Middleware(i18n.NegotiationOptions{Param: "a b"}); err == nil {
@@ -483,6 +483,26 @@ func TestMiddleware(t *testing.T) {
 	}
 	if _, err := translator.Middleware(i18n.NegotiationOptions{Cookie: "a;b"}); err == nil {
 		t.Error("invalid cookie name accepted")
+	}
+}
+
+func TestSetHeaders(t *testing.T) {
+	t.Parallel()
+	translator := load(t, i18n.Options{})
+	recorder := httptest.NewRecorder()
+	recorder.Header().Add("Vary", "accept-language")
+	i18n.SetHeaders(recorder, i18n.NewContext(context.Background(), translator, "pt-BR"))
+	i18n.SetHeaders(recorder, i18n.NewContext(context.Background(), translator, "pt-BR"))
+	if got := recorder.Header().Get("Content-Language"); got != "pt-BR" {
+		t.Fatalf("Content-Language = %q", got)
+	}
+	if got := recorder.Header().Values("Vary"); !slices.Equal(got, []string{"accept-language", "Cookie"}) {
+		t.Fatalf("Vary = %v", got)
+	}
+	untouched := httptest.NewRecorder()
+	i18n.SetHeaders(untouched, context.Background())
+	if len(untouched.Header()) != 0 {
+		t.Fatalf("headers without a locale: %v", untouched.Header())
 	}
 }
 

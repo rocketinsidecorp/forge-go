@@ -61,7 +61,7 @@ HTML, so escaping must be decided once, by the framework.
    locale where the text was found, using the operands n, i and v (fractions
    choose as CLDR says: `1.5` is `one` in French). An explicit `zero` form is
    used for 0 in every language (Rails). A form the rule selects but the file
-   lacks falls back to `other`. Built-in rules: en, de, nl, sv, nb, fi, et;
+   lacks falls back to `other`; without a count a plural key gives `other`. Built-in rules: en, de, nl, sv, nb, fi, et;
    es, fr, it, pt (Brazilian: 0 and 1 singular), pt-PT; ru, uk, pl, cs, sk;
    ar (all six forms), he; tr, el, hu; ja, zh, ko, vi, th, id, ms (only
    `other`). Rules are looked up by locale then parents (`pt-BR` → `pt`);
@@ -78,8 +78,11 @@ HTML, so escaping must be decided once, by the framework.
    thousandths, `q=0` excluded, malformed entries skipped, stable order on
    ties, unsupported subtags truncated, `*` meaning the default; headers over
    4096 bytes are ignored and only 32 entries are read. The middleware stores
-   the translator and locale in the request context and sends
-   `Content-Language` and `Vary: Accept-Language, Cookie`.
+   the translator and locale in the request context and sets no headers, so
+   language-independent responses (digested assets, JSON) stay cacheable;
+   translated responses get `Content-Language` and `Vary: Accept-Language,
+   Cookie` from `i18n.SetHeaders`, which the views renderer calls for every
+   page.
 6. **Missing translations never panic.** Lookup walks the locale and its
    parents. In development and test (`ShowMissing`) a missing key renders
    `translation missing: LOCALE.KEY`; in staging and production it falls back
@@ -97,7 +100,7 @@ HTML, so escaping must be decided once, by the framework.
    the precision (exact binary ties to even).
 8. **API surface.** Go: `i18n.Load(fs, Options)`, `Translator.Middleware`,
    `i18n.T(ctx, key, "name", value, ...)`, `i18n.HTML`, `i18n.Number`,
-   `i18n.Localize`, `i18n.NewContext` (jobs, mailers). Views: `t`, `l`,
+   `i18n.Localize`, `i18n.NewContext` (jobs, mailers), `i18n.SetHeaders`. Views: `t`, `l`,
    `number`, `locale`; they read the translator and locale from the request
    and use `views.Options.I18n` (default locale) for fragments rendered
    without a request, such as broadcasts. Without either, `t` fails the

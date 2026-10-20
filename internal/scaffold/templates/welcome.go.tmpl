@@ -120,6 +120,7 @@ func welcomeHandler(logoPath string) http.HandlerFunc {
 			web.Error(w, r, err)
 			return
 		}
+		i18n.SetHeaders(w, ctx)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'")
 		_, _ = w.Write(page.Bytes())

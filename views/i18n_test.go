@@ -3,6 +3,7 @@ package views_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -65,15 +66,21 @@ func TestTranslationHelpersUseTheRequestLocale(t *testing.T) {
 			t.Error(err)
 		}
 	}))
-	render := func(language string) string {
+	render := func(language, want string) string {
 		request := httptest.NewRequest(http.MethodGet, "/posts", nil)
 		request.Header.Set("Accept-Language", language)
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
+		if got := recorder.Header().Get("Content-Language"); got != want {
+			t.Errorf("Content-Language = %q for %q, want %q", got, language, want)
+		}
+		if vary := recorder.Header().Values("Vary"); !slices.Contains(vary, "Accept-Language") || !slices.Contains(vary, "Cookie") {
+			t.Errorf("Vary = %v", vary)
+		}
 		return recorder.Body.String()
 	}
 
-	english := render("en-US")
+	english := render("en-US", "en")
 	for _, want := range []string{
 		`<html lang="en">`, "<title>Posts</title>", "<h1>Posts</h1>", "<p>2 posts</p>", "<p>1,234.50</p>", "<p>Feb 3</p>",
 		`title="Hello, &#34;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"`,
@@ -88,7 +95,7 @@ func TestTranslationHelpersUseTheRequestLocale(t *testing.T) {
 		t.Fatalf("an argument escaped its context:\n%s", english)
 	}
 
-	portuguese := render("pt-BR,pt;q=0.9")
+	portuguese := render("pt-BR,pt;q=0.9", "pt-BR")
 	for _, want := range []string{
 		`<html lang="pt-BR">`, "<h1>Publicações</h1>", "<p>2 publicações</p>", "<p>1.234,50</p>", "<p>3 fev</p>",
 		"translation missing: pt-BR.posts.greeting",

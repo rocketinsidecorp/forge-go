@@ -342,6 +342,9 @@ func (r *Renderer) renderPage(w http.ResponseWriter, request *http.Request, name
 	if err != nil {
 		return err
 	}
+	if request != nil {
+		i18n.SetHeaders(w, request.Context())
+	}
 	w.Header().Set("Content-Security-Policy", r.csp)
 	return writeHTML(w, status, body.Bytes())
 }

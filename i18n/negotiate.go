@@ -1,6 +1,7 @@
 package i18n
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -240,10 +241,12 @@ func cookieName(opts NegotiationOptions) string {
 	return opts.Cookie
 }
 
-// Middleware negotiates each request's locale (see Negotiate), stores it with
-// the translator in the request context for T, the views' t helper and the
-// formatting functions, and sends Content-Language and Vary. Install it
-// before routing (forge.App.Use) so a path prefix is removed in time.
+// Middleware negotiates each request's locale (see Negotiate) and stores it
+// with the translator in the request context for T, the views' t helper and
+// the formatting functions. Install it before routing (forge.App.Use) so a
+// path prefix is removed in time. It sets no response headers: responses
+// that do not depend on the language (digested assets, JSON) stay cacheable;
+// translated responses call SetHeaders (the views renderer does).
 func (t *Translator) Middleware(opts NegotiationOptions) (func(http.Handler) http.Handler, error) {
 	if opts.Param != "" && !argumentName(opts.Param) {
 		return nil, fmt.Errorf("i18n: invalid locale parameter name %q", truncate(opts.Param))
@@ -257,10 +260,6 @@ func (t *Translator) Middleware(opts NegotiationOptions) (func(http.Handler) htt
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			locale, prefix := t.negotiate(r, opts)
-			header := w.Header()
-			header.Set("Content-Language", locale)
-			header.Add("Vary", "Accept-Language")
-			header.Add("Vary", "Cookie")
 			r = r.WithContext(NewContext(r.Context(), t, locale))
 			if prefix != "" {
 				r = stripPrefix(r, prefix)
@@ -268,6 +267,36 @@ func (t *Translator) Middleware(opts NegotiationOptions) (func(http.Handler) htt
 			next.ServeHTTP(w, r)
 		})
 	}, nil
+}
+
+// SetHeaders marks a response as translated for the locale of ctx:
+// Content-Language names it, and Vary: Accept-Language, Cookie keeps shared
+// caches from serving one visitor's language to another. The views renderer
+// calls it for every page; handlers that write translated text themselves
+// call it before writing. Without a locale in ctx it does nothing.
+func SetHeaders(w http.ResponseWriter, ctx context.Context) {
+	locale := Locale(ctx)
+	if locale == "" {
+		return
+	}
+	header := w.Header()
+	header.Set("Content-Language", locale)
+	for _, name := range []string{"Accept-Language", "Cookie"} {
+		if !varies(header, name) {
+			header.Add("Vary", name)
+		}
+	}
+}
+
+func varies(header http.Header, name string) bool {
+	for _, value := range header.Values("Vary") {
+		for field := range strings.SplitSeq(value, ",") {
+			if field = strings.TrimSpace(field); field == "*" || strings.EqualFold(field, name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // stripPrefix removes a locale segment from the request path.
