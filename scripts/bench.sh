@@ -139,7 +139,10 @@ mv "$bootstrap.new" "$bootstrap"
 (cd "$app" && gofmt -w app/bootstrap/bootstrap.go && go build -o "$work/benchapp-server" ./cmd/benchapp)
 
 echo "creating the database ${database} with the non-superuser role ${role}" >&2
-psql "$admin" -qAtc "CREATE ROLE ${role} LOGIN PASSWORD '${role_password}' NOSUPERUSER NOBYPASSRLS CREATEDB" >/dev/null
+# The statement goes on stdin (printf is a builtin), so the role password never
+# appears in psql's arguments, which ps shows.
+printf "CREATE ROLE %s LOGIN PASSWORD '%s' NOSUPERUSER NOBYPASSRLS CREATEDB;\n" "$role" "$role_password" |
+	psql "$admin" -qAt -v ON_ERROR_STOP=1 >/dev/null
 created_role=1
 psql "$admin" -qAtc "CREATE DATABASE ${database} OWNER ${role}" >/dev/null
 created_database=1

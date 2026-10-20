@@ -28,7 +28,8 @@ go test -run '^$' -bench RouterMatch -benchmem -count 5 ./router
 go test -run '^$' -bench 'MiddlewareChain|HTTPTelemetry' -benchmem .
 
 # end to end: needs Go, psql, openssl and a PostgreSQL server whose user may
-# create roles and databases
+# create roles and databases. The URL is psql's argument, which ps shows: on a
+# shared machine leave the password out of it and use PGPASSWORD or ~/.pgpass.
 export FORGE_TEST_POSTGRES_URL='postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable'
 scripts/bench.sh                                  # 16 workers, 10 s per scenario, 3 runs
 BENCH_DURATION=3s BENCH_RUNS=1 scripts/bench.sh   # a quick check
@@ -263,7 +264,7 @@ without it, 29). Ten middleware that only call the next handler add about
 2.5 us, 3.7 KB and 20 allocations (about 250 ns and 2 allocations each). The
 size of the route table changes `router_match` by only 10 to 15 percent from 1
 to 1000 routes (`ServeMux` matches through a tree); a wildcard route costs
-about 2.5 times a static one and 11 allocations instead of 1. Rendering a page of
+about 2.7 times a static one and 11 allocations instead of 1. Rendering a page of
 50 rows through `html/template` is the most expensive request-path scenario,
 about 0.4 ms and 2300 allocations.
 
