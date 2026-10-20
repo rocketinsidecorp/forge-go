@@ -38,10 +38,14 @@ Configuration is `FORGE_HTTP_TRUSTED_PROXIES` (`config.HTTP.TrustedProxies`):
 a comma-separated list of CIDR prefixes or bare addresses (a bare address is a
 `/32` or `/128`). **The default is empty: trust nobody, use the peer.** The
 list is validated at startup; the process refuses to start on a malformed or
-empty entry, a `/0` prefix (it would trust the whole internet and let any
-client choose its address), an IPv4-mapped IPv6 prefix (peers are compared in
-IPv4 form, so it would silently never match) or a zoned address. Errors name
-the entry's position, never its text.
+empty entry, an overly broad prefix (an IPv4 prefix shorter than `/8` or an
+IPv6 prefix shorter than `/16`, `/0` included: they would trust most of the
+internet and let almost any client choose its address; two `/1` prefixes
+cover all of IPv4), an IPv4-mapped IPv6 prefix (peers are compared in IPv4
+form, so it would silently never match) or a zoned address. Bare addresses
+are unaffected. Errors name the entry's position, never its text. One
+function, `config.CheckTrustedProxy`, holds these rules; `web.NewTrustedProxies`
+applies it too.
 
 Resolution, given the peer `P` and the trusted set `T`:
 
@@ -120,16 +124,29 @@ ports (ADR 0030), so only containers on the `forge` network can reach them.
 - An application that is reachable both through the proxy and directly from
   a trusted network trusts that network's headers; list only proxy networks.
 - A misconfigured, too-broad list re-opens spoofing. Configuration is the
-  operator's; the `/0` refusal only stops the obvious mistake.
+  operator's; the minimum prefix lengths (`/8`, `/16`) only stop the obvious
+  mistakes, and a `/8` still trusts 16 million addresses.
+- **Residual:** the Docker subnet `forge deploy` trusts includes the
+  network's gateway (for example `172.18.0.1`), so processes on the host reach
+  the application from a trusted address and can choose their `X-Forwarded-For`.
+  The host is root-equivalent anyway, so this adds no capability.
+- **Residual:** on a Docker network without IPv6, IPv6 clients reach
+  forge-proxy through docker-proxy, which connects from the gateway address,
+  so all IPv6 clients share one bucket (the same as before this ADR, not a
+  regression). Enable IPv6 on the `forge` network or run the Docker daemon
+  with `"userland-proxy": false`.
 - A successful sign-in still does not clear the source counter (ADR 0011):
   one client's counter now covers that client only, so this no longer lets
   successful sign-ins of others exhaust a shared budget.
 
 ## Forge-Rust port
 
-Forge-Rust implements the same behavior with the same names: environment key
-`FORGE_HTTP_TRUSTED_PROXIES`, empty default, the same validation rules and
-error shape, the same right-to-left `X-Forwarded-For` walk with fall-back to
-the peer, the same `/64` bucketing, a request-scoped resolved client address
-read by throttles, rate limits and audit, forge-proxy replacing the header,
-and `forge deploy` setting the variable from the `forge` network's subnets.
+Not implemented yet; tracked in
+[forge-rust#12](https://github.com/rocketinsidecorp/forge-rust/issues/12).
+Forge-Rust is to implement the same behavior with the same names: environment
+key `FORGE_HTTP_TRUSTED_PROXIES`, empty default, the same validation rules
+(including the minimum prefix lengths) and error shape, the same right-to-left
+`X-Forwarded-For` walk with fall-back to the peer, the same `/64` bucketing, a
+request-scoped resolved client address read by throttles, rate limits and
+audit, forge-proxy replacing the header, and `forge deploy` setting the
+variable from the `forge` network's subnets.

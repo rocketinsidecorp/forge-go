@@ -453,7 +453,8 @@ cache) and a conformance suite
   `web.ClientIP`, `ratelimit.ByClientIP`; throttles, rate limits, stream caps
   and audit sources; `forge deploy` trusts the forge-proxy network;
   [ADR 0037](adr/0037-trusted-proxies-and-client-ip.md)). Forge-Rust port
-  pending (same key and semantics).
+  tracked in [forge-rust#12](https://github.com/rocketinsidecorp/forge-rust/issues/12)
+  (same key and semantics).
 - [ ] Generated-application wiring (`forge new` options for cache, storage and
   rate limit, a `forge generate` attachment helper), image variants, malware
   scanning hook, cache tags/pattern invalidation, a distributed cache lock.

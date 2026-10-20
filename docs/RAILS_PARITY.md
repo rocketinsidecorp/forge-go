@@ -20,7 +20,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Persistent jobs, cron, outbox | Solid Queue | Done | In review |
 | Mailer with previews | Action Mailer | Done | Planned |
 | Rate limiting | `rate_limit` | Done | In review |
-| Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | In review (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Planned (same key and semantics) |
+| Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | In review (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Planned ([forge-rust#12](https://github.com/rocketinsidecorp/forge-rust/issues/12); same key and semantics) |
 | Cache | Solid Cache | Done | In review |
 | File storage with signed URLs | Active Storage | Done (disk) | In review (disk) |
 | Import maps, Turbo, Stimulus | Hotwire | Done | Done |

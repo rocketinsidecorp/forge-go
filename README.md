@@ -614,7 +614,8 @@ only from the `forge` Docker network (`forge deploy` sets
 `FORGE_HTTP_TRUSTED_PROXIES` to its subnets), so sign-in and reset throttles,
 `ratelimit.ByClientIP` and audit count each client, not the proxy. Behind any
 other proxy or load balancer, list its networks yourself (empty, the default,
-trusts nobody; `0.0.0.0/0` is refused):
+trusts nobody; `/0` and any IPv4 prefix shorter than `/8` or IPv6 prefix
+shorter than `/16` are refused):
 
 ```sh
 export FORGE_HTTP_TRUSTED_PROXIES=10.0.0.0/24,fd00:1::/64   # proxy CIDRs or addresses

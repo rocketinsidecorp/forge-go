@@ -129,7 +129,7 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_HTTP_SHUTDOWN_TIMEOUT`       | `30s`            | Total shutdown budget from the signal: HTTP drain plus shutdown hooks |
 | `FORGE_HTTP_MAX_HEADER_BYTES`       | `1048576`        | Maximum request header size |
 | `FORGE_HTTP_MAX_BODY_BYTES`         | `1048576`        | Maximum request body size; larger bodies get `413` |
-| `FORGE_HTTP_TRUSTED_PROXIES`        | (empty)          | Comma-separated CIDRs or addresses of reverse proxies whose `X-Forwarded-For` is believed; empty trusts nobody. `/0` and malformed entries fail at startup. `forge deploy` sets it for the proxied role. See [Client addresses behind a proxy](#client-addresses-behind-a-proxy). |
+| `FORGE_HTTP_TRUSTED_PROXIES`        | (empty)          | Comma-separated CIDRs or addresses of reverse proxies whose `X-Forwarded-For` is believed; empty trusts nobody. Malformed entries, `/0`, IPv4 prefixes shorter than `/8` and IPv6 prefixes shorter than `/16` fail at startup. `forge deploy` sets it for the proxied role. See [Client addresses behind a proxy](#client-addresses-behind-a-proxy). |
 | `FORGE_DATABASE_URL`                | (empty)          | `postgres://...`, `mysql://...`, or `sqlite:path`; the scheme selects the adapter. Secret: redacted in logs and formatted output. Production TLS rules below. |
 | `FORGE_DATABASE_MAX_CONNS`          | `10`             | Pool size per process, `1`-`1000` |
 | `FORGE_DATABASE_MIN_CONNS`          | `0`              | `0` to `FORGE_DATABASE_MAX_CONNS`; PostgreSQL only |
@@ -237,8 +237,9 @@ docker run --rm -p 8080:8080 \
   A client that reaches the application directly cannot choose its address.
 - An empty, malformed or non-address entry on that walk falls back to the
   peer. `Forwarded` and `X-Real-IP` are never read.
-- The value is validated at startup: malformed entries, `0.0.0.0/0` and
-  `::/0` stop the process. Empty (the default) trusts nobody.
+- The value is validated at startup: malformed entries, `/0` and prefixes
+  broader than IPv4 `/8` or IPv6 `/16` stop the process (bare addresses are
+  unaffected). Empty (the default) trusts nobody.
 - List only proxy networks, and keep the application port reachable only
   through them; anything inside a listed network can claim any client
   address.
@@ -249,7 +250,12 @@ docker run --rm -p 8080:8080 \
 `forge deploy` sets `FORGE_HTTP_TRUSTED_PROXIES` for the proxied role to the
 subnets of the `forge` Docker network on each host. Override it in
 `config/deploy.yml` (`env.clear`), for example to an empty string to trust
-nobody. Check what a container received (the filter runs on the host, so no
+nobody. The network's subnet includes the Docker gateway (for example
+`172.18.0.1`), so processes on the host reach the application from a trusted
+address. On a Docker network without IPv6, IPv6 clients reach forge-proxy
+through docker-proxy from the gateway address and share one bucket; enable
+IPv6 on the `forge` network or set `"userland-proxy": false` in the Docker
+daemon configuration. Check what a container received (the filter runs on the host, so no
 other variable leaves it):
 
 ```sh
