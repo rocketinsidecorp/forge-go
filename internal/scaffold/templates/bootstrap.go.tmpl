@@ -345,10 +345,11 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 	// The reset pages and the "Forgot your password?" link exist only when
 	// reset emails can actually be sent.
 	browserOptions := auth.BrowserOptions{
-		Login:    login,
-		Sessions: repository,
-		MFA:      mfaService,
-		Auditor:  repository,
+		Login:     login,
+		Sessions:  repository,
+		MFA:       mfaService,
+		Passwords: repository,
+		Auditor:   repository,
 	}
 	if mailConfigured {
 		browserOptions.Recovery = recoveryService
@@ -357,13 +358,13 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 	if err != nil {
 		return err
 	}
-	if err := htmlauth.Register(app, browser, renderer); err != nil {
+	// The pages include the two-factor settings at /mfa (enrollment,
+	// rotation, backup codes, disable), behind the session cookie; every
+	// change asks for the password again (and a current code once a factor
+	// exists). They say so when FORGE_AUTH_MFA_KEY is not set.
+	if err := htmlauth.Register(app, browser, renderer, middleware); err != nil {
 		return err
 	}
-
-	// MFA enrollment/management routes (require authenticated principal + step-up authorizer)
-	// These are intentionally left for application-specific step-up policy.
-	// Applications can wire them in app/bootstrap/bootstrap.go after generation.
 
 	// Pages behind a permission authenticate the session cookie and send
 	// signed-out browsers to the sign-in page, for example:

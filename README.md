@@ -216,8 +216,20 @@ forge dev                       # http://localhost:8080/posts (signed-out visito
 | --- | ---- |
 | `/session/new` | sign in (organization, email, password) |
 | `/session/mfa` | authenticator or backup code, when `FORGE_AUTH_MFA_KEY` is set |
+| `/mfa` | two-factor settings of the signed-in account: turn on, replace the authenticator, new backup codes, turn off |
 | `/passwords/new` | forgot password (only when reset emails are configured, below) |
 | `/passwords/edit?token=...` | choose a new password from the emailed link |
+
+Two-factor authentication: `forge new` puts a development
+`FORGE_AUTH_MFA_KEY` in `.env.local`, so signed in, open
+`http://localhost:8080/mfa`, enter your password, add the key to an
+authenticator app (the `otpauth://` link or the Base32 text) and confirm with
+the password and its 6-digit code; the page shows 10 backup codes once and
+signs you out everywhere. Every later change asks for the password and a
+current code (or a backup code), throttled and audited. For production,
+create a key with
+`openssl rand -base64 32 | tr '+/' '-_' | tr -d '='` and keep it in a secret
+manager ([docs/MFA.md](docs/MFA.md), [ADR 0045](docs/adr/0045-generated-mfa-settings-pages.md)).
 
 Password-reset emails are off until outgoing mail is configured, and so are
 the reset pages and the "Forgot your password?" link. To try them locally,
@@ -1074,3 +1086,4 @@ signed images for `v*` tags only.
   - [0042 Internationalization (i18n)](docs/adr/0042-internationalization.md)
   - [0043 OpenAPI from typed routes](docs/adr/0043-openapi-from-typed-routes.md)
   - [0044 Continuous fuzzing, SBOMs and signed images](docs/adr/0044-continuous-fuzzing-sbom-signed-images.md)
+  - [0045 Generated two-factor settings pages with step-up](docs/adr/0045-generated-mfa-settings-pages.md)

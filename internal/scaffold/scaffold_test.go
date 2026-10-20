@@ -485,7 +485,7 @@ func TestGenerateAuthenticationPagesForPostgreSQLOnly(t *testing.T) {
 			case "postgresql":
 				assertContains(t, dir, map[string][]string{
 					"app/bootstrap/bootstrap.go": {
-						`"example.com/shop/app/adapters/htmlauth"`, "auth.NewBrowser(browserOptions)", "htmlauth.Register(app, browser, renderer)",
+						`"example.com/shop/app/adapters/htmlauth"`, "auth.NewBrowser(browserOptions)", "htmlauth.Register(app, browser, renderer, middleware)",
 						"if mailConfigured {\n\t\tbrowserOptions.Recovery = recoveryService", "recoverymail.New(sender, recoverymail.Config{", "FORGE_AUTH_PASSWORD_RESET_URL",
 						"middleware.AuthenticateBrowser(htmlauth.SignInPath, page)",
 					},
@@ -528,7 +528,7 @@ func TestAuthenticationFilesMatchForgeNew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 8 || files[7].Path != filepath.Join("config", "locales", "authentication.en.json") {
+	if len(files) != 13 || files[12].Path != filepath.Join("config", "locales", "authentication.en.json") {
 		t.Fatalf("got %d authentication files", len(files))
 	}
 	for _, file := range files {

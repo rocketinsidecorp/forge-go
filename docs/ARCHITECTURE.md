@@ -626,6 +626,8 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0041](adr/0041-generators-and-destroy.md) | Model, controller, mailer and queue job generators, and `forge destroy` |
 | [0042](adr/0042-internationalization.md) | Internationalization: JSON translations, CLDR plurals, locale negotiation |
 | [0043](adr/0043-openapi-from-typed-routes.md) | OpenAPI 3.1 from described routes, `GET /openapi.json`, `forge openapi` |
+| [0044](adr/0044-continuous-fuzzing-sbom-signed-images.md) | Continuous fuzzing, SBOMs and keyless-signed release images |
+| [0045](adr/0045-generated-mfa-settings-pages.md) | Generated two-factor settings pages (`/mfa`) with password and code step-up |
 
 ## Not yet implemented
 

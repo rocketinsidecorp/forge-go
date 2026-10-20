@@ -175,6 +175,11 @@ validated return paths.
 | `POST` | `/session` | Sign in; 303 to the validated `return_to` or `/` |
 | `DELETE` | `/session` | Sign out (`_method=DELETE` form, `sessions/_sign_out` partial) |
 | `GET`, `POST` | `/session/mfa` | Authenticator or backup code, when `FORGE_AUTH_MFA_KEY` is set |
+| `GET` | `/mfa` | Two-factor settings of the signed-in account |
+| `POST` | `/mfa`, `/mfa/confirm` | Turn on: the password, then the key; confirm with the password and a code (backup codes shown once, signs out everywhere) |
+| `POST` | `/mfa/rotation`, `/mfa/rotation/confirm` | Replace the authenticator (password and a current code at both steps) |
+| `POST` | `/mfa/backup_codes` | New backup codes (password and a current code) |
+| `DELETE` | `/mfa` | Turn off (password and a current code); signs out everywhere |
 | `GET` | `/passwords/new` | Forgot-password form (only when reset emails are configured, see below) |
 | `POST` | `/passwords` | Send reset instructions (same answer whether or not the account exists) |
 | `GET` | `/passwords/edit?token=...` | Choose a new password from the emailed link |
@@ -289,9 +294,9 @@ secret manager in deployed environments. It is never stored in the identity
 database.
 
 Run `migrate` before serving so the Forge identity tables exist, then
-`setup` once to create the first owner. Inviting further users and MFA
-enrollment/rotation remain application opt-ins because they require
-application policy and step-up authorization. Browser-cookie
+`setup` once to create the first owner, sign in and open `/mfa` to turn on
+two-factor authentication. Inviting further users remains an application
+opt-in. Browser-cookie
 routes are available for HTTPS applications. Password recovery delivery is
 enabled by the `FORGE_MAIL_*` and `FORGE_AUTH_PASSWORD_RESET_URL` settings
 above; any SMTP server works, self-hosted included.

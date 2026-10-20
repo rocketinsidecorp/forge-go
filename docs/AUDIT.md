@@ -111,7 +111,17 @@ not retry a reset that already committed.
 enrollment start/enable, rotation start/complete and disable. MFA login failures
 emit `auth.mfa.challenge_failed`; successful backup-code use emits
 `auth.mfa.backup_code_used`; a completed MFA login also emits
-`auth.login.succeeded`.
+`auth.login.succeeded`. `RegenerateMFABackupCodes` emits
+`auth.mfa.backup_codes_regenerated`, and a backup code used up by a step-up
+(`VerifyMFACode`) emits `auth.mfa.backup_code_used`.
+
+The two-factor settings (`auth.Browser`, the generated `/mfa` pages) record a
+refused, throttled or wrong-code change as its target action with outcome
+`denied`: `auth.mfa.enrollment_started`, `auth.mfa.enabled`,
+`auth.mfa.rotation_started`, `auth.mfa.rotated`,
+`auth.mfa.backup_codes_regenerated` or `auth.mfa.disabled`, with the account
+as actor and subject and the source digest
+([ADR 0045](adr/0045-generated-mfa-settings-pages.md)).
 
 A completed MFA login does not release its bearer token until required audit
 events are persisted. If a success audit append fails, Forge revokes the

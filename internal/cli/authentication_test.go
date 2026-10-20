@@ -65,7 +65,7 @@ func TestGenerateAuthenticationDryRunWritesNothing(t *testing.T) {
 		"would create  " + filepath.Join("app", "views", "views.go"),
 		`"example.com/shop/app/adapters/htmlauth"`,
 		"auth.NewBrowser(auth.BrowserOptions{",
-		"htmlauth.Register(app, browser, renderer)",
+		"htmlauth.Register(app, browser, renderer, middleware)",
 		"middleware.AuthenticateBrowser(htmlauth.SignInPath, page)",
 		"authpostgres.SetupCommand(),",
 		filepath.Join("cmd", "shop", "main.go"),
@@ -91,7 +91,7 @@ func TestGenerateAuthenticationAddsWhatForgeNewGenerates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{filepath.Join("app", "adapters", "htmlauth"), filepath.Join("app", "views", "sessions"), filepath.Join("app", "views", "passwords"), filepath.Join("config", "locales", "authentication.en.json")} {
+	for _, path := range []string{filepath.Join("app", "adapters", "htmlauth"), filepath.Join("app", "views", "sessions"), filepath.Join("app", "views", "passwords"), filepath.Join("app", "views", "mfa"), filepath.Join("config", "locales", "authentication.en.json")} {
 		if err := os.RemoveAll(filepath.Join(dir, path)); err != nil {
 			t.Fatal(err)
 		}

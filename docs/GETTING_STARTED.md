@@ -468,6 +468,7 @@ two-factor and password-reset pages, and `forge setup` created the owner.
 | --- | ---- |
 | `/session/new` | sign in (organization, email, password) |
 | `/session/mfa` | authenticator or backup code, when `FORGE_AUTH_MFA_KEY` is set (`forge new` put one in `.env.local`) |
+| `/mfa` | two-factor settings: turn on, replace the authenticator, new backup codes, turn off |
 | `/passwords/new` | forgot password (needs outgoing mail, section 9) |
 | `/passwords/edit?token=...` | choose a new password from the emailed link |
 
@@ -481,6 +482,15 @@ redirect but not recorded unless you add `auth.WithAuthenticationAuditor`
 ([AUTHENTICATION.md](AUTHENTICATION.md), [AUDIT.md](AUDIT.md)). To let a signed-in user sign out, put
 `{{template "sessions/_sign_out" .}}` in a page: it renders a `DELETE /session`
 form.
+
+Turn on two-factor authentication for the owner: signed in, open
+<http://localhost:8080/mfa>, enter the password, add the key to an
+authenticator app (open the `otpauth://` link on a phone or type the Base32
+key) and confirm with the password and the app's 6-digit code. Keep the 10
+backup codes the page shows once; you are signed out everywhere, and from
+now on signing in asks for a code at `/session/mfa`. Replacing the
+authenticator, new backup codes and turning it off are on the same page and
+ask for the password and a current code ([MFA.md](MFA.md)).
 
 `forge generate authentication` writes the same pages into an application
 that predates them; here it refuses, because they exist:

@@ -1,0 +1,39 @@
+{{define "title"}}{{t "mfa.show.title"}}{{end}}
+{{define "content"}}
+<h1>{{t "mfa.show.title"}}</h1>
+{{with .Error}}<p class="flash flash-alert" role="alert">{{.}}</p>{{end}}
+{{if not .Available}}
+<p>{{t "mfa.show.unavailable"}}</p>
+{{else if .Enabled}}
+<p>{{t "mfa.show.enabled"}} {{t "mfa.show.remaining" "count" .Remaining}}</p>
+<h2>{{t "mfa.show.rotate_title"}}</h2>
+<form method="post" action="/mfa/rotation" class="auth-form">
+	{{csrfField}}
+	{{template "mfa/_step_up" (dict "ID" "rotate")}}
+	<p><button type="submit">{{t "mfa.show.rotate"}}</button></p>
+</form>
+<h2>{{t "mfa.show.backup_codes_title"}}</h2>
+<form method="post" action="/mfa/backup_codes" class="auth-form">
+	{{csrfField}}
+	{{template "mfa/_step_up" (dict "ID" "backup")}}
+	<p><button type="submit">{{t "mfa.show.regenerate"}}</button></p>
+</form>
+<h2>{{t "mfa.show.disable_title"}}</h2>
+<form method="post" action="/mfa" class="auth-form">
+	{{csrfField}}
+	{{methodField "DELETE"}}
+	{{template "mfa/_step_up" (dict "ID" "disable")}}
+	<p><button type="submit">{{t "mfa.show.disable"}}</button></p>
+</form>
+{{else}}
+<p>{{t "mfa.show.disabled"}}</p>
+<form method="post" action="/mfa" class="auth-form">
+	{{csrfField}}
+	<p>
+		<label for="enable-password">{{t "mfa.show.password"}}</label>
+		<input id="enable-password" name="password" type="password" required maxlength="4096" autocomplete="current-password">
+	</p>
+	<p><button type="submit">{{t "mfa.show.enable"}}</button></p>
+</form>
+{{end}}
+{{end}}

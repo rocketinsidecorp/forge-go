@@ -358,19 +358,7 @@ func (s *MFAService) beginTOTP(ctx context.Context, subjectID uuid.UUID, issuer,
 		}
 	}
 
-	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret)
-	query := url.Values{}
-	query.Set("secret", encoded)
-	query.Set("issuer", issuer)
-	query.Set("algorithm", "SHA1")
-	query.Set("digits", strconv.Itoa(totpDigits))
-	query.Set("period", strconv.Itoa(totpPeriodSeconds))
-	label := url.PathEscape(issuer + ":" + account)
-	enrollment := TOTPEnrollment{
-		Secret:          TOTPSecret{value: encoded},
-		ProvisioningURI: TOTPProvisioningURI{value: "otpauth://totp/" + label + "?" + query.Encode()},
-		ExpiresAt:       expiresAt,
-	}
+	enrollment := newTOTPEnrollment(secret, issuer, account, expiresAt)
 	kind := SecurityMFAEnrollmentStarted
 	if rotation {
 		kind = SecurityMFARotationStarted
@@ -382,6 +370,24 @@ func (s *MFAService) beginTOTP(ctx context.Context, subjectID uuid.UUID, issuer,
 		SubjectID: subjectID,
 	}, true)
 	return enrollment, auditErr
+}
+
+// newTOTPEnrollment is what an authenticator app needs to add seed: the
+// Base32 key and the otpauth:// provisioning URI.
+func newTOTPEnrollment(secret []byte, issuer, account string, expiresAt time.Time) TOTPEnrollment {
+	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret)
+	query := url.Values{}
+	query.Set("secret", encoded)
+	query.Set("issuer", issuer)
+	query.Set("algorithm", "SHA1")
+	query.Set("digits", strconv.Itoa(totpDigits))
+	query.Set("period", strconv.Itoa(totpPeriodSeconds))
+	label := url.PathEscape(issuer + ":" + account)
+	return TOTPEnrollment{
+		Secret:          TOTPSecret{value: encoded},
+		ProvisioningURI: TOTPProvisioningURI{value: "otpauth://totp/" + label + "?" + query.Encode()},
+		ExpiresAt:       expiresAt,
+	}
 }
 
 func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, code string) (TOTPConfirmation, error) {
@@ -699,6 +705,22 @@ func matchTOTPCounter(secret []byte, code string, now time.Time, lastCounter int
 		}
 	}
 	return 0, false
+}
+
+// TOTPCodeAt returns the code an authenticator app shows at for the Base32
+// key of a TOTPEnrollment (TOTPSecret.Reveal), so end-to-end tests can
+// complete enrollment and sign-in. It is Forge's own RFC 6238 profile:
+// HMAC-SHA-1, 6 digits, 30-second periods.
+func TOTPCodeAt(base32Key string, at time.Time) (string, error) {
+	secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.TrimSpace(base32Key)))
+	if err != nil || len(secret) != totpSecretBytes {
+		return "", errors.New("TOTP key must be the Base32 text of a 160-bit secret")
+	}
+	counter := at.Unix() / totpPeriodSeconds
+	if counter < 0 {
+		return "", errors.New("TOTP time must not be before 1970")
+	}
+	return totpCode(secret, uint64(counter)), nil
 }
 
 func totpCode(secret []byte, counter uint64) string {

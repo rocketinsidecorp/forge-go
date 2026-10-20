@@ -21,6 +21,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -44,6 +45,7 @@ type memoryIdentity struct {
 	mu           sync.Mutex
 	subjectID    uuid.UUID
 	membershipID uuid.UUID
+	tenantID     uuid.UUID
 	hash         string
 	sessions     map[auth.Digest]bool
 	resets       map[auth.Digest]bool
@@ -63,7 +65,7 @@ func newMemoryIdentity(t *testing.T) *memoryIdentity {
 		t.Fatal(err)
 	}
 	return &memoryIdentity{
-		subjectID: uuid.MustNew(), membershipID: uuid.MustNew(), hash: hash,
+		subjectID: uuid.MustNew(), membershipID: uuid.MustNew(), tenantID: uuid.MustNew(), hash: hash,
 		sessions: map[auth.Digest]bool{}, resets: map[auth.Digest]bool{},
 	}
 }
@@ -91,6 +93,24 @@ func (m *memoryIdentity) CreateSessionAtVersion(context.Context, uuid.UUID, int6
 	defer m.mu.Unlock()
 	m.sessions[token.Digest()] = true
 	return token, nil
+}
+
+// ResolveSession lets auth.Middleware authenticate the session cookie.
+func (m *memoryIdentity) ResolveSession(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.sessions[digest] {
+		return auth.Session{}, false, nil
+	}
+	tenant, err := tenancy.New(m.tenantID)
+	if err != nil {
+		return auth.Session{}, false, err
+	}
+	principal, err := auth.NewPrincipal(m.subjectID, tenant)
+	if err != nil {
+		return auth.Session{}, false, err
+	}
+	return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
 }
 
 func (m *memoryIdentity) RevokeSession(_ context.Context, token auth.Token) error {
@@ -218,10 +238,15 @@ func (b *mailbox) none(t *testing.T) {
 	}
 }
 
-// serve mounts the pages behind the middleware app/bootstrap installs. The
-// pages are in English (en.json), whatever the application's default locale.
-func serve(t *testing.T, browser *auth.Browser) http.Handler {
+// serve mounts the pages behind the middleware app/bootstrap installs, with
+// sessions resolving the session cookie. The pages are in English (en.json),
+// whatever the application's default locale.
+func serve(t *testing.T, browser *auth.Browser, sessions auth.Resolver) http.Handler {
 	t.Helper()
+	middleware, err := auth.NewMiddleware(sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Default()
 	cfg.I18n.DefaultLocale = "en"
 	translator, err := locales.New(cfg, nil)
@@ -249,7 +274,7 @@ func serve(t *testing.T, browser *auth.Browser) http.Handler {
 			t.Fatal(err)
 		}
 	}
-	if err := htmlauth.Register(app, browser, renderer); err != nil {
+	if err := htmlauth.Register(app, browser, renderer, middleware); err != nil {
 		t.Fatal(err)
 	}
 	return app.Handler()
@@ -285,7 +310,7 @@ func memoryPages(t *testing.T, loginOptions ...auth.LoginOption) (http.Handler, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return serve(t, browser), identity, mail
+	return serve(t, browser, identity), identity, mail
 }
 
 // client is a browser: it keeps cookies between requests and sends the CSRF
@@ -384,7 +409,7 @@ func TestNoResetPagesWithoutRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	visitor := newClient(t, serve(t, browser))
+	visitor := newClient(t, serve(t, browser, identity))
 	if page := visitor.do(http.MethodGet, htmlauth.SignInPath, nil); page.Code != http.StatusOK || strings.Contains(page.Body.String(), "/passwords/new") {
 		t.Fatalf("status=%d; the sign-in page must not link to a reset that cannot be sent:\n%s", page.Code, page.Body)
 	}
@@ -732,7 +757,7 @@ func TestPagesAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	visitor := newClient(t, serve(t, browser))
+	visitor := newClient(t, serve(t, browser, repository))
 	if failed := visitor.signIn("wrong password", ""); failed.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("wrong password status=%d", failed.Code)
 	}

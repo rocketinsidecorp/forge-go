@@ -73,6 +73,10 @@ type BrowserOptions struct {
 	// MFA completes sign-ins for accounts with a second factor. Without it,
 	// such accounts cannot sign in (LoginService fails closed).
 	MFA *MFAService
+	// Passwords re-checks the password of a signed-in account before it
+	// changes its second factor (step-up). With MFA, it enables the
+	// two-factor settings (MFASettingsAvailable).
+	Passwords SubjectPasswordStore
 	// Recovery enables the password-reset forms.
 	Recovery *RecoveryService
 	// Auditor records sign-outs. Login, MFA and recovery audit through their
@@ -94,11 +98,12 @@ type BrowserOptions struct {
 // method that sets cookies succeeds, redirect: the CSRF token was rotated, so
 // a page rendered in the same response would embed the old one.
 type Browser struct {
-	login    *LoginService
-	sessions SessionRevoker
-	mfa      *MFAService
-	recovery *RecoveryService
-	auditor  SecurityAuditor
+	login     *LoginService
+	sessions  SessionRevoker
+	mfa       *MFAService
+	passwords SubjectPasswordStore
+	recovery  *RecoveryService
+	auditor   SecurityAuditor
 }
 
 // NewBrowser validates options.
@@ -110,11 +115,12 @@ func NewBrowser(opts BrowserOptions) (*Browser, error) {
 		return nil, errors.New("auth: browser sign-out needs a session revoker")
 	}
 	return &Browser{
-		login:    opts.Login,
-		sessions: opts.Sessions,
-		mfa:      opts.MFA,
-		recovery: opts.Recovery,
-		auditor:  opts.Auditor,
+		login:     opts.Login,
+		sessions:  opts.Sessions,
+		mfa:       opts.MFA,
+		passwords: opts.Passwords,
+		recovery:  opts.Recovery,
+		auditor:   opts.Auditor,
 	}, nil
 }
 

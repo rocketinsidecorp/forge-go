@@ -30,6 +30,9 @@ const (
 	SecurityMFARotationStarted    SecurityEventKind = "auth.mfa.rotation_started"
 	SecurityMFARotated            SecurityEventKind = "auth.mfa.rotated"
 	SecurityMFADisabled           SecurityEventKind = "auth.mfa.disabled"
+	// SecurityMFABackupCodesRegenerated records a new backup-code set
+	// replacing the previous one.
+	SecurityMFABackupCodesRegenerated SecurityEventKind = "auth.mfa.backup_codes_regenerated"
 	// SecurityIdentityProvisioned records the first tenant and owner account
 	// created by the setup command.
 	SecurityIdentityProvisioned SecurityEventKind = "auth.identity.provisioned"

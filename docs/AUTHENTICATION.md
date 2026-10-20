@@ -254,18 +254,20 @@ Generated PostgreSQL applications serve HTML sign-in, sign-out, second-factor
 and password-reset pages, the equivalent of `rails generate authentication`
 ([ADR 0026](adr/0026-authentication-pages-and-setup.md)). The pages are
 application code in `app/adapters/htmlauth` and `app/views/sessions`,
-`app/views/passwords`; every security decision is made by `auth.Browser`:
+`app/views/passwords`, `app/views/mfa`; every security decision is made by
+`auth.Browser`:
 
 ```go
 browser, err := auth.NewBrowser(auth.BrowserOptions{
-	Login:    login,           // *auth.LoginService (required)
-	Sessions: repository,      // auth.SessionRevoker (required)
-	MFA:      mfaService,      // optional: accounts with TOTP
-	Recovery: recoveryService, // optional: password reset forms
-	Auditor:  repository,      // records sign-outs
+	Login:     login,           // *auth.LoginService (required)
+	Sessions:  repository,      // auth.SessionRevoker (required)
+	MFA:       mfaService,      // optional: accounts with TOTP
+	Passwords: repository,      // re-checks the password before two-factor changes
+	Recovery:  recoveryService, // optional: password reset forms
+	Auditor:   repository,      // records sign-outs
 })
 // ...
-if err := htmlauth.Register(app, browser, renderer); err != nil {
+if err := htmlauth.Register(app, browser, renderer, middleware); err != nil {
 	return err
 }
 ```
@@ -276,6 +278,11 @@ if err := htmlauth.Register(app, browser, renderer); err != nil {
 | `POST` | `/session` | `303` to the validated `return_to` (default `/`) with a notice; `422` with one message for any wrong field; `429` with `Retry-After` when throttled; an account with TOTP goes to `/session/mfa` |
 | `DELETE` | `/session` | revoke the session, clear the cookies, `303` to the sign-in page |
 | `GET`, `POST` | `/session/mfa` | authenticator or backup code (with an MFA service) |
+| `GET` | `/mfa` | two-factor settings of the signed-in account (behind `AuthenticateBrowser`) |
+| `POST` | `/mfa`, `/mfa/confirm` | turn on: the password, then the password and a code of the new key; backup codes once; every session revoked |
+| `POST` | `/mfa/rotation`, `/mfa/rotation/confirm` | replace the authenticator: password and a current code at both steps |
+| `POST` | `/mfa/backup_codes` | new backup codes (password and a current code) |
+| `DELETE` | `/mfa` | turn off (password and a current code); every session revoked |
 | `GET`, `POST` | `/passwords/new`, `/passwords` | request a reset: the same `303` and notice whether or not the account exists (mounted only with a recovery service) |
 | `GET`, `PATCH` | `/passwords/edit?token=`, `/passwords` | choose a new password (12 characters or more); every session of the account is revoked |
 
