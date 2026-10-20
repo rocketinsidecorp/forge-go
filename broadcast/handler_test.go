@@ -383,3 +383,122 @@ func TestHandlerOptionsAreValidated(t *testing.T) {
 		}
 	}
 }
+
+// Over HTTP/2 a write deadline that passes resets the stream even when
+// nothing is being written. The heartbeat here is longer than the handler's
+// write timeout, so a deadline left set after a write would kill the idle
+// stream before its first ping.
+func TestHandlerStreamsSurviveTheWriteTimeoutOverHTTP2(t *testing.T) {
+	t.Parallel()
+	memory := newMemory(t, broadcast.MemoryOptions{})
+	signer, _ := newSigner(t, nil)
+	handler, err := broadcast.NewHandler(broadcast.HandlerOptions{
+		Broker: memory, Signer: signer,
+		Heartbeat: 900 * time.Millisecond, WriteTimeout: 250 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	channel := mustGlobal(t, "posts")
+	token, _ := signer.Sign(channel)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/streams?stream="+url.QueryEscape(token), nil)
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	if response.ProtoMajor != 2 || response.StatusCode != http.StatusOK {
+		t.Fatalf("proto=%s status=%d: the test needs HTTP/2", response.Proto, response.StatusCode)
+	}
+	stream := lines(response.Body)
+	expect(t, stream, ": connected")
+	expect(t, stream, ": ping") // after the write timeout has long passed
+	waitSubscribers(t, memory, 1)
+	if err := memory.Publish(ctx, channel, broadcast.Message{Data: "still here"}); err != nil {
+		t.Fatal(err)
+	}
+	expect(t, stream, "data: still here")
+}
+
+func TestHandlerCapsOpenStreamsPerClientAndPerTenant(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, broadcast.HandlerOptions{MaxPerPrincipal: 2, MaxPerTenant: 3}, broadcast.MemoryOptions{})
+	global := f.token(mustGlobal(t, "announcements"))
+	open := func(token, tenant string) *http.Response { return f.get(context.Background(), token, tenant) }
+
+	// Without a principal, streams are counted per client address: one client
+	// cannot take a whole (even global) channel's capacity.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	first := f.get(ctx1, global, "")
+	f.get(context.Background(), global, "")
+	limited := open(global, "")
+	if limited.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("third stream: status=%d, want 429", limited.StatusCode)
+	}
+	body, _ := io.ReadAll(limited.Body)
+	if !strings.Contains(string(body), "stream_limit") || limited.Header.Get("Retry-After") == "" {
+		t.Fatalf("third stream: status=%d body=%s", limited.StatusCode, body)
+	}
+	if f.memory.Subscribers() != 2 {
+		t.Fatalf("subscribers = %d", f.memory.Subscribers())
+	}
+	// A closed stream frees its slot.
+	_ = first.Body.Close()
+	cancel1()
+	waitSubscribers(t, f.memory, 1)
+	if again := open(global, ""); again.StatusCode != http.StatusOK {
+		t.Fatalf("after a stream closed: status=%d", again.StatusCode)
+	}
+}
+
+func TestHandlerCapsOpenStreamsPerTenant(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, broadcast.HandlerOptions{MaxPerPrincipal: -1, MaxPerTenant: 2}, broadcast.MemoryOptions{})
+	mine, other := uuid.MustNew(), uuid.MustNew()
+	mineToken := f.token(mustTenant(t, mine, "posts"))
+	otherToken := f.token(mustTenant(t, other, "posts"))
+	for range 2 {
+		if response := f.get(context.Background(), mineToken, mine.String()); response.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d", response.StatusCode)
+		}
+	}
+	if response := f.get(context.Background(), mineToken, mine.String()); response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("a tenant's third stream: status=%d", response.StatusCode)
+	}
+	// Another tenant is not affected by it.
+	if response := f.get(context.Background(), otherToken, other.String()); response.StatusCode != http.StatusOK {
+		t.Fatalf("another tenant: status=%d", response.StatusCode)
+	}
+}
+
+func TestHandlerLimitsCanBeDisabled(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, broadcast.HandlerOptions{MaxPerPrincipal: -1, MaxPerTenant: -1}, broadcast.MemoryOptions{})
+	token := f.token(mustGlobal(t, "posts"))
+	for range 20 {
+		if response := f.get(context.Background(), token, ""); response.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d", response.StatusCode)
+		}
+	}
+}
+
+func TestHandlerDefaultsLimitOneClientToSixteenStreams(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, broadcast.HandlerOptions{}, broadcast.MemoryOptions{})
+	token := f.token(mustGlobal(t, "posts"))
+	for i := range broadcast.DefaultMaxPerPrincipal {
+		if response := f.get(context.Background(), token, ""); response.StatusCode != http.StatusOK {
+			t.Fatalf("stream %d: status=%d", i+1, response.StatusCode)
+		}
+	}
+	if response := f.get(context.Background(), token, ""); response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("stream %d: status=%d, want 429", broadcast.DefaultMaxPerPrincipal+1, response.StatusCode)
+	}
+}

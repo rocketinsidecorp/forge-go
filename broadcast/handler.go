@@ -4,10 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/fault"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -23,6 +26,11 @@ const (
 	DefaultWriteTimeout     = 10 * time.Second
 	// DefaultRetry is the reconnection delay clients are told to use.
 	DefaultRetry = 3 * time.Second
+	// DefaultMaxPerPrincipal limits the open streams of one signed-in person
+	// (or, without authentication, of one client address).
+	DefaultMaxPerPrincipal = 16
+	// DefaultMaxPerTenant limits the open streams of one tenant.
+	DefaultMaxPerTenant = 1000
 )
 
 // Authorizer decides whether the request may receive channel, after the token
@@ -53,12 +61,57 @@ type HandlerOptions struct {
 	// WriteTimeout bounds each write to a slow client. Zero means
 	// DefaultWriteTimeout.
 	WriteTimeout time.Duration
+	// MaxPerPrincipal limits the open streams of one authenticated principal
+	// (auth.FromContext); requests without one are counted by client address
+	// (a proxy's address when Forge is not told otherwise, so authenticate).
+	// It keeps one person from taking the whole subscriber capacity of a
+	// channel, including a global one. Zero means DefaultMaxPerPrincipal;
+	// negative disables the limit.
+	MaxPerPrincipal int
+	// MaxPerTenant limits the open streams of one tenant, so one tenant
+	// cannot take the process's capacity. Zero means DefaultMaxPerTenant;
+	// negative disables the limit.
+	MaxPerTenant int
 	// Logger receives debug and error events. Nil means slog.Default.
 	Logger *slog.Logger
 }
 
 type handler struct {
 	opts HandlerOptions
+	open *openStreams
+}
+
+// openStreams counts live streams per key. Entries are removed at zero, so
+// the map holds only keys with open streams, which the broker's own
+// subscriber cap bounds.
+type openStreams struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+// acquire takes one slot of key unless limit (positive) is reached.
+func (o *openStreams) acquire(key string, limit int) bool {
+	if limit < 0 {
+		return true
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.counts[key] >= limit {
+		return false
+	}
+	o.counts[key]++
+	return true
+}
+
+func (o *openStreams) release(key string, limit int) {
+	if limit < 0 {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.counts[key]--; o.counts[key] <= 0 {
+		delete(o.counts, key)
+	}
 }
 
 // NewHandler returns the Server-Sent Events endpoint a <turbo-stream-source>
@@ -93,16 +146,23 @@ func NewHandler(opts HandlerOptions) (http.Handler, error) {
 	if opts.WriteTimeout == 0 {
 		opts.WriteTimeout = DefaultWriteTimeout
 	}
+	if opts.MaxPerPrincipal == 0 {
+		opts.MaxPerPrincipal = DefaultMaxPerPrincipal
+	}
+	if opts.MaxPerTenant == 0 {
+		opts.MaxPerTenant = DefaultMaxPerTenant
+	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	return &handler{opts: opts}, nil
+	return &handler{opts: opts, open: &openStreams{counts: map[string]int{}}}, nil
 }
 
 var (
 	errStreamInvalid   = fault.New("stream_invalid", "stream is invalid or expired", fault.CategoryForbidden, 0)
 	errStreamForbidden = fault.New("stream_forbidden", "stream is not available to this account", fault.CategoryForbidden, 0)
 	errStreamBusy      = fault.New("stream_unavailable", "too many open streams; try again shortly", fault.CategoryUnavailable, 0)
+	errStreamLimit     = fault.New("stream_limit", "too many open streams for this account", fault.CategoryRateLimited, 0)
 )
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +195,26 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			web.Error(w, r, err)
 			return
 		}
+	}
+	// Per-principal and per-tenant caps, before anything is allocated.
+	principalKey := "ip:" + clientAddress(r)
+	if principal, ok := auth.FromContext(r.Context()); ok {
+		principalKey = "principal:" + principal.SubjectID().String()
+	}
+	if !h.open.acquire(principalKey, h.opts.MaxPerPrincipal) {
+		w.Header().Set("Retry-After", "5")
+		web.Error(w, r, errStreamLimit)
+		return
+	}
+	defer h.open.release(principalKey, h.opts.MaxPerPrincipal)
+	if tenant, ok := tenancy.FromContext(r.Context()); ok {
+		tenantKey := "tenant:" + tenant.ID.String()
+		if !h.open.acquire(tenantKey, h.opts.MaxPerTenant) {
+			w.Header().Set("Retry-After", "5")
+			web.Error(w, r, errStreamLimit)
+			return
+		}
+		defer h.open.release(tenantKey, h.opts.MaxPerTenant)
 	}
 	controller := http.NewResponseController(w)
 	if err := controller.SetReadDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
@@ -171,7 +251,15 @@ func (h *handler) stream(w http.ResponseWriter, r *http.Request, controller *htt
 		if _, err := fmt.Fprint(w, text); err != nil {
 			return false
 		}
-		return controller.Flush() == nil
+		if controller.Flush() != nil {
+			return false
+		}
+		// Clear the deadline once the write is out. HTTP/2 resets the stream
+		// when a write deadline passes even if nothing is being written, and
+		// the heartbeat is usually longer than the write timeout, so a
+		// deadline left behind would kill every idle stream.
+		err := controller.SetWriteDeadline(time.Time{})
+		return err == nil || errors.Is(err, http.ErrNotSupported)
 	}
 	if !write(fmt.Sprintf("retry: %d\n: connected\n\n", DefaultRetry.Milliseconds())) {
 		return
@@ -238,4 +326,13 @@ func event(data string) string {
 	flush(len(data), len(data))
 	out.WriteByte('\n')
 	return out.String()
+}
+
+// clientAddress is the host of the socket peer, without the port.
+func clientAddress(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

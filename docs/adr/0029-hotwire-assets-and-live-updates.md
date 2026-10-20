@@ -128,8 +128,16 @@ needs no upgrade handshake or origin protocol of its own, and the Rails
   stream. The handler clears the read deadline and sets a fresh write
   deadline (default 10 seconds) before every write with
   `http.ResponseController`, so a client that stops reading cannot pin a
-  connection. A test runs a real server with 150 ms timeouts and checks a
-  stream outlives them.
+  connection. The write deadline is cleared again after each flush: HTTP/2
+  resets a stream whose write deadline passes even with nothing to write, and
+  the heartbeat (20 seconds) is longer than the write timeout (10 seconds), so
+  a deadline left set would end every idle stream. Tests run real HTTP/1.1 and
+  HTTP/2 (TLS) servers with short timeouts and a longer heartbeat. Clearing
+  the read deadline is defensive; no test shows it is required.
+- **Per-account limits.** Each stream also takes a slot of its principal (16
+  by default; the client address when no principal is authenticated) and of
+  its tenant (1000), so one account cannot take a channel's whole capacity;
+  over the limit is `429 stream_limit` with `Retry-After`.
 - **SSE framing.** Payload lines are split on `\n`, `\r\n` and `\r` and each
   becomes a `data:` field, so a payload cannot end an event, inject `id:` or
   `event:` fields, or smuggle comments.

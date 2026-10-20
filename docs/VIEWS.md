@@ -665,7 +665,11 @@ err := broadcast.Publish(ctx, broker, channel, stream)
 - **Timeouts.** The handler clears the server's read and write deadlines per
   connection (`http.ResponseController`) and applies a 10 second deadline to
   every write, so streams outlive `FORGE_HTTP_WRITE_TIMEOUT` while a stalled
-  client cannot hold a connection. Heartbeat comments (20 seconds) keep
+  client cannot hold a connection (the deadline is cleared after each flush, so
+  idle HTTP/2 streams are not reset). Open streams are capped per principal (16)
+  and per tenant (1000) with `429`; proxy limits must count concurrent
+  requests, not connections, because HTTP/2 multiplexes streams over one
+  connection. Heartbeat comments (20 seconds) keep
   proxies from closing idle streams; disable proxy buffering for the route
   (`X-Accel-Buffering: no` is sent).
 - **Shutdown.** Closing the broker ends open streams, which lets the HTTP
