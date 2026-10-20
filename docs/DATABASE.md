@@ -573,6 +573,35 @@ forge.Main(
 The resulting `migrate`, `migrate status`, and `rollback` commands operate
 on the same merged history and the same `forge_schema_migrations` table.
 
+### Framework migrations
+
+The migrations Forge packages ship (identity, outbox, agent journal, job
+queue, rate limiter, cache) are registered by version, name and owning package
+in `migrate.FrameworkMigrations()`
+([ADR 0039](adr/0039-framework-migration-ownership.md)):
+
+- `rollback` reverts only your own migrations, the most recently applied
+  first, even when a framework migration was applied after them. When only
+  framework migrations are left it reverts nothing and fails (exit status 1)
+  with `nothing to roll back: every applied migration belongs to Forge
+  (newest <version>_<name>, from the <package> package) ...`.
+- Removing a framework set from `CommandsFromSets` (turning the feature off)
+  keeps `migrate` and `rollback` working: its applied migrations stay, with
+  their tables, and `migrate status` shows them as `disabled`. Adding the set
+  back finds them applied and verifies their checksums.
+- A framework version is reserved: an application migration with that version
+  and another name is refused before the database is contacted.
+- Reverting a framework migration is deliberate library code, never a
+  command: `Migrator.DownFramework(ctx, steps)` reverts the most recently
+  applied framework migrations the migrator contains and never one of yours.
+  The job queue, rate-limit, cache and outbox migrations have no down script
+  and are refused as irreversible.
+
+```sh
+forge db rollback -steps 3   # your three newest migrations; framework tables stay
+forge db status              # framework migrations of a set you removed: "disabled"
+```
+
 `forge generate migration NAME` (run in the application root) creates the
 pair with the current UTC time as the version. `NAME` must match
 `^[a-z][a-z0-9_]{0,99}$`. If another migration already uses that second, the
@@ -634,7 +663,11 @@ separate) without the engine's transaction; its row is recorded afterwards.
   is checksummed, so a down script may be edited after the migration was
   applied, for example to fix a broken rollback;
 - the database contains a version this build does not know, which usually
-  means an older release is deploying over a newer schema;
+  means an older release is deploying over a newer schema (a registered
+  framework migration whose set you no longer compose is not unknown: it is
+  tolerated as `disabled`);
+- a migration, in the build or recorded in the database, uses a framework
+  migration's reserved version under another name;
 - a file name does not follow the convention, a file is empty, a version is
   used by two names, or a down script has no up script;
 - a rollback includes an irreversible migration: every step is checked
@@ -691,12 +724,13 @@ accepts:
 | Command | Effect |
 | ------- | ------ |
 | `<app> migrate` | Apply pending migrations in version order; prints each one, or `database is up to date` |
-| `<app> migrate status` | One line per migration: `applied`, `pending`, `modified` (changed after applying), or `unknown` (in the database, not in the build), with the UTC apply time |
-| `<app> rollback [-steps N]` | Revert the `N` most recently applied migrations (default 1), last applied first |
+| `<app> migrate status` | One line per migration: `applied`, `pending`, `modified` (changed after applying), `unknown` (in the database, not in the build), or `disabled` (a framework migration whose set the build no longer composes), with the UTC apply time |
+| `<app> rollback [-steps N]` | Revert the `N` most recently applied application migrations (default 1), last applied first; framework migrations are never reverted |
 
 `rollback` orders by `applied_at` (then by version, for migrations applied in
 the same microsecond), so after an out-of-order migration it reverts the one
-that was actually applied last, not the highest version.
+that was actually applied last, not the highest version. It skips framework
+migrations ([Framework migrations](#framework-migrations)).
 
 Invalid arguments (`migrate foo`, `rollback -steps 0`) exit with status `2`;
 other failures exit with `1`. These commands load the same `FORGE_*`

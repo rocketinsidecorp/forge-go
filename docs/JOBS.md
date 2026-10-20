@@ -29,6 +29,10 @@ forge.Main(bootstrap.Configure,
 and SQLite use `mysql.CommandsFromSets` / `sqlite.CommandsFromSets` with
 `queuemysql` / `queuesqlite`. Run `app migrate` as usual.
 
+`app rollback` never reverts this framework migration, and removing the set
+from `CommandsFromSets` later keeps `migrate` working
+([framework migrations](DATABASE.md#framework-migrations)).
+
 ## 2. Define a job
 
 ```go

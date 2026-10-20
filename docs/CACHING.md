@@ -57,6 +57,10 @@ c, err := cachepostgres.NewStore(db, cache.StoreOptions{Options: cache.OptionsFr
 c, err := cache.NewMemory(cache.MemoryOptionsFromConfig(cfg.Cache))
 ```
 
+`app rollback` never reverts this framework migration, and removing the set
+from `CommandsFromSets` later keeps `migrate` working
+([framework migrations](DATABASE.md#framework-migrations)).
+
 Database rows are addressed by `SHA-256(key)`: keys are never stored, indexed or
 logged (they often name users or sessions), and cannot be listed or deleted by
 pattern. Namespace keys (`cache.Key("users", id, "profile")`) and let TTLs and

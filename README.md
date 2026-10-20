@@ -142,7 +142,7 @@ forge db setup                   # create + migrate + seed
 forge db prepare                 # setup if the database is missing, else migrate (safe to repeat)
 forge db reset                   # drop + setup: a clean development database
 forge db status                  # applied / pending migrations
-forge db rollback -steps 1
+forge db rollback -steps 1       # your newest migration; never a Forge framework table
 forge db schema:dump             # write db/schema.sql (pg_dump, mysqldump or sqlite3 on PATH)
 forge db schema:load             # load db/schema.sql into an existing, empty database (CI, tests)
 forge db console                 # psql, mysql or sqlite3 on the application's database
@@ -403,7 +403,7 @@ rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
 | `forge db COMMAND` | Database lifecycle like Rails' `db:*`: `create`, `drop`, `reset`, `setup`, `prepare`, `migrate`, `rollback`, `status`, `seed`, `schema:dump`, `schema:load`, `console`; see [Development loop](#development-loop) |
 | `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command (same as `forge db migrate`) |
-| `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step) |
+| `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step): only the application's own migrations, never Forge's framework migrations |
 | `forge setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | PostgreSQL: create the first organization, tenant and owner account; the password is prompted for (or piped, or `FORGE_SETUP_PASSWORD`), never an argument; refuses once a tenant exists |
 | `forge seed` | Run the application's `seed` command: `db.Seed` in one transaction |
 | `forge generate migration NAME [--dry-run]` | Create or preview `db/migrations/<UTC timestamp>_NAME.{up,down}.sql` |
@@ -658,7 +658,7 @@ Binaries built with `forge.Main` accept:
 | `serve` | Default. Serve HTTP until `SIGINT`/`SIGTERM` |
 | `healthcheck` | Probe `/health/live` on loopback; used by the Docker `HEALTHCHECK` |
 | `help` | List the available commands |
-| `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database) |
+| `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database); `rollback` reverts application migrations only |
 | `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |
 | `setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | Added by `authpostgres.SetupCommand()` (PostgreSQL): the first tenant and owner, once |
 
@@ -713,8 +713,15 @@ c, _ := cachepostgres.NewStore(db, cache.StoreOptions{})
 ```
 
 ```sh
-app migrate   # creates forge_rate_limits and forge_cache_entries
+app migrate          # creates forge_rate_limits and forge_cache_entries
+app rollback         # reverts your newest migration, never these framework tables
+app migrate status   # a framework set you stopped composing shows as "disabled"
 ```
+
+`rollback` refuses (exit status 1) when only framework migrations are left, and
+removing a framework set from `CommandsFromSets` later keeps `migrate` working;
+reverting a framework migration is the explicit `Migrator.DownFramework` API
+([ADR 0039](docs/adr/0039-framework-migration-ownership.md)).
 
 File storage: uploads with size and type limits, signed expiring links, safe
 serving (only raster images inline, everything else a download):
@@ -870,3 +877,4 @@ CI (`.github/workflows/ci.yml`):
   - [0036 Encrypted credentials and attribute encryption](docs/adr/0036-encrypted-credentials-and-attribute-encryption.md)
   - [0037 Trusted proxies and the client address](docs/adr/0037-trusted-proxies-and-client-ip.md)
   - [0038 Local observability stack](docs/adr/0038-local-observability-stack.md)
+  - [0039 Framework migration ownership in the application's migration table](docs/adr/0039-framework-migration-ownership.md)
