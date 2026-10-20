@@ -141,6 +141,12 @@ func (d *Dispatcher) runWorker(ctx context.Context) error {
 	for {
 		worked, err := d.dispatchOne(ctx)
 		if err != nil {
+			// pgx interrupts an in-flight query on cancellation by expiring the
+			// socket deadline, so the error can be "i/o timeout" instead of
+			// context.Canceled. Shutdown is not a delivery failure.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 		if worked {
