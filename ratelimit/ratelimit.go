@@ -13,12 +13,11 @@
 // holds across processes instead of being multiplied by their number.
 //
 // Middleware applies a Limit to HTTP requests. What identifies a client is
-// the application's decision (a KeyFunc); ByRemoteAddr is the default
-// building block and does not read forwarded headers (see its documentation
-// for the consequences behind a reverse proxy).
+// the application's decision (a KeyFunc); ByClientIP, the client address
+// resolved under the trusted-proxy policy (ADR 0037), is the usual choice.
 //
 //	limiter, _ := ratelimit.NewMemory(ratelimit.DefaultMemoryOptions())
-//	create, err := ratelimit.Middleware(limiter, ratelimit.ByRemoteAddr, ratelimit.Limit{N: 10, Per: 3 * time.Minute})
+//	create, err := ratelimit.Middleware(limiter, ratelimit.ByClientIP, ratelimit.Limit{N: 10, Per: 3 * time.Minute})
 //	if err != nil { ... }
 //	router.Handle("POST /comments", create(http.HandlerFunc(createComment)))
 package ratelimit

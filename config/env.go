@@ -23,6 +23,13 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 	if value, ok := lookup("FORGE_HTTP_TRANSPORT"); ok {
 		cfg.HTTP.Transport = TransportMode(value)
 	}
+	if value, ok := lookup("FORGE_HTTP_TRUSTED_PROXIES"); ok {
+		prefixes, err := ParseTrustedProxies(value)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.HTTP.TrustedProxies = prefixes
+	}
 	if value, ok := lookup("FORGE_AUTH_MFA_KEY"); ok {
 		cfg.Auth.MFAKey = NewSecret(value)
 	}

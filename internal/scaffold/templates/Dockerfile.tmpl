@@ -8,6 +8,8 @@
 # shell, no package manager. TLS is expected to terminate at a reverse proxy or
 # load balancer (FORGE_HTTP_TRANSPORT=trusted-proxy); expose the container only
 # through that proxy, or switch to FORGE_HTTP_TRANSPORT=tls with mounted certs.
+# Set FORGE_HTTP_TRUSTED_PROXIES to the proxy's network (forge deploy does) so
+# throttles and rate limits see client addresses instead of the proxy's.
 
 ARG GO_VERSION=1.27
 

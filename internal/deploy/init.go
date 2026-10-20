@@ -49,6 +49,10 @@ servers:
 env:
   clear:
     FORGE_ENV: production
+    # The proxied role trusts X-Forwarded-For only from the forge Docker
+    # network (forge-proxy), set automatically. Override with explicit CIDRs,
+    # or "" to trust nobody:
+    # FORGE_HTTP_TRUSTED_PROXIES: "172.18.0.0/16"
   # Names of secrets from .forge/secrets. They reach containers through an
   # env file written 0600 on the host, never through the command line.
   secret:

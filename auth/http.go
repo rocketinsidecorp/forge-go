@@ -2,7 +2,6 @@ package auth
 
 import (
 	"errors"
-	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -137,12 +136,12 @@ func newLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Han
 	}), nil
 }
 
+// requestSource is the network source throttles and audit events record:
+// the client address the HTTP server resolved (web.ClientIP), which is the
+// TCP peer unless the peer is a trusted proxy (FORGE_HTTP_TRUSTED_PROXIES,
+// ADR 0037).
 func requestSource(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
+	return web.ClientIP(r)
 }
 
 func retryAfterHeader(duration time.Duration) string {

@@ -306,6 +306,16 @@ The image runs `serve` by default and reads `FORGE_*` variables. Production
 refuses insecure settings: TLS (or `FORGE_HTTP_TRANSPORT=trusted-proxy` behind
 a TLS-terminating proxy){{if and .DB .DB.ProductionTLS}} and {{.DB.ProductionTLS}} on
 `FORGE_DATABASE_URL`{{end}}.
+
+Behind a reverse proxy the application sees the proxy's address unless it
+trusts that proxy's `X-Forwarded-For`. List the proxy networks so sign-in
+throttles, rate limits and audit records count each client
+(`forge deploy` sets this to the forge-proxy network automatically; empty
+trusts nobody):
+
+```bash
+docker run --rm -e FORGE_HTTP_TRUSTED_PROXIES=172.18.0.0/16 {{.Name}}
+```
 {{- if and .DB (not .DB.Server)}}
 
 The image stores the SQLite database in `/app/storage/production.db`; mount a

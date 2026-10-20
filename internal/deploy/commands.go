@@ -146,10 +146,12 @@ func (c commands) migrate(version, suffix string) Command {
 }
 
 func (c commands) runRole(role, version, name string) Command {
-	argv := []string{"docker", "run", "--detach", "--name", name,
+	head := []string{"docker", "run", "--detach", "--name", name,
 		"--network", NetworkName, "--restart", "unless-stopped",
 		"--stop-timeout", fmt.Sprint(int(c.cfg.StopTimeout.D().Seconds())),
 		"--env-file", c.envFile(role),
+	}
+	argv := []string{
 		"--label", labelService + "=" + c.cfg.Service,
 		"--label", labelRole + "=" + role,
 		"--label", labelVersion + "=" + version,
@@ -157,7 +159,36 @@ func (c commands) runRole(role, version, name string) Command {
 	argv = append(argv, volumeArgs(c.roleVolumes(role))...)
 	argv = append(argv, c.imageRef(version))
 	argv = append(argv, c.cfg.Servers[role].Cmd...)
-	return Command{Script: Join(argv...)}
+	if !c.trustsProxyNetwork(role) {
+		return Command{Script: Join(append(head, argv...)...)}
+	}
+	return Command{Script: proxyNetworkScript + "; " + Join(head...) +
+		` --env "` + TrustedProxiesEnv + `=$forge_proxies" ` + Join(argv...)}
+}
+
+// TrustedProxiesEnv names the application setting that lists the proxies
+// whose X-Forwarded-For header the application believes (ADR 0037).
+const TrustedProxiesEnv = "FORGE_HTTP_TRUSTED_PROXIES"
+
+// proxyNetworkScript sets $forge_proxies to the subnets of the forge
+// network, comma separated, and fails when there are none: forge-proxy
+// reaches the containers from an address in them, and replaces any
+// X-Forwarded-For a client sent with the client's address.
+var proxyNetworkScript = "forge_proxies=$(" +
+	Join("docker", "network", "inspect", "--format", "{{range $i, $c := .IPAM.Config}}{{if $i}},{{end}}{{$c.Subnet}}{{end}}", NetworkName) +
+	`) || exit 1; [ -n "$forge_proxies" ] || { echo "docker network ` + NetworkName + ` has no subnet; set ` + TrustedProxiesEnv + ` in config/deploy.yml" >&2; exit 1; }`
+
+// trustsProxyNetwork reports whether the proxied role's containers are told
+// to trust the forge network as their proxies: always, unless the
+// configuration sets FORGE_HTTP_TRUSTED_PROXIES itself (an empty value
+// trusts nobody).
+func (c commands) trustsProxyNetwork(role string) bool {
+	if !c.cfg.Proxied(role) {
+		return false
+	}
+	clear, secret := c.roleEnv(role)
+	_, set := clear[TrustedProxiesEnv]
+	return !set && !slices.Contains(secret, TrustedProxiesEnv)
 }
 
 func (c commands) start(name string) Command {

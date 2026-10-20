@@ -216,10 +216,6 @@ func WithRecoveryAuditor(auditor SecurityAuditor) RecoveryOption {
 	}
 }
 
-// DefaultRecoveryThrottleConfig is the password-recovery policy: in one hour,
-// 3 requests per login and source, 10 per login (so a victim's mailbox cannot
-// be flooded from many sources) and 30 per source, with at most 20,000
-// in-memory counters.
 // WithRecoveryDispatcher moves issuing and delivering reset links off the
 // request path. Without it, Request does that work inline, so an existing
 // account answers more slowly than an unknown one (the minimum response time
@@ -261,6 +257,10 @@ func WithRecoveryResponseTime(d time.Duration) RecoveryOption {
 	}
 }
 
+// DefaultRecoveryThrottleConfig is the password-recovery policy: in one hour,
+// 3 requests per login and source, 10 per login (so a victim's mailbox cannot
+// be flooded from many sources) and 30 per source, with at most 20,000
+// in-memory counters.
 func DefaultRecoveryThrottleConfig() LoginThrottleConfig {
 	return LoginThrottleConfig{
 		Window:       time.Hour,

@@ -129,6 +129,7 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_HTTP_SHUTDOWN_TIMEOUT`       | `30s`            | Total shutdown budget from the signal: HTTP drain plus shutdown hooks |
 | `FORGE_HTTP_MAX_HEADER_BYTES`       | `1048576`        | Maximum request header size |
 | `FORGE_HTTP_MAX_BODY_BYTES`         | `1048576`        | Maximum request body size; larger bodies get `413` |
+| `FORGE_HTTP_TRUSTED_PROXIES`        | (empty)          | Comma-separated CIDRs or addresses of reverse proxies whose `X-Forwarded-For` is believed; empty trusts nobody. Malformed entries, `/0`, IPv4 prefixes shorter than `/8` and IPv6 prefixes shorter than `/16` fail at startup. `forge deploy` sets it for the proxied role. See [Client addresses behind a proxy](#client-addresses-behind-a-proxy). |
 | `FORGE_DATABASE_URL`                | (empty)          | `postgres://...`, `mysql://...`, or `sqlite:path`; the scheme selects the adapter. Secret: redacted in logs and formatted output. Production TLS rules below. |
 | `FORGE_DATABASE_MAX_CONNS`          | `10`             | Pool size per process, `1`-`1000` |
 | `FORGE_DATABASE_MIN_CONNS`          | `0`              | `0` to `FORGE_DATABASE_MAX_CONNS`; PostgreSQL only |
@@ -190,8 +191,11 @@ Requirements:
 - The application port must be reachable **only** through the proxy. Do not
   publish it to the internet or to untrusted networks. The proxy must redirect
   or reject plain HTTP from clients.
-- Forge does not derive client IP or scheme from `X-Forwarded-For` or
-  `X-Forwarded-Proto`; `r.RemoteAddr` is the proxy's address.
+- `r.RemoteAddr` is the proxy's address. To give sign-in throttles, rate
+  limits and audit the real client address, list the proxy's network in
+  `FORGE_HTTP_TRUSTED_PROXIES` (see [Client addresses behind a
+  proxy](#client-addresses-behind-a-proxy)). Forge never derives the scheme
+  from `X-Forwarded-Proto`.
 
 **`tls`**: Forge terminates TLS itself using Go's `crypto/tls` defaults.
 
@@ -212,6 +216,51 @@ switches to HTTPS in `tls` mode, so the Docker `HEALTHCHECK` keeps working.
 
 **`plain`**: no TLS, no HSTS. Allowed in `development`, `test`, and
 `staging`; rejected in `production`.
+
+### Client addresses behind a proxy
+
+Sign-in and password-reset throttles, `ratelimit.ByClientIP`, the anonymous
+stream cap and audit source digests count the client address `web.ClientIP`
+returns ([ADR 0037](adr/0037-trusted-proxies-and-client-ip.md)). By default
+that is the TCP peer, so behind a proxy every client is the proxy and shares
+one budget. List the proxies that set `X-Forwarded-For`:
+
+```sh
+docker run --rm -p 8080:8080 \
+  -e FORGE_HTTP_TRUSTED_PROXIES=172.18.0.0/16,fd00:1::/64 \
+  -e FORGE_DATABASE_URL="$DATABASE_URL" \
+  myapp
+```
+
+- Only when the peer is inside a listed network is the header read, from the
+  right, skipping listed addresses; the first unlisted address is the client.
+  A client that reaches the application directly cannot choose its address.
+- An empty, malformed or non-address entry on that walk falls back to the
+  peer. `Forwarded` and `X-Real-IP` are never read.
+- The value is validated at startup: malformed entries, `/0` and prefixes
+  broader than IPv4 `/8` or IPv6 `/16` stop the process (bare addresses are
+  unaffected). Empty (the default) trusts nobody.
+- List only proxy networks, and keep the application port reachable only
+  through them; anything inside a listed network can claim any client
+  address.
+- Your proxy must overwrite the header, or append the address it received
+  the connection from (nginx `$proxy_add_x_forwarded_for`, most load
+  balancers); forge-proxy overwrites.
+
+`forge deploy` sets `FORGE_HTTP_TRUSTED_PROXIES` for the proxied role to the
+subnets of the `forge` Docker network on each host. Override it in
+`config/deploy.yml` (`env.clear`), for example to an empty string to trust
+nobody. The network's subnet includes the Docker gateway (for example
+`172.18.0.1`), so processes on the host reach the application from a trusted
+address. On a Docker network without IPv6, IPv6 clients reach forge-proxy
+through docker-proxy from the gateway address and share one bucket; enable
+IPv6 on the `forge` network or set `"userland-proxy": false` in the Docker
+daemon configuration. Check what a container received (the filter runs on the host, so no
+other variable leaves it):
+
+```sh
+ssh deploy@HOST "docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' CONTAINER | grep '^FORGE_HTTP_TRUSTED_PROXIES='"
+```
 
 ## Database
 
@@ -386,8 +435,25 @@ Docker; your machine needs `ssh` and, to build, the `docker` CLI.
 
 1. **Prepare each host** (Debian/Ubuntu shown) as root:
 
+   Install Docker Engine from Docker's signed apt repository, following
+   Docker's guide for [Ubuntu](https://docs.docker.com/engine/install/ubuntu/)
+   or [Debian](https://docs.docker.com/engine/install/debian/) (check it for
+   changes), rather than piping a script into a shell:
+
    ```sh
-   curl -fsSL https://get.docker.com | sh
+   apt-get update && apt-get install -y ca-certificates curl
+   install -m 0755 -d /etc/apt/keyrings
+   . /etc/os-release   # ID is ubuntu or debian
+   curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+   chmod a+r /etc/apt/keyrings/docker.asc
+   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" \
+     > /etc/apt/sources.list.d/docker.list
+   apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io
+   ```
+
+   Then create the deploy user and open the firewall:
+
+   ```sh
    adduser --disabled-password --gecos '' deploy
    usermod -aG docker deploy          # docker access is root-equivalent
    install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
@@ -496,8 +562,16 @@ error. Quotes are removed and nothing inside them is expanded. There is no
 command substitution. The file must be mode `0600`. Values are sent to each
 host on stdin and written to `~/.forge/SERVICE/env/ROLE.env` (mode `0600`,
 `umask 077`, atomic rename), which containers read with `--env-file`. They
-never appear in command lines, dry runs or progress output, and `forge logs`
-redacts them from application output.
+never appear in command lines, dry runs or progress output.
+
+Redaction of streamed output is best effort. `forge logs` and non-interactive
+`forge app exec` replace the exact values from `.forge/secrets` (4 characters
+or longer) line by line, but **output is otherwise not redacted**: an encoded,
+partial or derived value (URL-encoded, base64, a decrypted credential, a
+token the application created) passes through, and interactive sessions
+(`forge app exec --interactive`, `forge app shell`) and `docker logs` on the
+host are not filtered at all. Applications must not print secrets; treat
+streamed output as sensitive.
 
 ### Commands
 
@@ -585,11 +659,15 @@ restart. It:
   unmatched requests) and answers unknown hosts with `404`;
 - with `ssl: true`, obtains certificates from Let's Encrypt for exactly the
   configured hosts (TLS 1.2+) and redirects plain HTTP with `308`;
-- sets `X-Forwarded-For` (the connecting address only), `X-Forwarded-Proto`
-  and `X-Forwarded-Host`, drops any such headers the client sent, and keeps
-  the original `Host`. Forge applications ignore these headers
-  (`trusted-proxy` mode); if you read them, trust them only because the app
-  port is reachable solely through the proxy;
+- is the internet edge: it drops any `Forwarded`, `X-Forwarded-*` and
+  `X-Real-IP` headers the client sent, sets `X-Forwarded-For` to the
+  connecting address only (replacing, never appending), `X-Forwarded-Proto`
+  and `X-Forwarded-Host`, and keeps the original `Host`. The proxied role
+  trusts that `X-Forwarded-For` because `forge deploy` sets
+  `FORGE_HTTP_TRUSTED_PROXIES` to the `forge` network (see [Client addresses
+  behind a proxy](#client-addresses-behind-a-proxy)); `X-Forwarded-Proto` is
+  not interpreted. Running forge-proxy behind another load balancer is not
+  supported: client addresses would be the load balancer's;
 - rejects bodies over `max_body_bytes` with `413`; reads bodies up to 1 MiB
   completely, with or without `Content-Length`, before contacting the
   application, and answers `408` if one does not arrive within 30 s; streams

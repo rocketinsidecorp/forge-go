@@ -104,11 +104,17 @@ func newTarget(addr string, settings *DeployRequest, logger *slog.Logger) *targe
 	backend := &url.URL{Scheme: "http", Host: addr}
 	t := &target{addr: addr, transport: transport, idle: make(chan struct{})}
 	t.proxy = &httputil.ReverseProxy{
-		// Rewrite (unlike Director) drops inbound Forwarded and
-		// X-Forwarded-* headers, so clients cannot spoof them.
+		// forge-proxy is the internet edge: Rewrite (unlike Director) drops
+		// inbound Forwarded and X-Forwarded-* headers, and SetXForwarded
+		// then sets X-Forwarded-For to the connecting address alone, so a
+		// client cannot spoof its address or extend the chain. X-Real-IP is
+		// dropped too, so nothing downstream can mistake it for ours.
+		// Applications trust this header only from the forge network
+		// (FORGE_HTTP_TRUSTED_PROXIES, ADR 0037).
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(backend)
 			pr.Out.Host = pr.In.Host
+			pr.Out.Header.Del("X-Real-Ip")
 			pr.SetXForwarded()
 		},
 		Transport: transport,

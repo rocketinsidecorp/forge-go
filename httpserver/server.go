@@ -27,8 +27,9 @@ type Server struct {
 
 // Middleware wraps an HTTP handler. Middleware is applied in the order passed
 // to NewWithMiddleware: the first middleware is the outermost custom layer.
-// Forge's request ID and security headers remain outside custom middleware;
-// custom middleware remains inside body limiting and panic recovery.
+// Forge's request ID, client address resolution (web.ClientIP) and security
+// headers remain outside custom middleware; custom middleware remains inside
+// body limiting and panic recovery.
 type Middleware func(http.Handler) http.Handler
 
 func New(cfg config.Config, handler http.Handler, logger *slog.Logger) (*Server, error) {
@@ -87,7 +88,13 @@ func NewWithOptions(cfg config.Config, handler http.Handler, logger *slog.Logger
 			return nil, errors.New("HTTP instrumentation returned a nil handler")
 		}
 	}
-	wrapped := securityHeaders(cfg, requestID(logger, inner))
+	// The client address is resolved once, before anything reads it
+	// (instrumentation, rate limits, login throttles, audit).
+	trusted, err := web.NewTrustedProxies(cfg.HTTP.TrustedProxies...)
+	if err != nil {
+		return nil, fmt.Errorf("invalid FORGE_HTTP_TRUSTED_PROXIES: %w", err)
+	}
+	wrapped := securityHeaders(cfg, trusted.Middleware(requestID(logger, inner)))
 	return &Server{
 		server: &http.Server{
 			Addr:              cfg.HTTP.Address,

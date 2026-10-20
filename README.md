@@ -609,6 +609,27 @@ until every host passed its health gate, and routes all hosts back if one
 fails. Exit codes: `3` lock held, `4` unhealthy (reverted), `5` migration
 failed, `6` hook failed, `7` not fully reverted.
 
+Client addresses: behind forge-proxy the proxied role trusts `X-Forwarded-For`
+only from the `forge` Docker network (`forge deploy` sets
+`FORGE_HTTP_TRUSTED_PROXIES` to its subnets), so sign-in and reset throttles,
+`ratelimit.ByClientIP` and audit count each client, not the proxy. Behind any
+other proxy or load balancer, list its networks yourself (empty, the default,
+trusts nobody; `/0` and any IPv4 prefix shorter than `/8` or IPv6 prefix
+shorter than `/16` are refused):
+
+```sh
+export FORGE_HTTP_TRUSTED_PROXIES=10.0.0.0/24,fd00:1::/64   # proxy CIDRs or addresses
+```
+
+```yaml
+# config/deploy.yml: override the automatic value ("" trusts nobody)
+env:
+  clear:
+    FORGE_HTTP_TRUSTED_PROXIES: "172.18.0.0/16"
+```
+
+See [ADR 0037](docs/adr/0037-trusted-proxies-and-client-ip.md).
+
 ### Development environment files
 
 `forge dev`, `forge test`, `forge db`, `forge migrate`, `forge rollback`, and
@@ -663,12 +684,12 @@ export FORGE_STORAGE_ROOT=/var/lib/app/storage # enables disk storage
 export FORGE_STORAGE_SIGNING_KEY=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')  # required in production
 ```
 
-Rate limit one route (`rate_limit to: 10, within: 3.minutes, only: :create`);
-behind a proxy key by something authenticated, not the client address:
+Rate limit one route (`rate_limit to: 10, within: 3.minutes, only: :create`),
+per client address:
 
 ```go
 limiter, _ := ratelimit.NewMemory(ratelimit.MemoryOptionsFromConfig(app.Config().RateLimit))
-create, err := ratelimit.Middleware(limiter, ratelimit.ByRemoteAddr, ratelimit.Limit{N: 10, Per: 3 * time.Minute})
+create, err := ratelimit.Middleware(limiter, ratelimit.ByClientIP, ratelimit.Limit{N: 10, Per: 3 * time.Minute})
 err = r.Handle("POST /comments", create(http.HandlerFunc(h.Create))) // 429 + Retry-After over the limit
 ```
 
@@ -822,3 +843,4 @@ CI (`.github/workflows/ci.yml`):
   - [0032 Application cache](docs/adr/0032-cache.md)
   - [0033 File storage](docs/adr/0033-file-storage.md)
   - [0036 Encrypted credentials and attribute encryption](docs/adr/0036-encrypted-credentials-and-attribute-encryption.md)
+  - [0037 Trusted proxies and the client address](docs/adr/0037-trusted-proxies-and-client-ip.md)
