@@ -485,6 +485,29 @@ Key rotation, blind indexes for exact-match search and batch re-encryption are
 in [docs/ENCRYPTION.md](docs/ENCRYPTION.md); the credentials workflow, CI and
 rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 
+To rotate a data key, make the new key active, re-encrypt each column and
+remove the old key only when a count of rows not on the active key is 0
+([docs/ENCRYPTION.md](docs/ENCRYPTION.md#rotating-keys)). PostgreSQL tenant
+tables (row-level security) rotate once per tenant; an unscoped run on them is
+refused:
+
+```go
+rewriter, err := postgres.EncryptedColumn(db, encryption.SQLColumn{Table: "people", Column: "ssn"},
+	postgres.WithTenant(tenant))
+if err != nil {
+	return err
+}
+report, err := cipher.Reencrypt(ctx, rewriter, encryption.RotateOptions{})
+```
+
+```sql
+-- as a role that sees every row (superuser or BYPASSRLS); stale must be 0
+SELECT count(CASE WHEN ssn IS NOT NULL
+                   AND substr(ssn, 1, length('fg1.2026-10.')) <> 'fg1.2026-10.' THEN 1 END) AS stale,
+       count(*) AS total
+  FROM people;
+```
+
 ## OpenAPI
 
 JSON routes declare their request, response and error types next to the

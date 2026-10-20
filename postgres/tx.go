@@ -68,11 +68,20 @@ func (db *DB) InTenantTxWith(ctx context.Context, opts TxOptions, fn func(tx pgx
 		return err
 	}
 	return db.InTxWith(ctx, opts, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SELECT set_config('forge.tenant_id', $1, true)", tenant.ID.String()); err != nil {
-			return fmt.Errorf("set transaction tenant: %w", err)
+		if err := setTransactionTenant(ctx, tx, tenant); err != nil {
+			return err
 		}
 		return fn(tx)
 	})
+}
+
+// setTransactionTenant installs tenant as forge.tenant_id for the rest of
+// tx only (set_config's is_local), the setting RLS policies read.
+func setTransactionTenant(ctx context.Context, tx pgx.Tx, tenant tenancy.Tenant) error {
+	if _, err := tx.Exec(ctx, "SELECT set_config('forge.tenant_id', $1, true)", tenant.ID.String()); err != nil {
+		return fmt.Errorf("set transaction tenant: %w", err)
+	}
+	return nil
 }
 
 func (db *DB) runTx(ctx context.Context, opts TxOptions, fn func(tx pgx.Tx) error) error {

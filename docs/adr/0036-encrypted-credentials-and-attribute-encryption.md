@@ -115,7 +115,13 @@ before the first output or write, and a failed write restores the key file.
 - `Cipher.Reencrypt` rotates a column in bounded pages through a `Rewriter`,
   applies each change as a compare-and-set on the old ciphertext (a concurrent
   application write is never overwritten), stops on the first undecryptable row,
-  and returns a `LastID` checkpoint so an interrupted run resumes.
+  and returns a `LastID` checkpoint so an interrupted run resumes. On
+  PostgreSQL, `postgres.WithTenant` runs every page and update in a
+  transaction scoped with `set_config('forge.tenant_id', id, true)`; without
+  it, a missing relation, a view, or a table whose row-level security applies
+  to the connected role is refused with `encryption.ErrConfiguration`, because
+  the run would see no row and report success. Completion is proven by a count
+  of rows not on the active key, never by a report (ENCRYPTION.md).
 - `encryption.Value[T]` implements `sql.Scanner` and `driver.Valuer`. It needs
   `ForRecord(id)` before use: a scanned value is decrypted lazily by `Get`,
   because the row id is usually scanned in the same call.

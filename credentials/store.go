@@ -273,7 +273,8 @@ func (s Store) Decode(v any, keys ...string) error {
 //
 // ready for encryption.NewCipher. Keeping data-encryption keys in the
 // credentials file means one master key protects them, and rotation is an
-// edit: add a key, make it active, run the re-encryption, remove the old key.
+// edit: add a key, make it active, run the re-encryption, and remove the old
+// key only once a count of rows not on the active key is 0 (docs/ENCRYPTION.md).
 func (s Store) KeyRing(keys ...string) (*encryption.KeyRing, error) {
 	var ring struct {
 		Active string            `json:"active"`

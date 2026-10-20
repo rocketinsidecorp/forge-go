@@ -85,9 +85,14 @@ type Queryer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-// SQLRewriter is a Rewriter over database/sql, for MySQL, MariaDB and SQLite
-// (and PostgreSQL through a database/sql driver). The postgres package
-// provides the native pgx equivalent.
+// SQLRewriter is a Rewriter over database/sql, for MySQL, MariaDB and SQLite.
+// They have no row-level security: tenant isolation lives in the
+// application's predicates, which a rotation does not apply, so it visits
+// every row of the table. On PostgreSQL use postgres.EncryptedColumn, which
+// refuses an unscoped run on a table whose row-level security hides rows and
+// rotates tenant tables per tenant (postgres.WithTenant); a SQLRewriter over a
+// PostgreSQL database/sql driver has neither and sees only what the connected
+// role's policies show.
 type SQLRewriter struct {
 	db   Queryer
 	spec SQLColumn

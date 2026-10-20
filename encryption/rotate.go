@@ -11,6 +11,12 @@ const (
 	maxBatchSize     = 10000
 )
 
+// ErrConfiguration reports a rotation that cannot see what it must rotate,
+// such as an unscoped PostgreSQL rewriter on a table whose row-level security
+// hides rows from the connected role. Running it would scan nothing and
+// report success; it is refused instead.
+var ErrConfiguration = errors.New("encryption: invalid rotation configuration")
+
 // Record is one stored ciphertext and the id of its row.
 type Record struct {
 	ID     string
@@ -66,6 +72,11 @@ type Report struct {
 // safe to interrupt and rerun: rows already on the active key are skipped and
 // the Report's LastID resumes where a cancelled run stopped. A row that cannot
 // be decrypted stops the run with an error naming its id, never its value.
+//
+// It moves only the rows rw shows. A Report never proves that a column is
+// complete (Scanned == 0 and Rotated == 0 are exactly what a role that sees no
+// row reports): before removing an old key, count the rows not sealed with the
+// active key as a role that sees every row (docs/ENCRYPTION.md).
 func (c *Cipher) Reencrypt(ctx context.Context, rw Rewriter, opts RotateOptions) (Report, error) {
 	if rw == nil {
 		return Report{}, errors.New("encryption: rewriter is required")
