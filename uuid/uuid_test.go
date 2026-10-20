@@ -3,6 +3,7 @@ package uuid_test
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -121,10 +122,13 @@ func TestParseRejectsNonV7(t *testing.T) {
 func FuzzParse(f *testing.F) {
 	f.Add("01890f6e-9c00-7000-8000-000000000001")
 	f.Add("invalid")
+	f.Add("01890F6E-9C00-7000-8000-00000000000A")
 	f.Fuzz(func(t *testing.T, value string) {
 		id, err := uuid.Parse(value)
-		if err == nil && id.String() != value {
-			t.Fatalf("non-canonical round trip: %q -> %q", value, id.String())
+		// Hex digits are case-insensitive on input (RFC 9562); String is
+		// always lowercase.
+		if err == nil && id.String() != strings.ToLower(value) {
+			t.Fatalf("round trip: %q -> %q", value, id.String())
 		}
 	})
 }

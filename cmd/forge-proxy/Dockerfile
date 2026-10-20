@@ -10,16 +10,20 @@
 # resolved from the tags shown on 2026-10-20 (golang 1.27.2 on Alpine 3.24).
 # Dependabot (docker, /cmd/forge-proxy) proposes new digests; to refresh by
 # hand, read "Digest:" from `docker buildx imagetools inspect <image:tag>`.
+# The build stage runs on the builder's platform and cross-compiles, so the
+# release workflow builds linux/amd64 and linux/arm64 without an emulator.
 
-FROM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
 WORKDIR /src
 ENV CGO_ENABLED=0
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
+ARG TARGETOS
+ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -ldflags="-s -w" -o /out/forge-proxy ./cmd/forge-proxy
+    GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/forge-proxy ./cmd/forge-proxy
 # Directories the nonroot user (65532) owns: routing state and ACME cache
 # (mount a volume at /var/lib/forge-proxy) and the control socket.
 RUN mkdir -p /out/var/lib/forge-proxy/acme /out/run/forge-proxy && \

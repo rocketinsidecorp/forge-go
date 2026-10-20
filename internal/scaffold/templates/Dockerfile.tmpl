@@ -13,13 +13,18 @@
 
 ARG GO_VERSION=1.27
 
-FROM golang:${GO_VERSION}-alpine AS build
+# The build stage runs on the builder's platform and cross-compiles for the
+# target one, so a multi-platform build (docker buildx build --platform
+# linux/amd64,linux/arm64, as the release workflow does) needs no emulator.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
 ENV CGO_ENABLED=0
 COPY . .
+ARG TARGETOS
+ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/{{.Name}}
+    GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/{{.Name}}
 {{- if and .DB (not .DB.Server)}}
 # The distroless image has no shell to create directories at runtime.
 RUN mkdir -p /out/storage

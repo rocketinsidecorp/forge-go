@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Actions are pinned by commit SHA (the SBOM tool by digest; the database
+# service, Dockerfile and compose images by tag); Dependabot
+# (.github/dependabot.yml) proposes updates. release.yml publishes signed
+# images for version tags once enabled.
 permissions:
   contents: read
 
@@ -32,8 +36,10 @@ jobs:
       FORGE_TEST_REQUIRE_DATABASE: "true"
 {{- end}}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # Latest patch release, matching GO_VERSION in the Dockerfile.
           go-version: "1.27.x"
@@ -44,20 +50,39 @@ jobs:
       - name: Test
         run: go test -race ./...
       - name: Vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   docker:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Validate the observability overlay
         env:
           GRAFANA_ADMIN_PASSWORD: ci-only-not-a-secret
         run: docker compose -f compose.yaml -f compose.observability.yaml config --quiet
       - name: Build image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: false
+          load: true
           tags: {{.Name}}:ci
+      - name: SBOM of the image
+        # A CycloneDX SBOM of the image (distroless packages and the Go
+        # modules in the binary), by Syft pinned by digest and run without
+        # network access.
+        run: |
+          docker save {{.Name}}:ci -o "$RUNNER_TEMP/image.tar"
+          docker run --rm --network none -e SYFT_CHECK_FOR_APP_UPDATE=false -v "$RUNNER_TEMP:/scan" \
+            ghcr.io/anchore/syft:v1.54.1@sha256:3eb5379ba7b409c3f4069b686110527af0c47df993fa5c10d13e7cf34f49b1aa \
+            scan docker-archive:/scan/image.tar --source-name {{.Name}} -o cyclonedx-json=/scan/sbom.cdx.json
+          mv "$RUNNER_TEMP/sbom.cdx.json" sbom.cdx.json
+      - name: Keep the SBOM
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: sbom.cdx.json
+          if-no-files-found: error

@@ -57,6 +57,13 @@ func TestNewTargetRefusesUnsafeOrMissingConfiguration(t *testing.T) {
 		"database name too long":   {"FORGE_DATABASE_URL": "postgres://u:p@h/" + strings.Repeat("a", 64) + "?sslmode=disable"},
 		"missing database name":    {"FORGE_DATABASE_URL": "postgres://u:p@h:5432?sslmode=disable"},
 		"name with a quote":        {"FORGE_DATABASE_URL": "postgres://u:p@h/a%22b?sslmode=disable"},
+		// The mysql client would dial 99999 truncated to 16 bits, port 34463
+		// (found by FuzzNewTarget); every consumer gets one spelling.
+		"mysql port above 65535":      {"FORGE_DATABASE_URL": "mysql://root:p@h:99999/db"},
+		"postgres port above 65535":   {"FORGE_DATABASE_URL": "postgres://u:p@h:65536/db?sslmode=disable"},
+		"port with a leading zero":    {"FORGE_DATABASE_URL": "postgres://u:p@h:01/db?sslmode=disable"},
+		"port zero":                   {"FORGE_DATABASE_URL": "mysql://root:p@h:0/db"},
+		"privileged port above 65535": {"FORGE_DATABASE_URL": "mysql://root:p@h/db", EnvPrivilegedURL: "mysql://admin:p@h:70000/db"},
 		"privileged adapter differs": {
 			"FORGE_DATABASE_URL": "postgres://u:p@h/db?sslmode=disable", EnvPrivilegedURL: "mysql://root:p@h/db",
 		},

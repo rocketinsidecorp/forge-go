@@ -50,9 +50,16 @@ go vet ./...
 golangci-lint run ./...
 gosec -quiet -tests=false ./...
 go test -race -count=1 ./...
+scripts/fuzz.sh            # every fuzz target, 10s each, as CI runs it
 ```
 
 - Add tests for every change; a bug fix needs a test that fails without it.
+- Code that parses untrusted input gets a `FuzzXxx` target with a property
+  beyond "does not panic"; CI finds and runs it automatically. Commit any
+  failing input it finds (`testdata/fuzz/`) with the fix.
+- Pin a new GitHub Action by commit SHA with its version in a comment, and a
+  container by digest (`supply_chain_test.go` checks;
+  [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md)).
 - Update the docs your change affects.
 - Keep pull requests focused; unrelated refactors belong in separate ones.
 - Use [Conventional Commits](https://www.conventionalcommits.org/) messages

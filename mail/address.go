@@ -70,6 +70,11 @@ func (a Address) String() string {
 		// Plain text that looks like an encoded-word could be decoded by a
 		// client into something other than what was written.
 		return encodeText(a.Name) + " <" + a.Email + ">"
+	case !isASCII(a.Name):
+		// net/mail's Q-encoding leaves characters such as "\" and "\""
+		// raw, which a phrase does not allow (RFC 2047 section 5): the
+		// address would not parse back. Base64 words have no such case.
+		return base64Words(a.Name) + " <" + a.Email + ">"
 	default:
 		return (&netmail.Address{Name: a.Name, Address: a.Email}).String()
 	}
@@ -138,9 +143,19 @@ func formatAddresses(list []Address) []string {
 // client would otherwise decode a hand-written "=?utf-8?b?...?=" into
 // attacker-chosen text, bypassing every check applied to the literal value.
 func encodeText(s string) string {
-	if !strings.Contains(s, "=?") {
-		return mime.QEncoding.Encode("utf-8", s)
+	// Text with "=?" could be decoded as an encoded-word; runs of spaces
+	// inside the text would be collapsed where the header is folded.
+	// Encoded-words keep both exactly. Surrounding spaces are dropped, as
+	// header folding drops them from plain text.
+	if trimmed := strings.Trim(s, " "); strings.Contains(trimmed, "=?") || strings.Contains(trimmed, "  ") {
+		return base64Words(trimmed)
 	}
+	return mime.QEncoding.Encode("utf-8", s)
+}
+
+// base64Words encodes s as "B" encoded-words short enough for one header
+// line each, never splitting a UTF-8 sequence.
+func base64Words(s string) string {
 	const maxRaw = 45 // 45 bytes -> 60 base64 characters, 72 with the delimiters
 	var words []string
 	for len(s) > 0 {
@@ -152,4 +167,13 @@ func encodeText(s string) string {
 		s = s[n:]
 	}
 	return strings.Join(words, " ")
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }

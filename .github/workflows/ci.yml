@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+# Actions are pinned by commit SHA and container images by digest (the
+# version is in the comment or tag); Dependabot proposes updates for the
+# actions. See docs/SUPPLY_CHAIN.md.
 permissions:
   contents: read
 
@@ -16,7 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:18-alpine
+        image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
         env:
           POSTGRES_USER: forge
           POSTGRES_PASSWORD: forge
@@ -28,7 +31,7 @@ jobs:
           --health-timeout 3s
           --health-retries 15
       mysql:
-        image: mysql:8.4
+        image: mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364
         env:
           MYSQL_ROOT_PASSWORD: forge
         ports:
@@ -44,8 +47,10 @@ jobs:
       # Database tests fail instead of skipping when a server is missing.
       FORGE_TEST_REQUIRE_DATABASE: "true"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       - name: Format
@@ -53,7 +58,7 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
           # Build the linter with the job's Go toolchain: a prebuilt binary
@@ -70,14 +75,55 @@ jobs:
           echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
       - name: Test (race)
         run: go test -race -count=1 ./...
-      - name: Fuzz
-        run: |
-          go test -run='^$' -fuzz=FuzzNormalizeNeverAcceptsPathEscapes -fuzztime=30s ./internal/scaffold
-          go test -run='^$' -fuzz=FuzzDecodeCursor -fuzztime=30s ./pagination
       - name: Benchmarks
         run: go test -run='^$' -bench=. -benchmem ./...
       - name: Vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  fuzz:
+    # Every fuzz target, found by scripts/fuzz.sh with go test -list, for a
+    # short time each. The nightly Fuzz workflow (fuzz.yml) runs them longer.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Fuzz every target for 10s
+        run: scripts/fuzz.sh -t 10s
+      - name: Collect failing inputs
+        if: failure()
+        run: scripts/fuzz.sh -c "$RUNNER_TEMP/fuzz-failures"
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-failures
+          path: ${{ runner.temp }}/fuzz-failures
+          if-no-files-found: ignore
+
+  sbom:
+    # CycloneDX SBOMs of the forge CLI and forge-proxy binaries; the release
+    # workflow attaches SPDX SBOMs and provenance to the published images.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build the binaries and their SBOMs
+        run: scripts/sbom.sh "$RUNNER_TEMP/sbom"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-binaries
+          path: ${{ runner.temp }}/sbom
+          if-no-files-found: error
 
   mariadb:
     # The mysql adapter also serves MariaDB, whose error codes and statement
@@ -85,7 +131,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       mariadb:
-        image: mariadb:11.8
+        image: mariadb:11.8@sha256:f16d7a344413e519dff518f27bdb221388f84b0d274c97c4fb5f2cb0dc1b34fa
         env:
           MARIADB_ROOT_PASSWORD: forge
         ports:
@@ -99,8 +145,10 @@ jobs:
       FORGE_TEST_MYSQL_URL: mysql://root:forge@127.0.0.1:3306/mysql
       FORGE_TEST_REQUIRE_DATABASE: "true"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
       - name: Test the mysql adapter against MariaDB
@@ -115,11 +163,13 @@ jobs:
       matrix:
         database: [postgresql, mysql, mariadb, sqlite]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build example image
         if: matrix.database == 'postgresql'
         run: docker build -t forge-example:ci .
@@ -127,6 +177,15 @@ jobs:
         run: go run ./cmd/forge new ciapp --database "${{ matrix.database }}" --dir "$RUNNER_TEMP/ciapp" --framework-path "$GITHUB_WORKSPACE"
       - name: Build the generated production image
         run: docker build -t ciapp:ci "$RUNNER_TEMP/ciapp"
+      - name: SBOM of the generated image
+        if: matrix.database == 'postgresql'
+        # The Syft command of the generated CI (internal/scaffold/templates/ci.yml.tmpl).
+        run: |
+          docker save ciapp:ci -o "$RUNNER_TEMP/image.tar"
+          docker run --rm --network none -e SYFT_CHECK_FOR_APP_UPDATE=false -v "$RUNNER_TEMP:/scan" \
+            ghcr.io/anchore/syft:v1.54.1@sha256:3eb5379ba7b409c3f4069b686110527af0c47df993fa5c10d13e7cf34f49b1aa \
+            scan docker-archive:/scan/image.tar --source-name ciapp -o cyclonedx-json=/scan/sbom.cdx.json
+          jq -e '.bomFormat == "CycloneDX" and ([.components[] | select(.name == "github.com/rocketinsidecorp/forge-go")] | length) == 1' "$RUNNER_TEMP/sbom.cdx.json"
       - name: Smoke test the generated compose stack
         working-directory: ${{ runner.temp }}/ciapp
         run: |

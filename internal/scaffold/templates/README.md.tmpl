@@ -442,3 +442,29 @@ docker run --rm -e FORGE_ENV=production -e FORGE_DATABASE_URL=... {{.Name}} migr
 
 Concurrent `migrate` runs are serialized by {{.DB.MigrationLock}}.
 {{- end}}
+
+## Supply chain: SBOM and signed images
+
+CI (`.github/workflows/ci.yml`) builds the image and keeps a CycloneDX SBOM
+of it as the `sbom` artifact of every run. `.github/workflows/release.yml`
+publishes a signed image to the GitHub Container Registry for a version tag,
+once you opt in; it never runs for pull requests or branch pushes. The image
+carries SLSA provenance and an SPDX SBOM, and is signed keyless with Sigstore
+cosign through GitHub's OIDC token (no signing key to store).
+
+```bash
+# the SBOM of the latest CI run on main
+run="$(gh run list --workflow ci.yml --branch main --limit 1 --json databaseId --jq '.[0].databaseId')"
+gh run download "$run" --name sbom
+jq -r '.components[] | "\(.name) \(.version)"' sbom.cdx.json
+
+gh variable set FORGE_RELEASE_IMAGES --body true  # opt in to publishing
+git tag v0.1.0 && git push origin v0.1.0          # build, push and sign
+
+# verify; the image path is OWNER/REPOSITORY in lowercase
+cosign verify ghcr.io/OWNER/REPOSITORY:v0.1.0 \
+  --certificate-identity-regexp '^https://github\.com/OWNER/REPOSITORY/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+docker buildx imagetools inspect ghcr.io/OWNER/REPOSITORY:v0.1.0 --format '{{"{{"}} json .SBOM {{"}}"}}'
+docker buildx imagetools inspect ghcr.io/OWNER/REPOSITORY:v0.1.0 --format '{{"{{"}} json .Provenance {{"}}"}}'
+```
