@@ -17,8 +17,57 @@ import (
 	"time"
 )
 
-// ErrContract reports a response that does not match the document.
-var ErrContract = errors.New("openapi: response does not match the document")
+var (
+	// ErrContract reports a response that does not match the document.
+	ErrContract = errors.New("openapi: response does not match the document")
+	// ErrUndocumented reports a request no documented operation serves.
+	ErrUndocumented = errors.New("openapi: no documented operation serves the request")
+)
+
+// CheckResponses returns a handler for tests: it serves next, reports
+// through report every response of a documented route that does not match
+// the document (ValidateResponse), and writes the response unchanged.
+// Requests no documented route serves are not checked. Each response is
+// buffered, so it does not suit streaming handlers; do not use it in
+// production.
+func (d *Document) CheckResponses(next http.Handler, report func(*http.Request, error)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buffered := &bufferedResponse{header: http.Header{}}
+		next.ServeHTTP(buffered, r)
+		if buffered.status == 0 {
+			buffered.status = http.StatusOK
+		}
+		if err := d.ValidateResponse(r.Method, r.URL.Path, buffered.status, buffered.header, buffered.body.Bytes()); err != nil && !errors.Is(err, ErrUndocumented) {
+			report(r, err)
+		}
+		for key, values := range buffered.header {
+			w.Header()[key] = values
+		}
+		w.WriteHeader(buffered.status)
+		_, _ = w.Write(buffered.body.Bytes())
+	})
+}
+
+type bufferedResponse struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (b *bufferedResponse) Header() http.Header { return b.header }
+
+func (b *bufferedResponse) WriteHeader(status int) {
+	if b.status == 0 {
+		b.status = status
+	}
+}
+
+func (b *bufferedResponse) Write(data []byte) (int, error) {
+	if b.status == 0 {
+		b.status = http.StatusOK
+	}
+	return b.body.Write(data)
+}
 
 // ValidateResponse checks a response a documented route returned against the
 // document: the status must be declared (or fall under "default"), a body
@@ -31,7 +80,7 @@ func (d *Document) ValidateResponse(method, path string, status int, header http
 	_, pattern := d.matcher.Handler(request)
 	route, ok := d.patterns[pattern]
 	if !ok {
-		return fmt.Errorf("%w: no documented operation serves %s %s", ErrContract, method, path)
+		return fmt.Errorf("%w: %s %s", ErrUndocumented, method, path)
 	}
 	paths, _ := d.tree["paths"].(map[string]any)
 	item, _ := paths[route.path].(map[string]any)

@@ -471,7 +471,6 @@ func TestValidateResponseRejectsMismatches(t *testing.T) {
 		"not json":          {http.MethodPut, path, 200, jsonHeader, []byte(`{`), "not JSON"},
 		"trailing data":     {http.MethodPut, path, 200, jsonHeader, []byte(valid + "{}"), "after the JSON value"},
 		"content type":      {http.MethodPut, path, 200, http.Header{"Content-Type": {"text/html"}}, []byte(valid), "Content-Type"},
-		"undocumented":      {http.MethodGet, "/elsewhere", 200, jsonHeader, []byte(valid), "no documented operation"},
 		"body on 204":       {http.MethodDelete, path, 204, http.Header{}, []byte(`{}`), "without a body"},
 		"error shape":       {http.MethodPut, path, 500, jsonHeader, []byte(`{"message":"boom"}`), "error"},
 		"undeclared status": {http.MethodDelete, path, 500, jsonHeader, []byte(`{"error":{"code":"c","message":"m"}}`), ""},
@@ -520,5 +519,39 @@ func TestNamerChoosesTheComponentNameAndHTMLIsNotEscaped(t *testing.T) {
 	}
 	if !bytes.Contains(document.JSON(), []byte(`"<a> & b"`)) {
 		t.Fatalf("summary was escaped:\n%s", document.JSON())
+	}
+}
+
+func TestCheckResponsesReportsOnlyDocumentedMismatches(t *testing.T) {
+	t.Parallel()
+	var body string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Kept", "yes")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(body))
+	})
+	document, _ := build(t, openapi.Route{Method: http.MethodPost, Pattern: "/things", Handler: openapi.Describe(handler, openapi.Operation{
+		Responses: []openapi.Response{openapi.JSON[createRequest](http.StatusCreated)},
+	})})
+	var reports []string
+	checked := document.CheckResponses(handler, func(r *http.Request, err error) { reports = append(reports, r.URL.Path+": "+err.Error()) })
+	serve := func(path, payload string) *httptest.ResponseRecorder {
+		body = payload
+		recorder := httptest.NewRecorder()
+		checked.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, nil))
+		return recorder
+	}
+	if recorder := serve("/things", `{"name":"a"}`); recorder.Code != http.StatusCreated || recorder.Body.String() != `{"name":"a"}` || recorder.Header().Get("X-Kept") != "yes" {
+		t.Fatalf("response was changed: %d %v %s", recorder.Code, recorder.Header(), recorder.Body)
+	}
+	serve("/things", `{"name":1}`)
+	serve("/elsewhere", `not even JSON`)
+	if len(reports) != 1 || !strings.Contains(reports[0], "/things: ") || !strings.Contains(reports[0], "/name") {
+		t.Fatalf("reports = %v", reports)
+	}
+	err := document.ValidateResponse(http.MethodGet, "/elsewhere", 200, http.Header{}, nil)
+	if !errors.Is(err, openapi.ErrUndocumented) || errors.Is(err, openapi.ErrContract) {
+		t.Fatalf("undocumented route: err = %v", err)
 	}
 }
