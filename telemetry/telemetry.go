@@ -141,6 +141,10 @@ type Telemetry struct {
 	tracersMu sync.Mutex
 	tracers   map[string]*Tracer
 
+	// pools holds each observed pool name's wait totals (ObservePool).
+	poolsMu sync.Mutex
+	pools   map[string]*poolTotals
+
 	shutdownOnce sync.Once
 	shutdownErr  error
 

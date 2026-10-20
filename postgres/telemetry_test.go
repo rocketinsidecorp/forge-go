@@ -110,3 +110,35 @@ func TestPoolMetricsReportConnections(t *testing.T) {
 		}
 	}
 }
+
+// A closed pool is no longer observed: its connection counts drop to zero.
+func TestPoolMetricsStopWhenThePoolCloses(t *testing.T) {
+	t.Parallel()
+	tel, _ := telemetrytest.New(t)
+	ctx := context.Background()
+	db, err := postgres.Open(ctx, postgrestest.Config(t), postgres.WithTelemetry(tel), postgres.WithPoolName("closing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scrape := func() string {
+		var out bytes.Buffer
+		if err := tel.Metrics().WritePrometheus(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	const labels = `{db_system_name="postgresql",db_client_connection_pool_name="closing"`
+	if text := scrape(); !strings.Contains(text, "db_client_connection_count"+labels+`,db_client_connection_state="idle"} 1`) {
+		t.Fatalf("open pool:\n%s", text)
+	}
+	db.Close()
+	text := scrape()
+	for _, want := range []string{
+		"db_client_connection_count" + labels + `,db_client_connection_state="idle"} 0`,
+		"db_client_connection_count" + labels + `,db_client_connection_state="used"} 0`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("closed pool, metrics lack %q:\n%s", want, text)
+		}
+	}
+}

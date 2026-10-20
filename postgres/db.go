@@ -35,6 +35,8 @@ type DBTX interface {
 // DB is a PostgreSQL connection pool.
 type DB struct {
 	pool *pgxpool.Pool
+	// unobserve stops the pool metrics; nil without telemetry.
+	unobserve func()
 }
 
 var _ DBTX = (*DB)(nil)
@@ -89,11 +91,12 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 		pool.Close()
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
-	if err := observePool(settings.telemetry, settings.poolName, pool); err != nil {
+	unobserve, err := observePool(settings.telemetry, settings.poolName, pool)
+	if err != nil {
 		pool.Close()
 		return nil, err
 	}
-	return &DB{pool: pool}, nil
+	return &DB{pool: pool, unobserve: unobserve}, nil
 }
 
 // parseConfig builds the pgx configuration shared by the pool and the
@@ -163,13 +166,25 @@ func (db *DB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 func (db *DB) Ping(ctx context.Context) error { return db.pool.Ping(ctx) }
 
 // Close waits for acquired connections to be released and closes the pool.
-func (db *DB) Close() { db.pool.Close() }
+func (db *DB) Close() {
+	db.stopObserving()
+	db.pool.Close()
+}
 
 // Shutdown closes the pool like Close but stops waiting when ctx ends, so a
 // connection held by a stuck request cannot block process exit. Its signature
 // matches forge.ShutdownHook: app.OnShutdown(db.Shutdown).
 func (db *DB) Shutdown(ctx context.Context) error {
+	db.stopObserving()
 	return sqldb.CloseWithin(ctx, func() error { db.pool.Close(); return nil }, func() int { return int(db.pool.Stat().AcquiredConns()) })
+}
+
+// stopObserving removes the pool from the connection metrics: a closed pool
+// is no longer read at every collection.
+func (db *DB) stopObserving() {
+	if db.unobserve != nil {
+		db.unobserve()
+	}
 }
 
 // Pool exposes the underlying pgx pool for capabilities Forge does not wrap,

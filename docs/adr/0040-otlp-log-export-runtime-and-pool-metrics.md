@@ -90,7 +90,9 @@ decrease.
   (`idle`/`used`), `db.client.connection.max` (OpenTelemetry database client
   names), `forge.db.pool.waits` and `forge.db.pool.wait.duration`. The pool name
   label is `default` or `WithPoolName(...)`; registering a name again replaces the
-  pool. Waits are not exactly comparable: `database/sql` counts waits at the pool
+  pool and the wait counters add the new pool's totals to the old one's, so they
+  stay monotonic and keep counting. Closing the database stops observing its
+  pool (`ObservePool` returns the stop function). Waits are not exactly comparable: `database/sql` counts waits at the pool
   limit, pgx also waits for a new connection to be established.
 
 ### Local stack

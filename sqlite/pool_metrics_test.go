@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 	"github.com/rocketinsidecorp/forge-go/sqlite"
 	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
 	"github.com/rocketinsidecorp/forge-go/telemetry/telemetrytest"
@@ -92,4 +93,76 @@ func TestPoolMetricsDefaultNameAndNoTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = plain.Close()
+}
+
+// Closing a database stops its pool metrics, and the wait counters of a
+// database reopened under the same name continue from the closed pool's
+// totals instead of freezing until the new pool catches up.
+func TestPoolMetricsStopOnCloseAndKeepCountingAfterReopen(t *testing.T) {
+	t.Parallel()
+	tel, _ := telemetrytest.New(t)
+	cfg := sqlitetest.Config(t)
+	cfg.MaxConns = 1
+	ctx := context.Background()
+	const labels = `{db_system_name="sqlite",db_client_connection_pool_name="reopened"`
+	scrape := func() string {
+		var out bytes.Buffer
+		if err := tel.Metrics().WritePrometheus(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	// waitOnce makes one query wait for the only connection.
+	waitOnce := func(db *sqldb.DB) {
+		t.Helper()
+		conn, err := db.SQL().Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			var one int
+			done <- db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+		}()
+		time.Sleep(50 * time.Millisecond)
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, err := sqlite.Open(ctx, cfg, sqlite.WithTelemetry(tel), sqlite.WithPoolName("reopened"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitOnce(first)
+	if text := scrape(); !strings.Contains(text, "forge_db_pool_waits_total"+labels+"} 1") ||
+		!strings.Contains(text, "db_client_connection_count"+labels+`,db_client_connection_state="idle"} 1`) {
+		t.Fatalf("before close:\n%s", text)
+	}
+	if err := first.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	text := scrape()
+	for _, want := range []string{
+		"db_client_connection_count" + labels + `,db_client_connection_state="idle"} 0`,
+		"db_client_connection_count" + labels + `,db_client_connection_state="used"} 0`,
+		"forge_db_pool_waits_total" + labels + "} 1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("after close, metrics lack %q:\n%s", want, text)
+		}
+	}
+
+	second, err := sqlite.Open(ctx, cfg, sqlite.WithTelemetry(tel), sqlite.WithPoolName("reopened"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	waitOnce(second)
+	if text := scrape(); !strings.Contains(text, "forge_db_pool_waits_total"+labels+"} 2") {
+		t.Fatalf("the reopened pool's wait was not added:\n%s", text)
+	}
 }

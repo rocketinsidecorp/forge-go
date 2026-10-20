@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -80,7 +81,7 @@ func TestObservePoolExportsConnectionMetrics(t *testing.T) {
 	exporter := newExporter(t, server.URL, OTLPOptions{})
 	tel := newTestTelemetry(t, Options{MetricExporter: exporter, MetricsInterval: time.Hour})
 	stats := PoolStats{InUse: 3, Idle: 2, Max: 10, Waits: 7, WaitTime: 1500 * time.Millisecond}
-	if err := tel.ObservePool("postgresql", "primary", func() PoolStats { return stats }); err != nil {
+	if _, err := tel.ObservePool("postgresql", "primary", func() PoolStats { return stats }); err != nil {
 		t.Fatal(err)
 	}
 	text := prometheusText(t, tel)
@@ -110,23 +111,84 @@ func TestObservePoolExportsConnectionMetrics(t *testing.T) {
 		t.Fatalf("OTLP pool metrics: %s", encoded)
 	}
 	// A second pool under another name adds series; the same name replaces.
-	if err := tel.ObservePool("postgresql", "replica", func() PoolStats { return PoolStats{Max: 4} }); err != nil {
+	if _, err := tel.ObservePool("postgresql", "replica", func() PoolStats { return PoolStats{Max: 4} }); err != nil {
 		t.Fatal(err)
 	}
-	if err := tel.ObservePool("postgresql", "primary", func() PoolStats { return PoolStats{Max: 99} }); err != nil {
+	if _, err := tel.ObservePool("postgresql", "primary", func() PoolStats { return PoolStats{Max: 99} }); err != nil {
 		t.Fatal(err)
 	}
 	text = prometheusText(t, tel)
 	if !strings.Contains(text, `pool_name="replica"} 4`) || !strings.Contains(text, `pool_name="primary"} 99`) || strings.Contains(text, `pool_name="primary"} 10`) {
 		t.Fatalf("pool names:\n%s", text)
 	}
-	if err := tel.ObservePool("", "x", func() PoolStats { return PoolStats{} }); err == nil {
+	if _, err := tel.ObservePool("", "x", func() PoolStats { return PoolStats{} }); err == nil {
 		t.Fatal("system is required")
 	}
 	var none *Telemetry
-	if err := none.ObservePool("postgresql", "x", nil); err != nil {
+	if stop, err := none.ObservePool("postgresql", "x", nil); err != nil || stop == nil {
 		t.Fatal("a nil Telemetry observes nothing")
+	} else {
+		stop()
 	}
+}
+
+// A pool reopened under the same name starts its totals at zero; the
+// exported counters must neither go backwards nor freeze. A stopped pool is
+// no longer read.
+func TestObservePoolCountersKeepGrowingAcrossReplacedAndStoppedPools(t *testing.T) {
+	tel := newTestTelemetry(t, Options{})
+	const labels = `{db_system_name="sqlite",db_client_connection_pool_name="main"}`
+	expect := func(waits, waited string) {
+		t.Helper()
+		text := prometheusText(t, tel)
+		if !strings.Contains(text, "forge_db_pool_waits_total"+labels+" "+waits+"\n") ||
+			!strings.Contains(text, "forge_db_pool_wait_duration_seconds_total"+labels+" "+waited+"\n") {
+			t.Fatalf("want waits %s and %s s:\n%s", waits, waited, text)
+		}
+	}
+	var mu sync.Mutex
+	first := PoolStats{InUse: 1, Max: 2, Waits: 5, WaitTime: time.Second}
+	stopFirst, err := tel.ObservePool("sqlite", "main", func() PoolStats { mu.Lock(); defer mu.Unlock(); return first })
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect("5", "1")
+
+	second := PoolStats{Idle: 1, Max: 2, Waits: 2, WaitTime: 500 * time.Millisecond}
+	stopSecond, err := tel.ObservePool("sqlite", "main", func() PoolStats { mu.Lock(); defer mu.Unlock(); return second })
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect("7", "1.5")
+	mu.Lock()
+	second.Waits, second.WaitTime = 4, time.Second
+	mu.Unlock()
+	expect("9", "2")
+
+	// Stopping the replaced pool (its Close after the reopen) changes
+	// nothing.
+	stopFirst()
+	mu.Lock()
+	second.Waits = 6
+	mu.Unlock()
+	expect("11", "2")
+
+	stopSecond()
+	stopSecond()
+	mu.Lock()
+	second.Waits = 100
+	mu.Unlock()
+	expect("11", "2")
+	text := prometheusText(t, tel)
+	if !strings.Contains(text, `db_client_connection_count{db_system_name="sqlite",db_client_connection_pool_name="main",db_client_connection_state="idle"} 0`) ||
+		!strings.Contains(text, `db_client_connection_count{db_system_name="sqlite",db_client_connection_pool_name="main",db_client_connection_state="used"} 0`) {
+		t.Fatalf("a closed pool has no connections:\n%s", text)
+	}
+
+	if _, err := tel.ObservePool("sqlite", "main", func() PoolStats { return PoolStats{Waits: 1, WaitTime: time.Second} }); err != nil {
+		t.Fatal(err)
+	}
+	expect("12", "3")
 }
 
 func TestObserversAndObservedCounters(t *testing.T) {

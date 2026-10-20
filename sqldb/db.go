@@ -24,6 +24,9 @@ type DBTX interface {
 type DB struct {
 	db       *sql.DB
 	classify Classifier
+	// unobserve stops the pool metrics (Observer.ObservePool); nil when
+	// the pool is not observed.
+	unobserve func()
 }
 
 var _ DBTX = (*DB)(nil)
@@ -111,13 +114,25 @@ func (d *DB) Ping(ctx context.Context) error { return d.db.PingContext(ctx) }
 
 // Close closes the pool. database/sql does not wait for queries in progress:
 // idle connections close at once and busy ones when they are released.
-func (d *DB) Close() error { return d.db.Close() }
+func (d *DB) Close() error {
+	d.stopObserving()
+	return d.db.Close()
+}
 
 // Shutdown is Close bounded by ctx, for symmetry with the postgres adapter,
 // whose pool does wait for borrowed connections. Its signature matches
 // forge.ShutdownHook.
 func (d *DB) Shutdown(ctx context.Context) error {
+	d.stopObserving()
 	return CloseWithin(ctx, d.db.Close, func() int { return d.db.Stats().InUse })
+}
+
+// stopObserving removes the pool from the connection metrics: a closed pool
+// is no longer read at every collection.
+func (d *DB) stopObserving() {
+	if d.unobserve != nil {
+		d.unobserve()
+	}
 }
 
 // SQL exposes the underlying *sql.DB: the explicit escape hatch.

@@ -131,7 +131,9 @@ against the limit, how many acquisitions had to wait and for how long (a
 `rate()` of the wait duration is the average number of callers blocked). The
 pool name label is `default`; name each pool with `WithPoolName("replica")`
 when an application opens more than one database of the same kind (a name used
-twice replaces the earlier pool's series). With `database/sql` (MySQL, SQLite) a
+twice replaces the earlier pool, and the wait counters continue from its
+totals). Closing the database (`Close` or `Shutdown`) stops reading the pool
+and sets its connection counts to zero. With `database/sql` (MySQL, SQLite) a
 wait means every connection up to the limit was in use; with pgx (PostgreSQL) it
 also counts an acquisition that waited for a new connection to be established.
 The statistics are read when the metrics are collected (a scrape or an OTLP

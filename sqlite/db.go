@@ -93,7 +93,7 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*sqldb.DB, 
 		_ = db.Close()
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	if err := obs.ObservePool(poolName, db); err != nil {
+	if err := obs.ObservePool(poolName, pool); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

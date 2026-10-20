@@ -34,8 +34,8 @@ func WithPoolName(name string) Option {
 
 // observePool exports pool's connection statistics: db.client.connection.count,
 // db.client.connection.max, forge.db.pool.waits and
-// forge.db.pool.wait.duration.
-func observePool(t *telemetry.Telemetry, name string, pool *pgxpool.Pool) error {
+// forge.db.pool.wait.duration. stop ends it when the pool closes.
+func observePool(t *telemetry.Telemetry, name string, pool *pgxpool.Pool) (stop func(), err error) {
 	if name == "" {
 		name = DefaultPoolName
 	}
