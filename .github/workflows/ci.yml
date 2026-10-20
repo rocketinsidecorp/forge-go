@@ -164,7 +164,7 @@ jobs:
           }
           grafana() { curl -fsS -u "admin:$GRAFANA_ADMIN_PASSWORD" "$@"; }
           wait_for "grafana is up" grafana http://127.0.0.1:3000/api/health
-          wait_for "anonymous grafana access is refused" test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/datasources)" = 401
+          wait_for "anonymous grafana access is refused" sh -c 'test "$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/datasources)" = 401'
           for source in prometheus tempo loki; do
             wait_for "$source data source is healthy" grafana "http://127.0.0.1:3000/api/datasources/uid/$source/health"
           done

@@ -455,3 +455,22 @@ func TestObservabilityMetricNamesExistInTheDocumentedCatalogue(t *testing.T) {
 		}
 	}
 }
+
+// TestObservabilityAppNamesThatAreYAMLKeywordsStayStrings guards the
+// overlay against application names such as null, true or false, which the
+// name pattern allows and YAML would otherwise read as null or booleans.
+func TestObservabilityAppNamesThatAreYAMLKeywordsStayStrings(t *testing.T) {
+	for _, name := range []string{"null", "true", "false", "yes", "off"} {
+		dir := filepath.Join(t.TempDir(), name)
+		if _, err := scaffold.Generate(scaffold.Options{Name: name, Dir: dir, Database: "sqlite"}); err != nil {
+			t.Fatalf("generate %q: %v", name, err)
+		}
+		app := mapAt(t, readYAML(t, dir, "compose.observability.yaml"), "services", "app")
+		if got := mapAt(t, app, "environment")["FORGE_TELEMETRY_SERVICE_NAME"]; got != name {
+			t.Errorf("app %q: FORGE_TELEMETRY_SERVICE_NAME = %#v; want the string %q", name, got, name)
+		}
+		if got := mapAt(t, app, "logging", "options")["tag"]; got != name {
+			t.Errorf("app %q: log tag = %#v; want the string %q", name, got, name)
+		}
+	}
+}

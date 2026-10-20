@@ -307,6 +307,7 @@ curl http://127.0.0.1:8080/v1/status
 #    Explore > Prometheus              metrics, also at http://127.0.0.1:9090
 
 # 4. Stop it (keeps the data); add -v to delete traces, logs and metrics too
+# compose interpolates the whole file, so GRAFANA_ADMIN_PASSWORD must be set for down too
 docker compose -f compose.yaml -f compose.observability.yaml down
 ```
 

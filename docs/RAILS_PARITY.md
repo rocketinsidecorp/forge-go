@@ -25,8 +25,8 @@ the work is finished and waiting for its review; **Planned** means not started.
 | File storage with signed URLs | Active Storage | Done (disk) | In review (disk) |
 | Import maps, Turbo, Stimulus | Hotwire | Done | Done |
 | Turbo Streams over SSE | Action Cable | Done | Planned |
-| Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Planned |
-| Preconfigured Prometheus, Grafana, Tempo, Loki | — | Done (`compose.observability.yaml`, [ADR 0038](adr/0038-local-observability-stack.md)) | Planned |
+| Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Planned ([forge-rust#13](https://github.com/rocketinsidecorp/forge-rust/issues/13)) |
+| Preconfigured Prometheus, Grafana, Tempo, Loki | — | Done (`compose.observability.yaml`, [ADR 0038](adr/0038-local-observability-stack.md)) | Planned ([forge-rust#13](https://github.com/rocketinsidecorp/forge-rust/issues/13), after Turbo Streams and trusted proxies) |
 | Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge-proxy`) | Planned |
 | Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | Planned |
 | Rollback never reverts framework migrations; disabled framework sets tolerated | (engine migrations copied into the app) | Done (`rollback`, `Migrator.DownFramework`, ADR 0039) | Done (`rollback`, `rollback_framework`, ADR 0030) |

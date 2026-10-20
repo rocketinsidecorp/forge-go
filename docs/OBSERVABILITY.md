@@ -253,6 +253,7 @@ docker compose -f compose.yaml -f compose.observability.yaml up --build
 curl http://127.0.0.1:8080/v1/status
 # Grafana: http://127.0.0.1:3000 (user admin) opens the "Forge application" dashboard
 # Prometheus: http://127.0.0.1:9090
+# compose interpolates the whole file, so GRAFANA_ADMIN_PASSWORD must be set for down too
 docker compose -f compose.yaml -f compose.observability.yaml down      # add -v to delete the data
 ```
 
