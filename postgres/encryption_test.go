@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net/url"
 	"strings"
@@ -263,14 +264,27 @@ func TestEncryptedColumnRotatesTenantTablesPerTenantAndRefusesUnscopedRuns(t *te
 	if stale, _ := counts(admin, nil); stale != perTenant {
 		t.Fatalf("overall: %d stale", stale)
 	}
-	// Inside a caller's transaction the steps are savepoints.
+	// Inside a caller's transaction the steps are savepoints, and the
+	// caller's own tenant scope is back after the rotation.
 	err = runtimeDB.InTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SELECT set_config('forge.tenant_id', $1, true)", first.ID.String()); err != nil {
+			return err
+		}
 		inTx, err := postgres.EncryptedColumn(tx, spec, postgres.WithTenant(second))
 		if err != nil {
 			return err
 		}
-		report, err = rotating.Reencrypt(ctx, inTx, encryption.RotateOptions{})
-		return err
+		if report, err = rotating.Reencrypt(ctx, inTx, encryption.RotateOptions{}); err != nil {
+			return err
+		}
+		var scope string
+		if err := tx.QueryRow(ctx, "SELECT current_setting('forge.tenant_id', true)").Scan(&scope); err != nil {
+			return err
+		}
+		if scope != first.ID.String() {
+			return fmt.Errorf("caller scope after rotation = %q, want %s", scope, first.ID)
+		}
+		return nil
 	})
 	if err != nil || report.Scanned != perTenant || report.Rotated != perTenant {
 		t.Fatalf("second tenant: %+v %v", report, err)

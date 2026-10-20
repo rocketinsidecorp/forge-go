@@ -102,9 +102,12 @@ alone identifies the values). There is no deterministic encryption mode.
 2. Re-encrypt existing rows, in bounded batches, safe to interrupt and rerun:
 
    ```go
-   rewriter, _ := postgres.EncryptedColumn(db, encryption.SQLColumn{
+   rewriter, err := postgres.EncryptedColumn(db, encryption.SQLColumn{
    	Table: "people", Column: "ssn", IndexColumn: "ssn_idx", // IndexColumn only with a blind index
    })
+   if err != nil {
+   	return err
+   }
    report, err := cipher.Reencrypt(ctx, rewriter, encryption.RotateOptions{BatchSize: 500, BlindIndex: true})
    // on cancellation or error: report.LastID is the checkpoint
    report, err = cipher.Reencrypt(ctx, rewriter, encryption.RotateOptions{After: report.LastID, BlindIndex: true})

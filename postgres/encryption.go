@@ -19,8 +19,9 @@ type EncryptedColumnOption func(*encryptedColumn)
 // installs the tenant as forge.tenant_id (set_config(..., true), as InTenantTx
 // does), so the table's row-level security policies show and accept that
 // tenant's rows only. Rotate a tenant table once per tenant. db must then be a
-// *DB or a pgx.Tx; inside a pgx.Tx each step is a savepoint and the setting
-// stays for the rest of that transaction.
+// *DB or a pgx.Tx; inside a pgx.Tx each step is a savepoint, and the
+// transaction's own forge.tenant_id is restored after every step, so the
+// caller's later statements stay in the caller's scope.
 func WithTenant(tenant tenancy.Tenant) EncryptedColumnOption {
 	return func(c *encryptedColumn) { c.tenant = &tenant }
 }
@@ -158,6 +159,22 @@ func (c encryptedColumn) inTenantTx(ctx context.Context, fn func(DBTX) error) er
 	switch db := c.db.(type) {
 	case *DB:
 		return db.InTx(ctx, scoped)
+	case pgx.Tx:
+		// A released savepoint keeps its set_config: restore the caller's
+		// tenant after the step, or the caller's later statements would run
+		// scoped to the rotated tenant. A failed step rolls back to the
+		// savepoint, which restores it already.
+		var previous string
+		if err := db.QueryRow(ctx, "SELECT coalesce(current_setting('forge.tenant_id', true), '')").Scan(&previous); err != nil {
+			return fmt.Errorf("read transaction tenant: %w", err)
+		}
+		if err := pgx.BeginFunc(ctx, db, scoped); err != nil {
+			return err
+		}
+		if _, err := db.Exec(ctx, "SELECT set_config('forge.tenant_id', $1, true)", previous); err != nil {
+			return fmt.Errorf("restore transaction tenant: %w", err)
+		}
+		return nil
 	case txBeginner:
 		return pgx.BeginFunc(ctx, db, scoped)
 	default:

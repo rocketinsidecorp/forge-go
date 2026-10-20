@@ -492,8 +492,11 @@ tables (row-level security) rotate once per tenant; an unscoped run on them is
 refused:
 
 ```go
-rewriter, _ := postgres.EncryptedColumn(db, encryption.SQLColumn{Table: "people", Column: "ssn"},
+rewriter, err := postgres.EncryptedColumn(db, encryption.SQLColumn{Table: "people", Column: "ssn"},
 	postgres.WithTenant(tenant))
+if err != nil {
+	return err
+}
 report, err := cipher.Reencrypt(ctx, rewriter, encryption.RotateOptions{})
 ```
 
