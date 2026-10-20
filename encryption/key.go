@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"unicode/utf8"
 )
 
 // KeySize is the size of a master key in bytes.
@@ -123,31 +124,39 @@ func NewKeyRing(active Key, previous ...Key) (*KeyRing, error) {
 
 // ParseKeyRing builds a ring from an active identifier and a map of
 // identifier to canonical text keys, the shape stored in credentials.
+// Previous keys are ordered by identifier.
+//
+// Errors never echo an identifier or the active value: one swapped with a key
+// by mistake would otherwise print the key. They name a key by its position
+// among the identifiers in sorted order, and the active value by its length.
 func ParseKeyRing(active string, keys map[string]string) (*KeyRing, error) {
-	activeText, ok := keys[active]
-	if !ok {
-		return nil, fmt.Errorf("%w: active key %q is not among the keys", ErrInvalidKey, active)
+	if _, ok := keys[active]; !ok {
+		return nil, fmt.Errorf("%w: the active identifier (%d characters) is not among the %d keys",
+			ErrInvalidKey, utf8.RuneCountInString(active), len(keys))
 	}
-	material, err := ParseKey(activeText)
-	if err != nil {
-		return nil, fmt.Errorf("key %q: %w", active, err)
-	}
-	var previous []Key
 	ids := make([]string, 0, len(keys))
 	for id := range keys {
-		if id != active {
-			ids = append(ids, id)
-		}
+		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	for _, id := range ids {
+	var activeKey Key
+	previous := make([]Key, 0, len(ids)-1)
+	for position, id := range ids {
 		material, err := ParseKey(keys[id])
 		if err != nil {
-			return nil, fmt.Errorf("key %q: %w", id, err)
+			return nil, fmt.Errorf("key #%d: %w", position+1, err)
 		}
-		previous = append(previous, Key{ID: id, Material: material})
+		if !ValidKeyID(id) {
+			return nil, fmt.Errorf("key #%d: %w: identifier must be 1-%d letters, digits, '_' or '-'",
+				position+1, ErrInvalidKey, maxKeyIDLength)
+		}
+		if id == active {
+			activeKey = Key{ID: id, Material: material}
+		} else {
+			previous = append(previous, Key{ID: id, Material: material})
+		}
 	}
-	return NewKeyRing(Key{ID: active, Material: material}, previous...)
+	return NewKeyRing(activeKey, previous...)
 }
 
 // ActiveID returns the identifier of the key used for new ciphertexts.

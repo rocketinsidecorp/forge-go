@@ -238,6 +238,42 @@ func TestKeyRingValidationAndRedaction(t *testing.T) {
 	}
 }
 
+// TestParseKeyRingErrorsNeverEchoAKeySwappedWithAnIdentifier pastes key text
+// where an identifier belongs: errors name keys by position and the active
+// identifier by length, never by value.
+func TestParseKeyRingErrorsNeverEchoAKeySwappedWithAnIdentifier(t *testing.T) {
+	t.Parallel()
+	newKey := func() string {
+		material, err := encryption.GenerateKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encryption.EncodeKey(material)
+	}
+	key, other := newKey(), newKey()
+	// The key text pasted as the active identifier and as a map key.
+	swapped := map[string]string{key: "2026-10", "2025-03": other}
+	for _, active := range []string{key, "2026-10", "2025-03"} {
+		_, err := encryption.ParseKeyRing(active, swapped)
+		if err == nil || !errors.Is(err, encryption.ErrInvalidKey) {
+			t.Fatalf("active %d characters: %v", len(active), err)
+		}
+		if text := fmt.Sprintf("%v %+v %#v", err, err, err); strings.Contains(text, key) || strings.Contains(text, other) {
+			t.Fatalf("error echoes a key: %s", text)
+		}
+	}
+	// A valid key stored under the key text as its identifier.
+	if _, err := encryption.ParseKeyRing(key, map[string]string{key: other}); err == nil ||
+		strings.Contains(err.Error(), key) || strings.Contains(err.Error(), other) || !strings.Contains(err.Error(), "key #1") {
+		t.Fatalf("invalid identifier: %v", err)
+	}
+	// The key text pasted as the active identifier only.
+	_, err := encryption.ParseKeyRing(key, map[string]string{"2025-03": other})
+	if err == nil || strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "43 characters") {
+		t.Fatalf("missing active identifier: %v", err)
+	}
+}
+
 func TestDeriveKeySeparatesPurposes(t *testing.T) {
 	t.Parallel()
 	master := bytes.Repeat([]byte{3}, encryption.KeySize)
