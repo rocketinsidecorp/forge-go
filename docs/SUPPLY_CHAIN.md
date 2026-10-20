@@ -158,9 +158,24 @@ tags on the default branch. Its README shows the commands.
 - `supply_chain_test.go` fails `go test ./...` when an action is not pinned
   by SHA, a workflow container or service image is not pinned by digest,
   copies of the Syft pins differ, a checkout keeps its credentials, a
-  workflow lacks a top-level `permissions:`, write permissions appear outside
-  the release job, or a release workflow gains a trigger other than `v*`
-  tags.
+  workflow lacks a top-level `permissions:`, or a release workflow gains a
+  trigger other than `v*` tags. It reads `.yml` and `.yaml` workflows alike
+  and refuses:
+  - a `uses:` that is not `owner/repo@<40-hex commit> # vX.Y.Z`, in any
+    spelling (`- uses:`, `"uses":`, `uses :`, quoted value);
+  - a `container: <image>` shorthand or service `image:` without a digest
+    (a bare `container:` mapping opener and a `- image:` matrix entry are
+    not images);
+  - every `<scope>: write` permission, in block or flow style
+    (`permissions: { contents: write }`), except `id-token` and `packages`
+    in `release.yml`, and `write-all` everywhere;
+  - `pull_request_target`, which runs fork code with the repository's
+    secrets;
+  - `secrets[`, `toJSON(secrets)`, `join(secrets, ...)`, `secrets }` and
+    `secrets: inherit` in any case or spacing, which hand secrets on
+    wholesale or by computed name;
+  - any `secrets.NAME` read other than `secrets.GITHUB_TOKEN` in
+    `release.yml`.
 - Permissions are read-only by default (`contents: read`, or `{}` in
   `release.yml` and `scorecard.yml`); only the release image job holds
   `packages: write` and `id-token: write`.
