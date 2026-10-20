@@ -169,7 +169,11 @@ Wraps the router in a fixed security/lifecycle chain, outermost first:
    rendered by a `views.Load` renderer replace it with
    `views.DefaultContentSecurityPolicy`, and other HTML handlers set their
    own.
-2. **Request ID** - generates a UUIDv7, sets `X-Request-ID` on the response,
+2. **Client address and request ID** - resolves the client address once
+   and stores it for `web.ClientIP`: the TCP peer, or, when the peer is in
+   `FORGE_HTTP_TRUSTED_PROXIES`, the first untrusted `X-Forwarded-For` entry
+   read from the right ([ADR 0037](adr/0037-trusted-proxies-and-client-ip.md)).
+   Then generates a UUIDv7, sets `X-Request-ID` on the response,
    and stores the ID and a logger carrying `request_id` in the request
    context (`web.RequestID`, `web.Logger`). Incoming `X-Request-ID` headers
    are not trusted or reused. If ID generation fails, the request is answered
@@ -209,8 +213,9 @@ those requests' contexts so they release resources such as database
 connections.
 
 `trusted-proxy` mode means "TLS is terminated upstream". It enables HSTS and
-satisfies the production transport rule. It does not rewrite the client
-address or scheme from `X-Forwarded-*` headers.
+satisfies the production transport rule. It does not change the scheme or
+`r.RemoteAddr`; the client address comes from `web.ClientIP`, which reads
+`X-Forwarded-For` only from peers listed in `FORGE_HTTP_TRUSTED_PROXIES`.
 
 ### web
 
@@ -241,6 +246,9 @@ The HTTP adapter toolkit for handlers:
 - `web.RequestID(ctx)` and `web.Logger(ctx)` return the request ID and the
   request-scoped `*slog.Logger` (never nil; a discarding logger outside a
   request).
+- `web.ClientIP(r)` returns the client address the server resolved under the
+  trusted-proxy policy (`web.TrustedProxies`), or the TCP peer when no
+  resolver ran. Throttles, rate limits and audit use it.
 - For HTML ([VIEWS.md](VIEWS.md), [ADR 0025](adr/0025-server-rendered-html.md)):
   `web.DecodeForm` binds `form:"..."` tagged struct fields from a bounded
   `application/x-www-form-urlencoded` body (unknown or repeated fields are
@@ -574,6 +582,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0033](adr/0033-file-storage.md) | File storage |
 | [0034](adr/0034-dependency-free-telemetry.md) | Dependency-free telemetry speaking OpenTelemetry protocols |
 | [0036](adr/0036-encrypted-credentials-and-attribute-encryption.md) | Encrypted credentials and attribute encryption |
+| [0037](adr/0037-trusted-proxies-and-client-ip.md) | Trusted proxies and the client address |
 
 ## Not yet implemented
 

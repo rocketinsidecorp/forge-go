@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -328,11 +328,18 @@ func event(data string) string {
 	return out.String()
 }
 
-// clientAddress is the host of the socket peer, without the port.
+// clientAddress is the client address the HTTP server resolved (the socket
+// peer unless it is a trusted proxy, ADR 0037), with IPv6 reduced to its
+// /64 like every other per-client count.
 func clientAddress(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	host := web.ClientIP(r)
+	addr, err := netip.ParseAddr(host)
+	if err != nil || !addr.Is6() {
+		return host
 	}
-	return host
+	prefix, err := addr.Prefix(64)
+	if err != nil {
+		return host
+	}
+	return prefix.String()
 }

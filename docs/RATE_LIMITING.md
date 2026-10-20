@@ -22,7 +22,7 @@ Forge:
 limiter, err := ratelimit.NewMemory(ratelimit.MemoryOptionsFromConfig(app.Config().RateLimit))
 if err != nil { return err }
 
-create, err := ratelimit.Middleware(limiter, ratelimit.ByRemoteAddr,
+create, err := ratelimit.Middleware(limiter, ratelimit.ByClientIP,
     ratelimit.Limit{N: 10, Per: 3 * time.Minute})
 if err != nil { return err }
 
@@ -64,19 +64,28 @@ through (and logs a warning) for routes where availability matters more.
 `ratelimit.KeyFunc` is `func(*http.Request) string`; the result is hashed
 before it reaches a store (no addresses or identifiers at rest).
 
-`ratelimit.ByRemoteAddr` uses the **TCP peer address** only. IPv4 addresses are
-used whole; IPv6 addresses are reduced to their `/64`, because one subscriber
-controls the whole prefix and could otherwise rotate addresses at will. It
-**never reads `X-Forwarded-For`, `X-Real-IP` or `Forwarded`**: those headers are
-client-controlled unless a proxy overwrites them, and Forge has no trusted-proxy
-policy yet (see the [roadmap](ROADMAP.md)).
+`ratelimit.ByClientIP` keys by the client address the HTTP server resolved
+(`web.ClientIP`, [ADR 0037](adr/0037-trusted-proxies-and-client-ip.md)). That
+is the **TCP peer address**, unless the peer is a trusted proxy listed in
+`FORGE_HTTP_TRUSTED_PROXIES`: then it is the first address of
+`X-Forwarded-For` that is not a trusted proxy, read from the right. IPv4
+addresses are used whole; IPv6 addresses are reduced to their `/64`, because
+one subscriber controls the whole prefix and could otherwise rotate addresses
+at will. `X-Real-IP` and `Forwarded` are never read, and `X-Forwarded-For`
+from a peer that is not listed is ignored, so a client cannot pick a fresh
+bucket per request. `ratelimit.ByRemoteAddr` always keys by the peer.
 
 Consequences by deployment:
 
-| Deployment | `ByRemoteAddr` | What to do |
-| ---------- | -------------- | ---------- |
+| Deployment | `ByClientIP` | What to do |
+| ---------- | ------------ | ---------- |
 | Direct (TLS in the application) | the client | nothing |
-| Behind a proxy / load balancer (`trusted-proxy`) | **the proxy**: every client shares one bucket | key by an authenticated value, or by a header your proxy sets |
+| `forge deploy` behind forge-proxy | the client | nothing: the proxied role trusts the `forge` network |
+| Behind another proxy / load balancer | **the proxy** until configured: every client shares one bucket | `FORGE_HTTP_TRUSTED_PROXIES=<proxy CIDRs>` |
+
+```sh
+export FORGE_HTTP_TRUSTED_PROXIES=10.0.0.0/24   # your load balancer's subnet
+```
 
 Key by something the application has authenticated whenever possible:
 
@@ -90,11 +99,9 @@ byUser := func(r *http.Request) string {
 // several values: ratelimit.Join(p.Tenant().ID.String(), p.SubjectID().String())
 ```
 
-If you must key by client address behind a proxy, write the `KeyFunc`
-yourself, read the single header your proxy **overwrites** (not appends), and
-only do so when the proxy is the only network path to the application
-(firewall the container port). A `KeyFunc` that trusts a header the client
-can set lets one client use unlimited keys and bypass the limit entirely.
+Do not write a `KeyFunc` that reads a forwarding header directly: a header
+the client can set lets one client use unlimited keys and bypass the limit
+entirely. Configure the trusted proxies and use `ByClientIP` instead.
 
 An empty key is not "unlimited": unidentifiable clients share one bucket.
 

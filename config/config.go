@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -38,6 +39,11 @@ type HTTP struct {
 	ShutdownTimeout   time.Duration
 	MaxHeaderBytes    int
 	MaxBodyBytes      int64
+	// TrustedProxies are the networks of the reverse proxies whose
+	// X-Forwarded-For header is believed when resolving the client address
+	// (FORGE_HTTP_TRUSTED_PROXIES, ADR 0037). Empty, the default, trusts
+	// nobody: the client address is the TCP peer.
+	TrustedProxies []netip.Prefix
 }
 
 // Database configures the database connection pool. The URL's scheme selects
@@ -162,6 +168,11 @@ func (c Config) Validate() error {
 	}
 	if c.HTTP.MaxHeaderBytes <= 0 || c.HTTP.MaxBodyBytes <= 0 {
 		return errors.New("HTTP size limits must be positive")
+	}
+	for i, prefix := range c.HTTP.TrustedProxies {
+		if err := checkTrustedProxy(prefix); err != nil {
+			return fmt.Errorf("invalid FORGE_HTTP_TRUSTED_PROXIES: entry %d %s", i+1, err)
+		}
 	}
 	if err := c.Database.validate(c.Environment); err != nil {
 		return err

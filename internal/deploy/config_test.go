@@ -252,3 +252,42 @@ func TestDocumentedConfigIsValid(t *testing.T) {
 		t.Fatalf("documented config parsed unexpectedly: %+v", cfg)
 	}
 }
+
+func TestProxiedRoleTrustsTheForgeNetworkUnlessConfigured(t *testing.T) {
+	cfg, err := ParseConfig([]byte(validConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := commands{cfg: cfg}
+	web := cmds.runRole("web", "v1", "shop-web-v1-a").Script
+	if !strings.HasPrefix(web, "forge_proxies=$(docker network inspect --format ") ||
+		!strings.Contains(web, ` --env "FORGE_HTTP_TRUSTED_PROXIES=$forge_proxies" `) {
+		t.Fatalf("proxied role does not trust the forge network:\n%s", web)
+	}
+	if !strings.Contains(web, `[ -n "$forge_proxies" ] || {`) {
+		t.Fatalf("an empty subnet list is not refused:\n%s", web)
+	}
+	if jobs := cmds.runRole("jobs", "v1", "shop-jobs-v1-a").Script; strings.Contains(jobs, "FORGE_HTTP_TRUSTED_PROXIES") || strings.Contains(jobs, "forge_proxies") {
+		t.Fatalf("role without the proxy trusts proxies:\n%s", jobs)
+	}
+
+	for name, set := range map[string]func(*Config){
+		"global clear": func(c *Config) { c.Env.Clear[TrustedProxiesEnv] = "10.0.0.0/8" },
+		"role clear": func(c *Config) {
+			role := c.Servers["web"]
+			role.Env.Clear = map[string]string{TrustedProxiesEnv: ""}
+			c.Servers["web"] = role
+		},
+		"secret": func(c *Config) { c.Env.Secret = append(c.Env.Secret, TrustedProxiesEnv) },
+	} {
+		cfg, err := ParseConfig([]byte(validConfig))
+		if err != nil {
+			t.Fatal(err)
+		}
+		set(cfg)
+		script := commands{cfg: cfg}.runRole("web", "v1", "shop-web-v1-a").Script
+		if strings.Contains(script, "forge_proxies") {
+			t.Errorf("%s: an explicit %s is overridden:\n%s", name, TrustedProxiesEnv, script)
+		}
+	}
+}

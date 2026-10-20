@@ -34,6 +34,7 @@ type container struct {
 	Seq     int               `json:"seq"`
 	Created time.Time         `json:"created"`
 	EnvFile string            `json:"env_file"`
+	Env     map[string]string `json:"env"`
 	Args    []string          `json:"args"`
 	Publish []string          `json:"publish"`
 }
@@ -49,6 +50,9 @@ type state struct {
 	OneOffs     [][]string        `json:"one_offs"`
 	EnvSeen     map[string]string `json:"env_seen"`
 }
+
+// fakeSubnet is the one subnet every fake forge network has.
+const fakeSubnet = "172.18.0.0/16"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -141,6 +145,15 @@ func dispatch(dir string, st *state, args []string) int {
 				return 0
 			}
 			return 1
+		}
+		// The forge network's subnets, as forge deploy reads them for
+		// FORGE_HTTP_TRUSTED_PROXIES.
+		if len(args) == 5 && args[1] == "inspect" && args[2] == "--format" && strings.Contains(args[3], ".IPAM.Config") {
+			if !slices.Contains(st.Networks, args[4]) {
+				return fail(1, "network %s not found", args[4])
+			}
+			fmt.Println(fakeSubnet)
+			return 0
 		}
 		if len(args) == 3 && args[1] == "create" {
 			st.Networks = append(st.Networks, args[2])
@@ -245,7 +258,7 @@ func runContainer(st *state, args []string) int {
 		case "--detach":
 			detach = true
 		case "--interactive", "--tty":
-		case "--name", "--network", "--restart", "--stop-timeout", "--env-file", "--label", "--volume", "--publish":
+		case "--name", "--network", "--restart", "--stop-timeout", "--env-file", "--env", "--label", "--volume", "--publish":
 			if i+1 >= len(args) {
 				return fail(125, "flag %s needs a value", args[i])
 			}
@@ -255,6 +268,12 @@ func runContainer(st *state, args []string) int {
 				c.Name = value
 			case "--env-file":
 				c.EnvFile = value
+			case "--env":
+				key, val, _ := strings.Cut(value, "=")
+				if c.Env == nil {
+					c.Env = map[string]string{}
+				}
+				c.Env[key] = val
 			case "--label":
 				key, val, _ := strings.Cut(value, "=")
 				c.Labels[key] = val

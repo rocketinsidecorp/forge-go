@@ -28,23 +28,35 @@ var ErrUnavailable = fault.New("rate_limit_unavailable", "the service is tempora
 // exempt).
 type KeyFunc func(r *http.Request) string
 
-// ByRemoteAddr keys by the peer address of the TCP connection, the only
-// address a client cannot forge. IPv4 addresses are used whole; IPv6
-// addresses are reduced to their /64 prefix, because one subscriber
+// ByClientIP keys by the client address the HTTP server resolved
+// (web.ClientIP): the TCP peer, unless the peer is a trusted proxy listed in
+// FORGE_HTTP_TRUSTED_PROXIES, in which case it is the first untrusted
+// address of X-Forwarded-For read from the right (ADR 0037). A client that
+// reaches the application directly cannot choose it; with no trusted
+// proxies configured it equals ByRemoteAddr. IPv4 addresses are used whole;
+// IPv6 addresses are reduced to their /64 prefix, because one subscriber
 // routinely controls a whole /64 and could otherwise rotate through
 // addresses.
 //
-// Behind a reverse proxy (FORGE_HTTP_TRANSPORT=trusted-proxy) the peer is
-// the proxy, so every client shares one bucket. Forge does not interpret
-// X-Forwarded-For (see the roadmap): key by something the application
-// authenticates (the session or user ID), or write a KeyFunc that reads the
-// one header your proxy overwrites, only when the proxy is the sole path to
-// the application.
+// It is the key to use for per-client limits, including behind forge-proxy,
+// where `forge deploy` configures the trusted proxies.
+func ByClientIP(r *http.Request) string {
+	return addressKey(web.ClientIP(r))
+}
+
+// ByRemoteAddr keys by the peer address of the TCP connection, whatever the
+// trusted proxies (IPv6 reduced to its /64 like ByClientIP). Behind a
+// reverse proxy the peer is the proxy, so every client shares one bucket;
+// use ByClientIP for per-client limits.
 func ByRemoteAddr(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
+	return addressKey(host)
+}
+
+func addressKey(host string) string {
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
 		return host
@@ -110,7 +122,7 @@ type middleware struct {
 // to App.Use for the whole application, or wrap one route, like Rails'
 // `rate_limit to: 10, within: 3.minutes, only: :create`:
 //
-//	create, err := ratelimit.Middleware(limiter, ratelimit.ByRemoteAddr,
+//	create, err := ratelimit.Middleware(limiter, ratelimit.ByClientIP,
 //	    ratelimit.Limit{N: 10, Per: 3 * time.Minute})
 //	if err != nil { return err }
 //	err = r.Handle("POST /comments", create(http.HandlerFunc(h.Create)))

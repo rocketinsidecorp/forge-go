@@ -66,3 +66,16 @@ block; the PostgreSQL throttler (scope 3, migration
 `20261020120000_login_throttle_pair_scope`) locks counters in a fixed order,
 rolls refused attempts back and prunes a few expired counters on every
 attempt, replacing the "prune periodically" requirement above.
+
+## Addendum (2026-10-20): trusted proxies
+
+The source is now the client address the HTTP server resolves under the
+trusted-proxy policy of [ADR 0037](0037-trusted-proxies-and-client-ip.md):
+the TCP peer, unless the peer is listed in `FORGE_HTTP_TRUSTED_PROXIES`, in
+which case it is the first untrusted `X-Forwarded-For` entry read from the
+right. The default list is empty, so the paragraph above ("derives the source
+only from `RemoteAddr`") still describes an unconfigured application. Behind
+forge-proxy, `forge deploy` lists the proxy's network, so each client has its
+own source and pair counters instead of sharing the proxy's (forge-go#11).
+Success still does not clear the source counter: with per-client sources
+that counter is the client's own, which is the intended spraying limit.

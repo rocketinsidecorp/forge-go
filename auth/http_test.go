@@ -5,12 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 type revokeStub struct {
@@ -213,5 +217,84 @@ func TestAuditedLogoutStaysIdempotentWhenAuditFails(t *testing.T) {
 	}
 	if len(auditor.events) != 1 {
 		t.Fatalf("audit calls=%d", len(auditor.events))
+	}
+}
+
+// TestSourceThrottleBehindTrustedProxyCountsEachClient is the regression
+// test for forge-go#11: behind a trusted proxy every client used to share
+// the proxy's source counter, so a few hundred attempts from anyone refused
+// every sign-in. With the proxy trusted (ADR 0037) each client has its own
+// counter, and a client cannot escape its counter with X-Forwarded-For.
+func TestSourceThrottleBehindTrustedProxyCountsEachClient(t *testing.T) {
+	limiter, err := newMemoryLoginThrottler(LoginThrottleConfig{
+		Window:       time.Minute,
+		AccountLimit: 100,
+		SourceLimit:  2,
+		MaxEntries:   100,
+	}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewLoginService(&loginStoreStub{}, &sessionStub{}, WithLoginThrottler(limiter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := NewLoginHandler(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted, err := web.NewTrustedProxies(netip.MustParsePrefix("172.18.0.0/16"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := trusted.Middleware(login)
+	attempt := 0
+	try := func(remote, forwardedFor string) int {
+		attempt++
+		// A different login every time: only the source counter can refuse.
+		body := fmt.Sprintf(`{"email":"user%d@example.com","password":"wrong","tenant":"acme"}`, attempt)
+		request := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.RemoteAddr = remote
+		if forwardedFor != "" {
+			request.Header.Set("X-Forwarded-For", forwardedFor)
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder.Code
+	}
+	const proxy = "172.18.0.2:41000"
+
+	// Client A, through the proxy, uses up its source budget.
+	for range 2 {
+		if code := try(proxy, "203.0.113.10"); code != http.StatusUnauthorized {
+			t.Fatalf("client A attempt: %d", code)
+		}
+	}
+	if code := try(proxy, "203.0.113.10"); code != http.StatusTooManyRequests {
+		t.Fatalf("client A over its source limit: %d, want 429", code)
+	}
+	// Client B, through the same proxy, is not affected.
+	if code := try(proxy, "203.0.113.20"); code != http.StatusUnauthorized {
+		t.Fatalf("client B behind the same proxy: %d, want 401 (independent counter)", code)
+	}
+	// Client A cannot get a fresh counter: an appending proxy puts A's
+	// real address last, and entries A wrote to its left are never read.
+	if code := try(proxy, "198.51.100.99, 203.0.113.10"); code != http.StatusTooManyRequests {
+		t.Fatalf("client A spoofing a prefix: %d, want 429", code)
+	}
+	// Nor by reaching the application directly with a forged header: the
+	// peer is not a trusted proxy, so the header is ignored.
+	if code := try("203.0.113.10:5000", "198.51.100.98"); code != http.StatusTooManyRequests {
+		t.Fatalf("client A direct with a forged header: %d, want 429", code)
+	}
+	// And IPv6 clients are counted per /64 behind the proxy too.
+	for range 2 {
+		if code := try(proxy, "2001:db8:1:2::1"); code != http.StatusUnauthorized {
+			t.Fatalf("IPv6 client attempt: %d", code)
+		}
+	}
+	if code := try(proxy, "2001:db8:1:2::ffff"); code != http.StatusTooManyRequests {
+		t.Fatalf("another address of the same /64: %d, want 429", code)
 	}
 }

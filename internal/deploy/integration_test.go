@@ -300,6 +300,7 @@ type fakeState struct {
 		Labels  map[string]string
 		Args    []string
 		Publish []string
+		Env     map[string]string
 	}
 	Routes      map[string]string
 	Maintenance map[string]bool
@@ -416,6 +417,19 @@ func TestSSHIntegration(t *testing.T) {
 		for _, c := range beta.Containers {
 			if c.Labels[labelRole] == "jobs" && (len(c.Args) != 1 || c.Args[0] != "jobs") {
 				t.Fatalf("jobs cmd = %v", c.Args)
+			}
+			// Only the proxied role trusts the forge network's forwarded
+			// client addresses (ADR 0037).
+			proxies, set := c.Env[TrustedProxiesEnv]
+			switch c.Labels[labelRole] {
+			case "web":
+				if proxies != "172.18.0.0/16" {
+					t.Fatalf("web %s: %s = %q, want the forge network's subnet", c.Name, TrustedProxiesEnv, proxies)
+				}
+			case "jobs":
+				if set {
+					t.Fatalf("jobs %s trusts proxies %q", c.Name, proxies)
+				}
 			}
 		}
 		if len(alpha.OneOffs) != 2 || len(beta.OneOffs) != 0 || alpha.OneOffs[1][1] != "migrate" {

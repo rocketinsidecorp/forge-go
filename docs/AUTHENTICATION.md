@@ -198,11 +198,15 @@ bounded batches using `SKIP LOCKED` to empty a table that stopped receiving
 attempts. `MaxEntries` bounds only the in-memory throttler.
 
 A blocked login returns `login_throttled` with HTTP `429`; the HTTP adapter
-also sends `Retry-After`. Source detection uses the socket peer from
-`RemoteAddr` only. Forge does not trust `X-Forwarded-For` until an explicit
-trusted-proxy policy exists.
+also sends `Retry-After`. The source is the client address the HTTP server
+resolved (`web.ClientIP`): the socket peer, unless the peer is a trusted proxy
+listed in `FORGE_HTTP_TRUSTED_PROXIES`, in which case it is the first
+untrusted `X-Forwarded-For` entry read from the right. The default trusts
+nobody; `forge deploy` trusts the forge-proxy network, so clients behind
+forge-proxy get their own counters.
 
-See [ADR 0011](adr/0011-login-throttling.md).
+See [ADR 0011](adr/0011-login-throttling.md) and
+[ADR 0037](adr/0037-trusted-proxies-and-client-ip.md).
 
 ## Browser cookie sessions and CSRF
 

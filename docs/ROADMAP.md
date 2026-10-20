@@ -118,10 +118,12 @@ Core changes made alongside:
 
 Not scheduled in a specific phase unless noted.
 
-- `X-Forwarded-For` / `X-Forwarded-Proto` are not interpreted; handlers see
-  the proxy's address behind `trusted-proxy`. `ratelimit.ByRemoteAddr`
-  therefore puts every client behind a proxy in one bucket: key by an
-  authenticated value instead ([RATE_LIMITING.md](RATE_LIMITING.md)).
+- `X-Forwarded-Proto` is not interpreted (the scheme comes from the
+  transport setting). `X-Forwarded-For` is read only from trusted proxies
+  (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037); `Forwarded` (RFC 7239) is not
+  supported.
+- forge-proxy cannot run behind another load balancer and keep client
+  addresses: it always replaces `X-Forwarded-For`.
 - Readiness results are not cached; every probe runs the checks.
 - Matched requests are looked up in `ServeMux` twice (once to detect
   unmatched routes); tracked for Phase 9.
@@ -447,7 +449,11 @@ cache) and a conformance suite
 - [ ] Per-route request body limits: `FORGE_HTTP_MAX_BODY_BYTES` caps every
   route and an upload route cannot raise it, so uploads are bounded by the
   global limit.
-- [ ] Trusted-proxy policy for client addresses (limiter keys, audit sources).
+- [x] Trusted-proxy policy for client addresses (`FORGE_HTTP_TRUSTED_PROXIES`,
+  `web.ClientIP`, `ratelimit.ByClientIP`; throttles, rate limits, stream caps
+  and audit sources; `forge deploy` trusts the forge-proxy network;
+  [ADR 0037](adr/0037-trusted-proxies-and-client-ip.md)). Forge-Rust port
+  pending (same key and semantics).
 - [ ] Generated-application wiring (`forge new` options for cache, storage and
   rate limit, a `forge generate` attachment helper), image variants, malware
   scanning hook, cache tags/pattern invalidation, a distributed cache lock.

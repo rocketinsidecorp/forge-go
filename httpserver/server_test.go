@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -183,5 +184,56 @@ func TestInstrumentWrapsRecoveryAndBodyLimitInsideTheRequestID(t *testing.T) {
 		Instrument: func(http.Handler) http.Handler { return nil },
 	}); err == nil {
 		t.Fatal("a nil instrumented handler must be rejected")
+	}
+}
+
+func TestServerResolvesClientIPFromTrustedProxiesOnly(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.HTTP.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("172.18.0.0/16")}
+	var seen, seenByMiddleware, seenByInstrument string
+	server, err := httpserver.NewWithOptions(cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = web.ClientIP(r)
+		w.WriteHeader(http.StatusNoContent)
+	}), slog.New(slog.NewTextHandler(io.Discard, nil)), httpserver.Options{
+		Instrument: func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seenByInstrument = web.ClientIP(r)
+				next.ServeHTTP(w, r)
+			})
+		},
+		Middlewares: []httpserver.Middleware{func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seenByMiddleware = web.ClientIP(r)
+				next.ServeHTTP(w, r)
+			})
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ remote, xff, want string }{
+		{"172.18.0.2:5000", "203.0.113.9", "203.0.113.9"},
+		{"198.51.100.7:4000", "203.0.113.9", "198.51.100.7"},
+		{"172.18.0.2:5000", "", "172.18.0.2"},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.RemoteAddr = tc.remote
+		if tc.xff != "" {
+			request.Header.Set("X-Forwarded-For", tc.xff)
+		}
+		server.Handler().ServeHTTP(httptest.NewRecorder(), request)
+		if seen != tc.want || seenByMiddleware != tc.want || seenByInstrument != tc.want {
+			t.Fatalf("%s with X-Forwarded-For %q: handler %q, middleware %q, instrument %q, want %q", tc.remote, tc.xff, seen, seenByMiddleware, seenByInstrument, tc.want)
+		}
+	}
+}
+
+func TestServerRejectsUnsafeTrustedProxies(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.HTTP.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}
+	if _, err := httpserver.New(cfg, http.NotFoundHandler(), slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+		t.Fatal("a server trusting every address was built")
 	}
 }

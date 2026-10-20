@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 type clock struct {
@@ -417,4 +420,62 @@ type limiterFunc func(context.Context, string, Limit) (Decision, error)
 
 func (f limiterFunc) Allow(ctx context.Context, key string, limit Limit) (Decision, error) {
 	return f(ctx, key, limit)
+}
+
+func TestByClientIPWithoutResolverIsThePeer(t *testing.T) {
+	m, _ := NewMemory(MemoryOptions{})
+	var n atomic.Int32
+	h := newTestMiddleware(t, m, ByClientIP, Limit{N: 1, Per: time.Minute})(okHandler(&n))
+	spoof := func(ip string) http.Header {
+		return http.Header{"X-Forwarded-For": {ip}, "X-Real-Ip": {ip}, "Forwarded": {"for=" + ip}}
+	}
+	if do(h, "GET", "/", "203.0.113.7:1", spoof("1.1.1.1")).Code != 204 {
+		t.Fatal("first request")
+	}
+	if do(h, "GET", "/", "203.0.113.7:2", spoof("2.2.2.2")).Code != 429 {
+		t.Fatal("rotating forwarded headers must not evade the limit")
+	}
+}
+
+func TestByClientIPBehindTrustedProxy(t *testing.T) {
+	trusted, err := web.NewTrustedProxies(netip.MustParsePrefix("172.18.0.0/16"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := NewMemory(MemoryOptions{})
+	var n atomic.Int32
+	h := trusted.Middleware(newTestMiddleware(t, m, ByClientIP, Limit{N: 1, Per: time.Minute})(okHandler(&n)))
+	xff := func(ip string) http.Header { return http.Header{"X-Forwarded-For": {ip}} }
+	const proxy = "172.18.0.2:41000"
+	if do(h, "GET", "/", proxy, xff("203.0.113.10")).Code != 204 {
+		t.Fatal("client A first request")
+	}
+	if do(h, "GET", "/", proxy, xff("203.0.113.20")).Code != 204 {
+		t.Fatal("client B behind the same proxy shares A's bucket")
+	}
+	if do(h, "GET", "/", proxy, xff("198.51.100.1, 203.0.113.10")).Code != 429 {
+		t.Fatal("client A escaped its bucket with a forged prefix")
+	}
+	if do(h, "GET", "/", "203.0.113.10:5", xff("198.51.100.2")).Code != 429 {
+		t.Fatal("client A escaped its bucket with a forged header sent directly")
+	}
+	if do(h, "GET", "/", proxy, xff("2001:db8:1:2::1")).Code != 204 {
+		t.Fatal("IPv6 client first request")
+	}
+	if do(h, "GET", "/", proxy, xff("2001:db8:1:2::2")).Code != 429 {
+		t.Fatal("IPv6 client escaped with another address of its /64")
+	}
+	// ByRemoteAddr keeps keying by the peer: everyone behind the proxy is
+	// one bucket.
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = proxy
+	r.Header.Set("X-Forwarded-For", "203.0.113.10")
+	trusted.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if got := ByRemoteAddr(r); got != "172.18.0.2" {
+			t.Errorf("ByRemoteAddr = %q, want the peer", got)
+		}
+		if got := ByClientIP(r); got != "203.0.113.10" {
+			t.Errorf("ByClientIP = %q, want the client", got)
+		}
+	})).ServeHTTP(httptest.NewRecorder(), r)
 }

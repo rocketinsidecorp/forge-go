@@ -158,3 +158,12 @@ must not be derived from client-controlled input (the type documents this).
 - Behind a proxy the default key is useless until the application chooses a
   better one; the framework does not guess.
 - MySQL and MariaDB limiters were verified on MariaDB; CI also covers MySQL 8.4.
+
+## Addendum (2026-10-20): `ByClientIP`
+
+[ADR 0037](0037-trusted-proxies-and-client-ip.md) adds the first-party
+trusted-proxy policy this ADR deferred. `ratelimit.ByClientIP` keys by the
+resolved client address (`web.ClientIP`, IPv6 by `/64`) and is now the
+documented default; behind forge-proxy it identifies each client. With no
+trusted proxies configured it equals `ByRemoteAddr`, which keeps its meaning
+(the peer, whatever the policy).
