@@ -75,7 +75,7 @@ func currentCommandCatalog() commandCatalog {
 				{Name: "--skip-deps", Description: "Do not resolve Go dependencies."},
 			},
 		},
-		{Name: "dev", Usage: "forge dev [NAME]", Summary: "Run the application in development mode.", SideEffects: []string{"subprocess", "application_defined"}, Examples: []string{"forge dev", "forge dev api"}, Environment: runtimeEnvironment()},
+		devCommandDetail(),
 		{Name: "test", Usage: "forge test [ARGS]", Summary: "Run Go tests with Forge environment files loaded.", SideEffects: []string{"subprocess", "application_defined"}, Examples: []string{"forge test", "forge test ./... -run TestHealth"}, Environment: testEnvironment()},
 		{Name: "build", Usage: "forge build [NAME]", Summary: "Build the application binary under bin/.", SideEffects: []string{"filesystem_write", "subprocess"}, Examples: []string{"forge build", "forge build worker"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "The Go build subprocess inherits the caller environment; Forge .env files are not loaded."}},
 		{Name: "migrate", Usage: "forge migrate [status]", Summary: "Apply pending migrations or report migration status.", SideEffects: []string{"database_write", "database_read"}, Examples: []string{"forge migrate", "forge migrate status"}, Environment: runtimeEnvironment()},

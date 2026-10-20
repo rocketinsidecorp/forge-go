@@ -287,7 +287,9 @@ func usage(output io.Writer) {
 commands:
   new NAME            generate an application with Dockerfile, compose and CI;
                       --database postgresql (default), mysql, mariadb, sqlite or none
-  dev                 run the application in development mode
+  dev [NAME] [--no-reload] [--poll-interval D]
+                      run the application; rebuild, restart gracefully and
+                      reload the browser when files change
   test [ARGS]         go test with .env.development loaded (default ./...)
   build               compile the application into bin/
   migrate [status]    apply pending migrations, or list them
