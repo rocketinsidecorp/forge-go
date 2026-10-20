@@ -239,6 +239,48 @@ internet (no `ports:` mapping in Compose, no public Service or load-balancer
 rule in Kubernetes). A non-loopback address without that confirmation stops
 `production` at startup and logs a warning elsewhere.
 
+## Local stack: Grafana, Prometheus, Tempo and Loki
+
+`forge new` generates `compose.observability.yaml` and an `observability/`
+directory that run an OpenTelemetry Collector, Prometheus, Tempo, Loki and
+Grafana next to the application, already wired
+([ADR 0037](adr/0037-local-observability-stack.md)). It is opt-in: the default
+`docker compose up` does not start it.
+
+```bash
+export GRAFANA_ADMIN_PASSWORD="$(openssl rand -base64 18)"   # required; or put it in .env
+docker compose -f compose.yaml -f compose.observability.yaml up --build
+curl http://127.0.0.1:8080/v1/status
+# Grafana: http://127.0.0.1:3000 (user admin) opens the "Forge application" dashboard
+# Prometheus: http://127.0.0.1:9090
+docker compose -f compose.yaml -f compose.observability.yaml down      # add -v to delete the data
+```
+
+| Signal | Path | Where to look in Grafana |
+| ------ | ---- | ------------------------ |
+| Traces | app, OTLP to the collector, then Tempo | Explore, Tempo; the dashboard's "Recent traces" |
+| Metrics | app, OTLP to the collector, then Prometheus's OTLP receiver | The dashboard; Explore, Prometheus |
+| Logs | Docker fluentd log driver, the collector, then Loki's OTLP endpoint | The dashboard's "Application logs"; Explore, Loki |
+
+Traces and logs are linked both ways: a span's "Logs for this span" opens Loki
+filtered by its trace ID, and the `trace_id` in a log line is a link to the
+trace. Log lines carry `trace_id` when they are written with a traced context
+(`logger.InfoContext(ctx, ...)`, `web.Logger(ctx)`); the framework itself logs
+startup and errors, not every request. The collector reads `level`, `trace_id`
+and `span_id` from logfmt or JSON lines and keeps the line unchanged.
+
+Every published port binds `127.0.0.1` (Grafana `GRAFANA_PORT`, Prometheus
+`PROMETHEUS_PORT`, the collector's OTLP 4318 and log intake 24224), Grafana has
+no default password and no anonymous access, nothing is sent off the machine,
+and images are pinned by version and digest. The application's own variables
+stay the ones above; the overlay only sets `FORGE_TELEMETRY_EXPORTER=otlp`,
+`FORGE_TELEMETRY_OTLP_ENDPOINT`, `FORGE_TELEMETRY_SERVICE_NAME` and a 15 s
+`FORGE_TELEMETRY_METRICS_INTERVAL` on the `app` service. An application started
+with `forge dev` can export to the running collector
+(`FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318`);
+its logs stay in the terminal. The dashboard has no Go runtime or connection
+pool panels because the framework does not export those metrics yet.
+
 ## Propagation and sampling
 
 By default incoming `traceparent` and `tracestate` headers are ignored and
@@ -343,8 +385,9 @@ Recording into an existing metric series does not allocate.
 
 ## Limitations
 
-- Traces and metrics only; logs stay on standard output (collect them with
-  your log shipper and join on `trace_id`).
+- Traces and metrics only; logs stay on standard output (the local stack above
+  ships them with Docker's log driver; elsewhere use your log shipper and join
+  on `trace_id`). There is no OTLP log exporter.
 - OTLP/HTTP with JSON encoding only; no gRPC and no protobuf encoding.
 - Metric temporality is cumulative; exemplars and exponential histograms are
   not implemented.

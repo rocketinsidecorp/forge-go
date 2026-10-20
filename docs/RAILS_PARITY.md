@@ -26,7 +26,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Import maps, Turbo, Stimulus | Hotwire | Done | Done |
 | Turbo Streams over SSE | Action Cable | Done | Planned |
 | Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Planned |
-| Preconfigured Prometheus, Grafana, Tempo, Loki | — | Planned | Planned |
+| Preconfigured Prometheus, Grafana, Tempo, Loki | — | Done (`compose.observability.yaml`, [ADR 0037](adr/0037-local-observability-stack.md)) | Planned |
 | Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge-proxy`) | Planned |
 | Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | Planned |
 | Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`) | Planned |

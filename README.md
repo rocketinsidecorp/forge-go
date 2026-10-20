@@ -327,10 +327,12 @@ myapp/
   Dockerfile                   # multi-stage, distroless, nonroot
   .dockerignore                # excludes .git, .github, storage, all .env* files
   compose.yaml                 # database server (if any), one-off migrate, app
+  compose.observability.yaml   # opt-in overlay: collector, Prometheus, Tempo, Loki, Grafana
+  observability/               # their configuration, Grafana data sources and dashboard
   .gitignore                   # ignores .env, .env.local, .env.*.local (and /storage/ for SQLite)
   README.md
   .github/workflows/ci.yml     # gofmt, vet, test -race (with a database service), govulncheck, docker build
-  .github/dependabot.yml       # weekly Go module, Actions and Docker updates
+  .github/dependabot.yml       # weekly Go module, Actions, Docker and Compose updates
 ```
 
 With `--database none`, `db/`, the database wiring, and the Compose and CI
@@ -761,6 +763,29 @@ Pass `app.Telemetry()` to adapters to trace database statements and jobs:
 applications already do). Collector and Prometheus configuration, the
 metric catalogue, cardinality rules and what is never recorded:
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
+
+### Grafana, Prometheus, Tempo and Loki, preconfigured
+
+Every generated application includes an opt-in observability stack
+(`compose.observability.yaml` and `observability/`): an OpenTelemetry
+Collector, Prometheus, Tempo (traces), Loki (logs) and Grafana with the data
+sources, trace-to-log links and a starter dashboard provisioned. Everything
+stays on your machine and every port is bound to `127.0.0.1`
+([ADR 0037](docs/adr/0037-local-observability-stack.md)).
+
+```bash
+forge new myapp && cd myapp
+export GRAFANA_ADMIN_PASSWORD="$(openssl rand -base64 18)"   # required; or put it in .env
+docker compose -f compose.yaml -f compose.observability.yaml up --build
+curl http://127.0.0.1:8080/v1/status
+# Grafana http://127.0.0.1:3000 (user admin): dashboard "Forge application",
+# Explore > Tempo (traces), Explore > Loki (logs); Prometheus http://127.0.0.1:9090
+docker compose -f compose.yaml -f compose.observability.yaml down      # add -v to delete the data
+```
+
+The default `docker compose up` does not start it. See
+[docs/OBSERVABILITY.md](docs/OBSERVABILITY.md#local-stack-grafana-prometheus-tempo-and-loki)
+for how logs reach Loki and what the dashboard shows.
 
 ## Example
 
