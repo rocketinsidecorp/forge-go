@@ -604,8 +604,12 @@ forge db status              # framework migrations of a set you removed: "disab
 
 `forge generate migration NAME` (run in the application root) creates the
 pair with the current UTC time as the version. `NAME` must match
-`^[a-z][a-z0-9_]{0,99}$`. If another migration already uses that second, the
-version is moved forward one second at a time. Existing files are never
+`^[a-z][a-z0-9_]{0,99}$`. If another migration in `db/migrations` already
+uses that second, or the second is a framework migration's reserved version
+(`migrate.FrameworkMigrations()`, which the migrator would refuse alongside
+yours), the version is moved forward one second at a time until it is free.
+The model, resource, scaffold and controller generators choose their
+migration versions the same way. Existing files are never
 overwritten. Both generated files contain only comments, so the migrator
 refuses them until you write the SQL. Delete the `.down.sql` file if the
 change cannot be reverted.

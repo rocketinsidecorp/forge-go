@@ -117,3 +117,14 @@ the same destroy rules. The Rust port keeps its own idioms (typed handlers,
 compile-time checked templates, its own queue and mail crates) and its
 own tests that generate into a fresh application and run `cargo fmt`, `clippy`
 and `cargo test` on the result.
+
+**Addendum (2026-10-20, rocketinsidecorp/forge-go#18).** Every generator that
+writes a migration (`generate migration`, `model`, `resource`, `scaffold` and a
+guarded `controller`) moves its timestamp version forward one second at a time
+while it is taken, either by a file already in `db/migrations` or by a
+framework migration's reserved version (`migrate.FrameworkMigrations()`, ADR
+0039); before, a generator run in the second of a framework migration
+(2026-10-20 12:00:00 UTC is `login_throttle_pair_scope`) wrote a migration the
+migrator then refused. Forge-Rust's `forge generate migration` and its other
+migration-writing generators need the same guard against Forge-Rust's
+framework versions; it is tracked in a Forge-Rust issue.

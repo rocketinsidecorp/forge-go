@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/migrate"
 )
 
 func TestGenerateMigration(t *testing.T) {
@@ -37,6 +40,53 @@ func TestGenerateMigration(t *testing.T) {
 	for _, name := range []string{"CreateWidgets", "1widgets", "drop-table", "../escape", ""} {
 		if _, _, err := generateMigration(root, name, now); err == nil {
 			t.Errorf("name %q accepted", name)
+		}
+	}
+}
+
+// A framework migration's version is reserved (migrate.FrameworkMigrations):
+// the migrator refuses an application migration with that version and
+// another name, so a migration generated in that second moves to the next
+// free one, past the application's own migrations too (#18).
+func TestGenerateMigrationSkipsReservedFrameworkVersions(t *testing.T) {
+	t.Parallel()
+	reserved := make(map[string]bool)
+	for _, migration := range migrate.FrameworkMigrations() {
+		reserved[strconv.FormatInt(migration.Version, 10)] = true
+	}
+	// 2026-10-20 12:00:00 UTC is auth/postgres's login_throttle_pair_scope.
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	if !reserved[now.Format("20060102150405")] {
+		t.Fatal("the pinned clock must be a framework migration's version")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "db", "migrations"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"20261020120001_first.up.sql", "20261020120002_second.up.sql"} {
+		name := strings.TrimSuffix(want[15:], ".up.sql")
+		up, _, err := generateMigration(root, name, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if filepath.Base(up) != want {
+			t.Fatalf("generated %s, want %s", filepath.Base(up), want)
+		}
+	}
+	// No framework version can be generated, whichever second the clock
+	// reads. (Versions that are not a valid time, such as 20261003240000,
+	// cannot come from a clock.)
+	for version := range reserved {
+		at, err := time.Parse("20060102150405", version)
+		if err != nil {
+			continue
+		}
+		up, _, err := generateMigration(root, "at_"+version, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := filepath.Base(up)[:14]; reserved[got] {
+			t.Fatalf("clock %s generated the reserved version %s", version, got)
 		}
 	}
 }
