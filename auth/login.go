@@ -170,7 +170,7 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, ErrCredentialsInvalid
 	}
 
-	throttleKey := deriveLoginThrottleKey(email, tenant, strings.TrimSpace(input.Source))
+	throttleKey := deriveLoginThrottleKey(email, input.Source)
 	decision, err := s.throttler.Attempt(ctx, throttleKey)
 	if err != nil {
 		return LoginResult{}, err

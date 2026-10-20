@@ -166,10 +166,15 @@ func WithRecoveryAuditor(auditor SecurityAuditor) RecoveryOption {
 	}
 }
 
+// DefaultRecoveryThrottleConfig is the password-recovery policy: in one hour,
+// 3 requests per login and source, 10 per login (so a victim's mailbox cannot
+// be flooded from many sources) and 30 per source, with at most 20,000
+// in-memory counters.
 func DefaultRecoveryThrottleConfig() LoginThrottleConfig {
 	return LoginThrottleConfig{
 		Window:       time.Hour,
-		AccountLimit: 3,
+		PairLimit:    3,
+		AccountLimit: 10,
 		SourceLimit:  30,
 		MaxEntries:   20_000,
 	}
@@ -212,7 +217,7 @@ func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) 
 		return nil
 	}
 
-	key := deriveRecoveryThrottleKey(email, tenant, strings.TrimSpace(request.Source))
+	key := deriveRecoveryThrottleKey(email, request.Source)
 	decision, err := s.throttler.Attempt(ctx, key)
 	if err != nil {
 		return err
@@ -264,7 +269,7 @@ func (s *RecoveryService) Reset(ctx context.Context, reset PasswordReset) error 
 	if err != nil {
 		return ErrRecoveryInvalid
 	}
-	key := deriveRecoveryResetThrottleKey(token.Digest(), strings.TrimSpace(reset.Source))
+	key := deriveRecoveryResetThrottleKey(token.Digest(), reset.Source)
 	decision, err := s.throttler.Attempt(ctx, key)
 	if err != nil {
 		return err
@@ -359,24 +364,15 @@ func (e *RecoveryThrottledError) Error() string { return ErrRecoveryThrottled.Er
 
 func (e *RecoveryThrottledError) Unwrap() error { return ErrRecoveryThrottled }
 
-func deriveRecoveryThrottleKey(email, tenant, source string) LoginThrottleKey {
-	key := LoginThrottleKey{
-		Account: sha256.Sum256([]byte("recovery-account\x00" + tenant + "\x00" + email)),
-	}
-	if source != "" {
-		key.Source = sha256.Sum256([]byte("recovery-source\x00" + source))
-		key.HasSource = true
-	}
-	return key
+// deriveRecoveryThrottleKey counts reset requests per login and source, per
+// login across sources (which also caps the mail one victim can be flooded
+// with) and per source.
+func deriveRecoveryThrottleKey(email, source string) LoginThrottleKey {
+	return newThrottleKey("recovery", email, source, true)
 }
 
+// deriveRecoveryResetThrottleKey counts reset submissions per token and per
+// source. The token already names the account, so there is no pair counter.
 func deriveRecoveryResetThrottleKey(digest Digest, source string) LoginThrottleKey {
-	key := LoginThrottleKey{
-		Account: sha256.Sum256(append([]byte("recovery-reset\x00"), digest[:]...)),
-	}
-	if source != "" {
-		key.Source = sha256.Sum256([]byte("recovery-reset-source\x00" + source))
-		key.HasSource = true
-	}
-	return key
+	return newThrottleKey("recovery-reset", string(digest[:]), source, false)
 }

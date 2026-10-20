@@ -725,13 +725,9 @@ func validTOTPLabel(value string, maxBytes int) bool {
 	})
 }
 
+// deriveMFAThrottleKey counts code attempts per challenge and per source. The
+// challenge is a secret only its holder has, so its budget is not split per
+// source and there is no pair counter.
 func deriveMFAThrottleKey(digest Digest, source string) LoginThrottleKey {
-	key := LoginThrottleKey{
-		Account: sha256.Sum256(append([]byte("mfa-challenge\x00"), digest[:]...)),
-	}
-	if source != "" {
-		key.Source = sha256.Sum256([]byte("mfa-source\x00" + source))
-		key.HasSource = true
-	}
-	return key
+	return newThrottleKey("mfa", string(digest[:]), source, false)
 }
