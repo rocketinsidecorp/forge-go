@@ -1,0 +1,85 @@
+package httpapi
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/rocketinsidecorp/forge-go/web"
+)
+[[- if not .Public]]
+
+// [[.Camel]]ControllerReadPermission is the permission every [[.Name]] route needs.
+const [[.Camel]]ControllerReadPermission = "[[.Name]]:read"
+[[- end]]
+
+// [[.Title]]ControllerRouter is where Register[[.Title]]Controller mounts the routes; *forge.App satisfies it.
+type [[.Title]]ControllerRouter interface {
+	Handle(pattern string, handler http.Handler) error
+}
+[[- if not .Public]]
+
+// [[.Title]]ControllerProtect wraps next so that only callers holding permission
+// reach it. The application decides how: with Forge identity it authenticates
+// the bearer token and requires the permission. Register[[.Title]]Controller never
+// mounts a route without it, so these endpoints cannot be public by accident.
+type [[.Title]]ControllerProtect func(permission string, next http.Handler) (http.Handler, error)
+[[- end]]
+
+// Register[[.Title]]Controller mounts the JSON routes of the [[.Name]] controller, one
+// per action:
+[[- range .Actions]]
+//
+//	[[.Pattern]]  [[.Title]]
+[[- end]]
+[[- if not .Public]]
+//
+// Every route requires "[[.Name]]:read".
+[[- end]]
+func Register[[.Title]]Controller(routes [[.Title]]ControllerRouter[[if not .Public]], protect [[.Title]]ControllerProtect[[end]]) error {
+	if routes == nil {
+		return errors.New("httpapi: a router is required")
+	}
+[[- if not .Public]]
+	if protect == nil {
+		return errors.New("httpapi: a protect function is required: [[.Name]] routes are never public (generate with --public to publish them)")
+	}
+[[- end]]
+	controller := [[.Camel]]Controller{}
+[[- range .Actions]]
+[[- if $.Public]]
+	// The literal pattern lets `forge routes` list this route.
+	if err := routes.Handle("[[.Pattern]]", http.HandlerFunc(controller.[[.Title]])); err != nil {
+		return err
+	}
+[[- else]]
+	[[.Camel]]Handler, err := protect([[$.Camel]]ControllerReadPermission, http.HandlerFunc(controller.[[.Title]]))
+	if err != nil {
+		return err
+	}
+	if [[.Camel]]Handler == nil {
+		return errors.New("httpapi: the protect function returned no handler for [[.Pattern]]")
+	}
+	// The literal pattern lets `forge routes` list this route.
+	if err := routes.Handle("[[.Pattern]]", [[.Camel]]Handler); err != nil {
+		return err
+	}
+[[- end]]
+[[- end]]
+	return nil
+}
+
+type [[.Camel]]Controller struct{}
+
+// [[.Camel]]ControllerResponse is what every action answers. Replace it with
+// the type each action returns.
+type [[.Camel]]ControllerResponse struct {
+	Controller string `json:"controller"`
+	Action     string `json:"action"`
+}
+[[- range .Actions]]
+
+// [[.Title]] answers [[.Pattern]].
+func ([[$.Camel]]Controller) [[.Title]](w http.ResponseWriter, _ *http.Request) {
+	web.JSON(w, http.StatusOK, [[$.Camel]]ControllerResponse{Controller: "[[$.Name]]", Action: "[[.Name]]"})
+}
+[[- end]]

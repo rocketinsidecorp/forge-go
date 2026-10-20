@@ -1,0 +1,11 @@
+{{- /* HTML part of the [[.Human]] email of the [[.Mailer]] mailer: html/template, every value is escaped for its context. */ -}}
+<p>Hello,</p>
+<p>This is the "[[.Human]]" email of the [[.MailerHuman]] mailer. Edit it in
+<code>app/mailers/templates/[[.Mailer]]/[[.Name]].html.gohtml</code>.</p>
+[[- if .Fields]]
+<ul>
+[[- range .Fields]]
+	<li>[[.Label]]: {{.[[.Title]]}}</li>
+[[- end]]
+</ul>
+[[- end]]

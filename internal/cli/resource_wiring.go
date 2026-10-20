@@ -30,6 +30,54 @@ type resourceWiringParts struct {
 	Notes           []string
 }
 
+// identityJSONGuard is the guard of JSON routes (bearer token) in applications with Forge
+// identity: the bearer token plus the permission. Defined once per application.
+const identityJSONGuard = `	protect := func(permission string, next http.Handler) (http.Handler, error) {
+		required, err := auth.NewPermission(permission)
+		if err != nil {
+			return nil, err
+		}
+		guarded, err := auth.RequireAudited(required, next, repository)
+		if err != nil {
+			return nil, err
+		}
+		return middleware.Authenticate(guarded), nil
+	}
+`
+
+// identityPagesGuard is the guard of HTML pages in applications with Forge
+// identity: the session cookie plus the permission.
+const identityPagesGuard = `	protectCookie := func(permission string, next http.Handler) (http.Handler, error) {
+		required, err := auth.NewPermission(permission)
+		if err != nil {
+			return nil, err
+		}
+		guarded, err := auth.RequireAudited(required, next, repository)
+		if err != nil {
+			return nil, err
+		}
+		// Signed-out browsers go to the sign-in page and come back; API
+		// clients get the 401 JSON error.
+		return middleware.AuthenticateBrowser("/session/new", guarded)
+	}
+`
+
+// denyAllGuard is the guard of an application without Forge identity: it
+// refuses everyone until the owner writes the real one. permissions lists the
+// permissions the routes ask for, quoted, for the comment.
+func denyAllGuard(permissions, tenantNote string) string {
+	return fmt.Sprintf(`	// TODO: replace this deny-all guard with your authentication and
+	// authorization. It receives the permission each route needs (%s) and
+	// returns the handler to mount; the routes stay closed until you
+	// implement it.%s
+	protect := func(_ string, _ http.Handler) (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			web.Error(w, r, fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0))
+		}), nil
+	}
+`, permissions, tenantNote)
+}
+
 // buildResourceWiring is what `forge generate resource` and `forge generate
 // scaffold` print: the JSON routes, and for a scaffold the HTML pages too.
 func buildResourceWiring(spec resourceSpec) resourceWiringParts {
@@ -62,18 +110,7 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 	}
 	if spec.Identity {
 		parts.Where = "inside identityRoutes, after the `middleware, err := auth.NewMiddleware(repository)` statement and its error check"
-		parts.Guard = `	protect := func(permission string, next http.Handler) (http.Handler, error) {
-		required, err := auth.NewPermission(permission)
-		if err != nil {
-			return nil, err
-		}
-		guarded, err := auth.RequireAudited(required, next, repository)
-		if err != nil {
-			return nil, err
-		}
-		return middleware.Authenticate(guarded), nil
-	}
-`
+		parts.Guard = identityJSONGuard
 		parts.Notes = []string{
 			fmt.Sprintf("The migration registers the permissions %s:read and %s:write; grant them to a role before callers can use the routes.", spec.Plural, spec.Plural),
 		}
@@ -114,16 +151,7 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 	if spec.TenantScoped {
 		tenantNote = "\n\t// The resource is tenant-scoped: authenticate the caller and attach the\n\t// tenant with tenancy.WithContext, or every request fails with tenant_required."
 	}
-	parts.Guard = fmt.Sprintf(`	// TODO: replace this deny-all guard with your authentication and
-	// authorization. It receives the permission each route needs (%q or
-	// %q) and returns the handler to mount; the routes stay closed until you
-	// implement it.%s
-	protect := func(_ string, _ http.Handler) (http.Handler, error) {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			web.Error(w, r, fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0))
-		}), nil
-	}
-`, spec.Plural+":read", spec.Plural+":write", tenantNote)
+	parts.Guard = denyAllGuard(fmt.Sprintf("%q or %q", spec.Plural+":read", spec.Plural+":write"), tenantNote)
 	parts.Notes = []string{
 		"This application has no Forge identity, so the guard is yours to write; the generator never opens the routes to the public.",
 	}
@@ -163,20 +191,7 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 	guard := "protect"
 	if spec.Identity {
 		guard = "protectCookie"
-		parts.CookieGuard = `	protectCookie := func(permission string, next http.Handler) (http.Handler, error) {
-		required, err := auth.NewPermission(permission)
-		if err != nil {
-			return nil, err
-		}
-		guarded, err := auth.RequireAudited(required, next, repository)
-		if err != nil {
-			return nil, err
-		}
-		// Signed-out browsers go to the sign-in page and come back; API
-		// clients get the 401 JSON error.
-		return middleware.AuthenticateBrowser("/session/new", guarded)
-	}
-`
+		parts.CookieGuard = identityPagesGuard
 		parts.Notes = append(parts.Notes, "The pages authenticate the session cookie the sign-in page (/session/new) and POST /auth/cookie/login set; a signed-out browser is redirected to /session/new and back, while API clients get the 401 JSON error. forge new generates the sign-in page; run `forge generate authentication` in an application that lacks it. Their forms are protected by the CSRF middleware that bootstrap.go installs.")
 	}
 	if spec.Identity && !spec.TenantScoped {
@@ -208,18 +223,28 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 // resourceWiring renders the instructions printed after generation (and for
 // --dry-run).
 func resourceWiring(spec resourceSpec) string {
-	parts := buildResourceWiring(spec)
-	var out strings.Builder
 	kind := "resource"
 	if spec.Scaffold {
 		kind = "scaffold"
 	}
+	return formatWiring(kind, "resource", buildResourceWiring(spec), "forge migrate && forge test")
+}
+
+// formatWiring prints parts as numbered steps. kind names what is wired
+// ("resource", "scaffold", "controller"), subject what step 3 is for and then
+// the command to run afterwards.
+func formatWiring(kind, subject string, parts resourceWiringParts, then string) string {
+	var out strings.Builder
 	fmt.Fprintf(&out, "\nForge did not edit app/bootstrap/bootstrap.go. Wire the %s there:\n\n", kind)
 	out.WriteString("  1. Add these imports (skip any already present):\n\n")
 	for _, path := range parts.Imports {
 		fmt.Fprintf(&out, "\t%q\n", path)
 	}
-	fmt.Fprintf(&out, "\n  2. Once per application, %s, define the guard:\n\n%s", parts.Where, parts.Guard)
+	if parts.Guard != "" {
+		fmt.Fprintf(&out, "\n  2. Once per application, %s, define the guard:\n\n%s", parts.Where, parts.Guard)
+	} else {
+		fmt.Fprintf(&out, "\n  2. %s:\n", capitalize(parts.Where))
+	}
 	if parts.PlatformGuard != "" {
 		fmt.Fprintf(&out, "\n  This resource is global, so also define (once) the guard for its writes:\n\n%s", parts.PlatformGuard)
 	}
@@ -235,11 +260,11 @@ func resourceWiring(spec resourceSpec) string {
 	if parts.StreamsRegister != "" {
 		fmt.Fprintf(&out, "\n  Then mount the event stream (once, after the guard above):\n\n%s", parts.StreamsRegister)
 	}
-	fmt.Fprintf(&out, "\n  3. For this resource, right after it:\n\n%s", parts.Usage)
+	fmt.Fprintf(&out, "\n  3. For this %s, right after it:\n\n%s", subject, parts.Usage)
 	for _, note := range parts.Notes {
 		fmt.Fprintf(&out, "\n  %s\n", note)
 	}
-	fmt.Fprintf(&out, "\n  Then: forge migrate && forge test\n")
+	fmt.Fprintf(&out, "\n  Then: %s\n", then)
 	return out.String()
 }
 

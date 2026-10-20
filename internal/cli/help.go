@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 
 	"github.com/rocketinsidecorp/forge-go/internal/version"
 )
@@ -107,8 +108,8 @@ func currentCommandCatalog() commandCatalog {
 		},
 		{Name: "seed", Usage: "forge seed", Summary: "Load the application's idempotent seed data (db.Seed) in one transaction.", SideEffects: []string{"database_write", "subprocess"}, Examples: []string{"forge seed"}, Environment: runtimeEnvironment()},
 		{
-			Name: "generate", Usage: "forge generate <migration|view|job|resource|scaffold|authentication> NAME [field:type...] [flags]",
-			Summary:     "Generate or preview migrations, auto-escaped HTML views, cancellation-aware job stubs, a complete resource (migration, domain, application, persistence, JSON API and tests), or a scaffold: that resource plus server-rendered HTML CRUD pages (forms, validation errors at 422, flash notices, CSRF), without overwriting files.",
+			Name: "generate", Usage: "forge generate <migration|view|job|model|controller|mailer|resource|scaffold|authentication> NAME [arguments...] [flags]",
+			Summary:     "Generate or preview migrations, auto-escaped HTML views, cancellation-aware job stubs, typed queue jobs, models (migration, domain, application and persistence layers), controllers (handlers, routes and views without persistence), mailers (typed methods, text and HTML templates, previews), a complete resource (migration, domain, application, persistence, JSON API and tests), or a scaffold: that resource plus server-rendered HTML CRUD pages (forms, validation errors at 422, flash notices, CSRF), without overwriting files.",
 			SideEffects: []string{"filesystem_read", "filesystem_write"},
 			Examples: []string{
 				"forge generate migration create_widgets --dry-run", "forge generate view welcome", "forge generate job cleanup --dry-run",
@@ -117,14 +118,22 @@ func currentCommandCatalog() commandCatalog {
 				"forge generate scaffold post title:string body:text published:bool --global --dry-run",
 				"forge generate scaffold ticket subject:string 'details:text?' --tenant-scoped",
 				"forge generate authentication --dry-run",
+				"forge generate model post title:string 'body:text?' --tenant-scoped",
+				"forge generate controller pages home about_us --public",
+				"forge generate controller reports monthly --api",
+				"forge generate mailer user welcome:name,url password_reset:name,reset_url",
+				"forge generate job send_welcome user_id:uuid --queue",
 			},
-			Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Reads go.mod and relevant generator paths; --dry-run does not create files or directories. `generate resource` reads FORGE_DATABASE_URL (process environment over env files, as forge inspect does) only to choose the database dialect; the value is never printed. Field types: string (up to 255 characters), text, int (64-bit), bool, time (UTC), uuid (UUIDv7); a trailing ? makes a field optional (quote it in shells that expand ?). `generate scaffold` takes the same arguments as `generate resource` and adds app/adapters/htmlui/NAME.go and its tests, app/views/PLURAL/{index,show,new,edit,_form,not_found}.gohtml and, when the application has none, the views base `forge new` generates (app/views/views.go, layouts/application.gohtml, shared/_flash.gohtml); the pages are served at /PLURAL, the JSON API at /v1/PLURAL. `generate view NAME` or DIR/NAME adds app/views/DIR/NAME.gohtml (DIR defaults to pages). `generate authentication` (PostgreSQL applications only; others are refused because Forge persists identities only in PostgreSQL) adds app/adapters/htmlauth and app/views/{sessions,passwords}, the sign-in, sign-out, two-factor and password-reset pages forge new generates, and prints their wiring. Exactly one of --tenant-scoped or --global is required. Resources and scaffolds are never public: the printed wiring requires an application-supplied guard, and nothing edits app/bootstrap/bootstrap.go."},
+			Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Reads go.mod and relevant generator paths; --dry-run does not create files or directories. `generate resource` reads FORGE_DATABASE_URL (process environment over env files, as forge inspect does) only to choose the database dialect; the value is never printed. Field types: string (up to 255 characters), text, int (64-bit), bool, time (UTC), uuid (UUIDv7); a trailing ? makes a field optional (quote it in shells that expand ?). `generate scaffold` takes the same arguments as `generate resource` and adds app/adapters/htmlui/NAME.go and its tests, app/views/PLURAL/{index,show,new,edit,_form,not_found}.gohtml and, when the application has none, the views base `forge new` generates (app/views/views.go, layouts/application.gohtml, shared/_flash.gohtml); the pages are served at /PLURAL, the JSON API at /v1/PLURAL. `generate view NAME` or DIR/NAME adds app/views/DIR/NAME.gohtml (DIR defaults to pages). `generate authentication` (PostgreSQL applications only; others are refused because Forge persists identities only in PostgreSQL) adds app/adapters/htmlauth and app/views/{sessions,passwords}, the sign-in, sign-out, two-factor and password-reset pages forge new generates, and prints their wiring. `generate model` takes the arguments of `generate resource` and creates the migration, domain, application and persistence layers with their tests, without the HTTP layer. `generate controller NAME ACTION...` adds app/adapters/htmlui/NAME_controller.go (or app/adapters/httpapi with --api), its test, one view per action in app/views/NAME (HTML only) and, for a guarded controller in an application with Forge identity, a migration that registers the NAME:read permission; actions are read-only GET routes. `generate mailer NAME METHOD[:field,field]...` adds app/mailers/NAME_mailer.go with typed methods, its preview and tests, and app/mailers/templates/NAME/METHOD.{subject.tmpl,text.tmpl,html.gohtml}. `generate job NAME [field:type...] --queue` adds a typed handler for the persistent job queue and its test (app/jobs/NAME.go); without --queue it generates the recurring job stub. Exactly one of --tenant-scoped or --global is required for models, resources and scaffolds. Resources, scaffolds and guarded controllers are never public: the printed wiring requires an application-supplied guard, and nothing edits app/bootstrap/bootstrap.go."},
 			Flags: []flagDetail{
 				{Name: "--dry-run", Description: "Read-only: print exact planned paths without creating directories or files."},
 				{Name: "--tenant-scoped", Description: "resource and scaffold: rows belong to one tenant (tenant_id bound in every statement; PostgreSQL also enables row-level security)."},
 				{Name: "--global", Description: "resource and scaffold: rows are shared by all tenants."},
 				{Name: "--broadcast", Description: "scaffold only: publish created, updated and deleted rows to open index pages as Turbo Streams over Server-Sent Events (adds app/adapters/htmlstreams, the _item partial and the live-update wiring)."},
-				{Name: "--plural", Value: "PLURAL", Description: "resource and scaffold: snake_case plural used for the table and routes (default: built-in English rules)."},
+				{Name: "--plural", Value: "PLURAL", Description: "model, resource and scaffold: snake_case plural used for the table and routes (default: built-in English rules)."},
+				{Name: "--api", Description: "controller only: generate JSON handlers under /v1 in app/adapters/httpapi instead of HTML pages."},
+				{Name: "--public", Description: "controller only: mount the routes without a guard. Without it the controller needs an application-supplied guard and the NAME:read permission."},
+				{Name: "--queue", Description: "job only: generate a typed handler for the persistent job queue instead of the recurring job stub."},
 			},
 		},
 		{
@@ -164,6 +173,7 @@ func currentCommandCatalog() commandCatalog {
 		{Name: "help", Usage: "forge help [--json]", Summary: "Show human-readable help or the versioned command catalog.", SideEffects: []string{"read_only"}, Examples: []string{"forge help", "forge help --json"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}, Flags: []flagDetail{{Name: "--json", Description: "Print the stable machine-readable command catalog."}}},
 	}
 	commands = append(commands, deployCommandDetails()...)
+	commands = slices.Insert(commands, slices.IndexFunc(commands, func(c commandDetail) bool { return c.Name == "generate" })+1, destroyCommandDetail())
 	for i := range commands {
 		if commands[i].Examples == nil {
 			commands[i].Examples = []string{}
@@ -224,4 +234,22 @@ func configEnvironment(notes string) environmentInfo {
 	input := runtimeEnvironment()
 	input.Notes = notes + " Process environment overrides .env.local, which overrides .env.development."
 	return input
+}
+
+func destroyCommandDetail() commandDetail {
+	return commandDetail{
+		Name: "destroy", Usage: "forge destroy <model|resource|scaffold|controller|mailer|job|view> ARGUMENTS... [--force] [--migrations] [--dry-run]",
+		Summary:     "Remove the files a generator created, found by regenerating them from the same arguments; a file that differs from what the generator would write, or that a bigger generation still needs, is never removed without --force, and migrations are kept unless --migrations.",
+		SideEffects: []string{"filesystem_read", "filesystem_write"},
+		Examples: []string{
+			"forge destroy scaffold post title:string --tenant-scoped --dry-run", "forge destroy controller pages home about_us",
+			"forge destroy mailer user welcome:name", "forge destroy model post title:string --global --migrations",
+		},
+		Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Takes the arguments the generator was run with, so it can compare what is on disk with what the generator writes; a file that differs is listed and nothing is removed, unless --force. A model or resource whose resource or scaffold HTTP layer is still there, and a view a controller renders, are refused the same way. The views base, the live-update transport and other files shared with the application are never removed. app/bootstrap/bootstrap.go is never edited: the wiring to take out is printed."},
+		Flags: []flagDetail{
+			{Name: "--dry-run", Description: "Print what would be removed without removing anything."},
+			{Name: "--force", Description: "Remove files that differ from what this generator would write (edited, or written by another generator), and files a bigger generation (the resource or scaffold around a model, the controller that renders a view) still needs."},
+			{Name: "--migrations", Description: "Also remove the generator's migration files. Run `forge rollback` first if they were applied."},
+		},
+	}
 }

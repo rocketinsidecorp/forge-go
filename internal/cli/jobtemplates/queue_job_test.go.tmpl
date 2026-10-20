@@ -1,0 +1,111 @@
+package jobs
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"slices"
+	"testing"
+[[- if .HasTime]]
+	"time"
+[[- end]]
+
+	"github.com/rocketinsidecorp/forge-go/queue"
+[[- if .HasUUID]]
+	"github.com/rocketinsidecorp/forge-go/uuid"
+[[- end]]
+)
+
+// [[.Camel]]Inserter records what would be stored, so the tests need no database.
+type [[.Camel]]Inserter struct{ jobs []queue.NewJob }
+
+func (i *[[.Camel]]Inserter) Insert(_ context.Context, job queue.NewJob) (queue.InsertResult, error) {
+	i.jobs = append(i.jobs, job)
+	return queue.InsertResult{ID: job.ID}, nil
+}
+
+func [[.Camel]]Payload() [[.Title]]Payload {
+	return [[.Title]]Payload{
+[[- range .Fields]]
+		[[.Title]]: [[.SampleValue 1]],
+[[- end]]
+	}
+}
+
+func TestRegister[[.Title]]AddsTheKind(t *testing.T) {
+	t.Parallel()
+	registry := queue.NewRegistry()
+	if err := Register[[.Title]](registry); err != nil {
+		t.Fatal(err)
+	}
+	if got := registry.Kinds(); !slices.Equal(got, []string{[[.Title]]Kind}) {
+		t.Fatalf("registered kinds = %v, want [%s]", got, [[.Title]]Kind)
+	}
+	if err := Register[[.Title]](registry); err == nil {
+		t.Error("the kind was registered twice")
+	}
+}
+
+func TestEnqueue[[.Title]]StoresATypedJob(t *testing.T) {
+	t.Parallel()
+	registry := queue.NewRegistry()
+	if err := Register[[.Title]](registry); err != nil {
+		t.Fatal(err)
+	}
+	inserter := &[[.Camel]]Inserter{}
+	payload := [[.Camel]]Payload()
+	result, err := Enqueue[[.Title]](context.Background(), inserter, registry, payload, queue.WithKey("[[.Name]]:test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inserter.jobs) != 1 || result.ID != inserter.jobs[0].ID {
+		t.Fatalf("stored %d jobs, want 1 with the returned ID", len(inserter.jobs))
+	}
+	job := inserter.jobs[0]
+	if job.Kind != [[.Title]]Kind || job.Queue != queue.DefaultQueue || job.MaxAttempts != 5 || job.Key != "[[.Name]]:test" {
+		t.Errorf("job = kind %q queue %q attempts %d key %q, want the registered defaults", job.Kind, job.Queue, job.MaxAttempts, job.Key)
+	}
+	want, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(job.Payload, want) {
+		t.Errorf("payload = %s, want %s", job.Payload, want)
+	}
+	// What was stored is what the worker's strict decoder accepts.
+	decoder := json.NewDecoder(bytes.NewReader(job.Payload))
+	decoder.DisallowUnknownFields()
+	var decoded [[.Title]]Payload
+	if err := decoder.Decode(&decoded); err != nil {
+		t.Fatalf("the stored payload does not decode strictly: %v", err)
+	}
+}
+
+func TestEnqueue[[.Title]]RefusesAnUnregisteredKind(t *testing.T) {
+	t.Parallel()
+	inserter := &[[.Camel]]Inserter{}
+	_, err := Enqueue[[.Title]](context.Background(), inserter, queue.NewRegistry(), [[.Camel]]Payload())
+	if !errors.Is(err, queue.ErrUnknownKind) {
+		t.Fatalf("error = %v, want queue.ErrUnknownKind", err)
+	}
+	if len(inserter.jobs) != 0 {
+		t.Errorf("%d jobs were stored for an unregistered kind", len(inserter.jobs))
+	}
+}
+
+func TestPerform[[.Title]]RequiresImplementation(t *testing.T) {
+	t.Parallel()
+	if err := Perform[[.Title]](context.Background(), [[.Camel]]Payload()); !errors.Is(err, Err[[.Title]]NotImplemented) {
+		t.Fatalf("Perform[[.Title]] error = %v, want Err[[.Title]]NotImplemented", err)
+	}
+}
+
+func TestPerform[[.Title]]HonorsCancellation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := Perform[[.Title]](ctx, [[.Camel]]Payload()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Perform[[.Title]] error = %v, want context.Canceled", err)
+	}
+}

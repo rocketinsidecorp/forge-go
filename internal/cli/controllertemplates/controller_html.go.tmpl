@@ -1,0 +1,98 @@
+package htmlui
+
+import (
+	"errors"
+	"net/http"
+
+	"github.com/rocketinsidecorp/forge-go/views"
+	"github.com/rocketinsidecorp/forge-go/web"
+)
+[[- if not .Public]]
+
+// [[.Camel]]ControllerReadPermission is the permission every [[.Name]] page needs.
+const [[.Camel]]ControllerReadPermission = "[[.Name]]:read"
+[[- end]]
+
+// [[.Title]]ControllerRouter is where Register[[.Title]]Controller mounts the pages; *forge.App satisfies it.
+type [[.Title]]ControllerRouter interface {
+	Handle(pattern string, handler http.Handler) error
+}
+[[- if not .Public]]
+
+// [[.Title]]ControllerProtect wraps next so that only callers holding permission
+// reach it. The application decides how: with Forge identity it authenticates
+// the session cookie and requires the permission. Register[[.Title]]Controller never
+// mounts a page without it, so these pages cannot be public by accident.
+type [[.Title]]ControllerProtect func(permission string, next http.Handler) (http.Handler, error)
+[[- end]]
+
+// Register[[.Title]]Controller mounts the pages of the [[.Name]] controller, one route
+// per action:
+[[- range .Actions]]
+//
+//	[[.Pattern]]  [[.Title]]  app/views/[[$.Name]]/[[.Name]].gohtml
+[[- end]]
+[[- if not .Public]]
+//
+// Every page requires "[[.Name]]:read".
+[[- end]]
+func Register[[.Title]]Controller(routes [[.Title]]ControllerRouter, renderer *views.Renderer[[if not .Public]], protect [[.Title]]ControllerProtect[[end]]) error {
+	if routes == nil || renderer == nil {
+		return errors.New("htmlui: router and view renderer are required")
+	}
+[[- if not .Public]]
+	if protect == nil {
+		return errors.New("htmlui: a protect function is required: [[.Name]] pages are never public (generate with --public to publish them)")
+	}
+[[- end]]
+	controller := [[.Camel]]Controller{renderer: renderer}
+[[- range .Actions]]
+[[- if $.Public]]
+	// The literal pattern lets `forge routes` list this route.
+	if err := routes.Handle("[[.Pattern]]", http.HandlerFunc(controller.[[.Title]])); err != nil {
+		return err
+	}
+[[- else]]
+	[[.Camel]]Handler, err := protect([[$.Camel]]ControllerReadPermission, http.HandlerFunc(controller.[[.Title]]))
+	if err != nil {
+		return err
+	}
+	if [[.Camel]]Handler == nil {
+		return errors.New("htmlui: the protect function returned no handler for [[.Pattern]]")
+	}
+	// The literal pattern lets `forge routes` list this route.
+	if err := routes.Handle("[[.Pattern]]", [[.Camel]]Handler); err != nil {
+		return err
+	}
+[[- end]]
+[[- end]]
+	return nil
+}
+
+type [[.Camel]]Controller struct {
+	renderer *views.Renderer
+}
+
+// [[.Camel]]ControllerPage is the data of every page of the controller: the
+// views fill the "title" and "content" blocks of the application layout. Add
+// the fields your pages need; every value is HTML-escaped by the template.
+type [[.Camel]]ControllerPage struct {
+	Title   string
+	Content string
+}
+
+func (c [[.Camel]]Controller) render(w http.ResponseWriter, r *http.Request, view string, data [[.Camel]]ControllerPage) {
+	if err := c.renderer.RenderRequest(w, r, "[[.Name]]/"+view, http.StatusOK, data); err != nil {
+		web.Error(w, r, err)
+	}
+}
+[[- range .Actions]]
+
+// [[.Title]] renders app/views/[[$.Name]]/[[.Name]].gohtml.
+func (c [[$.Camel]]Controller) [[.Title]](w http.ResponseWriter, r *http.Request) {
+	c.render(w, r, "[[.Name]]", [[$.Camel]]ControllerPage{
+		Title:   "[[.HumanTitle]]",
+		Content: "Find me in app/views/[[$.Name]]/[[.Name]].gohtml",
+	})
+}
+[[- end]]

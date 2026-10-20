@@ -81,6 +81,12 @@ type resourceRequest struct {
 	// pages publish created, updated and deleted rows to open index pages as
 	// Turbo Streams over Server-Sent Events.
 	Broadcast bool
+	// Model is set by `forge generate model`: the resource without its HTTP
+	// layer (migration, domain, application and persistence only).
+	Model bool
+	// Destroy plans for `forge destroy`: the same files, found where they
+	// are, with no refusal for files that already exist.
+	Destroy bool
 }
 
 // resourceField is one user-declared column.
@@ -292,6 +298,13 @@ func validateResourcePlural(name, plural string, explicit bool) error {
 }
 
 func parseResourceField(declaration string) (resourceField, error) {
+	return parseField(declaration, true)
+}
+
+// parseField reads name:type or name:type?. Table columns may not reuse the
+// columns every generated table owns; other uses of fields (a job payload)
+// pass reserveColumns false.
+func parseField(declaration string, reserveColumns bool) (resourceField, error) {
 	name, kind, ok := strings.Cut(declaration, ":")
 	if !ok {
 		return resourceField{}, fmt.Errorf("field %q must be written name:type (types: %s)", declaration, strings.Join(resourceFieldTypes, ", "))
@@ -303,7 +316,7 @@ func parseResourceField(declaration string) (resourceField, error) {
 	switch {
 	case len(name) > maxResourceNameLength || !resourceName.MatchString(name):
 		return resourceField{}, fmt.Errorf("field name %q must be snake_case (lowercase letters and digits, starting with a letter, at most %d characters)", name, maxResourceNameLength)
-	case slices.Contains(reservedColumns, name):
+	case reserveColumns && slices.Contains(reservedColumns, name):
 		return resourceField{}, fmt.Errorf("field name %q is reserved: every table already has %s", name, strings.Join(reservedColumns, ", "))
 	case !slices.Contains(resourceFieldTypes, kind):
 		return resourceField{}, fmt.Errorf("field %q has unsupported type %q (types: %s; use int for money in minor units)", name, kind, strings.Join(resourceFieldTypes, ", "))
@@ -424,28 +437,36 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 	spec := resourceSpec{resourceRequest: request, Module: module, Database: adapter}
 	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot)
 
-	dir, version, err := nextMigrationVersion(projectRoot, now)
-	if err != nil {
-		return resourceSpec{}, nil, err
-	}
-	existingMigrations, err := fs.ReadDir(projectRoot.FS(), dir)
-	if err != nil {
-		return resourceSpec{}, nil, err
-	}
-	for _, entry := range existingMigrations {
-		if _, rest, ok := strings.Cut(entry.Name(), "_"); ok && strings.HasPrefix(rest, "create_"+request.Plural+".") {
-			return resourceSpec{}, nil, fmt.Errorf("refusing to generate: %s already creates the table %s; pick another resource name or --plural", filepath.Join(dir, entry.Name()), request.Plural)
-		}
-	}
-	migrationBase := filepath.Join(dir, version+"_create_"+request.Plural)
 	rendered, err := renderResource(spec)
 	if err != nil {
 		return resourceSpec{}, nil, err
 	}
-	files := []generatedFile{
-		{path: migrationBase + ".up.sql", content: rendered.migrationUp},
-		{path: migrationBase + ".down.sql", content: rendered.migrationDown},
+	migrations, existing, err := planMigrationPair(projectRoot, "create_"+request.Plural, request.Destroy, now, rendered.migrationUp, rendered.migrationDown)
+	if err != nil {
+		return resourceSpec{}, nil, err
 	}
+	if existing != "" {
+		return resourceSpec{}, nil, fmt.Errorf("refusing to generate: %s already creates the table %s; pick another resource name or --plural", existing, request.Plural)
+	}
+	if spec.Identity && !request.Destroy {
+		owner, permission, err := permissionRegisteredBy(projectRoot, "create_"+request.Plural, request.Plural+":read", request.Plural+":write")
+		if err != nil {
+			return resourceSpec{}, nil, err
+		}
+		if owner != "" {
+			kind := "resource"
+			switch {
+			case request.Model:
+				kind = "model"
+			case request.Scaffold:
+				kind = "scaffold"
+			}
+			return resourceSpec{}, nil, fmt.Errorf("refusing to generate: %[1]s already registers the permission %[2]s, which the %[3]s's migration would register too. "+
+				"A permission belongs to the one migration that registers it (rolling that migration back removes it and every grant of it), so it never gets a second one. "+
+				"Choose another name or --plural; or, to let the %[3]s own %[2]s, revert %[1]s (`forge rollback`) and delete that migration pair first: a controller that asks for %[2]s keeps working with the %[3]s's permission", filepath.ToSlash(owner), permission, kind)
+		}
+	}
+	files := migrations
 	for _, source := range rendered.sources {
 		path := filepath.Join(filepath.FromSlash(source.dir), request.Name+source.suffix)
 		formatted, err := format.Source([]byte(source.content))
@@ -462,24 +483,118 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 		files = append(files, extra...)
 	}
 
+	if err := checkPlannedFiles(projectRoot, files, request.Destroy); err != nil {
+		return resourceSpec{}, nil, err
+	}
+	return spec, files, nil
+}
+
+// planMigrationPair plans the up/down pair named name: at the next free
+// version when generating, or, for `forge destroy`, at the version of the pair
+// that exists. When generating and a migration of that name already exists,
+// existing is its path and nothing is planned.
+func planMigrationPair(projectRoot *os.Root, name string, destroy bool, now time.Time, up, down string) (files []generatedFile, existing string, err error) {
+	dir := filepath.Join("db", "migrations")
+	if destroy {
+		if err := rejectExistingSymlinkPaths(projectRoot, []string{dir}); err != nil {
+			return nil, "", err
+		}
+		entries, err := fs.ReadDir(projectRoot.FS(), dir)
+		if err != nil {
+			return nil, "", errors.New("db/migrations not found: run this inside a Forge application with a database")
+		}
+		for _, entry := range entries {
+			version, rest, ok := strings.Cut(entry.Name(), "_")
+			if !ok || len(version) != 14 {
+				continue
+			}
+			switch rest {
+			case name + ".up.sql":
+				files = append(files, generatedFile{path: filepath.Join(dir, entry.Name()), content: up, migration: true})
+			case name + ".down.sql":
+				files = append(files, generatedFile{path: filepath.Join(dir, entry.Name()), content: down, migration: true})
+			}
+		}
+		return files, "", nil
+	}
+	dir, version, err := nextMigrationVersion(projectRoot, now)
+	if err != nil {
+		return nil, "", err
+	}
+	entries, err := fs.ReadDir(projectRoot.FS(), dir)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, entry := range entries {
+		if _, rest, ok := strings.Cut(entry.Name(), "_"); ok && strings.HasPrefix(rest, name+".") {
+			return nil, filepath.Join(dir, entry.Name()), nil
+		}
+	}
+	base := filepath.Join(dir, version+"_"+name)
+	return []generatedFile{
+		{path: base + ".up.sql", content: up, migration: true},
+		{path: base + ".down.sql", content: down, migration: true},
+	}, "", nil
+}
+
+// permissionRegisteredBy finds an up migration in db/migrations, other than
+// the pair named own, that names one of permissions as a SQL string literal
+// ('posts:read'), and returns its path and the permission it names. A
+// permission belongs to the one migration that registers it, because that
+// migration's rollback removes it: the generators reuse a registered
+// permission (controller) or refuse to register it again (model, resource,
+// scaffold) instead of giving it a second owner. Any mention counts, so a
+// hand-written migration that registers the permission is found too.
+func permissionRegisteredBy(projectRoot *os.Root, own string, permissions ...string) (path, permission string, err error) {
+	dir := filepath.Join("db", "migrations")
+	entries, err := fs.ReadDir(projectRoot.FS(), dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	for _, entry := range entries {
+		_, rest, ok := strings.Cut(entry.Name(), "_")
+		if !ok || entry.IsDir() || !strings.HasSuffix(rest, ".up.sql") || rest == own+".up.sql" {
+			continue
+		}
+		candidate := filepath.Join(dir, entry.Name())
+		source, err := projectRoot.ReadFile(candidate)
+		if err != nil {
+			return "", "", fmt.Errorf("read %s: %w", candidate, err)
+		}
+		for _, permission := range permissions {
+			if strings.Contains(string(source), "'"+permission+"'") {
+				return candidate, permission, nil
+			}
+		}
+	}
+	return "", "", nil
+}
+
+// checkPlannedFiles refuses a plan that would overwrite a file, write through
+// a symlink or declare a Go name a package already declares. A destroy plan
+// names files that exist, so only the symlink check applies to it.
+func checkPlannedFiles(projectRoot *os.Root, files []generatedFile, destroy bool) error {
 	paths := make([]string, 0, len(files))
 	for _, file := range files {
 		paths = append(paths, file.path)
 	}
 	if err := rejectExistingSymlinkPaths(projectRoot, paths); err != nil {
-		return resourceSpec{}, nil, err
+		return err
+	}
+	if destroy {
+		return nil
 	}
 	for _, path := range paths {
 		if _, err := projectRoot.Lstat(path); err == nil {
-			return resourceSpec{}, nil, fmt.Errorf("refusing to overwrite %s; nothing was written", path)
+			return fmt.Errorf("refusing to overwrite %s; nothing was written", path)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return resourceSpec{}, nil, err
+			return err
 		}
 	}
-	if err := rejectDeclarationConflicts(projectRoot, files); err != nil {
-		return resourceSpec{}, nil, err
-	}
-	return spec, files, nil
+	return rejectDeclarationConflicts(projectRoot, files)
 }
 
 // hasIdentityMigrations reports whether the application composes the Forge

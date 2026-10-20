@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -113,7 +114,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
 		t.Fatalf("decode command catalog: %v\n%s", err, stdout.String())
 	}
-	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 20 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
+	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 21 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
 		t.Fatalf("unexpected catalog header: %+v", catalog)
 	}
 	rollbackDeclaredDestructive := false
@@ -124,7 +125,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	expectedCommands := map[string]bool{
 		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true, "setup": true, "seed": true, "db": true,
 		"generate": true, "doctor": true, "inspect": true, "routes": true, "uuid": true, "version": true, "help": true,
-		"credentials": true, "deploy": true, "logs": true, "app": true,
+		"credentials": true, "deploy": true, "logs": true, "app": true, "destroy": true,
 	}
 	for _, command := range catalog.Commands {
 		if !expectedCommands[command.Name] || commandsSeen[command.Name] || len(command.Examples) == 0 || command.Environment.Files == nil || command.Environment.Variables == nil || len(command.ExitCodes) < 2 {
@@ -132,7 +133,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		}
 		commandsSeen[command.Name] = true
 		if command.Name == "generate" {
-			generateDeclaresJob = strings.Contains(command.Usage, "|job|resource|scaffold|authentication>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
+			generateDeclaresJob = strings.Contains(command.Usage, "|job|model|controller|mailer|resource|scaffold|authentication>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
 				containsString(command.Examples, "forge generate resource category name:string --global --plural categories") &&
 				containsString(command.Examples, "forge generate scaffold post title:string body:text published:bool --global --dry-run")
 		}
@@ -544,36 +545,49 @@ func generateAndWireResources(t *testing.T, dir, adapter string) {
 // generated bootstrap.go, exactly as a developer pasting it would.
 func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 	t.Helper()
+	var parts []resourceWiringParts
+	for _, spec := range specs {
+		parts = append(parts, buildResourceWiring(spec))
+	}
+	wireParts(t, dir, parts)
+}
+
+// declaredName is the variable a printed wiring block declares first
+// ("protect", "renderer"), which tells whether the block is already present.
+var declaredName = regexp.MustCompile(`(?m)^\t(\w+)(?:, err)? := `)
+
+// wireParts pastes the wiring of any generator into bootstrap.go: the imports,
+// each once-per-application block when it is not there yet, and the usage.
+func wireParts(t *testing.T, dir string, partsList []resourceWiringParts) {
+	t.Helper()
 	path := filepath.Join(dir, "app", "bootstrap", "bootstrap.go")
 	source := readFile(t, path)
 	var imports, usage strings.Builder
 	var guard string
-	for i, spec := range specs {
-		parts := buildResourceWiring(spec)
-		if i == 0 {
-			guard = parts.Guard
+	addOnce := func(block string) {
+		if block == "" {
+			return
 		}
+		if match := declaredName.FindStringSubmatch(block); match != nil && regexp.MustCompile(`(?m)^\t`+regexp.QuoteMeta(match[1])+`(, err)? := `).MatchString(guard) {
+			return
+		}
+		guard += "\n" + block
+	}
+	for _, parts := range partsList {
 		// Live updates: the signer comes before the view renderer.
 		if parts.StreamSigner != "" && !strings.Contains(source, "streamSigner, err :=") && !strings.Contains(guard, "streamSigner, err :=") {
 			const identityRenderer = "\trenderer, err := views.New()\n"
 			if strings.Contains(source, identityRenderer) {
 				source = strings.Replace(source, identityRenderer, parts.StreamSigner+"\trenderer, err := views.New(views.WithStreams(streamSigner))\n", 1)
 			} else {
-				guard += "\n" + parts.StreamSigner
+				addOnce(parts.StreamSigner)
 			}
 		}
-		if parts.PlatformGuard != "" && !strings.Contains(guard, "protectPlatformWrite :=") {
-			guard += "\n" + parts.PlatformGuard
-		}
-		if parts.CookieGuard != "" && !strings.Contains(guard, "protectCookie :=") {
-			guard += "\n" + parts.CookieGuard
-		}
-		if parts.Renderer != "" && !strings.Contains(guard, "renderer, err :=") {
-			guard += "\n" + parts.Renderer
-		}
-		if parts.StreamsRegister != "" && !strings.Contains(guard, "streams, err :=") {
-			guard += "\n" + parts.StreamsRegister
-		}
+		addOnce(parts.Guard)
+		addOnce(parts.PlatformGuard)
+		addOnce(parts.CookieGuard)
+		addOnce(parts.Renderer)
+		addOnce(parts.StreamsRegister)
 		for _, importPath := range parts.Imports {
 			if !strings.Contains(source, `"`+importPath+`"`) && !strings.Contains(imports.String(), `"`+importPath+`"`) {
 				imports.WriteString("\t\"" + importPath + "\"\n")
@@ -589,6 +603,11 @@ func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 		insertAfter = true
 	}
 	if !strings.Contains(source, anchor) {
+		// An application without a database: Configure only calls routes.
+		anchor = "\treturn nil\n}\n\n// useBrowserPipeline"
+		insertAfter = false
+	}
+	if !strings.Contains(source, anchor) {
 		t.Fatalf("bootstrap.go has no wiring anchor:\n%s", source)
 	}
 	block := guard + "\n" + usage.String()
@@ -597,6 +616,7 @@ func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 	} else {
 		source = strings.Replace(source, anchor, block+"\n"+anchor, 1)
 	}
+	source = strings.Replace(source, "\n\n\treturn nil\n}\n\n// useBrowserPipeline", "\n\treturn nil\n}\n\n// useBrowserPipeline", 1)
 	formatted, err := format.Source([]byte(source))
 	if err != nil {
 		t.Fatalf("pasted wiring does not parse: %v\n%s", err, source)

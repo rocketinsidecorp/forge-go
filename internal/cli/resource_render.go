@@ -475,6 +475,9 @@ func renderResource(spec resourceSpec) (renderedResource, error) {
 		{"app/adapters/httpapi", ".go", "httpapi.go.tmpl"},
 		{"app/adapters/httpapi", "_test.go", "httpapi_test.go.tmpl"},
 	} {
+		if spec.Model && source.dir == "app/adapters/httpapi" {
+			continue
+		}
 		content, err := renderTemplate(source.template, view)
 		if err != nil {
 			return renderedResource{}, err

@@ -1,0 +1,10 @@
+{{- /* Text part of the [[.Human]] email of the [[.Mailer]] mailer: text/template, nothing is escaped. */ -}}
+Hello,
+
+This is the "[[.Human]]" email of the [[.MailerHuman]] mailer. Edit it in
+app/mailers/templates/[[.Mailer]]/[[.Name]].text.tmpl.
+[[- if .Fields]]
+[[range .Fields]]
+[[.Label]]: {{.[[.Title]]}}
+[[- end]]
+[[- end]]

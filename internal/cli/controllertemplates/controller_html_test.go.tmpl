@@ -1,0 +1,192 @@
+package htmlui_test
+
+import (
+[[- if not .Public]]
+	"errors"
+[[- end]]
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/csrf"
+[[- if not .Public]]
+	"github.com/rocketinsidecorp/forge-go/fault"
+[[- end]]
+	"github.com/rocketinsidecorp/forge-go/web"
+	"[[.Module]]/app/adapters/htmlui"
+	appviews "[[.Module]]/app/views"
+)
+
+// [[.Camel]]ControllerPages lists every page of the controller: its path, its
+// heading and the view that renders it.
+var [[.Camel]]ControllerPages = []struct{ path, heading, view string }{
+[[- range .Actions]]
+	{"[[.Path]]", "[[.HumanTitle]]", "app/views/[[$.Name]]/[[.Name]].gohtml"},
+[[- end]]
+}
+
+func new[[.Title]]ControllerHandler(t *testing.T[[if not .Public]], protect htmlui.[[.Title]]ControllerProtect[[end]]) http.Handler {
+	t.Helper()
+	renderer, err := appviews.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The application layout needs the browser pipeline bootstrap installs.
+	protection, err := csrf.New(csrf.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, middleware := range []func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash} {
+		if err := app.Use(middleware); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := htmlui.Register[[.Title]]Controller(app, renderer[[if not .Public]], protect[[end]]); err != nil {
+		t.Fatal(err)
+	}
+	return app.Handler()
+}
+
+func [[.Camel]]ControllerRequest(handler http.Handler, method, path string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, nil)
+	request.Header.Set("Accept", "text/html")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// [[.Camel]]ControllerPost sends a POST with a valid CSRF token, so what is
+// refused is the method, not the missing token.
+func [[.Camel]]ControllerPost(handler http.Handler, path string) *httptest.ResponseRecorder {
+	var token string
+	for _, cookie := range [[.Camel]]ControllerRequest(handler, http.MethodGet, path).Result().Cookies() {
+		if cookie.Name == csrf.CookieName {
+			token = cookie.Value
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, path, nil)
+	request.AddCookie(&http.Cookie{Name: csrf.CookieName, Value: token})
+	request.Header.Set(csrf.HeaderName, token)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+[[- if not .Public]]
+
+// [[.Camel]]ControllerGuard stands in for the application's guard: it records
+// the permissions it is asked for and lets through only the granted ones. It
+// exists only in tests.
+func [[.Camel]]ControllerGuard(asked *[]string, granted ...string) htmlui.[[.Title]]ControllerProtect {
+	return func(permission string, next http.Handler) (http.Handler, error) {
+		*asked = append(*asked, permission)
+		for _, name := range granted {
+			if name == permission {
+				return next, nil
+			}
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			web.Error(w, r, fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0))
+		}), nil
+	}
+}
+[[- end]]
+
+func Test[[.Title]]ControllerRendersEveryAction(t *testing.T) {
+	t.Parallel()
+[[- if .Public]]
+	handler := new[[.Title]]ControllerHandler(t)
+[[- else]]
+	var asked []string
+	handler := new[[.Title]]ControllerHandler(t, [[.Camel]]ControllerGuard(&asked, "[[.Name]]:read"))
+[[- end]]
+	for _, page := range [[.Camel]]ControllerPages {
+		recorder := [[.Camel]]ControllerRequest(handler, http.MethodGet, page.path)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200: %s", page.path, recorder.Code, recorder.Body)
+		}
+		if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+			t.Errorf("GET %s Content-Type = %q, want text/html", page.path, got)
+		}
+		for _, want := range []string{"<h1>" + page.heading + "</h1>", page.view} {
+			if !strings.Contains(recorder.Body.String(), want) {
+				t.Errorf("GET %s does not contain %q:\n%s", page.path, want, recorder.Body)
+			}
+		}
+	}
+}
+
+func Test[[.Title]]ControllerAnswersGetOnly(t *testing.T) {
+	t.Parallel()
+[[- if .Public]]
+	handler := new[[.Title]]ControllerHandler(t)
+[[- else]]
+	var asked []string
+	handler := new[[.Title]]ControllerHandler(t, [[.Camel]]ControllerGuard(&asked, "[[.Name]]:read"))
+[[- end]]
+	for _, page := range [[.Camel]]ControllerPages {
+		if recorder := [[.Camel]]ControllerPost(handler, page.path); recorder.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s = %d, want 405", page.path, recorder.Code)
+		}
+	}
+}
+[[- if not .Public]]
+
+func Test[[.Title]]ControllerRequiresItsPermission(t *testing.T) {
+	t.Parallel()
+	var asked []string
+	handler := new[[.Title]]ControllerHandler(t, [[.Camel]]ControllerGuard(&asked))
+	for _, page := range [[.Camel]]ControllerPages {
+		recorder := [[.Camel]]ControllerRequest(handler, http.MethodGet, page.path)
+		if recorder.Code != http.StatusForbidden {
+			t.Errorf("GET %s without the permission = %d, want 403", page.path, recorder.Code)
+		}
+		if strings.Contains(recorder.Body.String(), page.heading) {
+			t.Errorf("GET %s showed the page to a caller without the permission", page.path)
+		}
+	}
+	if len(asked) != len([[.Camel]]ControllerPages) {
+		t.Fatalf("the guard was asked %d times, want once per page (%d)", len(asked), len([[.Camel]]ControllerPages))
+	}
+	for _, permission := range asked {
+		if permission != "[[.Name]]:read" {
+			t.Errorf("the guard was asked for %q, want [[.Name]]:read", permission)
+		}
+	}
+}
+[[- end]]
+
+func Test[[.Title]]ControllerRefusesIncompleteSetups(t *testing.T) {
+	t.Parallel()
+	renderer, err := appviews.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := htmlui.Register[[.Title]]Controller(nil, renderer[[if not .Public]], [[.Camel]]ControllerGuard(new([]string))[[end]]); err == nil {
+		t.Error("a nil router was accepted")
+	}
+	if err := htmlui.Register[[.Title]]Controller(app, nil[[if not .Public]], [[.Camel]]ControllerGuard(new([]string))[[end]]); err == nil {
+		t.Error("a nil view renderer was accepted")
+	}
+[[- if not .Public]]
+	if err := htmlui.Register[[.Title]]Controller(app, renderer, nil); err == nil {
+		t.Error("a missing guard was accepted: the pages would be public")
+	}
+	broken := errors.New("guard failed")
+	if err := htmlui.Register[[.Title]]Controller(app, renderer, func(string, http.Handler) (http.Handler, error) { return nil, broken }); !errors.Is(err, broken) {
+		t.Errorf("a guard error was not reported: %v", err)
+	}
+	if err := htmlui.Register[[.Title]]Controller(app, renderer, func(string, http.Handler) (http.Handler, error) { return nil, nil }); err == nil {
+		t.Error("a guard that returned no handler was accepted")
+	}
+[[- end]]
+}

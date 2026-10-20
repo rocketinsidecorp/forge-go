@@ -1,0 +1,60 @@
+package jobs
+
+import (
+	"context"
+	"errors"
+	"time"
+[[- if .HasUUID]]
+
+	"github.com/rocketinsidecorp/forge-go/uuid"
+[[- end]]
+	"github.com/rocketinsidecorp/forge-go/queue"
+)
+
+// [[.Title]]Kind names the job in the queue. A worker claims only the kinds it
+// has a handler for, so register this one in every process that should run it.
+const [[.Title]]Kind = "[[.Name]]"
+
+// [[.Title]]Payload is the schema of the [[.Name]] job (queue.Register): it is stored
+// as JSON, in clear text, and the worker decodes it strictly, rejecting unknown
+// members. Put identifiers in it, never secrets, and treat what it carries as
+// input to validate before acting on it.
+type [[.Title]]Payload [[if .Fields]]struct {
+[[- range .Fields]]
+	[[.Title]] [[.FieldType]] `json:"[[.Name]]"`
+[[- end]]
+}[[else]]struct{}[[end]]
+
+// Err[[.Title]]NotImplemented keeps a generated placeholder from silently
+// reporting successful work. Replace Perform[[.Title]] before enqueueing the job.
+var Err[[.Title]]NotImplemented = errors.New("[[.Name]] job is not implemented")
+
+// Register[[.Title]] adds the handler of the [[.Name]] job to registry. Its defaults
+// are five attempts and a one-minute timeout for each; options override them
+// (queue.HandlerQueue, queue.HandlerMaxAttempts, queue.HandlerTimeout, ...).
+// Register every handler before starting the worker.
+func Register[[.Title]](registry *queue.Registry, options ...queue.HandlerOption) error {
+	defaults := []queue.HandlerOption{queue.HandlerMaxAttempts(5), queue.HandlerTimeout(time.Minute)}
+	return queue.Register(registry, [[.Title]]Kind, Perform[[.Title]], append(defaults, options...)...)
+}
+
+// Enqueue[[.Title]] stores a [[.Name]] job. Pass the Inserter that binds the job to
+// your database transaction (store.In(tx)) so the job exists if and only if the
+// transaction commits, or the store itself for an independent write
+// (docs/JOBS.md). queue.WithKey makes the enqueue idempotent.
+func Enqueue[[.Title]](ctx context.Context, in queue.Inserter, registry *queue.Registry, payload [[.Title]]Payload, options ...queue.EnqueueOption) (queue.InsertResult, error) {
+	return queue.Enqueue(ctx, in, registry, [[.Title]]Kind, payload, options...)
+}
+
+// Perform[[.Title]] runs one attempt of the [[.Name]] job. The worker passes a
+// context that ends when the attempt times out or the application shuts down:
+// honor it promptly. Delivery is at least once, so make the work idempotent;
+// queue.JobFromContext(ctx).ID is a stable idempotency key for providers that
+// take one. A queue.Permanent error sends the job straight to the dead state,
+// any other error retries it with backoff.
+func Perform[[.Title]](ctx context.Context, payload [[.Title]]Payload) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return queue.Permanent(Err[[.Title]]NotImplemented)
+}

@@ -1,0 +1,157 @@
+package httpapi_test
+
+import (
+	"encoding/json"
+[[- if not .Public]]
+	"errors"
+[[- end]]
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	forge "github.com/rocketinsidecorp/forge-go"
+[[- if not .Public]]
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/web"
+[[- end]]
+	"[[.Module]]/app/adapters/httpapi"
+)
+
+// [[.Camel]]ControllerRoutes lists every route of the controller with the
+// action it must answer.
+var [[.Camel]]ControllerRoutes = []struct{ path, action string }{
+[[- range .Actions]]
+	{"[[.Path]]", "[[.Name]]"},
+[[- end]]
+}
+
+func new[[.Title]]ControllerHandler(t *testing.T[[if not .Public]], protect httpapi.[[.Title]]ControllerProtect[[end]]) http.Handler {
+	t.Helper()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := httpapi.Register[[.Title]]Controller(app[[if not .Public]], protect[[end]]); err != nil {
+		t.Fatal(err)
+	}
+	return app.Handler()
+}
+
+func [[.Camel]]ControllerRequest(handler http.Handler, method, path string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, nil)
+	request.Header.Set("Accept", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+[[- if not .Public]]
+
+// [[.Camel]]ControllerGuard stands in for the application's guard: it records
+// the permissions it is asked for and lets through only the granted ones. It
+// exists only in tests.
+func [[.Camel]]ControllerGuard(asked *[]string, granted ...string) httpapi.[[.Title]]ControllerProtect {
+	return func(permission string, next http.Handler) (http.Handler, error) {
+		*asked = append(*asked, permission)
+		for _, name := range granted {
+			if name == permission {
+				return next, nil
+			}
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			web.Error(w, r, fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0))
+		}), nil
+	}
+}
+[[- end]]
+
+func Test[[.Title]]ControllerAnswersEveryAction(t *testing.T) {
+	t.Parallel()
+[[- if .Public]]
+	handler := new[[.Title]]ControllerHandler(t)
+[[- else]]
+	var asked []string
+	handler := new[[.Title]]ControllerHandler(t, [[.Camel]]ControllerGuard(&asked, "[[.Name]]:read"))
+[[- end]]
+	for _, route := range [[.Camel]]ControllerRoutes {
+		recorder := [[.Camel]]ControllerRequest(handler, http.MethodGet, route.path)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200: %s", route.path, recorder.Code, recorder.Body)
+		}
+		if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+			t.Errorf("GET %s Content-Type = %q, want application/json", route.path, got)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+			t.Fatalf("GET %s: %v: %s", route.path, err, recorder.Body)
+		}
+		if body["controller"] != "[[.Name]]" || body["action"] != route.action {
+			t.Errorf("GET %s = %v, want controller [[.Name]] and action %s", route.path, body, route.action)
+		}
+	}
+}
+
+func Test[[.Title]]ControllerAnswersGetOnly(t *testing.T) {
+	t.Parallel()
+[[- if .Public]]
+	handler := new[[.Title]]ControllerHandler(t)
+[[- else]]
+	var asked []string
+	handler := new[[.Title]]ControllerHandler(t, [[.Camel]]ControllerGuard(&asked, "[[.Name]]:read"))
+[[- end]]
+	for _, route := range [[.Camel]]ControllerRoutes {
+		if recorder := [[.Camel]]ControllerRequest(handler, http.MethodPost, route.path); recorder.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s = %d, want 405", route.path, recorder.Code)
+		}
+	}
+}
+[[- if not .Public]]
+
+func Test[[.Title]]ControllerRequiresItsPermission(t *testing.T) {
+	t.Parallel()
+	var asked []string
+	handler := new[[.Title]]ControllerHandler(t, [[.Camel]]ControllerGuard(&asked))
+	for _, route := range [[.Camel]]ControllerRoutes {
+		recorder := [[.Camel]]ControllerRequest(handler, http.MethodGet, route.path)
+		if recorder.Code != http.StatusForbidden {
+			t.Errorf("GET %s without the permission = %d, want 403", route.path, recorder.Code)
+		}
+		if strings.Contains(recorder.Body.String(), `"action"`) {
+			t.Errorf("GET %s answered a caller without the permission", route.path)
+		}
+	}
+	if len(asked) != len([[.Camel]]ControllerRoutes) {
+		t.Fatalf("the guard was asked %d times, want once per route (%d)", len(asked), len([[.Camel]]ControllerRoutes))
+	}
+	for _, permission := range asked {
+		if permission != "[[.Name]]:read" {
+			t.Errorf("the guard was asked for %q, want [[.Name]]:read", permission)
+		}
+	}
+}
+[[- end]]
+
+func Test[[.Title]]ControllerRefusesIncompleteSetups(t *testing.T) {
+	t.Parallel()
+[[- if not .Public]]
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+[[- end]]
+	if err := httpapi.Register[[.Title]]Controller(nil[[if not .Public]], [[.Camel]]ControllerGuard(new([]string))[[end]]); err == nil {
+		t.Error("a nil router was accepted")
+	}
+[[- if not .Public]]
+	if err := httpapi.Register[[.Title]]Controller(app, nil); err == nil {
+		t.Error("a missing guard was accepted: the routes would be public")
+	}
+	broken := errors.New("guard failed")
+	if err := httpapi.Register[[.Title]]Controller(app, func(string, http.Handler) (http.Handler, error) { return nil, broken }); !errors.Is(err, broken) {
+		t.Errorf("a guard error was not reported: %v", err)
+	}
+	if err := httpapi.Register[[.Title]]Controller(app, func(string, http.Handler) (http.Handler, error) { return nil, nil }); err == nil {
+		t.Error("a guard that returned no handler was accepted")
+	}
+[[- end]]
+}

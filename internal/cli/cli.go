@@ -72,6 +72,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runSeed(args[1:], stdout, commandStderr)
 	case "generate":
 		err = runGenerate(args[1:], stdout)
+	case "destroy":
+		err = runDestroy(args[1:], stdout)
 	case "deploy":
 		err = deploy.RunDeploy(args[1:], stdout, commandStderr)
 	case "logs":
@@ -311,6 +313,18 @@ commands:
                       create or preview an auto-escaped page in app/views
   generate job NAME [--dry-run]
                       create or preview a cancellation-aware job stub and tests
+  generate job NAME [field:type...] --queue [--dry-run]
+                      a typed handler for the persistent job queue, with its
+                      enqueue function and tests
+  generate model NAME field:type... (--tenant-scoped | --global) [--plural P] [--dry-run]
+                      a migration, domain, application and persistence layers
+                      with tests; no HTTP layer
+  generate controller NAME ACTION... [--api] [--public] [--dry-run]
+                      HTTP handlers, routes, views and tests, no persistence;
+                      never public unless --public
+  generate mailer NAME METHOD[:field,field]... [--dry-run]
+                      a mailer with typed methods, text and HTML templates,
+                      previews and tests
   generate resource NAME field:type... (--tenant-scoped | --global) [--plural P] [--dry-run]
                       create or preview a migration, domain, application,
                       persistence and HTTP layers with tests; never public
@@ -320,6 +334,8 @@ commands:
   generate authentication [--dry-run]
                       add the sign-in, sign-out, two-factor and password-reset
                       pages forge new generates (PostgreSQL)
+  destroy GENERATOR ARGUMENTS... [--force] [--migrations] [--dry-run]
+                      remove what a generator created, unless it was edited
   deploy [init|setup|rollback VERSION|prune|details|lock|maintenance]
                       deploy containers to hosts over SSH behind forge-proxy;
                       --dry-run prints the remote commands, secrets redacted
