@@ -244,7 +244,7 @@ written to logs.
 
 | Path | Purpose |
 | --- | --- |
-| `cmd/{{.Name}}` | Process entrypoint: `serve` (default), `healthcheck`{{if .DB}}, `migrate`, `rollback`, `seed`{{end}}{{if and .DB .DB.Identity}}, `setup`{{end}} |
+| `cmd/{{.Name}}` | Process entrypoint: `serve` (default), `healthcheck`, `openapi`{{if .DB}}, `migrate`, `rollback`, `seed`{{end}}{{if and .DB .DB.Identity}}, `setup`{{end}} |
 | `app/bootstrap` | Composition root: dependencies, readiness checks, routes |
 {{- if and .DB .DB.Identity}}
 | `app/adapters/htmlauth` | Sign-in, sign-out, two-factor and password-reset pages |
@@ -296,6 +296,28 @@ routes are available for HTTPS applications. Password recovery delivery is
 enabled by the `FORGE_MAIL_*` and `FORGE_AUTH_PASSWORD_RESET_URL` settings
 above; any SMTP server works, self-hosted included.
 {{- end}}
+
+## API description (OpenAPI)
+
+JSON routes declare their request, response and error types next to the
+route (`openapi.Typed` or `openapi.Describe` from
+`github.com/rocketinsidecorp/forge-go/openapi`), so the OpenAPI 3.1 document
+is generated from the Go types and cannot drift from them. `GET /v1/status`
+in `app/bootstrap` is the example; generated resources and `--api`
+controllers are described too.
+
+```bash
+# Served in development and test (FORGE_OPENAPI_ENABLED=true elsewhere)
+curl http://127.0.0.1:8080/openapi.json
+
+# Written from the application without serving it{{if and .DB .DB.Server}} (needs the database, like forge migrate){{end}}
+forge openapi --output openapi.json
+forge openapi --check openapi.json   # exits 1 when the committed file is stale (CI)
+```
+
+In staging and production the document is not served unless
+`FORGE_OPENAPI_ENABLED=true`: it lists every documented route. The handler
+tests of generated resources check every response against it.
 
 ## Observability
 

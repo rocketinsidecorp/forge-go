@@ -8,6 +8,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/auth"
 	{{- end}}
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -57,6 +58,7 @@ func TestRoutes(t *testing.T) {
 			t.Fatalf("welcome page CSP = %q", recorder.Header().Get("Content-Security-Policy"))
 		}
 	}
+	assertOpenAPI(t, app, "/v1/status", "/health")
 	// Without Accept-Language the page is in the default locale.
 	if page := welcomeResponse(app); page.Header().Get("Content-Language") != locales.DefaultLocale || strings.Contains(page.Body.String(), "translation missing") {
 		t.Fatalf("welcome page Content-Language = %q:\n%s", page.Header().Get("Content-Language"), page.Body.String())
@@ -106,6 +108,37 @@ func TestRoutes(t *testing.T) {
 {{- end}}
 }
 
+
+// assertOpenAPI checks the OpenAPI document Forge serves in development and
+// test: valid JSON describing paths, and the real /v1/status response
+// matching what it declares (a contract test; do the same for your routes).
+func assertOpenAPI(t *testing.T, app *forge.App, paths ...string) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, forge.OpenAPIPath, nil))
+	var document struct {
+		OpenAPI string         `json:"openapi"`
+		Info    map[string]any `json:"info"`
+		Paths   map[string]any `json:"paths"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &document); recorder.Code != http.StatusOK || err != nil || document.OpenAPI != "3.1.0" || document.Info["title"] != "{{.Name}}" {
+		t.Fatalf("GET %s status=%d err=%v body=%s", forge.OpenAPIPath, recorder.Code, err, recorder.Body.String())
+	}
+	for _, path := range paths {
+		if _, ok := document.Paths[path]; !ok {
+			t.Errorf("the OpenAPI document does not describe %s", path)
+		}
+	}
+	spec, err := app.OpenAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := httptest.NewRecorder()
+	app.Handler().ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	if err := spec.ValidateResponse(http.MethodGet, "/v1/status", status.Code, status.Header(), status.Body.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+}
 {{- if not .DB}}
 
 func welcomeBody(t *testing.T, app *forge.App) string {
@@ -231,6 +264,11 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"database"`) {
 		t.Fatalf("readiness status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
+{{- if .DB.Identity}}
+	assertOpenAPI(t, app, "/v1/status", "/health", "/v1/auth/session")
+{{- else}}
+	assertOpenAPI(t, app, "/v1/status", "/health")
+{{- end}}
 {{- if .DB.Identity}}
 
 	authRecorder := httptest.NewRecorder()

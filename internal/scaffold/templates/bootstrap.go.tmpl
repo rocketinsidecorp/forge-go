@@ -24,6 +24,7 @@ import (
 {{- if and .DB .DB.Identity}}
 	"github.com/rocketinsidecorp/forge-go/mail"
 {{- end}}
+	"github.com/rocketinsidecorp/forge-go/openapi"
 {{- if .DB}}
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
 {{- end}}
@@ -130,7 +131,16 @@ func routes(ctx context.Context, app *forge.App, translator *i18n.Translator) er
 	if err := app.Handle("GET /assets/", bundle.Set.Handler()); err != nil {
 		return err
 	}
-	if err := app.HandleFunc("GET /v1/status", status); err != nil {
+	// JSON endpoints declare their types: GET /openapi.json (development
+	// and test, or FORGE_OPENAPI_ENABLED=true) and `forge openapi` describe
+	// them. openapi.Typed derives the description from the handler itself.
+	if err := app.SetAPIInfo(openapi.Info{Title: "{{.Name}}", Version: "0.1.0"}); err != nil {
+		return err
+	}
+	if err := app.Handle("GET /v1/status", openapi.Typed(http.StatusOK, openapi.Operation{
+		Summary: "Service status",
+		Tags:    []string{"status"},
+	}, status)); err != nil {
 		return err
 	}
 	return nil
@@ -164,8 +174,13 @@ func useBrowserPipeline(app *forge.App, translator *i18n.Translator) error {
 	return nil
 }
 
-func status(w http.ResponseWriter, _ *http.Request) {
-	web.JSON(w, http.StatusOK, map[string]string{"service": "{{.Name}}", "status": "ok"})
+type statusResponse struct {
+	Service string `json:"service" example:"{{.Name}}"`
+	Status  string `json:"status" example:"ok"`
+}
+
+func status(*http.Request, openapi.NoBody) (statusResponse, error) {
+	return statusResponse{Service: "{{.Name}}", Status: "ok"}, nil
 }
 
 {{- if and .DB .DB.Identity}}
@@ -357,7 +372,12 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 	//	...
 	//	guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
 
-	return app.Handle("GET /v1/auth/session", middleware.Authenticate(http.HandlerFunc(currentSession)))
+	return app.Handle("GET /v1/auth/session", openapi.Describe(middleware.Authenticate(http.HandlerFunc(currentSession)), openapi.Operation{
+		Summary:       "The signed-in session",
+		Tags:          []string{"auth"},
+		Authenticated: true,
+		Responses:     []openapi.Response{openapi.JSON[sessionResponse](http.StatusOK)},
+	}))
 }
 
 // passwordRecoveryDelivery emails reset links through auth/recoverymail when

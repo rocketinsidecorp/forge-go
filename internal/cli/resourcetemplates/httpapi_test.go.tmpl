@@ -134,7 +134,9 @@ func new[[.Title]]Service(t *testing.T) *application.[[.Title]]Service {
 }
 
 // new[[.Title]]Handler serves the API from a forge.App, so requests pass through
-// the framework's middleware (request IDs, body limit, error format).
+// the framework's middleware (request IDs, body limit, error format). Every
+// response is also checked against the OpenAPI document the routes declare,
+// so each test below is a contract test too.
 func new[[.Title]]HandlerFor(t *testing.T, service *application.[[.Title]]Service, protect httpapi.[[.Title]]Protect) http.Handler {
 	t.Helper()
 	app, err := forge.New()
@@ -144,7 +146,63 @@ func new[[.Title]]HandlerFor(t *testing.T, service *application.[[.Title]]Servic
 	if err := httpapi.Register[[.PluralTitle]](app, service, protect); err != nil {
 		t.Fatal(err)
 	}
-	return app.Handler()
+	spec, err := app.OpenAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec.CheckResponses(app.Handler(), func(r *http.Request, err error) {
+		t.Errorf("%s %s: the response does not match the OpenAPI document: %v", r.Method, r.URL, err)
+	})
+}
+
+// Test[[.Title]]OpenAPIDocument checks what the routes declare: every route is
+// described, with its permission and types.
+func Test[[.Title]]OpenAPIDocument(t *testing.T) {
+	t.Parallel()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := httpapi.Register[[.PluralTitle]](app, new[[.Title]]Service(t), [[.Name]]AllowAll); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := app.OpenAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if undocumented := spec.Undocumented(); len(undocumented) != 0 {
+		t.Fatalf("undocumented routes: %v", undocumented)
+	}
+	var document struct {
+		Paths map[string]map[string]struct {
+			OperationID string         `json:"operationId"`
+			Permission  string         `json:"x-forge-permission"`
+			RequestBody map[string]any `json:"requestBody"`
+		} `json:"paths"`
+		Components struct {
+			Schemas map[string]any `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(spec.JSON(), &document); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct{ path, method, id, permission string }{
+		{"/v1/[[.Plural]]", "post", "create[[.Title]]", "[[.Plural]]:write"},
+		{"/v1/[[.Plural]]", "get", "list[[.PluralTitle]]", "[[.Plural]]:read"},
+		{"/v1/[[.Plural]]/{id}", "get", "get[[.Title]]", "[[.Plural]]:read"},
+		{"/v1/[[.Plural]]/{id}", "patch", "update[[.Title]]", "[[.Plural]]:write"},
+		{"/v1/[[.Plural]]/{id}", "delete", "delete[[.Title]]", "[[.Plural]]:write"},
+	} {
+		operation, ok := document.Paths[want.path][want.method]
+		if !ok || operation.OperationID != want.id || operation.Permission != want.permission {
+			t.Errorf("%s %s = %+v, want %s requiring %s", want.method, want.path, operation, want.id, want.permission)
+		}
+	}
+	for _, name := range []string{"[[.Title]]Response", "[[.Title]]CreateRequest", "[[.Title]]PatchRequest", "ErrorBody"} {
+		if _, ok := document.Components.Schemas[name]; !ok {
+			t.Errorf("component %s is missing", name)
+		}
+	}
 }
 
 func new[[.Title]]Handler(t *testing.T) http.Handler {

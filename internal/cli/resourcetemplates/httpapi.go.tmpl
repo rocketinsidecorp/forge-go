@@ -11,6 +11,7 @@ import (
 
 	"[[.Module]]/app/application"
 	"[[.Module]]/app/domain"
+	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/pagination"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -43,18 +44,49 @@ func Register[[.PluralTitle]](router [[.Title]]Router, service *application.[[.T
 		return errors.New("httpapi: a protect function is required: [[.Name]] routes are never public")
 	}
 	h := [[.Name]]Handlers{service: service}
+	// Each route declares its request, response and error types for the
+	// OpenAPI document (GET /openapi.json, `forge openapi`); the handler
+	// tests check the actual responses against it.
+	tags := []string{"[[.Plural]]"}
 	routes := []struct {
 		pattern    string
 		permission string
 		handler    http.HandlerFunc
+		operation  openapi.Operation
 	}{
-		{"POST " + [[.Plural]]Path, [[.Plural]]WritePermission, h.create},
-		{"GET " + [[.Plural]]Path, [[.Plural]]ReadPermission, h.list},
-		{"GET " + [[.Plural]]Path + "/{id}", [[.Plural]]ReadPermission, h.get},
-		{"PATCH " + [[.Plural]]Path + "/{id}", [[.Plural]]WritePermission, h.update},
-		{"DELETE " + [[.Plural]]Path + "/{id}", [[.Plural]]WritePermission, h.delete},
+		{"POST " + [[.Plural]]Path, [[.Plural]]WritePermission, h.create, openapi.Operation{
+			ID: "create[[.Title]]", Summary: "Create a [[.Name]]", Tags: tags,
+			Request:   [[printf "openapi.TypeOf[%sCreateRequest]" .Name]](),
+			Responses: []openapi.Response{{Status: http.StatusCreated, Body: [[printf "openapi.TypeOf[%sResponse]" .Name]](), Headers: []string{"Location"}}},
+		}},
+		{"GET " + [[.Plural]]Path, [[.Plural]]ReadPermission, h.list, openapi.Operation{
+			ID: "list[[.PluralTitle]]", Summary: "List [[.Plural]], newest first", Tags: tags,
+			Params:    openapi.TypeOf[pagination.Query](),
+			Responses: []openapi.Response{[[printf "openapi.JSON[pagination.Page[%sResponse]]" .Name]](http.StatusOK)},
+			Errors:    []int{http.StatusBadRequest},
+		}},
+		{"GET " + [[.Plural]]Path + "/{id}", [[.Plural]]ReadPermission, h.get, openapi.Operation{
+			ID: "get[[.Title]]", Summary: "Get a [[.Name]]", Tags: tags,
+			Params:    [[printf "openapi.TypeOf[%sIDParam]" .Name]](),
+			Responses: []openapi.Response{[[printf "openapi.JSON[%sResponse]" .Name]](http.StatusOK)},
+			Errors:    []int{http.StatusBadRequest, http.StatusNotFound},
+		}},
+		{"PATCH " + [[.Plural]]Path + "/{id}", [[.Plural]]WritePermission, h.update, openapi.Operation{
+			ID: "update[[.Title]]", Summary: "Change some fields of a [[.Name]]", Tags: tags,
+			Params:    [[printf "openapi.TypeOf[%sIDParam]" .Name]](),
+			Request:   [[printf "openapi.TypeOf[%sPatchRequest]" .Name]](),
+			Responses: []openapi.Response{[[printf "openapi.JSON[%sResponse]" .Name]](http.StatusOK)},
+			Errors:    []int{http.StatusNotFound, http.StatusConflict},
+		}},
+		{"DELETE " + [[.Plural]]Path + "/{id}", [[.Plural]]WritePermission, h.delete, openapi.Operation{
+			ID: "delete[[.Title]]", Summary: "Delete a [[.Name]]", Tags: tags,
+			Params:    [[printf "openapi.TypeOf[%sDeleteParams]" .Name]](),
+			Responses: []openapi.Response{openapi.Empty(http.StatusNoContent)},
+			Errors:    []int{http.StatusBadRequest, http.StatusNotFound, http.StatusConflict},
+		}},
 	}
 	for _, route := range routes {
+		route.operation.Permission = route.permission
 		protected, err := protect(route.permission, route.handler)
 		if err != nil {
 			return fmt.Errorf("protect %s: %w", route.pattern, err)
@@ -62,11 +94,22 @@ func Register[[.PluralTitle]](router [[.Title]]Router, service *application.[[.T
 		if protected == nil {
 			return fmt.Errorf("protect %s: the protect function returned no handler", route.pattern)
 		}
-		if err := router.Handle(route.pattern, protected); err != nil {
+		if err := router.Handle(route.pattern, openapi.Describe(protected, route.operation)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// [[.Name]]IDParam documents the {id} path parameter.
+type [[.Name]]IDParam struct {
+	ID uuid.UUID `path:"id" doc:"The [[.Name]]'s ID."`
+}
+
+// [[.Name]]DeleteParams documents DELETE's parameters.
+type [[.Name]]DeleteParams struct {
+	[[.Name]]IDParam
+	Version int `query:"version" openapi:"required" doc:"The version the client last read."`
 }
 
 type [[.Name]]Handlers struct {
@@ -77,7 +120,11 @@ type [[.Name]]Handlers struct {
 // silently becoming a zero value.
 type [[.Name]]CreateRequest struct {
 [[- range .Fields]]
-	[[.Title]] *[[.RequestType]] `json:"[[.Name]]"`
+[[- if .Optional]]
+	[[.Title]] *[[.RequestType]] `json:"[[.Name]],omitempty"[[if .IsTime]] format:"date-time"[[else if .IsUUID]] format:"uuid"[[end]]`
+[[- else]]
+	[[.Title]] *[[.RequestType]] `json:"[[.Name]]" openapi:"required,nonnull"[[if .IsTime]] format:"date-time"[[else if .IsUUID]] format:"uuid"[[end]]`
+[[- end]]
 [[- end]]
 }
 
@@ -145,6 +192,9 @@ type [[.Name]]PatchField[T any] struct {
 	Value *T
 }
 
+// OpenAPIType documents the field as T or null (openapi.Typer).
+func ([[.Name]]PatchField[T]) OpenAPIType() openapi.Type { return openapi.TypeOf[*T]() }
+
 func (f *[[.Name]]PatchField[T]) UnmarshalJSON(data []byte) error {
 	f.Set = true
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
@@ -163,9 +213,9 @@ func (f *[[.Name]]PatchField[T]) UnmarshalJSON(data []byte) error {
 // fields to change. A member left out stays as it is; null clears an optional
 // field and is rejected for a required one.
 type [[.Name]]PatchRequest struct {
-	Version int `json:"version"`
+	Version int `json:"version" doc:"The version the client last read."`
 [[- range .Fields]]
-	[[.Title]] [[printf "%sPatchField[%s]" $.Name .RequestType]] `json:"[[.Name]]"`
+	[[.Title]] [[printf "%sPatchField[%s]" $.Name .RequestType]] `json:"[[.Name]],omitzero"[[if not .Optional]] openapi:"nonnull"[[end]][[if .IsTime]] format:"date-time"[[else if .IsUUID]] format:"uuid"[[end]]`
 [[- end]]
 }
 

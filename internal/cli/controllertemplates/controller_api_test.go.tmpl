@@ -35,7 +35,14 @@ func new[[.Title]]ControllerHandler(t *testing.T[[if not .Public]], protect http
 	if err := httpapi.Register[[.Title]]Controller(app[[if not .Public]], protect[[end]]); err != nil {
 		t.Fatal(err)
 	}
-	return app.Handler()
+	// Every response must match the OpenAPI document the routes declare.
+	spec, err := app.OpenAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spec.CheckResponses(app.Handler(), func(r *http.Request, err error) {
+		t.Errorf("%s %s: %v", r.Method, r.URL, err)
+	})
 }
 
 func [[.Camel]]ControllerRequest(handler http.Handler, method, path string) *httptest.ResponseRecorder {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 [[- if not .Public]]
@@ -47,8 +48,9 @@ func Register[[.Title]]Controller(routes [[.Title]]ControllerRouter[[if not .Pub
 	controller := [[.Camel]]Controller{}
 [[- range .Actions]]
 [[- if $.Public]]
-	// The literal pattern lets `forge routes` list this route.
-	if err := routes.Handle("[[.Pattern]]", http.HandlerFunc(controller.[[.Title]])); err != nil {
+	// The literal pattern lets `forge routes` list this route; the
+	// description puts it in the OpenAPI document.
+	if err := routes.Handle("[[.Pattern]]", openapi.Describe(http.HandlerFunc(controller.[[.Title]]), [[$.Camel]]ControllerOperation("[[.Name]]", ""))); err != nil {
 		return err
 	}
 [[- else]]
@@ -59,13 +61,25 @@ func Register[[.Title]]Controller(routes [[.Title]]ControllerRouter[[if not .Pub
 	if [[.Camel]]Handler == nil {
 		return errors.New("httpapi: the protect function returned no handler for [[.Pattern]]")
 	}
-	// The literal pattern lets `forge routes` list this route.
-	if err := routes.Handle("[[.Pattern]]", [[.Camel]]Handler); err != nil {
+	// The literal pattern lets `forge routes` list this route; the
+	// description puts it in the OpenAPI document.
+	if err := routes.Handle("[[.Pattern]]", openapi.Describe([[.Camel]]Handler, [[$.Camel]]ControllerOperation("[[.Name]]", [[$.Camel]]ControllerReadPermission))); err != nil {
 		return err
 	}
 [[- end]]
 [[- end]]
 	return nil
+}
+
+// [[.Camel]]ControllerOperation describes an action for the OpenAPI document.
+// Change the response type here when an action answers something else.
+func [[.Camel]]ControllerOperation(action, permission string) openapi.Operation {
+	return openapi.Operation{
+		Summary:    "[[.Name]] " + action,
+		Tags:       []string{"[[.Name]]"},
+		Permission: permission,
+		Responses:  []openapi.Response{[[printf "openapi.JSON[%sControllerResponse]" .Camel]](http.StatusOK)},
+	}
 }
 
 type [[.Camel]]Controller struct{}
