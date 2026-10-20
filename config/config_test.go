@@ -217,3 +217,41 @@ func TestPasswordResetURLIsValidated(t *testing.T) {
 		}
 	}
 }
+
+// The OpenAPI document discloses every documented route, so it is served by
+// default only where a developer is at the keyboard.
+func TestOpenAPIIsServedOnlyInDevelopmentAndTestByDefault(t *testing.T) {
+	t.Parallel()
+	load := func(values map[string]string) (config.Config, error) {
+		values["FORGE_HTTP_TRANSPORT"] = "trusted-proxy"
+		return config.LoadWithLookup(func(key string) (string, bool) { value, ok := values[key]; return value, ok })
+	}
+	tests := []struct {
+		env, enabled string
+		want         bool
+	}{
+		{"development", "", true},
+		{"test", "", true},
+		{"staging", "", false},
+		{"production", "", false},
+		{"production", "true", true},
+		{"development", "false", false},
+		{"staging", "1", true},
+	}
+	for _, tt := range tests {
+		values := map[string]string{"FORGE_ENV": tt.env}
+		if tt.enabled != "" {
+			values["FORGE_OPENAPI_ENABLED"] = tt.enabled
+		}
+		cfg, err := load(values)
+		if err != nil {
+			t.Fatalf("%s/%q: %v", tt.env, tt.enabled, err)
+		}
+		if got := cfg.ServesOpenAPI(); got != tt.want {
+			t.Errorf("FORGE_ENV=%s FORGE_OPENAPI_ENABLED=%q: ServesOpenAPI = %v, want %v", tt.env, tt.enabled, got, tt.want)
+		}
+	}
+	if _, err := load(map[string]string{"FORGE_OPENAPI_ENABLED": "yes please"}); err == nil || !strings.Contains(err.Error(), "FORGE_OPENAPI_ENABLED") || strings.Contains(err.Error(), "yes please") {
+		t.Fatalf("invalid value: err = %v", err)
+	}
+}

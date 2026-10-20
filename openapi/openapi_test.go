@@ -286,7 +286,7 @@ func TestDescriptionsThatCannotBeAccurateAreErrors(t *testing.T) {
 		"unknown path parameter": {[]openapi.Route{{Method: "GET", Pattern: "/a", Handler: describe(openapi.Operation{Params: openapi.TypeOf[sinkParams](), Responses: okResponse})}}, "not a wildcard"},
 		"channel":                {[]openapi.Route{{Method: "GET", Pattern: "/a", Handler: describe(openapi.Operation{Responses: []openapi.Response{openapi.JSON[chan int](http.StatusOK)}})}}, "cannot encode chan"},
 		"no response":            {[]openapi.Route{{Method: "GET", Pattern: "/a", Handler: describe(openapi.Operation{})}}, "declares no response"},
-		"error as response":      {[]openapi.Route{{Method: "GET", Pattern: "/a", Handler: describe(openapi.Operation{Responses: []openapi.Response{openapi.Empty(http.StatusNotFound)}})}}, "Operation.Errors"},
+		"response and error":     {[]openapi.Route{{Method: "GET", Pattern: "/a", Handler: describe(openapi.Operation{Responses: []openapi.Response{openapi.Empty(http.StatusNotFound)}, Errors: []int{http.StatusNotFound}})}}, "both a response and an error"},
 		"success as error":       {[]openapi.Route{{Method: "GET", Pattern: "/a", Handler: describe(openapi.Operation{Responses: okResponse, Errors: []int{http.StatusOK}})}}, "not 4xx"},
 		"body on 204":            {[]openapi.Route{{Method: "GET", Pattern: "/a", Handler: describe(openapi.Operation{Responses: []openapi.Response{openapi.JSON[first](http.StatusNoContent)}})}}, "has no body"},
 		"bad tag option": {[]openapi.Route{{Method: "GET", Pattern: "/a", Handler: describe(openapi.Operation{Responses: []openapi.Response{openapi.JSON[struct {
@@ -500,5 +500,25 @@ func TestDocumentHandlerServesJSON(t *testing.T) {
 	document.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/openapi.json", nil))
 	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "application/json" || !bytes.Equal(recorder.Body.Bytes(), document.JSON()) {
 		t.Fatalf("status=%d headers=%v", recorder.Code, recorder.Header())
+	}
+}
+
+type named struct {
+	A int `json:"a"`
+}
+
+func (named) OpenAPIName() string { return "Chosen" }
+
+func TestNamerChoosesTheComponentNameAndHTMLIsNotEscaped(t *testing.T) {
+	t.Parallel()
+	document, tree := build(t, openapi.Route{Method: "GET", Pattern: "/a", Handler: openapi.Describe(ok, openapi.Operation{
+		Summary:   "<a> & b",
+		Responses: []openapi.Response{openapi.JSON[named](http.StatusOK)},
+	})})
+	if _, ok := at(t, tree, "components", "schemas").(map[string]any)["Chosen"]; !ok {
+		t.Fatal("OpenAPIName was not used")
+	}
+	if !bytes.Contains(document.JSON(), []byte(`"<a> & b"`)) {
+		t.Fatalf("summary was escaped:\n%s", document.JSON())
 	}
 }

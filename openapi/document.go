@@ -153,11 +153,14 @@ func Build(info Info, routes []Route) (*Document, error) {
 		"paths":             paths,
 		"components":        components,
 	}
-	encoded, err := json.MarshalIndent(tree, "", "  ")
-	if err != nil {
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(tree); err != nil {
 		return nil, fmt.Errorf("openapi: encode document: %w", err)
 	}
-	document.json = append(encoded, '\n')
+	document.json = encoded.Bytes()
 	// The validator works on the published bytes, not on the Go values
 	// that produced them.
 	decoder := json.NewDecoder(bytes.NewReader(document.json))
@@ -225,30 +228,32 @@ func (s *schemas) operation(method, path string, wildcards []string, op Operatio
 	if len(parameters) > 0 {
 		result["parameters"] = parameters
 	}
-	errorStatuses := slices.Clone(op.Errors)
+	// Errors the framework answers on its own for this kind of operation;
+	// a declared response with the same status takes precedence.
+	var implied []int
 	if !op.Request.IsZero() {
 		body, err := s.schema(op.Request.t)
 		if err != nil {
 			return nil, err
 		}
 		result["requestBody"] = map[string]any{"required": true, "content": map[string]any{jsonMediaType: map[string]any{"schema": body}}}
-		errorStatuses = append(errorStatuses, http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType)
+		implied = append(implied, http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType)
 	}
 	if op.Permission != "" || op.Authenticated {
 		result["security"] = []any{map[string]any{bearerScheme: []string{}}}
-		errorStatuses = append(errorStatuses, http.StatusUnauthorized)
+		implied = append(implied, http.StatusUnauthorized)
 	}
 	if op.Permission != "" {
 		result["x-forge-permission"] = op.Permission
-		errorStatuses = append(errorStatuses, http.StatusForbidden)
+		implied = append(implied, http.StatusForbidden)
 	}
 	if len(op.Responses) == 0 {
 		return nil, fmt.Errorf("%w: the operation declares no response", ErrNotDescribable)
 	}
 	responses := map[string]any{}
 	for _, response := range op.Responses {
-		if response.Status < 100 || response.Status > 399 {
-			return nil, fmt.Errorf("%w: response status %d is not 1xx-3xx; list error statuses in Operation.Errors", ErrNotDescribable, response.Status)
+		if response.Status < 100 || response.Status > 599 {
+			return nil, fmt.Errorf("%w: response status %d is not an HTTP status", ErrNotDescribable, response.Status)
 		}
 		key := strconv.Itoa(response.Status)
 		if _, duplicate := responses[key]; duplicate {
@@ -274,11 +279,21 @@ func (s *schemas) operation(method, path string, wildcards []string, op Operatio
 		}
 		responses[key] = object
 	}
-	for _, status := range errorStatuses {
+	for _, status := range op.Errors {
 		if status < 400 || status > 599 {
 			return nil, fmt.Errorf("%w: error status %d is not 4xx or 5xx", ErrNotDescribable, status)
 		}
-		responses[strconv.Itoa(status)] = errorResponse(http.StatusText(status), errorSchema)
+		key := strconv.Itoa(status)
+		if _, declared := responses[key]; declared {
+			return nil, fmt.Errorf("%w: status %d is both a response and an error", ErrNotDescribable, status)
+		}
+		responses[key] = errorResponse(http.StatusText(status), errorSchema)
+	}
+	for _, status := range implied {
+		key := strconv.Itoa(status)
+		if _, declared := responses[key]; !declared {
+			responses[key] = errorResponse(http.StatusText(status), errorSchema)
+		}
 	}
 	responses["default"] = errorResponse("Error", errorSchema)
 	result["responses"] = responses

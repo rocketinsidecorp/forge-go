@@ -25,6 +25,7 @@ var (
 	uuidType        = reflect.TypeFor[uuid.UUID]()
 	rawMessageType  = reflect.TypeFor[json.RawMessage]()
 	typerType       = reflect.TypeFor[Typer]()
+	namerType       = reflect.TypeFor[Namer]()
 	jsonMarshaler   = reflect.TypeFor[json.Marshaler]()
 	jsonUnmarshaler = reflect.TypeFor[json.Unmarshaler]()
 	textMarshaler   = reflect.TypeFor[encoding.TextMarshaler]()
@@ -489,7 +490,8 @@ func validTagName(name string) bool {
 	return true
 }
 
-// assignNames names every component after its Go type, with the first letter
+// assignNames names every component after its Go type (or its OpenAPIName),
+// with the first letter
 // upper-cased and type arguments reduced to their names
 // (pagination.Page[app/httpapi.postResponse] is Page_PostResponse). Types that
 // would share a name are qualified with their package name, then with their
@@ -529,6 +531,13 @@ func packageName(t reflect.Type) string {
 }
 
 func shortName(t reflect.Type) string {
+	if t.Implements(namerType) {
+		if namer, ok := reflect.Zero(t).Interface().(Namer); ok {
+			if name := sanitize(namer.OpenAPIName()); name != "" {
+				return name
+			}
+		}
+	}
 	var builder strings.Builder
 	token := func(text string) {
 		if slash := strings.LastIndex(text, "/"); slash >= 0 {

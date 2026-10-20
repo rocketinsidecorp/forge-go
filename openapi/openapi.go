@@ -63,6 +63,14 @@ type Typer interface {
 	OpenAPIType() Type
 }
 
+// Namer is implemented by struct types that choose their component name in
+// #/components/schemas instead of their Go name, such as a generic or
+// unexported type. It is called on the zero value and needs no import of
+// this package.
+type Namer interface {
+	OpenAPIName() string
+}
+
 // Response is one documented response of an operation.
 type Response struct {
 	Status int
@@ -104,9 +112,11 @@ type Operation struct {
 	// Request is the JSON request body, decoded with web.DecodeJSON. It adds
 	// the 400, 413 and 415 errors that decoding answers.
 	Request Type
-	// Responses are the successful (or redirect) responses.
+	// Responses are the responses with their own body type: successes,
+	// redirects, and errors that are not web.ErrorBody (a readiness check
+	// answering 503 with its report).
 	Responses []Response
-	// Errors are further statuses the route answers with web.Error. Every
+	// Errors are the error statuses the route answers with web.Error. Every
 	// error response, and the "default" response, uses web.ErrorBody.
 	Errors []int
 }

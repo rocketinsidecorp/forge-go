@@ -150,6 +150,13 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 		}
 		cfg.Mail.Preview = parsed
 	}
+	if value, ok := lookup("FORGE_OPENAPI_ENABLED"); ok {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, invalidValue("FORGE_OPENAPI_ENABLED", "true or false")
+		}
+		cfg.OpenAPI.Enabled = &parsed
+	}
 	if err := loadTelemetry(lookup, &cfg.Telemetry); err != nil {
 		return Config{}, err
 	}

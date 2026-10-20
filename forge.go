@@ -18,6 +18,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/health"
 	"github.com/rocketinsidecorp/forge-go/httpserver"
+	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/router"
 	"github.com/rocketinsidecorp/forge-go/telemetry"
 	htmlviews "github.com/rocketinsidecorp/forge-go/views"
@@ -25,6 +26,10 @@ import (
 )
 
 const liveRoutePath = "/health/live"
+
+// OpenAPIPath is where the application serves its OpenAPI document when
+// FORGE_OPENAPI_ENABLED allows it (config.Config.ServesOpenAPI).
+const OpenAPIPath = "/openapi.json"
 
 // ViewRenderer executes server-side HTML templates with contextual escaping.
 // It is an alias for views.Renderer, exposed here for generated apps that
@@ -65,6 +70,13 @@ type App struct {
 	middlewares  []httpserver.Middleware
 	chain        atomic.Pointer[http.Handler]
 	serving      atomic.Bool
+
+	// apiMu guards the OpenAPI info and the document served at
+	// OpenAPIPath, built once from the frozen routes.
+	apiMu      sync.Mutex
+	apiInfo    openapi.Info
+	apiServed  *openapi.Document
+	apiHandler http.Handler
 }
 
 // ShutdownHook releases a resource, such as a database pool, after the HTTP
@@ -94,6 +106,7 @@ func New(opts ...Option) (*App, error) {
 		router:    router.New(),
 		health:    health.New(),
 		telemetry: settings.telemetry,
+		apiInfo:   openapi.Info{Title: "Forge application", Version: "0.0.0"},
 	}
 	if !settings.telemetrySet {
 		built, err := telemetry.FromConfig(settings.config, settings.logger)
@@ -125,6 +138,11 @@ func New(opts ...Option) (*App, error) {
 func (a *App) build(settings options) error {
 	if err := a.registerHealthRoutes(); err != nil {
 		return err
+	}
+	if a.config.ServesOpenAPI() {
+		if err := a.router.HandleFunc("GET "+OpenAPIPath, a.serveOpenAPI); err != nil {
+			return err
+		}
 	}
 	var routes http.Handler = a.router
 	a.chain.Store(&routes)
@@ -294,6 +312,71 @@ func (a *App) Readiness(name string, check health.Check) error {
 
 func (a *App) Routes() []router.Route { return a.router.Routes() }
 
+// SetAPIInfo sets the title, version and description of the application's
+// OpenAPI document; the title defaults to "Forge application" and the
+// version to "0.0.0".
+func (a *App) SetAPIInfo(info openapi.Info) error {
+	if info.Title == "" || info.Version == "" {
+		return errors.New("the API needs a title and a version")
+	}
+	a.apiMu.Lock()
+	defer a.apiMu.Unlock()
+	a.apiInfo = info
+	return nil
+}
+
+// OpenAPI builds the OpenAPI 3.1 document of the routes registered so far
+// whose handlers are described (openapi.Describe, openapi.Typed); the
+// others are listed by Document.Undocumented. It works whether or not the
+// document is served, which is how `forge openapi` and tests use it.
+func (a *App) OpenAPI() (*openapi.Document, error) {
+	a.apiMu.Lock()
+	info := a.apiInfo
+	a.apiMu.Unlock()
+	var routes []openapi.Route
+	for _, route := range a.router.Routes() {
+		if route.Method == http.MethodGet && route.Pattern == OpenAPIPath {
+			continue
+		}
+		handler, _ := a.router.Lookup(route)
+		routes = append(routes, openapi.Route{Method: route.Method, Pattern: route.Pattern, Handler: handler})
+	}
+	return openapi.Build(info, routes)
+}
+
+// servedOpenAPI returns the document served at OpenAPIPath. It is built
+// once, when Run starts or on the first request, after which routes can no
+// longer change.
+func (a *App) servedOpenAPI() (*openapi.Document, error) {
+	a.apiMu.Lock()
+	served := a.apiServed
+	a.apiMu.Unlock()
+	if served != nil {
+		return served, nil
+	}
+	document, err := a.OpenAPI()
+	if err != nil {
+		return nil, err
+	}
+	a.apiMu.Lock()
+	defer a.apiMu.Unlock()
+	if a.apiServed == nil {
+		a.apiServed, a.apiHandler = document, document.Handler()
+	}
+	return a.apiServed, nil
+}
+
+func (a *App) serveOpenAPI(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.servedOpenAPI(); err != nil {
+		web.Error(w, r, fmt.Errorf("build the OpenAPI document: %w", err))
+		return
+	}
+	a.apiMu.Lock()
+	handler := a.apiHandler
+	a.apiMu.Unlock()
+	handler.ServeHTTP(w, r)
+}
+
 func (a *App) Handler() http.Handler { return a.server.Handler() }
 
 // Run serves HTTP until ctx is cancelled, then drains in-flight requests and
@@ -308,6 +391,18 @@ func (a *App) Run(ctx context.Context) error {
 	})
 	defer stopWatching()
 
+	if a.config.ServesOpenAPI() {
+		// An inaccurate description is a startup error, not a 500 on
+		// the first request.
+		if _, err := a.servedOpenAPI(); err != nil {
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.config.HTTP.ShutdownTimeout)
+			defer cancel()
+			return errors.Join(err, a.Close(closeCtx))
+		}
+		if a.config.Environment != config.Development && a.config.Environment != config.Test {
+			a.logger.Warn("serving the OpenAPI document, which lists every documented route; FORGE_OPENAPI_ENABLED=true enabled it", "path", OpenAPIPath, "environment", a.config.Environment)
+		}
+	}
 	var runErr error
 	stopMetrics, err := a.serveMetrics()
 	if err == nil {
@@ -324,10 +419,18 @@ func (a *App) Run(ctx context.Context) error {
 	return errors.Join(runErr, a.Close(closeCtx))
 }
 
+// liveness is the body of GET /health/live.
+type liveness struct {
+	Status string `json:"status" doc:"Always \"live\" while the process serves requests."`
+}
+
 func (a *App) registerHealthRoutes() error {
-	if err := a.router.HandleFunc("GET "+liveRoutePath, func(w http.ResponseWriter, _ *http.Request) {
-		web.JSON(w, http.StatusOK, map[string]string{"status": "live"})
-	}); err != nil {
+	live := openapi.Typed(http.StatusOK, openapi.Operation{
+		ID:      "healthLive",
+		Summary: "Liveness: the process is serving requests",
+		Tags:    []string{"health"},
+	}, func(*http.Request, openapi.NoBody) (liveness, error) { return liveness{Status: "live"}, nil })
+	if err := a.router.Handle("GET "+liveRoutePath, live); err != nil {
 		return err
 	}
 	ready := func(w http.ResponseWriter, r *http.Request) {
@@ -338,10 +441,21 @@ func (a *App) registerHealthRoutes() error {
 		}
 		web.JSON(w, status, result)
 	}
-	if err := a.router.HandleFunc("GET /health/ready", ready); err != nil {
+	readiness := func(id string) http.Handler {
+		return openapi.Describe(http.HandlerFunc(ready), openapi.Operation{
+			ID:      id,
+			Summary: "Readiness: every registered check passes",
+			Tags:    []string{"health"},
+			Responses: []openapi.Response{
+				openapi.JSON[health.Result](http.StatusOK),
+				{Status: http.StatusServiceUnavailable, Description: "A check failed", Body: openapi.TypeOf[health.Result]()},
+			},
+		})
+	}
+	if err := a.router.Handle("GET /health/ready", readiness("healthReady")); err != nil {
 		return err
 	}
-	return a.router.HandleFunc("GET /health", ready)
+	return a.router.Handle("GET /health", readiness("health"))
 }
 
 const (
