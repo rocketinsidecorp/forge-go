@@ -275,6 +275,12 @@ func TestGenerateControllerHTML(t *testing.T) {
 	if got := readFile(t, filepath.Join(root, "app", "views", "pages", "about_us.gohtml")); got != generatedView {
 		t.Errorf("the action view is not the generated page view:\n%s", got)
 	}
+	// The generated test pins the heading only, so rewriting the page content
+	// (the first thing anyone does) does not break it.
+	generatedTest := readFile(t, filepath.Join(root, "app", "adapters", "htmlui", "pages_controller_test.go"))
+	if strings.Contains(generatedTest, "Find me in") || strings.Contains(generatedTest, ".view") || strings.Contains(generatedTest, "app/views/") {
+		t.Errorf("the generated test depends on the placeholder content of the page:\n%s", generatedTest)
+	}
 	generatedGoParses(t, root)
 	// db/migrations holds no permission migration: the application has no Forge identity.
 	if entries, _ := os.ReadDir(filepath.Join(root, "db", "migrations")); len(entries) != 1 {
