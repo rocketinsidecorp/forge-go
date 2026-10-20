@@ -257,7 +257,11 @@ func TestBccIsEnvelopeOnly(t *testing.T) {
 	msg.Bcc = []forgemail.Address{{Email: "secret@example.net"}, {Email: "ALICE@example.org"}}
 	msg.ReplyTo = []forgemail.Address{{Name: "Support", Email: "support@example.com"}}
 	encoded := encode(t, msg)
-	if bytes.Contains(bytes.ToLower(encoded.Data), []byte("secret@example.net")) || bytes.Contains(bytes.ToLower(encoded.Data), []byte("bcc")) {
+	// Look for a Bcc header field, not the letters "bcc": the random hex MIME
+	// boundary and the UUIDv7 Message-ID contain them about once in a
+	// hundred messages.
+	lower := bytes.ToLower(encoded.Data)
+	if bytes.Contains(lower, []byte("secret@example.net")) || bytes.HasPrefix(lower, []byte("bcc:")) || bytes.Contains(lower, []byte("\r\nbcc:")) {
 		t.Fatal("Bcc recipient leaked into the message")
 	}
 	want := []string{"alice@example.org", "cc@example.org", "secret@example.net"}
