@@ -1,6 +1,7 @@
 package i18n_test
 
 import (
+	"math"
 	"slices"
 	"testing"
 
@@ -37,7 +38,9 @@ func TestPluralRules(t *testing.T) {
 		"ar": {
 			{0, z}, {1, o}, {2, tw}, {3, fw}, {10, fw}, {103, fw}, {110, fw}, {11, m}, {99, m}, {111, m},
 			{100, f}, {101, f}, {102, f}, {1.5, f},
+			{int64(100000000000000003), fw}, // past 2^53: n % 100 must stay exact
 		},
+		"nb":      {{1, o}, {1.0, o}, {0, f}, {2, f}, {1.5, f}},
 		"he":      {{1, o}, {2, tw}, {3, f}, {0.5, o}, {0, f}},
 		"tr":      {{1, o}, {1.0, o}, {2, f}, {0, f}},
 		"ja":      {{0, f}, {1, f}, {2, f}},
@@ -52,6 +55,92 @@ func TestPluralRules(t *testing.T) {
 			if got := rule(operands(s.count)); got != s.want {
 				t.Errorf("%s: count %v = %s, want %s", locale, s.count, got, s.want)
 			}
+		}
+	}
+}
+
+// TestPluralRulesDecimalSamples checks the CLDR 46 decimal samples with
+// visible fraction digits ("1.0", "0.00"), which a float64 cannot carry, so
+// the operands are written out: n, the integer digits i and the number of
+// visible fraction digits v.
+func TestPluralRulesDecimalSamples(t *testing.T) {
+	t.Parallel()
+	dec := func(n float64, v int) i18n.Operands { return i18n.Operands{N: n, I: int64(n), V: v} }
+	type sample struct {
+		text string
+		o    i18n.Operands
+		want i18n.Category
+	}
+	z, o, tw, fw, m, f := i18n.Zero, i18n.One, i18n.Two, i18n.Few, i18n.Many, i18n.Other
+	tables := map[string][]sample{
+		// ar: zero n = 0; one n = 1; two n = 2; few n % 100 = 3..10;
+		// many n % 100 = 11..99.
+		"ar": {
+			{"0", dec(0, 0), z}, {"0.0", dec(0, 1), z}, {"0.00", dec(0, 2), z},
+			{"1", dec(1, 0), o}, {"1.0", dec(1, 1), o}, {"1.00", dec(1, 2), o},
+			{"2", dec(2, 0), tw}, {"2.0", dec(2, 1), tw}, {"2.00", dec(2, 2), tw},
+			{"3", dec(3, 0), fw}, {"3.0", dec(3, 1), fw}, {"10.0", dec(10, 1), fw}, {"103.0", dec(103, 1), fw},
+			{"110.00", dec(110, 2), fw}, {"1003.0", dec(1003, 1), fw},
+			{"11", dec(11, 0), m}, {"11.0", dec(11, 1), m}, {"26.00", dec(26, 2), m}, {"99.0", dec(99, 1), m},
+			{"111.0", dec(111, 1), m}, {"1011.0", dec(1011, 1), m},
+			{"100", dec(100, 0), f}, {"100.0", dec(100, 1), f}, {"101.0", dec(101, 1), f}, {"102.00", dec(102, 2), f},
+			{"200.0", dec(200, 1), f}, {"1000.0", dec(1000, 1), f},
+			{"0.1", dec(0.1, 1), f}, {"0.9", dec(0.9, 1), f}, {"1.1", dec(1.1, 1), f}, {"1.7", dec(1.7, 1), f},
+			{"2.5", dec(2.5, 1), f}, {"3.5", dec(3.5, 1), f}, {"10.1", dec(10.1, 1), f}, {"11.5", dec(11.5, 1), f},
+			{"100.1", dec(100.1, 1), f}, {"103.5", dec(103.5, 1), f}, {"1000.1", dec(1000.1, 1), f},
+		},
+		// n = 1 languages: "1.0" is singular, unlike the "i = 1 and v = 0" ones.
+		"nb": {{"1.0", dec(1, 1), o}, {"1.00", dec(1, 2), o}, {"0.0", dec(0, 1), f}, {"1.5", dec(1.5, 1), f}},
+		"tr": {{"1.0", dec(1, 1), o}, {"1.5", dec(1.5, 1), f}},
+		"el": {{"1.0", dec(1, 1), o}, {"2.0", dec(2, 1), f}},
+		"hu": {{"1.0", dec(1, 1), o}, {"0.5", dec(0.5, 1), f}},
+		"es": {{"1.0", dec(1, 1), o}, {"1.5", dec(1.5, 1), f}, {"1000000.0", dec(1e6, 1), f}},
+		// i = 1 and v = 0 languages: "1.0" is plural.
+		"en": {{"1.0", dec(1, 1), f}, {"1.00", dec(1, 2), f}, {"0.0", dec(0, 1), f}},
+		"de": {{"1.0", dec(1, 1), f}},
+		"nl": {{"1.0", dec(1, 1), f}},
+		"sv": {{"1.0", dec(1, 1), f}},
+		"fi": {{"1.0", dec(1, 1), f}},
+		"et": {{"1.0", dec(1, 1), f}},
+		"it": {{"1.0", dec(1, 1), f}, {"1000000.0", dec(1e6, 1), f}},
+		// i = 0..1 languages.
+		"fr": {{"0.0", dec(0, 1), o}, {"1.0", dec(1, 1), o}, {"1.5", dec(1.5, 1), o}, {"2.0", dec(2, 1), f}},
+		"pt": {{"0.0", dec(0, 1), o}, {"1.0", dec(1, 1), o}, {"2.0", dec(2, 1), f}},
+		// v = 0 only: decimals are "other".
+		"ru": {{"1.0", dec(1, 1), f}, {"2.0", dec(2, 1), f}, {"5.0", dec(5, 1), f}},
+		"uk": {{"1.0", dec(1, 1), f}},
+		"pl": {{"1.0", dec(1, 1), f}, {"2.0", dec(2, 1), f}},
+		"cs": {{"1.0", dec(1, 1), m}, {"2.0", dec(2, 1), m}, {"0.5", dec(0.5, 1), m}},
+		"sk": {{"1.0", dec(1, 1), m}},
+		// he: i = 1 and v = 0 or i = 0 and v != 0; i = 2 and v = 0.
+		"he": {{"1.0", dec(1, 1), f}, {"2.0", dec(2, 1), f}, {"0.0", dec(0, 1), o}, {"0.5", dec(0.5, 1), o}},
+	}
+	for locale, samples := range tables {
+		rule := i18n.PluralRuleFor(locale)
+		for _, s := range samples {
+			if got := rule(s.o); got != s.want {
+				t.Errorf("%s: %s = %s, want %s", locale, s.text, got, s.want)
+			}
+		}
+	}
+}
+
+// TestNonFiniteCountsAreOther: NaN and infinity are never zero, one or two
+// in any locale, for built-in rules (even those keyed on the integer digits)
+// and for the locales without one.
+func TestNonFiniteCountsAreOther(t *testing.T) {
+	t.Parallel()
+	locales := append([]string{"xx"}, i18n.BuiltinPluralLocales()...)
+	for _, locale := range locales {
+		rule := i18n.PluralRuleFor(locale)
+		for _, count := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			if got := rule(operands(count)); got != i18n.Other {
+				t.Errorf("%s: count %v = %s, want other", locale, count, got)
+			}
+		}
+		// Operands built by hand are covered too.
+		if got := rule(i18n.Operands{N: math.Inf(1), I: 0, V: 0}); got != i18n.Other {
+			t.Errorf("%s: infinite operands = %s, want other", locale, got)
 		}
 	}
 }

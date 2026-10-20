@@ -98,7 +98,7 @@ func unsignedOperands(value uint64) Operands {
 
 func floatOperands(value float64) Operands {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
-		return Operands{N: 0, I: 0, V: 1} // never a singular form
+		return Operands{N: math.NaN(), I: 0, V: 1} // no rule on n counts it as 0, 1 or 2
 	}
 	value = math.Abs(value)
 	text := strconv.FormatFloat(value, 'f', -1, 64)
@@ -147,7 +147,8 @@ func oneIfIntegerOne(o Operands) Category {
 	return Other
 }
 
-// oneIfExactlyOne is "n = 1": the rule of Turkish, Greek and Hungarian.
+// oneIfExactlyOne is "n = 1": the rule of Norwegian, Turkish, Greek and
+// Hungarian ("1.0" is singular too).
 func oneIfExactlyOne(o Operands) Category {
 	if o.N == 1 {
 		return One
@@ -161,7 +162,7 @@ var builtinRules = map[string]PluralRule{
 	"de": oneIfIntegerOne,
 	"nl": oneIfIntegerOne,
 	"sv": oneIfIntegerOne,
-	"nb": oneIfIntegerOne,
+	"nb": oneIfExactlyOne,
 	"fi": oneIfIntegerOne,
 	"et": oneIfIntegerOne,
 	"tr": oneIfExactlyOne,
@@ -239,25 +240,7 @@ var builtinRules = map[string]PluralRule{
 	},
 	"cs": czech,
 	"sk": czech,
-	"ar": func(o Operands) Category {
-		if o.V != 0 {
-			return Other
-		}
-		mod100 := o.I % 100
-		switch {
-		case o.I == 0:
-			return Zero
-		case o.I == 1:
-			return One
-		case o.I == 2:
-			return Two
-		case mod100 >= 3 && mod100 <= 10:
-			return Few
-		case mod100 >= 11:
-			return Many
-		}
-		return Other
-	},
+	"ar": arabic,
 	"he": func(o Operands) Category {
 		switch {
 		case o.is(1) || (o.I == 0 && o.V != 0):
@@ -267,6 +250,34 @@ var builtinRules = map[string]PluralRule{
 		}
 		return Other
 	},
+}
+
+// arabic is CLDR 46's rule, written in terms of n (the whole value, so "0.0",
+// "1.0" and "103.0" count as integers) and not of the integer digits: zero
+// n = 0, one n = 1, two n = 2, few n % 100 = 3..10, many n % 100 = 11..99.
+// A range matches whole numbers only, so 3.5 is "other".
+func arabic(o Operands) Category {
+	if o.N != math.Trunc(o.N) { // also NaN
+		return Other
+	}
+	mod100 := math.Mod(o.N, 100)
+	if o.V == 0 {
+		// Exact past 2^53, where the float n is not.
+		mod100 = float64(o.I % 100)
+	}
+	switch {
+	case o.N == 0:
+		return Zero
+	case o.N == 1:
+		return One
+	case o.N == 2:
+		return Two
+	case mod100 >= 3 && mod100 <= 10:
+		return Few
+	case mod100 >= 11 && mod100 <= 99:
+		return Many
+	}
+	return Other
 }
 
 func czech(o Operands) Category {
@@ -291,13 +302,25 @@ func PluralRuleFor(locale string) PluralRule {
 func ruleIn(custom map[string]PluralRule, locale string) PluralRule {
 	for _, candidate := range parents(locale) {
 		if rule, ok := custom[candidate]; ok {
-			return rule
+			return finiteOnly(rule)
 		}
 		if rule, ok := builtinRules[candidate]; ok {
-			return rule
+			return finiteOnly(rule)
 		}
 	}
 	return onlyOther
+}
+
+// finiteOnly makes NaN and infinity "other" in every language, whatever the
+// rule says: rules keyed on the integer digits (French, Portuguese, Hebrew)
+// would otherwise call NaN singular.
+func finiteOnly(rule PluralRule) PluralRule {
+	return func(o Operands) Category {
+		if math.IsNaN(o.N) || math.IsInf(o.N, 0) {
+			return Other
+		}
+		return rule(o)
+	}
 }
 
 // usedCategories lists the categories a rule gives the integers 0 to 1000,
