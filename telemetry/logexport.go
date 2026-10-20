@@ -519,7 +519,10 @@ func encodeJSONLogValue(v any) string {
 	return string(data)
 }
 
-// encodeTextLogValue mirrors slog.TextHandler.
+// encodeTextLogValue mirrors slog.TextHandler's appendTextValue (Go 1.27):
+// encoding.TextAppender first, then encoding.TextMarshaler (slog's doc
+// comment names only the latter, its code checks both in this order), then a
+// byte slice as its text, then fmt's %+v. A test compares the two outputs.
 func encodeTextLogValue(v any) string {
 	switch value := v.(type) {
 	case encoding.TextAppender:

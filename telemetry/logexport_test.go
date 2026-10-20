@@ -423,6 +423,16 @@ type redactingText struct{ Token string }
 
 func (redactingText) MarshalText() ([]byte, error) { return []byte("[hidden]"), nil }
 
+// appendingText answers AppendText and MarshalText differently.
+// slog.TextHandler checks encoding.TextAppender before
+// encoding.TextMarshaler (Go 1.27's appendTextValue, although its doc
+// comment names only TextMarshaler); the exporter must pick the same one.
+type appendingText struct{}
+
+func (appendingText) AppendText(b []byte) ([]byte, error) { return append(b, "[appended]"...), nil }
+
+func (appendingText) MarshalText() ([]byte, error) { return []byte("[marshaled]"), nil }
+
 // redactingString hides itself from fmt but not from encoding/json.
 type redactingString string
 
@@ -528,7 +538,8 @@ func TestLogExportEncodesValuesLikeTheJSONHandler(t *testing.T) {
 }
 
 func TestLogExportEncodesValuesLikeTheTextHandler(t *testing.T) {
-	attrs := append(hiddenLogValues(t), slog.Any("stringer", redactingString(logValueSecret)), slog.Any("bytes", []byte("raw")))
+	attrs := append(hiddenLogValues(t), slog.Any("stringer", redactingString(logValueSecret)), slog.Any("bytes", []byte("raw")),
+		slog.Any("append_text", appendingText{}), slog.Any("append_text_ptr", &appendingText{}))
 	exported := exportedLogValues(t, LogFormatText, attrs)
 	for _, attr := range attrs {
 		var stdout bytes.Buffer
@@ -560,7 +571,8 @@ func TestLogExportEncodesValuesLikeTheTextHandler(t *testing.T) {
 			t.Fatalf("%s: exported %q, standard output %q", attr.Key, got, want)
 		}
 	}
-	if exported["stringer"] != "[hidden]" || exported["marshal_text"] != "[hidden]" || exported["error"] != "card declined" || exported["bytes"] != "raw" {
+	if exported["stringer"] != "[hidden]" || exported["marshal_text"] != "[hidden]" || exported["error"] != "card declined" || exported["bytes"] != "raw" ||
+		exported["append_text"] != "[appended]" || exported["append_text_ptr"] != "[appended]" {
 		t.Fatalf("exported %v", exported)
 	}
 }
