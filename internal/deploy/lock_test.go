@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -80,7 +81,7 @@ func TestReleaseRemovesOnlyItsOwnLock(t *testing.T) {
 	if !lockExists(home) {
 		t.Fatal("the deferred release deleted a lock somebody else took")
 	}
-	if !strings.Contains(log.String(), "no longer ours") {
+	if !strings.Contains(log.String(), "held by someone else") {
 		t.Fatalf("no warning about the foreign lock:\n%s", log.String())
 	}
 	locks, err := d.LockStatus(ctx)
@@ -160,18 +161,94 @@ func TestLockWithoutRecordIsRecoverable(t *testing.T) {
 	}
 }
 
-func TestStaleRecoveryNeverRemovesALockWithARecord(t *testing.T) {
-	d, _, home := lockFixture(t, "alice@laptop")
+// A lock with a record, or with an empty info file, is never taken over, however
+// old. The script runs on one host directly, so the other hosts' locks cannot
+// stand in for the answer.
+func TestStaleRecoveryLeavesALockWithAnInfoFileAlone(t *testing.T) {
+	for name, content := range map[string]string{
+		"record":     `{"holder":"bob@ci","message":"window","acquired_at":"2026-10-20T10:00:00Z"}` + "\n",
+		"empty info": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, _, home := lockFixture(t, "alice@laptop")
+			host := d.Config.AllHosts()[0]
+			lock := filepath.Join(home, ".forge", "shop", "lock")
+			info := filepath.Join(lock, "info")
+			if err := os.MkdirAll(lock, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(info, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			old := time.Now().Add(-5 * time.Minute)
+			for _, path := range []string{info, lock} {
+				if err := os.Chtimes(path, old, old); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := d.Runner.Run(t.Context(), host, d.cmds.acquireLock([]byte(`{"holder":"alice@laptop"}`+"\n")))
+			var remote *RemoteError
+			if !errors.As(err, &remote) || remote.ExitCode != lockHeldExitStatus {
+				t.Fatalf("acquire over an old lock with an info file = %v, want exit %d", err, lockHeldExitStatus)
+			}
+			if got, err := os.ReadFile(info); err != nil || string(got) != content {
+				t.Fatalf("info changed: %q, %v", got, err)
+			}
+			if leftovers, _ := filepath.Glob(filepath.Join(home, ".forge", "shop", "lock.tmp.*")); len(leftovers) != 0 {
+				t.Fatalf("temporary record left behind: %v", leftovers)
+			}
+		})
+	}
+}
+
+func TestReleaseOfAForceReleasedLockIsReportedAsGone(t *testing.T) {
+	d, log, home := lockFixture(t, "alice@laptop")
 	ctx := t.Context()
-	if err := d.LockAcquire(ctx, "window"); err != nil {
+	release, err := d.acquire(ctx, d.Config.AllHosts(), "deploy")
+	if err != nil {
 		t.Fatal(err)
 	}
-	old := time.Now().Add(-5 * time.Minute)
+	if err := d.LockRelease(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if lockExists(home) {
+		t.Fatal("lock reappeared")
+	}
+	if !strings.Contains(log.String(), "already released") || strings.Contains(log.String(), "someone else") {
+		t.Fatalf("log should say the lock was already released:\n%s", log.String())
+	}
+}
+
+// Two acquirers race for an aged lock without an info file: exactly one may
+// win. Every round starts from the same aged, empty directory.
+func TestConcurrentStaleRecoveryHasOneWinner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns many shells")
+	}
+	d, _, home := lockFixture(t, "alice@laptop")
+	host := d.Config.AllHosts()[0]
 	lock := filepath.Join(home, ".forge", "shop", "lock")
-	if err := os.Chtimes(lock, old, old); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.acquire(ctx, d.Config.AllHosts(), "deploy"); ExitCodeOf(err) != ExitLockHeld {
-		t.Fatalf("an old lock with a record must stay held: %v", err)
+	old := time.Now().Add(-5 * time.Minute)
+	for round := range 200 {
+		if err := os.RemoveAll(lock); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(lock, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(lock, old, old); err != nil {
+			t.Fatal(err)
+		}
+		wins := make(chan bool, 2)
+		for i := range 2 {
+			go func() {
+				_, err := d.Runner.Run(t.Context(), host, d.cmds.acquireLock([]byte(fmt.Sprintf(`{"holder":"p%d"}`+"\n", i))))
+				wins <- err == nil
+			}()
+		}
+		if a, b := <-wins, <-wins; a == b {
+			t.Fatalf("round %d: winners = %v and %v, want exactly one", round, a, b)
+		}
 	}
 }

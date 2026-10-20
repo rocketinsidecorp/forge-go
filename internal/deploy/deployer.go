@@ -270,7 +270,7 @@ type LockInfo struct {
 func parseLockInfo(stdout string) LockInfo {
 	text := strings.TrimSpace(stdout)
 	if text == "" || text == "{}" {
-		return LockInfo{Holder: "unknown", Message: "lock without a record: an acquire was interrupted; deploys remove it once it is a minute old, or use forge deploy lock release --force"}
+		return LockInfo{Holder: "unknown", Message: "lock without a record: an acquire was interrupted; a deploy takes it over once it is a minute old if its info file is missing, otherwise use forge deploy lock release --force"}
 	}
 	var info LockInfo
 	if json.Unmarshal([]byte(text), &info) != nil {
@@ -311,9 +311,13 @@ func (d *Deployer) acquire(ctx context.Context, hosts []string, message string) 
 		if err := d.eachHost(releaseCtx, acquired, func(ctx context.Context, host string) error {
 			_, err := d.run(ctx, host, d.cmds.releaseLock(record))
 			var remote *RemoteError
-			if errors.As(err, &remote) && remote.ExitCode == lockNotOursExitStatus {
+			switch {
+			case errors.As(err, &remote) && remote.ExitCode == lockGoneExitStatus:
+				d.logf("warning", "%s: the deploy lock was already released (by --force?)", host)
+				return nil
+			case errors.As(err, &remote) && remote.ExitCode == lockNotOursExitStatus:
 				// Somebody force-released and took the lock: not ours to remove.
-				d.logf("warning", "%s: the deploy lock is no longer ours and was left in place", host)
+				d.logf("warning", "%s: the deploy lock is now held by someone else and was left in place", host)
 				return nil
 			}
 			return err
@@ -406,6 +410,10 @@ func (d *Deployer) LockRelease(ctx context.Context, force bool) error {
 	return d.eachHost(ctx, sortedKeys(records), func(ctx context.Context, host string) error {
 		_, err := d.run(ctx, host, d.cmds.releaseLock([]byte(records[host]+"\n")))
 		var remote *RemoteError
+		if errors.As(err, &remote) && remote.ExitCode == lockGoneExitStatus {
+			d.logf(host, "lock was already released")
+			return nil
+		}
 		if errors.As(err, &remote) && remote.ExitCode == lockNotOursExitStatus {
 			return withCode(ExitLockHeld, fmt.Errorf("%s: the lock changed while releasing it; left in place (pass --force to release it anyway)", host))
 		}

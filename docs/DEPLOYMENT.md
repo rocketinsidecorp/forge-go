@@ -634,13 +634,20 @@ printed on stdout also on failure, with `ok`, `error` and `exit_code`.
    holder, time and message are recorded). It is released at the end, also
    on failure, but only if its record is still the deploy's own: a lock
    somebody else took after a `--force` release is left in place with a
-   warning. A lock without a record (the process was killed between the
-   `mkdir` and writing it) older than a minute is removed by the next deploy
-   or `lock acquire` without `--force`, with a warning naming it; a younger
-   one reports holder `unknown` and `lock release --force` clears it at once.
-   The check and the removal are separate shell steps, so the release is
-   race-aware, not transactional: it needs a force release and a new acquire
-   inside the same few milliseconds to remove a foreign lock.
+   warning (or a note that it was already released). The record is written
+   to a temporary file and claimed with `ln`, which fails if the lock already
+   has one, so a record is never seen half written. A lock directory without
+   a record file (the process was killed between the `mkdir` and the claim)
+   older than a minute is taken over in place by the next deploy or `lock
+   acquire` without `--force`, with a warning; nothing is removed, so two
+   deploys cannot both win it (3,000 rounds of two concurrent acquirers on
+   such a lock gave exactly one winner each). A younger one reports holder
+   `unknown`, and so does a lock with an empty record file (left by earlier
+   versions); `lock release --force` clears either at once. The release
+   compares the record and then removes the directory as separate shell
+   steps, so it is race-aware, not transactional: removing a foreign lock
+   takes a force release and a new acquire inside the same few
+   milliseconds.
 2. Run `pre-build`, build and push the image (unless `--skip-build`), run
    `pre-deploy`.
 3. On all hosts in parallel (at most `parallelism`): registry login, `docker

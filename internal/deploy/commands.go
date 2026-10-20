@@ -19,11 +19,13 @@ const (
 	labelVersion       = "forge.version"
 	labelAccessory     = "forge.accessory"
 	lockHeldExitStatus = 75
-	// lockNotOursExitStatus: the lock is gone or its record is not ours.
+	// lockNotOursExitStatus: the lock exists with a record that is not ours.
 	lockNotOursExitStatus = 76
+	// lockGoneExitStatus: the lock was already released (or force-released).
+	lockGoneExitStatus = 77
 	// staleLockNotice is printed by acquireLock on stderr after it removed
 	// a lock that never got its record.
-	staleLockNotice = "removed a stale lock without a record (an earlier acquire was interrupted)"
+	staleLockNotice = "took over a stale lock without a record (an earlier acquire was interrupted)"
 )
 
 // commands builds the remote commands for one configuration. Keeping them
@@ -316,18 +318,22 @@ func (c commands) waitReady(name string) Command {
 		`[ "$(date +%s)" -ge "$end" ] && { echo "container ` + name + ` not ready after ` + fmt.Sprint(seconds) + `s" >&2; exit 1; }; sleep 1; done`}
 }
 
-// acquireLock takes the lock with an atomic mkdir and then writes the record.
-// A lock directory without a record means an acquire was killed between the
-// two steps; once it is older than a minute it is removed (rmdir, which
-// cannot delete a lock that has a record) and taken again, and the script
-// says so on stderr. A failed record write gives the directory back.
+// acquireLock stores the record in a temporary file and claims the lock by
+// hard-linking it to lock/info: ln fails when info exists, so exactly one
+// claimant wins and the record is never visible half written. The directory
+// comes from an atomic mkdir. A directory with no info file at all (the
+// acquire was killed between mkdir and ln) that is older than a minute is
+// taken over in place with the same ln, so nothing is ever removed and two
+// recoverers cannot both win; the script says so on stderr. An empty info
+// file (left by earlier versions) is not taken over: --force clears it.
 func (c commands) acquireLock(record []byte) Command {
 	lock, info := Quote(c.lockDir()), Quote(c.lockDir()+"/info")
+	tmp := Quote(c.stateDir()+"/lock.tmp.") + "$$"
 	return Command{
-		Script: Join("mkdir", "-p", c.stateDir()) + " && if " + Join("mkdir", c.lockDir()) + " 2>/dev/null || { [ ! -s " + info + " ] && " +
-			"[ -n \"$(find " + lock + " -maxdepth 0 -mmin +1 2>/dev/null)\" ] && rmdir " + lock + " 2>/dev/null && " +
-			"echo " + Quote(staleLockNotice) + " >&2 && " + Join("mkdir", c.lockDir()) + " 2>/dev/null; }; then " +
-			Join("cat") + " > " + info + " || { rm -rf " + lock + "; exit 1; }; else " +
+		Script: Join("mkdir", "-p", c.stateDir()) + " && " + Join("cat") + " > " + tmp + " || { rm -f " + tmp + "; exit 1; }; " +
+			"if { " + Join("mkdir", c.lockDir()) + " 2>/dev/null && ln " + tmp + " " + info + " 2>/dev/null; } || { [ ! -e " + info + " ] && " +
+			"[ -n \"$(find " + lock + " -maxdepth 0 -mmin +1 2>/dev/null)\" ] && ln " + tmp + " " + info + " 2>/dev/null && " +
+			"echo " + Quote(staleLockNotice) + " >&2; }; then rm -f " + tmp + "; else rm -f " + tmp + "; " +
 			Join("cat", c.lockDir()+"/info") + " 2>/dev/null; exit " + fmt.Sprint(lockHeldExitStatus) + "; fi",
 		Stdin:     record,
 		StdinNote: "lock record (holder, time, message)",
@@ -342,13 +348,15 @@ func (c commands) lockStatus() Command {
 
 // releaseLock removes the lock only while its record is the one on stdin, so
 // a lock somebody else took after a --force release is left alone (exit
-// lockNotOursExitStatus). The compare and the rm are not atomic; the window
+// lockNotOursExitStatus); a lock that is already gone exits
+// lockGoneExitStatus. The compare and the rm are not atomic; the window
 // needs a force release and a new acquire inside it.
 func (c commands) releaseLock(record []byte) Command {
 	lock, info := Quote(c.lockDir()), Quote(c.lockDir()+"/info")
 	return Command{
-		Script: "record=$(cat) && if [ -n \"$record\" ] && [ \"$(cat " + info + " 2>/dev/null)\" = \"$record\" ]; then rm -rf " + lock +
-			"; else echo 'lock is not held by this process; left in place' >&2; exit " + fmt.Sprint(lockNotOursExitStatus) + "; fi",
+		Script: "record=$(cat) && if [ ! -d " + lock + " ]; then echo 'lock is already released' >&2; exit " + fmt.Sprint(lockGoneExitStatus) +
+			"; elif [ -n \"$record\" ] && [ \"$(cat " + info + " 2>/dev/null)\" = \"$record\" ]; then rm -rf " + lock +
+			"; else echo 'lock is held by someone else; left in place' >&2; exit " + fmt.Sprint(lockNotOursExitStatus) + "; fi",
 		Stdin:     record,
 		StdinNote: "own lock record (release only if unchanged)",
 	}

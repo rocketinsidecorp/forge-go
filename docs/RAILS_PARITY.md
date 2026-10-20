@@ -69,7 +69,8 @@ the work is finished and waiting for its review; **Planned** means not started.
   `deploy.yml` over 1 MiB) with a line-numbered error, while Forge-Go relies
   on yaml.v3's own maximum depth (10,000 levels) and reads the file without a
   size cap. Forge-Rust mirrors the lock scripts and the four golden plan
-  files in `internal/deploy/testdata` and the `retain` minimum.
+  files in `internal/deploy/testdata` and the `retain` minimum, tracked in
+  [forge-rust#40](https://github.com/rocketinsidecorp/forge-rust/issues/40).
 
 ## Review gate
 
