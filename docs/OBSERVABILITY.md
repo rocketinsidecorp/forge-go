@@ -145,8 +145,10 @@ allocated heap objects (`MemStats.HeapAlloc`), `go.memory.heap.inuse` the bytes
 in in-use heap spans (`HeapInuse`), `go.memory.total` everything the runtime has
 mapped, `go.memory.gc.goal` the heap size that triggers the next collection.
 `go.gc.pause.duration` histograms the stop-the-world pauses in buckets from
-10 microseconds to 1 second; bucket counts are exact to the bucket edges and the
-sum is estimated from bucket midpoints. A `go.goroutine.count` that only grows
+10 microseconds to 1 second, re-bucketed from the runtime's finer histogram: a
+pause counts in the bucket that holds the upper edge of its runtime bucket, so a
+pause just below a bound can be counted one bucket high, and the sum is
+estimated from bucket midpoints. A `go.goroutine.count` that only grows
 is a goroutine leak.
 
 Duration buckets (seconds) follow the OpenTelemetry advice: 0.005, 0.01,

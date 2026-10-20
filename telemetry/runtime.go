@@ -91,7 +91,7 @@ func registerRuntimeMetrics(r *Registry) error {
 	if err != nil {
 		return err
 	}
-	pauses, err := r.Histogram(MetricGoGCPause, "Stop-the-world pauses of the garbage collector. Bucket counts are exact to the bucket edges; the sum is estimated from bucket midpoints.", "s", gcPauseBounds)
+	pauses, err := r.Histogram(MetricGoGCPause, "Stop-the-world pauses of the garbage collector, re-bucketed from the runtime's finer histogram: a pause counts in the bucket holding the upper edge of its runtime bucket, so one just below a bound can count one bucket high; the sum is estimated from bucket midpoints.", "s", gcPauseBounds)
 	if err != nil {
 		return err
 	}
