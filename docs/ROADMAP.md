@@ -363,6 +363,27 @@ otherwise):
   runs vet, build, the generated tests and migrate/rollback; Docker smoke
   checks run in CI.)
 
+## Developer loop (Rails parity)
+
+[ADR 0035](adr/0035-development-loop.md); commands in the
+[README](../README.md#development-loop).
+
+- [x] M4: `forge dev` watches Go sources, templates, assets, migrations and
+  `.env.*` files with a bounded polling watcher, rebuilds, keeps the old process
+  serving until the build succeeds, restarts it gracefully (SIGTERM, wait) and
+  reports build errors without stopping the application; `--no-reload`,
+  `--poll-interval`, `--debounce`.
+- [x] M4: browser reload in development only, through a proxy inside the forge
+  CLI that injects a same-origin script (CSP nonce when needed) and streams
+  reload and build-error events; nothing is compiled into applications.
+- [x] M4: `forge db create|drop|reset|setup|prepare|migrate|rollback|status|
+  seed|schema:dump|schema:load|console` for PostgreSQL, MySQL/MariaDB and
+  SQLite, with a production guard, credentials kept out of arguments and a
+  deterministic `db/schema.sql`.
+- [ ] Partial hot swap for template and asset changes without a rebuild;
+  `forge stats`; a Procfile-style `bin/dev` that also runs background
+  processes.
+
 ## Server-rendered HTML (Rails parity)
 
 Rails-style HTML CRUD on the standard-library core

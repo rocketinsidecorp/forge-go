@@ -122,12 +122,54 @@ Running the application outside Docker (server databases):
 
 ```sh
 docker compose up -d postgres   # or mysql, mariadb
-forge migrate
-forge dev
+forge db prepare                # create the database if missing, then migrate (and seed a new one)
+forge dev                       # rebuilds, restarts and reloads the browser when files change
 ```
 
-With SQLite, `forge migrate` and `forge dev` use `storage/development.db`
+With SQLite, `forge db prepare` and `forge dev` use `storage/development.db`
 directly.
+
+### Development loop
+
+```sh
+forge dev                        # http://127.0.0.1:8080, reloads on save
+forge dev --poll-interval 1s     # scan less often (large trees, slow disks)
+forge dev --no-reload            # build and run once, no watching
+
+forge db setup                   # create + migrate + seed
+forge db prepare                 # setup if the database is missing, else migrate (safe to repeat)
+forge db reset                   # drop + setup: a clean development database
+forge db status                  # applied / pending migrations
+forge db rollback -steps 1
+forge db schema:dump             # write db/schema.sql (pg_dump, mysqldump or sqlite3 on PATH)
+forge db schema:load             # load db/schema.sql into an existing, empty database (CI, tests)
+forge db console                 # psql, mysql or sqlite3 on the application's database
+forge db console -- -c 'select count(*) from forge_schema_migrations'
+```
+
+`forge dev` watches Go sources, templates, assets, migrations and
+`.env.development`/`.env.local`. The old process keeps serving until the new
+build succeeds, then gets `SIGTERM` and is replaced; build errors are printed
+and shown over the page, and the running app is not stopped. With
+`FORGE_ENV=development` (the default under `forge dev`) the forge process
+listens on `FORGE_HTTP_ADDR` as a development-only proxy, runs the application
+on a private loopback port and injects the reload script into HTML pages; the
+page's Content-Security-Policy gets a per-response nonce only if it would block
+that one script. Nothing of this is in your application binary
+([ADR 0035](docs/adr/0035-development-loop.md), [Database](docs/DATABASE.md#database-lifecycle-forge-db)).
+
+`drop`, `reset`, `schema:load` and `rollback` are refused with
+`FORGE_ENV=production` unless you pass `--force-production` and either type the
+database name at the prompt or pass `--yes` with `FORGE_ALLOW_DESTRUCTIVE=true`
+in the process environment:
+
+```sh
+FORGE_ALLOW_DESTRUCTIVE=true forge db drop --force-production --yes
+```
+
+`FORGE_MIGRATION_DATABASE_URL` optionally names a privileged role for
+`create`, `drop`, `schema:*` and `console`; the database itself always comes
+from `FORGE_DATABASE_URL`.
 
 ### Sign in (PostgreSQL)
 
@@ -293,10 +335,11 @@ configured for production behind a TLS-terminating proxy. See
 | Command | Description |
 | ------- | ----------- |
 | `forge new NAME [--database DB] [--module PATH] [--dir DIR] [--framework-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
-| `forge dev [NAME]` | Build `./cmd/<name>` into a temporary directory and run it, forwarding interrupts for graceful shutdown |
+| `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
-| `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command |
+| `forge db COMMAND` | Database lifecycle like Rails' `db:*`: `create`, `drop`, `reset`, `setup`, `prepare`, `migrate`, `rollback`, `status`, `seed`, `schema:dump`, `schema:load`, `console`; see [Development loop](#development-loop) |
+| `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command (same as `forge db migrate`) |
 | `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step) |
 | `forge setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | PostgreSQL: create the first organization, tenant and owner account; the password is prompted for (or piped, or `FORGE_SETUP_PASSWORD`), never an argument; refuses once a tenant exists |
 | `forge seed` | Run the application's `seed` command: `db.Seed` in one transaction |
@@ -317,7 +360,7 @@ configured for production behind a TLS-terminating proxy. See
 | `forge version` | Print CLI version, commit, and build date |
 
 `NAME` for `dev` and `build` is needed only if `cmd/` has several commands.
-`migrate`, `rollback`, `setup` and `seed` require exactly one.
+`migrate`, `rollback`, `setup`, `seed` and `db` require exactly one.
 
 Flags for `forge new`:
 
@@ -502,10 +545,10 @@ failed, `6` hook failed, `7` not fully reverted.
 
 ### Development environment files
 
-`forge dev`, `forge test`, `forge migrate`, `forge rollback`, and
+`forge dev`, `forge test`, `forge db`, `forge migrate`, `forge rollback`, and
 `forge doctor` read `.env.development` and then `.env.local` from the current
 directory; a later file overrides an earlier one, and variables already set in
-the process environment always win. `dev`, `test`, `migrate`, and `rollback`
+the process environment always win. `dev`, `test`, `db`, `migrate`, and `rollback`
 set `FORGE_ENV=development` when no source sets it.
 
 The format is deliberately small: `KEY=VALUE` lines, blank lines and lines
@@ -707,6 +750,7 @@ CI (`.github/workflows/ci.yml`):
   - [0008 SQL migrations embedded in the application binary](docs/adr/0008-sql-migrations-embedded-in-the-binary.md)
   - [0009 Multiple databases: PostgreSQL, MySQL, MariaDB and SQLite](docs/adr/0009-multiple-databases.md)
   - [0030 `forge deploy` and forge-proxy](docs/adr/0030-forge-deploy.md)
+  - [0035 Development loop and database lifecycle](docs/adr/0035-development-loop.md)
   - [0031 Rate limiting](docs/adr/0031-rate-limiting.md)
   - [0032 Application cache](docs/adr/0032-cache.md)
   - [0033 File storage](docs/adr/0033-file-storage.md)

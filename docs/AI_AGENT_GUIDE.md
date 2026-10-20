@@ -58,6 +58,21 @@ token. Commands such as `forge new`, `forge migrate`, and `forge rollback`
 perform filesystem, subprocess, or database effects; get explicit approval
 from the user before running them. In particular, rollback may destroy data.
 
+`forge db` is the database lifecycle (`create`, `drop`, `reset`, `setup`,
+`prepare`, `migrate`, `rollback`, `status`, `seed`, `schema:dump`,
+`schema:load`, `console`). Its catalog entry lists `database_destructive`.
+`status`, `schema:dump` (writes only `db/schema.sql`) and `prepare` on an
+existing database are the low-risk ones; `drop`, `reset`, `schema:load` and
+`rollback` change or destroy data and need the user's explicit approval for the
+named database. Never add `--force-production`, `--yes` or
+`FORGE_ALLOW_DESTRUCTIVE=true` on your own: they exist so that a person can
+confirm a production operation, and an agent supplying them defeats the
+guard. `forge db console` opens an interactive client and is for people; use
+`forge db console -- -c 'SELECT ...'` only for read-only queries the user asked
+for. `forge dev` starts a long-running process that listens on
+`FORGE_HTTP_ADDR` and restarts the application when files change; run it in the
+background, and stop it with `SIGTERM`.
+
 For application-defined agent actions, route execution through `agent.Engine`.
 Register only the use cases the application intends to expose and validate
 their input strictly. `Engine.Execute` accepts no principal argument: it reads
@@ -127,6 +142,9 @@ return their command-specific reports on stdout.
 
 ## Security boundaries
 
+- `forge db` and `forge dev` pass database credentials to vendor tools through
+  environment variables or a private temporary file, never arguments; do not
+  work around that by putting a URL on a command line.
 - Never pass secrets as command-line arguments or include them in generated
   source, prompts, or reports. Doctor and inspect intentionally redact
   configuration values.
