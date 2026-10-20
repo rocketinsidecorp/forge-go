@@ -166,10 +166,16 @@ tags on the default branch. Its README shows the commands.
   - a `container: <image>` shorthand or service `image:` without a digest
     (a bare `container:` mapping opener and a `- image:` matrix entry are
     not images);
-  - every `<scope>: write` permission, except `id-token` and `packages` in
-    `release.yml`, and `write-all` everywhere;
-  - `secrets[`, `secrets)`, `secrets }`, `secrets}` and `secrets: inherit`,
-    which hand secrets on wholesale or by computed name.
+  - every `<scope>: write` permission, in block or flow style
+    (`permissions: { contents: write }`), except `id-token` and `packages`
+    in `release.yml`, and `write-all` everywhere;
+  - `pull_request_target`, which runs fork code with the repository's
+    secrets;
+  - `secrets[`, `toJSON(secrets)`, `join(secrets, ...)`, `secrets }` and
+    `secrets: inherit` in any case or spacing, which hand secrets on
+    wholesale or by computed name;
+  - any `secrets.NAME` read other than `secrets.GITHUB_TOKEN` in
+    `release.yml`.
 - Permissions are read-only by default (`contents: read`, or `{}` in
   `release.yml` and `scorecard.yml`); only the release image job holds
   `packages: write` and `id-token: write`.

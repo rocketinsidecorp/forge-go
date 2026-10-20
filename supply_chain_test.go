@@ -115,12 +115,23 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 	}
 }
 
-// forbiddenSecretAccess are the spellings that hand a workflow's secrets on
-// wholesale or by computed name, outside the reviewed list.
-var forbiddenSecretAccess = []string{"secrets[", "secrets)", "secrets }", "secrets}", "secrets: inherit"}
+// forbiddenSecretAccess matches the spellings that hand a workflow's secrets
+// on wholesale or by computed name, outside the reviewed list: `secrets[`,
+// `toJSON(secrets)`, `join(secrets, ...)`, `{ x: secrets }` and
+// `secrets: inherit`, in any case and spacing (expression contexts are
+// case-insensitive).
+var forbiddenSecretAccess = regexp.MustCompile(`(?i)\bsecrets\s*(?:[\[),}]|:\s*inherit)`)
 
-// secretReference is a `secrets.NAME` read.
-var secretReference = regexp.MustCompile(`secrets\.[A-Za-z0-9_.]*`)
+// secretReference is a `secrets.NAME` read, in any case.
+var secretReference = regexp.MustCompile(`(?i)\bsecrets\s*\.\s*[A-Za-z0-9_.]*`)
+
+// writePermission is a `<scope>: write` pair, in block (`contents: write`) or
+// flow style (`permissions: { contents: write }`), quoted or not.
+var writePermission = regexp.MustCompile(`["']?([A-Za-z][A-Za-z-]*)["']?\s*:\s*["']?write["']?\s*(?:$|[,}])`)
+
+// lineComment is a YAML comment: a `#` at the start of a line or after
+// whitespace.
+var lineComment = regexp.MustCompile(`(?:^|\s)#.*$`)
 
 // TestWorkflowPermissionsAreLeastPrivilege requires a top-level permissions
 // block in every workflow and refuses every `<scope>: write`; the only
@@ -137,18 +148,17 @@ func TestWorkflowPermissionsAreLeastPrivilege(t *testing.T) {
 		if strings.Contains(text, "write-all") {
 			t.Errorf("%s: write access to everything", path)
 		}
+		if strings.Contains(text, "pull_request_target") {
+			t.Errorf("%s: pull_request_target runs fork code with secrets", path)
+		}
 		release := filepath.Base(path) == "release.yml"
 		for number, line := range strings.Split(text, "\n") {
-			if code, _, found := strings.Cut(line, " #"); found {
-				line = code
-			}
-			scope, access, found := strings.Cut(strings.TrimSpace(line), ":")
-			if !found || strings.Trim(strings.TrimSpace(access), `"'`) != "write" {
-				continue
-			}
-			scope = strings.Trim(strings.TrimSpace(scope), `"'`)
-			if !release || (scope != "id-token" && scope != "packages") {
-				t.Errorf("%s:%d: %q is not allowed", path, number+1, scope+": write")
+			code := lineComment.ReplaceAllString(line, "")
+			for _, match := range writePermission.FindAllStringSubmatch(code, -1) {
+				scope := match[1]
+				if !release || (scope != "id-token" && scope != "packages") {
+					t.Errorf("%s:%d: %q is not allowed", path, number+1, scope+": write")
+				}
 			}
 		}
 		for _, permission := range []string{"id-token: write", "packages: write"} {
@@ -157,10 +167,8 @@ func TestWorkflowPermissionsAreLeastPrivilege(t *testing.T) {
 				t.Errorf("%s: %q appears %d times", path, permission, count)
 			}
 		}
-		for _, forbidden := range forbiddenSecretAccess {
-			if strings.Contains(text, forbidden) {
-				t.Errorf("%s: %q reaches secrets outside the reviewed list", path, forbidden)
-			}
+		for _, forbidden := range forbiddenSecretAccess.FindAllString(text, -1) {
+			t.Errorf("%s: %q reaches secrets outside the reviewed list", path, forbidden)
 		}
 		// The only secret any workflow reads is the release job's token.
 		for _, reference := range secretReference.FindAllString(text, -1) {
