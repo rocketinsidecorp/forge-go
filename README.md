@@ -37,8 +37,10 @@ metrics. An in-process job scheduler (`jobs.Scheduler`) runs recurring work
 with configurable concurrency. Phase 5 adds dependency-free observability:
 traces with W3C propagation, bounded-cardinality metrics for Prometheus and
 OTLP, trace-correlated logs, and database and job instrumentation
-([docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)). OpenAPI, performance work,
-and further security hardening remain planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
+([docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)). Phase 6 starts with an
+OpenAPI 3.1 document generated from the routes' Go types
+([docs/OPENAPI.md](docs/OPENAPI.md)). Performance work and further security
+hardening remain planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
 
 ## Packages
 
@@ -57,6 +59,7 @@ Core packages import only the standard library and each other; a test
 | `credentials` | Encrypted per-environment credentials (`config/credentials/<env>.json.enc`, AES-256-GCM, key from `FORGE_MASTER_KEY` or a git-ignored key file), typed `Store`, fail-fast required credentials; `forge credentials edit` |
 | `encryption` | Attribute encryption with key rotation: randomized AES-256-GCM bound to table, column and record id, key rings, opt-in HMAC blind index, `Value[T]` for `database/sql`, resumable batch re-encryption |
 | `router`     | Route registry on `net/http.ServeMux` (Go 1.22 patterns), frozen after the first request; JSON `400`/`404`/`405`; conventional `Resources` routes |
+| `openapi`    | OpenAPI 3.1 from described routes: `Describe`, `Typed` handlers, schemas reflected from Go types (UUIDv7, `date-time`, nullable, `$ref` components), deterministic JSON, contract validation of responses |
 | `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown, and composable application middleware |
 | `web`        | JSON responses, the single error format, strict JSON and form decoding, safe redirects, content negotiation, flash messages, method override, request ID and request-scoped logger |
 | `csrf`       | CSRF protection for browser requests: double-submit token in forms and headers, cross-origin rejection |
@@ -464,6 +467,40 @@ Key rotation, blind indexes for exact-match search and batch re-encryption are
 in [docs/ENCRYPTION.md](docs/ENCRYPTION.md); the credentials workflow, CI and
 rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 
+## OpenAPI
+
+JSON routes declare their request, response and error types next to the
+route, and Forge builds an OpenAPI 3.1 document from the Go types: accurate
+by construction for `openapi.Typed` handlers, checked by contract tests for
+the rest. Generated applications, resources and `--api` controllers are
+described out of the box.
+
+```sh
+forge new shop && cd shop && forge dev
+curl http://127.0.0.1:8080/openapi.json             # served in development and test
+forge openapi                                       # print it (runs Configure, never listens)
+forge openapi --output openapi.json                 # write it to commit and diff
+forge openapi --check openapi.json                  # exit 1 when the committed file is stale
+FORGE_OPENAPI_ENABLED=false forge dev               # off; staging and production serve it only with =true
+```
+
+```go
+app.Handle("GET /v1/status", openapi.Typed(http.StatusOK,
+	openapi.Operation{Summary: "Service status", Tags: []string{"status"}},
+	func(*http.Request, openapi.NoBody) (statusResponse, error) { return statusResponse{Status: "ok"}, nil }))
+
+app.Handle("POST /v1/posts", openapi.Describe(create, openapi.Operation{
+	Summary: "Create a post", Permission: "posts:write",
+	Request:   openapi.TypeOf[createPost](),
+	Responses: []openapi.Response{openapi.JSON[post](http.StatusCreated)},
+	Errors:    []int{http.StatusConflict},
+}))
+```
+
+In tests, `spec.CheckResponses(app.Handler(), report)` validates every
+response against the document. Details, type mapping and tags:
+[docs/OPENAPI.md](docs/OPENAPI.md), [ADR 0043](docs/adr/0043-openapi-from-typed-routes.md).
+
 ## CLI
 
 | Command | Description |
@@ -496,6 +533,7 @@ rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes` | Read-only table of the routes found in the source (including `Resources` routes) and Forge's health routes |
+| `forge openapi [--output FILE \| --check FILE]` | Build the application and run its `openapi` command with the development environment: print or write the OpenAPI 3.1 document of the described routes, list undescribed ones on stderr; `--check` exits 1 when FILE is out of date. See [OpenAPI](#openapi) |
 | `forge help --json` | Emit the versioned command catalog with per-command flags, examples, environment inputs, exit codes and side effects |
 | `forge uuid [--count N]` | Print N UUIDv7 values (1-1000) |
 | `forge version` | Print CLI version, commit, and build date |
@@ -737,6 +775,7 @@ Binaries built with `forge.Main` accept:
 | ------- | ----------- |
 | `serve` | Default. Serve HTTP until `SIGINT`/`SIGTERM` |
 | `healthcheck` | Probe `/health/live` on loopback; used by the Docker `HEALTHCHECK` |
+| `openapi [--output FILE \| --check FILE]` | Run `Configure` without listening and print or write the OpenAPI document (what `forge openapi` runs) |
 | `help` | List the available commands |
 | `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database); `rollback` reverts application migrations only |
 | `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |
@@ -951,6 +990,7 @@ CI (`.github/workflows/ci.yml`):
 - [Server-rendered HTML](docs/VIEWS.md)
 - [Generators and `forge destroy`](docs/GENERATORS.md)
 - [Internationalization (i18n)](docs/I18N.md)
+- [OpenAPI from typed routes](docs/OPENAPI.md)
 - [Rate limiting](docs/RATE_LIMITING.md), [caching](docs/CACHING.md) and [file storage](docs/STORAGE.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Observability](docs/OBSERVABILITY.md)
@@ -982,3 +1022,4 @@ CI (`.github/workflows/ci.yml`):
   - [0040 OTLP log export, Go runtime and connection pool metrics](docs/adr/0040-otlp-log-export-runtime-and-pool-metrics.md)
   - [0041 Model, controller, mailer and queue job generators, and `forge destroy`](docs/adr/0041-generators-and-destroy.md)
   - [0042 Internationalization (i18n)](docs/adr/0042-internationalization.md)
+  - [0043 OpenAPI from typed routes](docs/adr/0043-openapi-from-typed-routes.md)

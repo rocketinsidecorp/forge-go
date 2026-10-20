@@ -11,7 +11,7 @@ branch. Nothing in a phase marked *planned* is implemented.
 | 3     | Authentication, authorization, tenancy             | In progress |
 | 4     | Jobs, events, outbox, scheduling                   | Done    |
 | 5     | OpenTelemetry                                      | Done    |
-| 6     | OpenAPI and tooling                                | Planned |
+| 6     | OpenAPI and tooling                                | In progress |
 | 7     | AI API and CLI subsystem                           | In progress |
 | 8     | Code generation                                    | Planned |
 | 9     | Performance                                        | Planned |
@@ -265,9 +265,17 @@ Implemented on the standard library only
 Not included: OTLP gRPC/protobuf, logs export, baggage, exemplars, and
 stored enqueue context for jobs (linked by job ID instead).
 
-## Phase 6 - API tooling
+## Phase 6 - API tooling (in progress)
 
-OpenAPI description and related tooling.
+- OpenAPI 3.1 from typed routes (done, [ADR 0043](adr/0043-openapi-from-typed-routes.md),
+  [OPENAPI.md](OPENAPI.md)): `openapi.Describe` and `openapi.Typed`, schemas
+  reflected from Go types, `GET /openapi.json` (development and test unless
+  `FORGE_OPENAPI_ENABLED=true`), `forge openapi [--output FILE | --check
+  FILE]`, described generated endpoints and contract tests.
+
+Not included yet: descriptions of the `auth` package's JSON routes, request
+validation from the document, constraint tags (`enum`, lengths) and a
+`--check` step in the generated CI.
 
 ## Phase 7 - AI subsystem
 

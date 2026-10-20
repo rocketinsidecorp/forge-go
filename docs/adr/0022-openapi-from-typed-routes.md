@@ -1,7 +1,12 @@
 # ADR 0022: OpenAPI from typed routes
 
-- **Status:** Proposed
+- **Status:** Superseded by [ADR 0043](0043-openapi-from-typed-routes.md)
 - **Date:** 2026-10-14
+
+ADR 0043 keeps this decision's goals (Go types as the single source of
+truth, OpenAPI 3.1, nothing reflected per request, the binary's `openapi`
+command and `forge openapi --check`) but attaches descriptions to ordinary
+handlers instead of adding a separate `api.Handle` registration.
 
 ## Context
 
