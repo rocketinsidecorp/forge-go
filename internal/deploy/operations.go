@@ -649,10 +649,8 @@ func (d *Deployer) Details(ctx context.Context) ([]HostDetails, error) {
 			}
 		}
 		if result, err := d.run(ctx, host, d.cmds.lockStatus()); err == nil && strings.TrimSpace(result.Stdout) != "" {
-			var info LockInfo
-			if json.Unmarshal([]byte(result.Stdout), &info) == nil {
-				hd.Lock = &info
-			}
+			info := parseLockInfo(result.Stdout)
+			hd.Lock = &info
 		}
 		if result, err := d.run(ctx, host, d.cmds.readLog(5)); err == nil {
 			for line := range strings.Lines(result.Stdout) {

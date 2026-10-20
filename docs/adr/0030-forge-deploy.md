@@ -53,7 +53,7 @@ progress, dry-run and log output passes through a redactor for every secret
 value of four or more characters.
 
 **Deploy algorithm.** Lock (an atomic `mkdir` on every host, with holder and
-message) → optional `pre-build` hook, local `docker build` and `push` →
+message; released only while the record is still the deploy's own, and a lock without a record file older than a minute is taken over in place) → optional `pre-build` hook, local `docker build` and `push` →
 `pre-deploy` hook → in parallel (bounded by `parallelism`): registry login,
 `pull`, env files → `migrate` once in a one-off container on the first host
 of the migrate role (failure aborts with exit 5 before any container
