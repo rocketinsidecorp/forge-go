@@ -60,7 +60,7 @@ func TestStopEndsTheApplicationsChildrenToo(t *testing.T) {
 	dir := t.TempDir()
 	pidFile, ready := filepath.Join(dir, "child.pid"), filepath.Join(dir, "ready")
 	script := writeScript(t, "sleep 300 &\necho $! > \"$1\"\ntrap 'exit 0' TERM\n: > \"$2\"\nwhile :; do sleep 0.05; done\n")
-	process, err := StartProcess(script, []string{pidFile, ready}, dir, os.Environ(), nil, nil)
+	process, err := StartProcess("/bin/sh", []string{script, pidFile, ready}, dir, os.Environ(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
