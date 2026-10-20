@@ -15,7 +15,8 @@ datasources:
       timeInterval: 15s
 
   # Trace -> logs: "Logs for this span" opens Loki filtered by the trace ID
-  # and service. Trace -> metrics: request rate of the span's service.
+  # (structured metadata of each log record) and service. Trace -> metrics:
+  # request rate of the span's service.
   - name: Tempo
     uid: tempo
     type: tempo
@@ -29,8 +30,10 @@ datasources:
         datasourceUid: loki
         spanStartTimeShift: -5m
         spanEndTimeShift: 5m
-        filterByTraceID: true
-        filterBySpanID: false
+        # trace_id is structured metadata, not part of the log line, so the
+        # default line filter would find nothing.
+        customQuery: true
+        query: '{$${__tags}} | trace_id="$${__span.traceId}"'
         tags:
           - key: service.name
             value: service_name
@@ -47,8 +50,8 @@ datasources:
           - name: p95 latency
             query: histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{$$__tags}[5m])))
 
-  # Logs -> trace: a trace_id in a log line (logfmt `trace_id=...` or JSON
-  # "trace_id":"...") becomes a link that opens the trace in Tempo.
+  # Logs -> trace: the trace_id of a log record (structured metadata) becomes
+  # a link that opens the trace in Tempo.
   - name: Loki
     uid: loki
     type: loki
@@ -60,6 +63,7 @@ datasources:
       derivedFields:
         - name: trace_id
           datasourceUid: tempo
-          matcherRegex: 'trace_id(?:=|":")([0-9a-f]{32})'
+          matcherType: label
+          matcherRegex: trace_id
           url: '$${__value.raw}'
           urlDisplayLabel: Open trace

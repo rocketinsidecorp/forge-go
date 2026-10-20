@@ -11,7 +11,7 @@
 #
 # How the data flows:
 #   traces + metrics   app --OTLP/HTTP--> otel-collector --> Tempo, Prometheus
-#   logs               Docker fluentd log driver --> otel-collector --> Loki
+#   logs               app --OTLP/HTTP--> otel-collector --> Loki
 # Images are pinned to exact versions and digests; update them deliberately.
 
 services:
@@ -21,17 +21,9 @@ services:
       FORGE_TELEMETRY_EXPORTER: otlp
       FORGE_TELEMETRY_OTLP_ENDPOINT: http://otel-collector:4318
       FORGE_TELEMETRY_METRICS_INTERVAL: 15s
-    # The Docker daemon, not the container, connects to the collector, hence
-    # the host address. Async: the app starts even if the collector is down.
-    # Rootless Docker: the daemon's loopback is another network namespace, so
-    # logs may not arrive; traces and metrics are unaffected.
-    logging:
-      driver: fluentd
-      options:
-        fluentd-address: 127.0.0.1:24224
-        fluentd-async: "true"
-        fluentd-sub-second-precision: "true"
-        tag: "{{.Name}}"
+      # Every log record also goes to the collector, with trace_id and
+      # span_id; standard output (docker compose logs) keeps the same lines.
+      FORGE_TELEMETRY_LOGS_EXPORTER: otlp
     depends_on:
       otel-collector:
         condition: service_started
@@ -44,8 +36,6 @@ services:
     ports:
       # OTLP/HTTP, so an app started with `forge dev` can export here too.
       - "127.0.0.1:4318:4318"
-      # Where the Docker daemon delivers the app's logs.
-      - "127.0.0.1:24224:24224"
     depends_on:
       - tempo
       - loki

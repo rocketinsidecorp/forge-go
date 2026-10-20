@@ -170,6 +170,7 @@ jobs:
           done
           wait_for "the dashboard is provisioned" grafana http://127.0.0.1:3000/api/dashboards/uid/forge-app
           wait_for "metrics reach Prometheus" sh -c "curl -fsS --get http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=http_server_request_duration_seconds_count{job=\"ciapp\"}' | grep -q '\"result\":\[{'"
+          wait_for "Go runtime metrics reach Prometheus" sh -c "curl -fsS --get http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=go_goroutine_count{job=\"ciapp\"}' | grep -q '\"result\":\[{'"
           wait_for "traces reach Tempo" sh -c "curl -fsS -u 'admin:$GRAFANA_ADMIN_PASSWORD' 'http://127.0.0.1:3000/api/datasources/proxy/uid/tempo/api/search?limit=5' | grep -q traceID"
           wait_for "logs reach Loki" sh -c "curl -fsS -u 'admin:$GRAFANA_ADMIN_PASSWORD' --get 'http://127.0.0.1:3000/api/datasources/proxy/uid/loki/loki/api/v1/query_range' --data-urlencode 'query={service_name=\"ciapp\"}' | grep -q '\"result\":\[{'"
       - name: Observability stack logs
