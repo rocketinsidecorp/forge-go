@@ -1,0 +1,178 @@
+package mailers
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/mail"
+	"github.com/rocketinsidecorp/forge-go/mail/mailtest"
+)
+
+var [[.Camel]]From = mail.Address{Name: "Example App", Email: "app@example.com"}
+
+var [[.Camel]]To = mail.Address{Name: "Ada Lovelace", Email: "ada@example.org"}
+
+func new[[.Title]]MailerForTest(t *testing.T) (*[[.Title]]Mailer, *mailtest.Recorder) {
+	t.Helper()
+	recorder := mailtest.NewRecorder()
+	mailer, err := New[[.Title]]Mailer(recorder, [[.Camel]]From)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mailer, recorder
+}
+
+func TestNew[[.Title]]MailerRefusesIncompleteSetups(t *testing.T) {
+	t.Parallel()
+	if _, err := New[[.Title]]Mailer(nil, [[.Camel]]From); err == nil {
+		t.Error("a missing sender was accepted")
+	}
+	if _, err := New[[.Title]]Mailer(mailtest.NewRecorder(), mail.Address{}); err == nil {
+		t.Error("a missing sender address was accepted")
+	}
+}
+[[- range .Methods]]
+
+func Test[[$.Title]]Mailer[[.Title]]Delivers(t *testing.T) {
+	t.Parallel()
+	mailer, recorder := new[[$.Title]]MailerForTest(t)
+	data := [[$.Title]][[.Title]]Data{
+[[- range .Fields]]
+		[[.Title]]: "Ada [[.Name]]",
+[[- end]]
+	}
+	if err := mailer.[[.Title]](context.Background(), [[$.Camel]]To, data); err != nil {
+		t.Fatal(err)
+	}
+	delivery, ok := recorder.Last()
+	if !ok || recorder.Len() != 1 {
+		t.Fatalf("%d messages were delivered, want 1", recorder.Len())
+	}
+	parsed, err := delivery.Parse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Header.Get("Subject"); got == "" {
+		t.Error("the email has no subject: add app/mailers/templates/[[$.Name]]/[[.Name]].subject.tmpl")
+	}
+	if got := parsed.Header.Get("To"); !strings.Contains(got, [[$.Camel]]To.Email) {
+		t.Errorf("To = %q, want it to name %s", got, [[$.Camel]]To.Email)
+	}
+	if got := parsed.Header.Get("From"); !strings.Contains(got, [[$.Camel]]From.Email) {
+		t.Errorf("From = %q, want it to name %s", got, [[$.Camel]]From.Email)
+	}
+	if delivery.Message.Text == "" || delivery.Message.HTML == "" {
+		t.Errorf("the email must have a text and an HTML part; text=%d bytes, html=%d bytes", len(delivery.Message.Text), len(delivery.Message.HTML))
+	}
+[[- range .Fields]]
+	for part, body := range map[string]string{"text": delivery.Message.Text, "HTML": delivery.Message.HTML} {
+		if !strings.Contains(body, "Ada [[.Name]]") {
+			t.Errorf("the %s part does not show [[.Name]]:\n%s", part, body)
+		}
+	}
+[[- end]]
+}
+
+func Test[[$.Title]]Mailer[[.Title]]DoesNotSendWhenDeliveryFails(t *testing.T) {
+	t.Parallel()
+	mailer, recorder := new[[$.Title]]MailerForTest(t)
+	recorder.FailWith(mail.ErrUnavailable)
+	err := mailer.[[.Title]](context.Background(), [[$.Camel]]To, [[$.Title]][[.Title]]Data{})
+	if !errors.Is(err, mail.ErrUnavailable) {
+		t.Fatalf("error = %v, want mail.ErrUnavailable", err)
+	}
+	if recorder.Len() != 0 {
+		t.Errorf("%d messages were recorded although delivery failed", recorder.Len())
+	}
+}
+
+func Test[[$.Title]]Mailer[[.Title]]RefusesAHeaderInjectingRecipient(t *testing.T) {
+	t.Parallel()
+	mailer, recorder := new[[$.Title]]MailerForTest(t)
+	hostile := mail.Address{Email: "ada@example.org\r\nBcc: victim@example.net"}
+	if err := mailer.[[.Title]](context.Background(), hostile, [[$.Title]][[.Title]]Data{}); err == nil {
+		t.Fatal("a recipient with a line break was accepted")
+	}
+	if recorder.Len() != 0 {
+		t.Errorf("%d messages were recorded for an invalid recipient", recorder.Len())
+	}
+}
+[[- if .Fields]]
+
+func Test[[$.Title]]Mailer[[.Title]]EscapesTheHTMLPart(t *testing.T) {
+	t.Parallel()
+	mailer, _ := new[[$.Title]]MailerForTest(t)
+	const hostile = "<script>alert(1)</script>"
+	msg, err := mailer.Build[[.Title]]([[$.Camel]]To, [[$.Title]][[.Title]]Data{
+[[- range .Fields]]
+		[[.Title]]: hostile,
+[[- end]]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(msg.HTML, "<script>") {
+		t.Errorf("the HTML part carries unescaped markup from the data:\n%s", msg.HTML)
+	}
+	if !strings.Contains(msg.HTML, "&lt;script&gt;") {
+		t.Errorf("the HTML part does not show the escaped data:\n%s", msg.HTML)
+	}
+}
+[[- end]]
+[[- end]]
+
+func Test[[.Title]]MailerPreviewsBuildValidMessages(t *testing.T) {
+	t.Parallel()
+	mailer, _ := new[[.Title]]MailerForTest(t)
+	previews := [[.Title]]MailerPreviews(mailer)
+	if len(previews) != [[len .Methods]] {
+		t.Fatalf("%d previews, want one per email ([[len .Methods]])", len(previews))
+	}
+	for _, preview := range previews {
+		msg, err := preview.Build(context.Background())
+		if err != nil {
+			t.Fatalf("preview %s: %v", preview.Name, err)
+		}
+		if err := msg.Validate(); err != nil {
+			t.Errorf("preview %s builds a message production would refuse: %v", preview.Name, err)
+		}
+	}
+}
+
+func Test[[.Title]]MailerPreviewsAreDevelopmentOnly(t *testing.T) {
+	t.Parallel()
+	mailer, _ := new[[.Title]]MailerForTest(t)
+	previews := [[.Title]]MailerPreviews(mailer)
+
+	cfg := config.Default()
+	cfg.Environment = config.Development
+	cfg.Mail.Preview = true
+	handler, err := mail.NewPreviewHandler(cfg, "/_mail/[[.Name]]", previews...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/_mail/[[.Name]]/"[[range .Methods]], "/_mail/[[$.Name]]/[[.Name]]"[[end]]} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200: %s", path, recorder.Code, recorder.Body)
+		}
+	}
+
+	// Without the explicit switch, or in production, nothing is served.
+	off := cfg
+	off.Mail.Preview = false
+	if _, err := mail.NewPreviewHandler(off, "/_mail/[[.Name]]", previews...); err == nil {
+		t.Error("previews were served without FORGE_MAIL_PREVIEW")
+	}
+	production := cfg
+	production.Environment = config.Production
+	if _, err := mail.NewPreviewHandler(production, "/_mail/[[.Name]]", previews...); err == nil {
+		t.Error("previews were served in production")
+	}
+}

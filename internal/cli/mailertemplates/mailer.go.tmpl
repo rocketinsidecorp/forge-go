@@ -1,0 +1,73 @@
+package mailers
+
+import (
+	"context"
+	"embed"
+	"errors"
+	"fmt"
+
+	"github.com/rocketinsidecorp/forge-go/mail"
+)
+
+//go:embed templates/[[.Name]]
+var [[.Camel]]Templates embed.FS
+
+// [[.Title]]Mailer builds and sends the emails of the [[.Name]] mailer. Each
+// email has typed template data, text and HTML templates under
+// app/mailers/templates/[[.Name]] and a preview, so a template cannot be
+// called with data it does not expect.
+type [[.Title]]Mailer struct {
+	sender mail.Sender
+	from   mail.Address
+[[- range .Methods]]
+	[[.Camel]]Template *mail.Template[ [[$.Title]][[.Title]]Data]
+[[- end]]
+}
+
+// New[[.Title]]Mailer parses the templates, so a syntax error stops the
+// application at start-up instead of failing a send. sender is how mail
+// leaves the process (mail.FromConfig in production, a mailtest.Recorder in
+// tests) and from the sender address (mail.DefaultFrom).
+func New[[.Title]]Mailer(sender mail.Sender, from mail.Address) (*[[.Title]]Mailer, error) {
+	if sender == nil {
+		return nil, errors.New("mailers: [[.Name]] mailer needs a sender")
+	}
+	if err := from.Validate(); err != nil {
+		return nil, fmt.Errorf("mailers: [[.Name]] mailer sender address: %w", err)
+	}
+	m := &[[.Title]]Mailer{sender: sender, from: from}
+	var err error
+[[- range .Methods]]
+	if m.[[.Camel]]Template, err = mail.NewTemplate[ [[$.Title]][[.Title]]Data]([[$.Camel]]Templates, "templates/[[$.Name]]/[[.Name]]"); err != nil {
+		return nil, err
+	}
+[[- end]]
+	return m, nil
+}
+
+func (m *[[.Title]]Mailer) base(to mail.Address) mail.Message {
+	return mail.Message{From: m.from, To: []mail.Address{to}}
+}
+[[- range .Methods]]
+
+// [[$.Title]][[.Title]]Data is the data of the [[.Name]] email's templates.
+// The HTML part escapes every value for its context; the text part prints
+// values as they are.
+type [[$.Title]][[.Title]]Data [[if .Fields]]struct {
+[[- range .Fields]]
+	[[.Title]] string
+[[- end]]
+}[[else]]struct{}[[end]]
+
+// [[.Title]] sends the [[.Name]] email to to. The templates render completely
+// before anything is sent, so a template error sends nothing.
+func (m *[[$.Title]]Mailer) [[.Title]](ctx context.Context, to mail.Address, data [[$.Title]][[.Title]]Data) error {
+	return m.[[.Camel]]Template.Deliver(ctx, m.sender, m.base(to), data)
+}
+
+// Build[[.Title]] renders the [[.Name]] email without sending it; previews and
+// tests use it.
+func (m *[[$.Title]]Mailer) Build[[.Title]](to mail.Address, data [[$.Title]][[.Title]]Data) (mail.Message, error) {
+	return m.[[.Camel]]Template.Message(m.base(to), data)
+}
+[[- end]]

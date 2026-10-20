@@ -1,0 +1,29 @@
+package mailers
+
+import (
+	"context"
+
+	"github.com/rocketinsidecorp/forge-go/mail"
+)
+
+// [[.Title]]MailerPreviews lists previews of the [[.Name]] mailer's emails,
+// built from fixture data; nothing is sent. Register them in development with
+// mail.NewPreviewHandler (docs/MAIL.md).
+func [[.Title]]MailerPreviews(m *[[.Title]]Mailer) []mail.Preview {
+	to := mail.Address{Name: "Alex Example", Email: "alex@example.com"}
+	return []mail.Preview{
+[[- range .Methods]]
+		{
+			Name:        "[[.Name]]",
+			Description: "[[$.HumanTitle]] mailer: [[.Human]]",
+			Build: func(context.Context) (mail.Message, error) {
+				return m.Build[[.Title]](to, [[$.Title]][[.Title]]Data{
+[[- range .Fields]]
+					[[.Title]]: "[[.Sample]]",
+[[- end]]
+				})
+			},
+		},
+[[- end]]
+	}
+}

@@ -16,7 +16,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
-const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate authentication [--dry-run]"
+const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate job NAME [field:type...] --queue [--dry-run]\n       forge generate model NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate controller NAME ACTION... [--api] [--public] [--dry-run]\n       forge generate mailer NAME METHOD[:field,field...]... [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate authentication [--dry-run]"
 
 var migrationName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,99}$`)
 var viewName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -44,6 +44,18 @@ func runGenerateAtTime(args []string, stdout io.Writer, root string, now time.Ti
 func runGenerateEnv(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
 	if len(args) > 0 && args[0] == "resource" {
 		return runGenerateResource(args[1:], stdout, root, env, now)
+	}
+	if len(args) > 0 && args[0] == "model" {
+		return runGenerateModel(args[1:], stdout, root, env, now)
+	}
+	if len(args) > 0 && args[0] == "controller" {
+		return runGenerateController(args[1:], stdout, root, env, now)
+	}
+	if len(args) > 0 && args[0] == "job" && slices.Contains(args[1:], "--queue") {
+		return runGenerateQueueJob(args[1:], stdout, root)
+	}
+	if len(args) > 0 && args[0] == "mailer" {
+		return runGenerateMailer(args[1:], stdout, root)
 	}
 	if len(args) > 0 && args[0] == "scaffold" {
 		return runGenerateScaffold(args[1:], stdout, root, env, now)
@@ -114,6 +126,12 @@ func runGenerateEnv(args []string, stdout io.Writer, root string, env []string, 
 type generatedFile struct {
 	path    string
 	content string
+	// shared marks a file other generated code depends on (the views base,
+	// the live-update transport): `forge destroy` never removes it.
+	shared bool
+	// migration marks a migration file: `forge destroy` keeps those unless
+	// asked, because the database may already have applied them.
+	migration bool
 }
 
 // generatedView is a page of the application's view tree (app/views): it
@@ -278,7 +296,7 @@ func viewBaseFiles(projectRoot *os.Root, module string) ([]generatedFile, error)
 	}
 	files := make([]generatedFile, 0, len(base))
 	for _, file := range base {
-		files = append(files, generatedFile{path: file.Path, content: string(file.Content)})
+		files = append(files, generatedFile{path: file.Path, content: string(file.Content), shared: true})
 	}
 	return files, nil
 }
@@ -320,6 +338,13 @@ func planJob(root, name string) ([]generatedFile, error) {
 			return nil, err
 		}
 	}
+	return renderJobFiles(name)
+}
+
+// renderJobFiles renders the scheduled job stub and its test.
+func renderJobFiles(name string) ([]generatedFile, error) {
+	jobPath := filepath.Join("app", "jobs", name+".go")
+	testPath := filepath.Join("app", "jobs", name+"_test.go")
 	replacements := strings.NewReplacer("{{name}}", name, "{{Name}}", exportedJobName(name))
 	jobSource, err := format.Source([]byte(replacements.Replace(generatedJob)))
 	if err != nil {

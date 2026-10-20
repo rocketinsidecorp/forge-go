@@ -57,7 +57,7 @@ func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFil
 		{filepath.Join("app", "adapters", "htmlui", spec.Name+".go"), "htmlui.go.tmpl"},
 		{filepath.Join("app", "adapters", "htmlui", spec.Name+"_test.go"), "htmlui_test.go.tmpl"},
 	}
-	if spec.Broadcast {
+	if spec.Broadcast && !spec.Destroy {
 		// The live-update transport is shared by every broadcasting scaffold:
 		// the first one adds it, later ones reuse it.
 		streams := filepath.Join("app", "adapters", "htmlstreams", "streams.go")
@@ -91,6 +91,11 @@ func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFil
 			return nil, err
 		}
 		files = append(files, generatedFile{path: filepath.Join("app", "views", spec.Plural, page.name+".gohtml"), content: content})
+	}
+	if spec.Destroy {
+		// The views base and the live-update transport are shared with the
+		// rest of the application; destroying one scaffold never touches them.
+		return files, nil
 	}
 	if spec.Broadcast {
 		if err := checkLiveUpdateBase(projectRoot); err != nil {
