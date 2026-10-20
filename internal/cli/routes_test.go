@@ -109,3 +109,33 @@ func TestRunInspectExpandsResources(t *testing.T) {
 		t.Fatalf("scope = %q", report.RouteScope)
 	}
 }
+
+func TestRoutesAndInspectIgnoreRoutesMountedByTests(t *testing.T) {
+	t.Parallel()
+	root := writeRoutesProject(t)
+	writeFile(t, filepath.Join(root, "app", "bootstrap", "bootstrap_test.go"), `package bootstrap
+
+func newTestServer(mux interface{ Handle(string, any) }) {
+	mux.Handle("GET /items/new", nil)
+	mux.Handle("DELETE /items/{id}", nil)
+}
+`)
+	var table bytes.Buffer
+	if err := runRoutesAt(nil, &table, root); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(table.String(), "/items") || strings.Contains(table.String(), "_test.go") {
+		t.Fatalf("forge routes lists routes mounted by tests:\n%s", table.String())
+	}
+	var output bytes.Buffer
+	if err := runInspectAt([]string{"--json"}, &output, root, nil); err == nil {
+		t.Fatal("a project without a Forge import is reported complete")
+	}
+	var report projectInspection
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(report.Routes, ","), "/items") {
+		t.Fatalf("forge inspect lists routes mounted by tests: %v", report.Routes)
+	}
+}

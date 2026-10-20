@@ -9,6 +9,10 @@ MariaDB, or SQLite with secure defaults, a conventional application layout,
 and a production container from the first commit. The core packages use only
 the Go standard library; each database adapter adds its driver.
 
+New to Forge? [Getting started](docs/GETTING_STARTED.md) builds a small blog
+from `forge new` to deploy: scaffolds, sign-in, live updates, translations,
+email, jobs, OpenAPI and tests.
+
 ## Status
 
 Pre-release. Phases 1 (core runtime, configuration, CLI, lifecycle, HTTP) and
@@ -986,6 +990,7 @@ CI (`.github/workflows/ci.yml`):
 
 ## Documentation
 
+- [Getting started](docs/GETTING_STARTED.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Authentication and authorization](docs/AUTHENTICATION.md)
 - [AI agent guide and current authorization boundaries](docs/AI_AGENT_GUIDE.md)

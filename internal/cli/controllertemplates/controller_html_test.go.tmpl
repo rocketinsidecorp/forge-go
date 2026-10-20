@@ -22,11 +22,11 @@ import (
 	"[[.Module]]/config/locales"
 )
 
-// [[.Camel]]ControllerPages lists every page of the controller: its path, its
-// heading and the view that renders it.
-var [[.Camel]]ControllerPages = []struct{ path, heading, view string }{
+// [[.Camel]]ControllerPages lists every page of the controller: its path and
+// its heading, the Title its handler sets.
+var [[.Camel]]ControllerPages = []struct{ path, heading string }{
 [[- range .Actions]]
-	{"[[.Path]]", "[[.HumanTitle]]", "app/views/[[$.Name]]/[[.Name]].gohtml"},
+	{"[[.Path]]", "[[.HumanTitle]]"},
 [[- end]]
 }
 
@@ -127,10 +127,9 @@ func Test[[.Title]]ControllerRendersEveryAction(t *testing.T) {
 		if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
 			t.Errorf("GET %s Content-Type = %q, want text/html", page.path, got)
 		}
-		for _, want := range []string{"<h1>" + page.heading + "</h1>", page.view} {
-			if !strings.Contains(recorder.Body.String(), want) {
-				t.Errorf("GET %s does not contain %q:\n%s", page.path, want, recorder.Body)
-			}
+		// Only the <h1> heading is pinned: keep it, the rest of the page is yours.
+		if want := "<h1>" + page.heading + "</h1>"; !strings.Contains(recorder.Body.String(), want) {
+			t.Errorf("GET %s does not contain %q:\n%s", page.path, want, recorder.Body)
 		}
 	}
 }

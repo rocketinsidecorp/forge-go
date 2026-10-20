@@ -104,8 +104,13 @@ func inspectProject(rootPath string, baseEnv []string) projectInspection {
 	inspectEnvironment(rootPath, baseEnv, &report)
 	fileCount := 0
 	for _, directory := range []string{"app", "cmd"} {
-		inspectSourceTree(root, directory, &fileCount, &report, func(_ string, fileSet *token.FileSet, file *ast.File) {
+		inspectSourceTree(root, directory, &fileCount, &report, func(name string, fileSet *token.FileSet, file *ast.File) {
 			inspectImports(file, imports)
+			if strings.HasSuffix(name, "_test.go") {
+				// Tests mount throwaway routes on test servers; they are not
+				// the application's routes.
+				return
+			}
 			for _, route := range discoverRoutes(fileSet, file) {
 				routeSet[route.pattern] = struct{}{}
 			}
