@@ -48,18 +48,10 @@ func TestPoolMetricsReportConnectionsAndWaits(t *testing.T) {
 	}
 
 	// A second caller must wait for the only connection.
-	done := make(chan error, 1)
-	go func() {
-		var one int
-		done <- db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
-	}()
-	time.Sleep(50 * time.Millisecond)
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
+	waitForTheOnlyConnection(t, db)
 	text = scrape()
 	if !strings.Contains(text, "forge_db_pool_waits_total"+labels+"} 1") {
 		t.Fatalf("a wait was not counted:\n%s", text)
@@ -112,32 +104,11 @@ func TestPoolMetricsStopOnCloseAndKeepCountingAfterReopen(t *testing.T) {
 		}
 		return out.String()
 	}
-	// waitOnce makes one query wait for the only connection.
-	waitOnce := func(db *sqldb.DB) {
-		t.Helper()
-		conn, err := db.SQL().Conn(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		done := make(chan error, 1)
-		go func() {
-			var one int
-			done <- db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
-		}()
-		time.Sleep(50 * time.Millisecond)
-		if err := conn.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
-	}
-
 	first, err := sqlite.Open(ctx, cfg, sqlite.WithTelemetry(tel), sqlite.WithPoolName("reopened"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitOnce(first)
+	waitForTheOnlyConnection(t, first)
 	if text := scrape(); !strings.Contains(text, "forge_db_pool_waits_total"+labels+"} 1") ||
 		!strings.Contains(text, "db_client_connection_count"+labels+`,db_client_connection_state="idle"} 1`) {
 		t.Fatalf("before close:\n%s", text)
@@ -161,8 +132,38 @@ func TestPoolMetricsStopOnCloseAndKeepCountingAfterReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = second.Close() })
-	waitOnce(second)
+	waitForTheOnlyConnection(t, second)
 	if text := scrape(); !strings.Contains(text, "forge_db_pool_waits_total"+labels+"} 2") {
 		t.Fatalf("the reopened pool's wait was not added:\n%s", text)
+	}
+}
+
+// waitForTheOnlyConnection makes one query wait for the only connection of
+// db, so the pool counts one wait.
+func waitForTheOnlyConnection(t *testing.T, db *sqldb.DB) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := db.SQL().Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waits := db.SQL().Stats().WaitCount
+	done := make(chan error, 1)
+	go func() {
+		var one int
+		done <- db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+	}()
+	// database/sql counts the wait when the query starts waiting.
+	for deadline := time.Now().Add(5 * time.Second); db.SQL().Stats().WaitCount == waits; {
+		if time.Now().After(deadline) {
+			t.Fatal("the query never waited for the connection")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
