@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -73,5 +74,71 @@ func TestTelemetryTracesStatementsWithoutText(t *testing.T) {
 	if series["db.system.name=postgresql,db.operation.name=INSERT,error.type=unique_violation"] != 1 ||
 		series["db.system.name=postgresql,db.operation.name=CREATE,error.type="] != 1 {
 		t.Fatalf("series %v", series)
+	}
+}
+
+func TestPoolMetricsReportConnections(t *testing.T) {
+	t.Parallel()
+	tel, _ := telemetrytest.New(t)
+	ctx := context.Background()
+	cfg := postgrestest.Config(t)
+	cfg.MaxConns = 3
+	db, err := postgres.Open(ctx, cfg, postgres.WithTelemetry(tel), postgres.WithPoolName("primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	conn, err := db.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+
+	var out bytes.Buffer
+	if err := tel.Metrics().WritePrometheus(&out); err != nil {
+		t.Fatal(err)
+	}
+	const labels = `{db_system_name="postgresql",db_client_connection_pool_name="primary"`
+	for _, want := range []string{
+		"db_client_connection_count" + labels + `,db_client_connection_state="used"} 1`,
+		"db_client_connection_max" + labels + "} 3",
+		"forge_db_pool_waits_total" + labels + "} ",
+		"forge_db_pool_wait_duration_seconds_total" + labels + "} ",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("metrics lack %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// A closed pool is no longer observed: its connection counts drop to zero.
+func TestPoolMetricsStopWhenThePoolCloses(t *testing.T) {
+	t.Parallel()
+	tel, _ := telemetrytest.New(t)
+	ctx := context.Background()
+	db, err := postgres.Open(ctx, postgrestest.Config(t), postgres.WithTelemetry(tel), postgres.WithPoolName("closing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scrape := func() string {
+		var out bytes.Buffer
+		if err := tel.Metrics().WritePrometheus(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	const labels = `{db_system_name="postgresql",db_client_connection_pool_name="closing"`
+	if text := scrape(); !strings.Contains(text, "db_client_connection_count"+labels+`,db_client_connection_state="idle"} 1`) {
+		t.Fatalf("open pool:\n%s", text)
+	}
+	db.Close()
+	text := scrape()
+	for _, want := range []string{
+		"db_client_connection_count" + labels + `,db_client_connection_state="idle"} 0`,
+		"db_client_connection_count" + labels + `,db_client_connection_state="used"} 0`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("closed pool, metrics lack %q:\n%s", want, text)
+		}
 	}
 }

@@ -275,7 +275,14 @@ FORGE_TELEMETRY_METRICS_ADDR=127.0.0.1:9464 forge dev
 FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://localhost:4318 forge dev
 # Spans in the development log
 FORGE_TELEMETRY_EXPORTER=log forge dev
+# Every log record, with trace_id and span_id, also to the collector (OTLP/HTTP);
+# standard output keeps the same lines. Uses the same FORGE_TELEMETRY_OTLP_* settings.
+FORGE_TELEMETRY_LOGS_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://localhost:4318 forge dev
 ```
+
+Go runtime (goroutines, heap, garbage collection){{if .DB}} and database connection pool
+(connections in use, idle and the limit, waits){{end}} metrics are always
+recorded and reach both `/metrics` and OTLP.
 
 Set `FORGE_TELEMETRY_SERVICE_NAME={{.Name}}` in deployments. Incoming
 `traceparent` headers are ignored unless `FORGE_TELEMETRY_TRUST_TRACEPARENT=true`
@@ -301,7 +308,7 @@ docker compose -f compose.yaml -f compose.observability.yaml up --build
 curl http://127.0.0.1:8080/v1/status
 
 # 3. Open Grafana: http://127.0.0.1:3000, user admin, the password above
-#    Dashboards > "Forge application"  request rate, latency, errors, database, jobs, logs, traces
+#    Dashboards > "Forge application"  request rate, latency, errors, database, connection pool, Go runtime, jobs, logs, traces
 #    Explore > Tempo                   traces; "Logs for this span" opens the matching log lines
 #    Explore > Loki                    logs; a trace_id links to its trace
 #    Explore > Prometheus              metrics, also at http://127.0.0.1:9090
@@ -311,16 +318,18 @@ curl http://127.0.0.1:8080/v1/status
 docker compose -f compose.yaml -f compose.observability.yaml down
 ```
 
-The app sends traces and metrics to the collector over OTLP; Docker's fluentd
-log driver sends its logs to the same collector, which forwards everything to
-Tempo, Prometheus and Loki. To use another host port set `GRAFANA_PORT` or
+The app sends traces, metrics and logs to the collector over OTLP
+(`FORGE_TELEMETRY_LOGS_EXPORTER=otlp` is set by the overlay), which forwards them
+to Tempo, Prometheus and Loki. To use another host port set `GRAFANA_PORT` or
 `PROMETHEUS_PORT`. The app logs only what it or the framework logs (startup,
-errors, your `logger.InfoContext(ctx, ...)` calls); each line made with a traced
-context carries `trace_id`, which is what ties logs and traces together. The
+errors, your `logger.InfoContext(ctx, ...)` calls); each record made with a traced
+context carries `trace_id` and `span_id`, which is what ties logs and traces
+together. Output that does not go through the logger (a crash's stack trace, for
+example) is only in `docker compose logs`. The
 stack keeps seven days of data and is meant for development, not production.
 To export from an app started with `forge dev`, run
 `FORGE_TELEMETRY_SERVICE_NAME={{.Name}} FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318 forge dev`
-while the stack runs; traces and metrics arrive, logs stay in your terminal.
+while the stack runs, adding `FORGE_TELEMETRY_LOGS_EXPORTER=otlp` to send logs too.
 
 ## Credentials
 

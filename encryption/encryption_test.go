@@ -160,18 +160,18 @@ func TestBlindIndex(t *testing.T) {
 	t.Parallel()
 	oldKey, newKey := testKey(t, "k1", 1), testKey(t, "k2", 2)
 	c := newCipher(t, oldKey)
-	a, err := c.BlindIndex("people", "ssn", []byte("123"))
+	a, err := c.BlindIndex("people", "ssn", []byte("ssn#123"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := c.BlindIndex("people", "ssn", []byte("123")); a != b {
+	if b, _ := c.BlindIndex("people", "ssn", []byte("ssn#123")); a != b {
 		t.Fatal("blind index is not stable for equal input")
 	}
 	for name, other := range map[string]func() (string, error){
-		"another value":  func() (string, error) { return c.BlindIndex("people", "ssn", []byte("124")) },
-		"another column": func() (string, error) { return c.BlindIndex("people", "tax_id", []byte("123")) },
-		"another table":  func() (string, error) { return c.BlindIndex("customers", "ssn", []byte("123")) },
-		"another key":    func() (string, error) { return newCipher(t, newKey).BlindIndex("people", "ssn", []byte("123")) },
+		"another value":  func() (string, error) { return c.BlindIndex("people", "ssn", []byte("ssn#124")) },
+		"another column": func() (string, error) { return c.BlindIndex("people", "tax_id", []byte("ssn#123")) },
+		"another table":  func() (string, error) { return c.BlindIndex("customers", "ssn", []byte("ssn#123")) },
+		"another key":    func() (string, error) { return newCipher(t, newKey).BlindIndex("people", "ssn", []byte("ssn#123")) },
 	} {
 		got, err := other()
 		if err != nil || got == a {
@@ -180,17 +180,17 @@ func TestBlindIndex(t *testing.T) {
 	}
 	// The index key is separate from the encryption key: the digest of a
 	// value is not derivable from, nor equal to, anything in the ciphertext.
-	if strings.Contains(a, "123") {
+	if strings.Contains(a, "ssn#123") {
 		t.Fatal("index leaks the value")
 	}
 	rotated := newCipher(t, newKey, oldKey)
-	all, err := rotated.BlindIndexes("people", "ssn", []byte("123"))
+	all, err := rotated.BlindIndexes("people", "ssn", []byte("ssn#123"))
 	if err != nil || len(all) != 2 || all[1] != a || all[0] == a {
 		t.Fatalf("BlindIndexes = %v, %v; want [new, old=%s]", all, err, a)
 	}
 	// Encryption stays randomized even though a blind index is available.
-	x, _ := c.Encrypt([]byte("123"), rowAAD)
-	y, _ := c.Encrypt([]byte("123"), rowAAD)
+	x, _ := c.Encrypt([]byte("ssn#123"), rowAAD)
+	y, _ := c.Encrypt([]byte("ssn#123"), rowAAD)
 	if x == y {
 		t.Fatal("encryption became deterministic")
 	}
@@ -294,7 +294,7 @@ func TestValueRoundTrip(t *testing.T) {
 	if _, err := v.Value(); err != nil {
 		t.Fatalf("absent value: %v", err)
 	}
-	v.Set("123")
+	v.Set("ssn#123")
 	if _, err := v.Value(); !errors.Is(err, encryption.ErrNoRecordID) {
 		t.Fatalf("missing record id: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestValueRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, ok := driverValue.(string)
-	if !ok || strings.Contains(stored, "123") {
+	if !ok || strings.Contains(stored, "ssn#123") {
 		t.Fatalf("driver value = %#v", driverValue)
 	}
 
@@ -316,7 +316,7 @@ func TestValueRoundTrip(t *testing.T) {
 		t.Fatalf("Get without record id: %v", err)
 	}
 	got, present, err := scanned.ForRecord(rowAAD.RecordID).Get()
-	if err != nil || !present || got != "123" {
+	if err != nil || !present || got != "ssn#123" {
 		t.Fatalf("Get = %q, %v, %v", got, present, err)
 	}
 

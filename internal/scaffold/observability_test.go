@@ -2,6 +2,7 @@ package scaffold_test
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -266,14 +267,25 @@ func TestObservabilityAppSettingsAreValidFrameworkConfiguration(t *testing.T) {
 		t.Errorf("OTLP endpoint = %q; want the collector service on 4318", cfg.Telemetry.OTLPEndpoint)
 	}
 
-	// Logs: the Docker tag is the service name the traces and metrics use.
-	logging := mapAt(t, app, "logging")
-	options := mapAt(t, logging, "options")
-	if logging["driver"] != "fluentd" || options["tag"] != "shop" || options["fluentd-address"] != "127.0.0.1:24224" {
-		t.Errorf("logging = %v; want the fluentd driver to 127.0.0.1:24224 tagged with the service name", logging)
+	// Logs go over OTLP like traces and metrics, with the same service name
+	// and endpoint; there is no Docker log driver in between.
+	if cfg.Telemetry.LogsExporter != config.TelemetryLogsExporterOTLP {
+		t.Errorf("logs exporter = %q; want otlp so application logs reach Loki through the collector", cfg.Telemetry.LogsExporter)
 	}
-	if options["fluentd-async"] != "true" {
-		t.Error("the fluentd driver must be async so the app starts without the collector")
+	if level, ok := cfg.Telemetry.LogLevel(); !ok || level != slog.LevelInfo {
+		t.Errorf("logs level = %q; want info", cfg.Telemetry.LogsLevel)
+	}
+	if _, ok := app["logging"]; ok {
+		t.Errorf("app logging = %v; the app's logs travel over OTLP, not a log driver", app["logging"])
+	}
+	overlay, err := os.ReadFile(filepath.Join(dir, "compose.observability.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"fluentd", "fluent_forward", "24224"} {
+		if strings.Contains(string(overlay), gone) {
+			t.Errorf("the overlay still mentions %q", gone)
+		}
 	}
 }
 
@@ -299,15 +311,21 @@ func TestObservabilityConfigurationAgreesAcrossFiles(t *testing.T) {
 		}
 	}
 	pipelines := mapAt(t, collector, "service", "pipelines")
-	for pipeline, receiver := range map[string]string{"traces": "otlp", "metrics": "otlp", "logs": "fluent_forward"} {
+	for pipeline, receiver := range map[string]string{"traces": "otlp", "metrics": "otlp", "logs": "otlp"} {
 		got := stringList(t, mapAt(t, pipelines, pipeline)["receivers"])
 		if len(got) != 1 || got[0] != receiver {
 			t.Errorf("%s pipeline receivers = %v, want [%s]", pipeline, got, receiver)
 		}
 	}
 	collectorService := mapAt(t, services, "otel-collector")
-	if ports := strings.Join(stringList(t, collectorService["ports"]), " "); !strings.Contains(ports, ":4318") || !strings.Contains(ports, ":24224") {
-		t.Errorf("collector ports = %s; want OTLP 4318 and the log driver's 24224", ports)
+	if ports := strings.Join(stringList(t, collectorService["ports"]), " "); !strings.Contains(ports, ":4318") || strings.Contains(ports, ":24224") {
+		t.Errorf("collector ports = %s; want only OTLP 4318 (logs arrive over OTLP, there is no fluent intake)", ports)
+	}
+	if _, ok := mapAt(t, collector, "receivers")["fluent_forward"]; ok {
+		t.Error("the collector must not keep a fluent_forward receiver")
+	}
+	if _, ok := mapAt(t, collector, "processors")["transform/logs"]; ok {
+		t.Error("log records arrive structured; the collector needs no log parsing")
 	}
 
 	// Tempo and Loki serve what the collector and Grafana expect.
@@ -343,8 +361,14 @@ func TestObservabilityConfigurationAgreesAcrossFiles(t *testing.T) {
 			t.Errorf("datasource %s url = %v, want %s", uid, source["url"], wantURL)
 		}
 	}
-	if got := mapAt(t, byUID["tempo"], "jsonData", "tracesToLogsV2")["datasourceUid"]; got != "loki" {
-		t.Errorf("tempo trace-to-logs targets %v, want loki", got)
+	toLogs := mapAt(t, byUID["tempo"], "jsonData", "tracesToLogsV2")
+	if toLogs["datasourceUid"] != "loki" {
+		t.Errorf("tempo trace-to-logs targets %v, want loki", toLogs["datasourceUid"])
+	}
+	// trace_id is structured metadata of the OTLP log record, not text of the
+	// line, so the link must filter on it and not use a line filter.
+	if query, _ := toLogs["query"].(string); toLogs["customQuery"] != true || !strings.Contains(query, `| trace_id="$${__span.traceId}"`) || !strings.Contains(query, "__tags") {
+		t.Errorf("tempo trace-to-logs = %v; want a custom query filtering on the trace_id structured metadata", toLogs)
 	}
 	derived, _ := mapAt(t, byUID["loki"], "jsonData")["derivedFields"].([]any)
 	if len(derived) != 1 {
@@ -354,15 +378,8 @@ func TestObservabilityConfigurationAgreesAcrossFiles(t *testing.T) {
 	if field["datasourceUid"] != "tempo" {
 		t.Errorf("loki trace_id field links to %v, want tempo", field["datasourceUid"])
 	}
-	pattern := regexp.MustCompile(field["matcherRegex"].(string))
-	const traceID = "0af7651916cd43dd8448eb211c80319c"
-	for _, line := range []string{
-		`time=2026-10-20T10:00:00Z level=ERROR msg="request failed" trace_id=` + traceID + ` span_id=b7ad6b7169203331`,
-		`{"level":"ERROR","msg":"request failed","trace_id":"` + traceID + `"}`,
-	} {
-		if m := pattern.FindStringSubmatch(line); m == nil || m[1] != traceID {
-			t.Errorf("derived field does not extract the trace ID from %s", line)
-		}
+	if field["matcherType"] != "label" || field["matcherRegex"] != "trace_id" {
+		t.Errorf("loki trace_id field = %v; want it to read the trace_id label or structured metadata", field)
 	}
 }
 
@@ -401,6 +418,17 @@ func TestObservabilityDashboard(t *testing.T) {
 		"db_client_operation_duration_seconds_bucket":   false,
 		"forge_queue_job_duration_seconds_count":        false,
 		"forge_telemetry_spans_dropped_total":           false,
+		"forge_telemetry_logs_dropped_total":            false,
+		"db_client_connection_count":                    false,
+		"db_client_connection_max":                      false,
+		"forge_db_pool_waits_total":                     false,
+		"forge_db_pool_wait_duration_seconds_total":     false,
+		"go_goroutine_count":                            false,
+		"go_memory_heap_alloc_bytes":                    false,
+		"go_memory_heap_inuse_bytes":                    false,
+		"go_memory_allocated_bytes_total":               false,
+		"go_gc_cycles_total":                            false,
+		"go_gc_pause_duration_seconds_bucket":           false,
 		`http_response_status_class="5xx"`:              false,
 		`{service_name=~"$service"}`:                    false,
 		`{ resource.service.name =~ "$service" }`:       false,
@@ -447,7 +475,7 @@ func TestObservabilityMetricNamesExistInTheDocumentedCatalogue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	metric := regexp.MustCompile(`\b((?:http|db|forge)_[a-z_]+?)(?:_bucket|_count|_sum)?\b[{\[(]`)
+	metric := regexp.MustCompile(`\b((?:http|db|forge|go)_[a-z_]+?)(?:_bucket|_count|_sum)?\b[{\[(]`)
 	for _, match := range metric.FindAllStringSubmatch(string(content), -1) {
 		name := match[1]
 		if !strings.Contains(string(catalogue), name) {
@@ -468,9 +496,6 @@ func TestObservabilityAppNamesThatAreYAMLKeywordsStayStrings(t *testing.T) {
 		app := mapAt(t, readYAML(t, dir, "compose.observability.yaml"), "services", "app")
 		if got := mapAt(t, app, "environment")["FORGE_TELEMETRY_SERVICE_NAME"]; got != name {
 			t.Errorf("app %q: FORGE_TELEMETRY_SERVICE_NAME = %#v; want the string %q", name, got, name)
-		}
-		if got := mapAt(t, app, "logging", "options")["tag"]; got != name {
-			t.Errorf("app %q: log tag = %#v; want the string %q", name, got, name)
 		}
 	}
 }

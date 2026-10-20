@@ -175,6 +175,9 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger, configur
 		logger.Error("build application", "error", err)
 		return 1
 	}
+	// The application's logger also exports records when
+	// FORGE_TELEMETRY_LOGS_EXPORTER=otlp.
+	logger = app.Logger()
 	if err := configure(ctx, app); err != nil {
 		logger.Error("configure application", "error", err)
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.HTTP.ShutdownTimeout)

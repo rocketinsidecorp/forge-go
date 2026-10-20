@@ -44,10 +44,11 @@ func (k Kind) String() string {
 // only when the statement runs inside a traced operation, so pollers and
 // startup queries do not create root spans. A nil *Observer does nothing.
 type Observer struct {
-	tracer   *telemetry.Tracer
-	duration *telemetry.Histogram
-	system   string
-	classify Classifier
+	telemetry *telemetry.Telemetry
+	tracer    *telemetry.Tracer
+	duration  *telemetry.Histogram
+	system    string
+	classify  Classifier
 }
 
 // NewObserver returns an observer for system (the OpenTelemetry
@@ -64,7 +65,43 @@ func NewObserver(t *telemetry.Telemetry, system string, classify Classifier) (*O
 	if err != nil {
 		return nil, err
 	}
-	return &Observer{tracer: t.Tracer(telemetry.ScopeName + "/sqldb"), duration: duration, system: system, classify: classify}, nil
+	return &Observer{telemetry: t, tracer: t.Tracer(telemetry.ScopeName + "/sqldb"), duration: duration, system: system, classify: classify}, nil
+}
+
+// DefaultPoolName is the pool name reported when the application gives none.
+const DefaultPoolName = "default"
+
+// ObservePool exports db's connection statistics (open, in use, idle, limit,
+// waits and time waited) under the pool name, DefaultPoolName when empty:
+// db.client.connection.count, db.client.connection.max, forge.db.pool.waits
+// and forge.db.pool.wait.duration, until db is closed (Close or Shutdown).
+// Registering a name again replaces the pool, so reopening a database in a
+// process does not duplicate series, and the wait counters keep counting from
+// the earlier pool's totals (see telemetry.Telemetry.ObservePool). Call it
+// once per DB. A nil Observer does nothing.
+func (o *Observer) ObservePool(name string, db *DB) error {
+	if o == nil {
+		return nil
+	}
+	if name == "" {
+		name = DefaultPoolName
+	}
+	pool := db.SQL()
+	stop, err := o.telemetry.ObservePool(o.system, name, func() telemetry.PoolStats {
+		stats := pool.Stats()
+		return telemetry.PoolStats{
+			InUse:    stats.InUse,
+			Idle:     stats.Idle,
+			Max:      stats.MaxOpenConnections,
+			Waits:    stats.WaitCount,
+			WaitTime: stats.WaitDuration,
+		}
+	})
+	if err != nil {
+		return err
+	}
+	db.unobserve = stop
+	return nil
 }
 
 // Observation is one statement in progress; End it exactly once.

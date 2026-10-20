@@ -310,3 +310,17 @@ func TestStringAttributesAreTruncatedAndValidUTF8(t *testing.T) {
 		t.Fatal("value round trip failed")
 	}
 }
+
+// A truncated value is a copy: a queued span or record must not keep the
+// caller's large string alive. Copying is the one allocation truncation
+// makes; a value within the limit is kept as is.
+func TestTruncatedStringsDoNotShareTheCallersMemory(t *testing.T) {
+	large := strings.Repeat("v", 64*MaxAttributeValueLength)
+	if allocs := testing.AllocsPerRun(10, func() { _ = truncate(large, MaxAttributeValueLength) }); allocs != 1 {
+		t.Fatalf("truncating made %v allocations, want the one copy", allocs)
+	}
+	small := large[:MaxAttributeValueLength]
+	if allocs := testing.AllocsPerRun(10, func() { _ = truncate(small, MaxAttributeValueLength) }); allocs != 0 {
+		t.Fatalf("a value within the limit made %v allocations", allocs)
+	}
+}

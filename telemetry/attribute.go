@@ -105,17 +105,23 @@ func Bool(key string, value bool) Attribute {
 }
 
 // truncate shortens s to at most limit bytes without splitting a UTF-8
-// sequence, and replaces invalid UTF-8, which OTLP JSON cannot carry.
+// sequence, and replaces invalid UTF-8, which OTLP JSON cannot carry. A
+// shortened value is a copy, so a queued span or log record does not keep
+// the caller's whole string alive.
 func truncate(s string, limit int) string {
-	if len(s) > limit {
-		cut := limit
-		for cut > 0 && !utf8.RuneStart(s[cut]) {
-			cut--
+	cut := len(s) > limit
+	if cut {
+		end := limit
+		for end > 0 && !utf8.RuneStart(s[end]) {
+			end--
 		}
-		s = s[:cut]
+		s = s[:end]
 	}
-	if !utf8.ValidString(s) {
-		return strings.ToValidUTF8(s, "\uFFFD")
+	switch {
+	case !utf8.ValidString(s):
+		return strings.ToValidUTF8(s, "\uFFFD") // a new string
+	case cut:
+		return strings.Clone(s)
 	}
 	return s
 }

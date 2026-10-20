@@ -23,7 +23,9 @@ func TestDispatcherTelemetry(t *testing.T) {
 		}
 		handled = append(handled, event.ID.String())
 		if event.ID == created[1].ID {
-			return errors.New("webhook for task-1 returned 500 with token abc")
+			// Sentinels hold non-hex letters, so they cannot occur by
+			// chance in a hex trace ID or a UUID attribute.
+			return errors.New("webhook for task-zz returned 500 with token zz-secret-qq")
 		}
 		return nil
 	}, DispatcherOptions{MaxAttempts: 1, Telemetry: tel})
@@ -51,7 +53,7 @@ func TestDispatcherTelemetry(t *testing.T) {
 			t.Fatalf("delivery span %+v", span)
 		}
 		for _, attr := range span.Attributes {
-			if strings.Contains(attr.Value.Emit(), "task-1") || strings.Contains(attr.Value.Emit(), "abc") {
+			if strings.Contains(attr.Value.Emit(), "task-zz") || strings.Contains(attr.Value.Emit(), "zz-secret-qq") {
 				t.Fatalf("payload or error message recorded: %+v", attr)
 			}
 		}

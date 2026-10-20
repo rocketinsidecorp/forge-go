@@ -105,6 +105,12 @@ func New(opts ...Option) (*App, error) {
 			// work are still exported.
 			app.telemetry = built
 			app.shutdownHooks = append(app.shutdownHooks, built.Shutdown)
+			// With the OTLP log exporter every record also reaches the
+			// collector. The export-failure logger above stays the plain
+			// one, so a failing export cannot log into its own queue.
+			if exported := built.LogHandler(); exported != nil {
+				app.logger = slog.New(telemetry.NewTeeHandler(settings.logger.Handler(), exported))
+			}
 		}
 	}
 	if err := app.build(settings); err != nil {

@@ -757,6 +757,10 @@ docker run --rm -p 4318:4318 -v "$PWD/otel-collector.yaml:/etc/otelcol/config.ya
 FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318 \
   FORGE_TELEMETRY_SERVICE_NAME=myapp forge dev
 
+# Logs too: every record, with trace_id and span_id, also goes to the collector
+# (stdout keeps the same lines; same FORGE_TELEMETRY_OTLP_* settings)
+FORGE_TELEMETRY_LOGS_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318 forge dev
+
 # In a container: bind to all interfaces and confirm it (never publish the port)
 FORGE_TELEMETRY_METRICS_ADDR=0.0.0.0:9464 FORGE_TELEMETRY_METRICS_PUBLIC=true forge dev
 
@@ -765,9 +769,11 @@ FORGE_TELEMETRY_EXPORTER=log forge dev
 FORGE_TELEMETRY_ENABLED=false forge dev
 ```
 
-Pass `app.Telemetry()` to adapters to trace database statements and jobs:
+Pass `app.Telemetry()` to adapters to trace database statements and jobs and to
+export their connection pool (in use, idle, limit, waits):
 `postgres.Open(ctx, cfg, postgres.WithTelemetry(app.Telemetry()))` (generated
-applications already do). Collector and Prometheus configuration, the
+applications already do). Go runtime metrics (goroutines, heap, GC) are always
+recorded. Collector and Prometheus configuration, the
 metric catalogue, cardinality rules and what is never recorded:
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
 
@@ -776,7 +782,9 @@ metric catalogue, cardinality rules and what is never recorded:
 Every generated application includes an opt-in observability stack
 (`compose.observability.yaml` and `observability/`): an OpenTelemetry
 Collector, Prometheus, Tempo (traces), Loki (logs) and Grafana with the data
-sources, trace-to-log links and a starter dashboard provisioned. Everything
+sources, trace-to-log links and a starter dashboard (requests, database and
+connection pool, Go runtime, jobs, logs, traces) provisioned; the app's logs
+reach Loki over OTLP. Everything
 stays on your machine and every port is bound to `127.0.0.1`
 ([ADR 0038](docs/adr/0038-local-observability-stack.md)).
 
@@ -879,3 +887,4 @@ CI (`.github/workflows/ci.yml`):
   - [0037 Trusted proxies and the client address](docs/adr/0037-trusted-proxies-and-client-ip.md)
   - [0038 Local observability stack](docs/adr/0038-local-observability-stack.md)
   - [0039 Framework migration ownership in the application's migration table](docs/adr/0039-framework-migration-ownership.md)
+  - [0040 OTLP log export, Go runtime and connection pool metrics](docs/adr/0040-otlp-log-export-runtime-and-pool-metrics.md)

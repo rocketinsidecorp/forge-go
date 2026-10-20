@@ -24,15 +24,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // Defaults for Options fields left zero.
 const (
-	DefaultMaxQueueSize    = 2048
-	DefaultMaxExportBatch  = 512
-	DefaultBatchTimeout    = 5 * time.Second
+	DefaultMaxQueueSize   = 2048
+	DefaultMaxExportBatch = 512
+	DefaultBatchTimeout   = 5 * time.Second
+	// DefaultLogBatchTimeout is shorter than the span interval: people tail
+	// logs.
+	DefaultLogBatchTimeout = time.Second
 	DefaultExportTimeout   = 10 * time.Second
 	DefaultMetricsInterval = 60 * time.Second
 	minMetricsInterval     = time.Second
@@ -48,6 +53,7 @@ type Resource struct {
 }
 
 // MetricExporter sends metric snapshots to a backend. It must honor ctx.
+// Shutdown is called once, after the last export (see SpanExporter).
 type MetricExporter interface {
 	ExportMetrics(ctx context.Context, resource Resource, metrics []MetricData) error
 	Shutdown(ctx context.Context) error
@@ -87,9 +93,30 @@ type Options struct {
 	BatchTimeout time.Duration
 	// ExportTimeout bounds one export call. Default 10s.
 	ExportTimeout time.Duration
+	// LogExporter receives log records queued by LogHandler. Nil means
+	// logs are not exported and LogHandler returns nil.
+	LogExporter LogRecordExporter
+	// LogLevel is the lowest level LogHandler queues. Default slog.LevelInfo.
+	LogLevel slog.Leveler
+	// LogFormat is how LogHandler encodes values that are not strings,
+	// numbers, booleans, durations or times. Set it to the format of the
+	// handler that writes standard output: LogFormatJSON (default) for
+	// slog.JSONHandler, LogFormatText for slog.TextHandler. FromConfig sets
+	// it from the logger it is given.
+	LogFormat LogFormat
+	// LogMaxQueueSize bounds the log records waiting for export; when the
+	// queue is full new records are dropped and counted. Default 2048.
+	LogMaxQueueSize int
+	// LogMaxExportBatch is the most records sent in one export. Default 512.
+	LogMaxExportBatch int
+	// LogBatchTimeout is the longest a record waits before export. Default
+	// 1s.
+	LogBatchTimeout time.Duration
 	// MaxSeries bounds the series of each metric instrument. Default 1000.
 	MaxSeries int
-	// Logger receives export failures. Default discards.
+	// Logger receives export failures. Default discards. It must not export
+	// to LogExporter: a failed log export would log, and so export, again.
+	// forge.New passes the logger that writes to standard output only.
 	Logger *slog.Logger
 }
 
@@ -101,7 +128,10 @@ type Telemetry struct {
 	threshold     uint64
 	trustIncoming bool
 	logger        *slog.Logger
-	spans         *batcher
+	spans         *batcher[SpanData]
+	logs          *batcher[LogRecord]
+	logLevel      slog.Leveler
+	logFormat     LogFormat
 	metrics       *Registry
 
 	metricExporter MetricExporter
@@ -109,15 +139,25 @@ type Telemetry struct {
 	metricsCancel  context.CancelFunc
 	metricsStop    chan struct{}
 	metricsDone    chan struct{}
-	exportTimeout  time.Duration
+	// shutdownMetricExporter releases the metric exporter once the metrics
+	// goroutine stopped; metricsShutdownErr is its result, read after
+	// metricsDone is closed.
+	shutdownMetricExporter func(context.Context) error
+	metricsShutdownErr     error
+	exportTimeout          time.Duration
 
 	tracersMu sync.Mutex
 	tracers   map[string]*Tracer
+
+	// pools holds each observed pool name's wait totals (ObservePool).
+	poolsMu sync.Mutex
+	pools   map[string]*poolTotals
 
 	shutdownOnce sync.Once
 	shutdownErr  error
 
 	droppedSpans *Counter
+	droppedLogs  *Counter
 	exportErrors *Counter
 }
 
@@ -130,8 +170,12 @@ func New(opts Options) (*Telemetry, error) {
 		return nil, errors.New("telemetry: sample ratio must be between 0 and 1")
 	}
 	if opts.MaxQueueSize < 0 || opts.MaxQueueSize > maxQueueSizeLimit || opts.MaxExportBatch < 0 ||
-		opts.BatchTimeout < 0 || opts.ExportTimeout < 0 || opts.MetricsInterval < 0 {
+		opts.BatchTimeout < 0 || opts.ExportTimeout < 0 || opts.MetricsInterval < 0 ||
+		opts.LogMaxQueueSize < 0 || opts.LogMaxQueueSize > maxQueueSizeLimit || opts.LogMaxExportBatch < 0 || opts.LogBatchTimeout < 0 {
 		return nil, errors.New("telemetry: queue sizes and intervals must not be negative or too large")
+	}
+	if opts.LogFormat > LogFormatText {
+		return nil, errors.New("telemetry: unknown log format")
 	}
 	if opts.MaxQueueSize == 0 {
 		opts.MaxQueueSize = DefaultMaxQueueSize
@@ -142,6 +186,19 @@ func New(opts Options) (*Telemetry, error) {
 	opts.MaxExportBatch = min(opts.MaxExportBatch, opts.MaxQueueSize)
 	if opts.BatchTimeout == 0 {
 		opts.BatchTimeout = DefaultBatchTimeout
+	}
+	if opts.LogMaxQueueSize == 0 {
+		opts.LogMaxQueueSize = DefaultMaxQueueSize
+	}
+	if opts.LogMaxExportBatch == 0 {
+		opts.LogMaxExportBatch = DefaultMaxExportBatch
+	}
+	opts.LogMaxExportBatch = min(opts.LogMaxExportBatch, opts.LogMaxQueueSize)
+	if opts.LogBatchTimeout == 0 {
+		opts.LogBatchTimeout = DefaultLogBatchTimeout
+	}
+	if opts.LogLevel == nil {
+		opts.LogLevel = slog.LevelInfo
 	}
 	if opts.ExportTimeout == 0 {
 		opts.ExportTimeout = DefaultExportTimeout
@@ -176,20 +233,73 @@ func New(opts Options) (*Telemetry, error) {
 		metricExporter: opts.MetricExporter,
 		exportTimeout:  opts.ExportTimeout,
 		tracers:        make(map[string]*Tracer),
+		logLevel:       opts.LogLevel,
+		logFormat:      opts.LogFormat,
 	}
 	var err error
 	if t.droppedSpans, err = t.metrics.Counter("forge.telemetry.spans.dropped", "Spans dropped because the export queue was full or export failed.", "{span}"); err != nil {
 		return nil, err
 	}
+	if t.droppedLogs, err = t.metrics.Counter("forge.telemetry.logs.dropped", "Log records dropped because the export queue was full or export failed.", "{log_record}"); err != nil {
+		return nil, err
+	}
 	if t.exportErrors, err = t.metrics.Counter("forge.telemetry.export.errors", "Failed export calls.", "{error}", "signal"); err != nil {
 		return nil, err
+	}
+	if err := registerRuntimeMetrics(t.metrics); err != nil {
+		return nil, err
+	}
+	// Each exporter is shut down once, by the last signal using it to stop.
+	var shutdowns exporterShutdowns
+	var spanShutdown, logShutdown func(context.Context) error
+	if opts.SpanExporter != nil {
+		spanShutdown = shutdowns.add(opts.SpanExporter, opts.SpanExporter.Shutdown)
+	}
+	if opts.LogExporter != nil {
+		logShutdown = shutdowns.add(opts.LogExporter, opts.LogExporter.Shutdown)
+	}
+	if opts.MetricExporter != nil {
+		t.shutdownMetricExporter = shutdowns.add(opts.MetricExporter, opts.MetricExporter.Shutdown)
 	}
 	if opts.SpanExporter != nil {
 		onError := func(n int) {
 			t.exportErrors.Add(1, "traces")
 			t.droppedSpans.Add(int64(n))
 		}
-		t.spans = newBatcher(opts.SpanExporter, t.resource, opts.Logger, opts.MaxQueueSize, opts.MaxExportBatch, opts.BatchTimeout, opts.ExportTimeout, onError)
+		t.spans = newBatcher(batcherConfig[SpanData]{
+			signal:           "span",
+			failedMessage:    "telemetry: span export failed; spans dropped",
+			countKey:         "spans",
+			export:           opts.SpanExporter.ExportSpans,
+			shutdownExporter: spanShutdown,
+			resource:         t.resource,
+			logger:           opts.Logger,
+			maxQueue:         opts.MaxQueueSize,
+			maxBatch:         opts.MaxExportBatch,
+			interval:         opts.BatchTimeout,
+			timeout:          opts.ExportTimeout,
+			onError:          onError,
+		})
+	}
+	if opts.LogExporter != nil {
+		onError := func(n int) {
+			t.exportErrors.Add(1, "logs")
+			t.droppedLogs.Add(int64(n))
+		}
+		t.logs = newBatcher(batcherConfig[LogRecord]{
+			signal:           "log",
+			failedMessage:    "telemetry: log export failed; log records dropped",
+			countKey:         "log_records",
+			export:           opts.LogExporter.ExportLogs,
+			shutdownExporter: logShutdown,
+			resource:         t.resource,
+			logger:           opts.Logger,
+			maxQueue:         opts.LogMaxQueueSize,
+			maxBatch:         opts.LogMaxExportBatch,
+			interval:         opts.LogBatchTimeout,
+			timeout:          opts.ExportTimeout,
+			onError:          onError,
+		})
 	}
 	if opts.MetricExporter != nil {
 		t.metricsRun, t.metricsCancel = context.WithCancel(context.Background())
@@ -254,7 +364,7 @@ func (t *Telemetry) Stats() Stats {
 	return Stats{Dropped: t.spans.dropped.Load() + failed, Exported: t.spans.exported.Load(), Failed: failed}
 }
 
-// ForceFlush exports queued spans and a metric snapshot now, waiting at most
+// ForceFlush exports queued spans and log records and a metric snapshot now, waiting at most
 // until ctx ends.
 func (t *Telemetry) ForceFlush(ctx context.Context) error {
 	if t == nil {
@@ -264,6 +374,9 @@ func (t *Telemetry) ForceFlush(ctx context.Context) error {
 	if t.spans != nil {
 		errs = append(errs, t.spans.flush(ctx))
 	}
+	if t.logs != nil {
+		errs = append(errs, t.logs.flush(ctx))
+	}
 	if t.metricExporter != nil {
 		errs = append(errs, t.exportMetrics(ctx))
 	}
@@ -271,8 +384,12 @@ func (t *Telemetry) ForceFlush(ctx context.Context) error {
 }
 
 // Shutdown exports what is queued, stops the exporter goroutines and shuts
-// the exporters down, all within ctx. Spans still queued when ctx ends are
-// dropped. Spans ended after Shutdown are dropped. Only the first call has an
+// the exporters down, all within ctx. The signals shut down concurrently, so
+// a hung collector costs each at most the whole budget but not their sum; an
+// exporter shared by several signals is shut down once, after the last of
+// them stopped.
+// Spans and log records still queued when ctx ends are dropped, and so are
+// those produced after Shutdown. Only the first call has an
 // effect; later calls return its result. Its signature matches
 // forge.ShutdownHook.
 func (t *Telemetry) Shutdown(ctx context.Context) error {
@@ -280,13 +397,32 @@ func (t *Telemetry) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	t.shutdownOnce.Do(func() {
-		var errs []error
+		var (
+			wg   sync.WaitGroup
+			mu   sync.Mutex
+			errs []error
+		)
+		run := func(stop func(context.Context) error) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := stop(ctx); err != nil {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+				}
+			}()
+		}
 		if t.spans != nil {
-			errs = append(errs, t.spans.shutdown(ctx))
+			run(t.spans.shutdown)
+		}
+		if t.logs != nil {
+			run(t.logs.shutdown)
 		}
 		if t.metricExporter != nil {
-			errs = append(errs, t.stopMetrics(ctx))
+			run(t.stopMetrics)
 		}
+		wg.Wait()
 		if err := errors.Join(errs...); err != nil {
 			t.shutdownErr = fmt.Errorf("telemetry shutdown: %w", err)
 		}
@@ -303,7 +439,7 @@ func (t *Telemetry) stopMetrics(ctx context.Context) error {
 	select {
 	case <-t.metricsDone:
 		t.metricsCancel()
-		return t.metricExporter.Shutdown(ctx)
+		return t.metricsShutdownErr
 	case <-ctx.Done():
 		t.metricsCancel()
 		return fmt.Errorf("telemetry: metric export did not finish before the shutdown deadline: %w", ctx.Err())
@@ -325,6 +461,8 @@ func (t *Telemetry) exportMetricsLoop(interval time.Duration) {
 			if err := t.exportMetrics(t.metricsRun); err != nil {
 				t.logger.Warn("telemetry: final metric export failed", "error_type", ErrorType(err), "error", err)
 			}
+			// After the last export, like the batchers.
+			t.metricsShutdownErr = t.shutdownMetricExporter(t.metricsRun)
 			return
 		}
 	}
@@ -389,4 +527,51 @@ func (t *Telemetry) sampleRoot(id TraceID) bool {
 		return true
 	}
 	return binary.BigEndian.Uint64(id[8:])>>1 < t.threshold
+}
+
+// exporterShutdowns shuts each exporter down once, after every signal that
+// exports through it has stopped: FromConfig gives one OTLPExporter to
+// traces, metrics and logs, which stop concurrently, and Shutdown must not
+// run while another signal still exports.
+type exporterShutdowns struct {
+	shared []*sharedExporter
+}
+
+type sharedExporter struct {
+	exporter any
+	shutdown func(context.Context) error
+	// users is the number of signals that have not stopped yet.
+	users atomic.Int32
+}
+
+// add registers one signal exporting through exporter and returns the
+// function that signal calls once, after its last export; the last such call
+// shuts the exporter down. All adds happen before any signal can stop.
+func (s *exporterShutdowns) add(exporter any, shutdown func(context.Context) error) func(context.Context) error {
+	var shared *sharedExporter
+	for _, candidate := range s.shared {
+		if sameExporter(candidate.exporter, exporter) {
+			shared = candidate
+			break
+		}
+	}
+	if shared == nil {
+		shared = &sharedExporter{exporter: exporter, shutdown: shutdown}
+		s.shared = append(s.shared, shared)
+	}
+	shared.users.Add(1)
+	return func(ctx context.Context) error {
+		if shared.users.Add(-1) == 0 {
+			return shared.shutdown(ctx)
+		}
+		return nil
+	}
+}
+
+// sameExporter reports whether a and b are the same exporter. Values that
+// cannot be compared (a struct holding a slice, say) are never the same,
+// rather than panicking.
+func sameExporter(a, b any) bool {
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	return va.Type() == vb.Type() && va.Comparable() && vb.Comparable() && a == b
 }
