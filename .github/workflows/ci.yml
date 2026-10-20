@@ -92,6 +92,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: false
       - name: Fuzz every target for 10s
         run: scripts/fuzz.sh -t 10s
       - name: Collect failing inputs

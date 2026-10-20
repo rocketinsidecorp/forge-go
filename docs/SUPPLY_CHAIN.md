@@ -188,8 +188,11 @@ by hand, all copies at once (the test requires them to agree).
 - The generated application's Dockerfile and compose database images are
   referenced by tag, not digest; their provenance attestation records the
   digests that were used.
-- A maintainer who can push `v*` tags to a commit on the default branch can
-  publish a signed image; protect `v*` tags with a repository ruleset.
+- A maintainer who can push `v*` tags can publish a signed image from any
+  commit: the default-branch guard runs from the tagged commit's own
+  `release.yml`, so a tag on a commit that removed it skips it. Protect `v*`
+  tags with a repository ruleset, and when verifying an image also check that
+  the certificate's source commit is on `main`.
 - Signatures prove which workflow built an image from which commit, not that
   the commit is benign: review still guards `main`.
 - Binary SBOMs are workflow artifacts (90 days for releases); they are not
