@@ -306,3 +306,34 @@ func TestUnencodedPasswordsNeverReachDescribeOrErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestDescribeNamesTheServerTheCommandsTalkTo(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		privileged, want string
+	}{
+		"no privileged URL":    {"", `postgres database "shop" on db:5432`},
+		"same server":          {"postgres://root7:r00tpw@DB:5432/postgres?sslmode=disable", `postgres database "shop" on DB:5432`},
+		"another server":       {"postgres://root7:r00tpw@db-admin:5432/postgres?sslmode=disable", `postgres database "shop" on db-admin:5432 (application: db:5432)`},
+		"another port, no pwd": {"postgres://root7@db:6432/postgres?sslmode=disable", `postgres database "shop" on db:6432 (application: db:5432)`},
+	}
+	for name, test := range tests {
+		env := map[string]string{"FORGE_DATABASE_URL": "postgres://app:apppw@db:5432/shop?sslmode=disable"}
+		if test.privileged != "" {
+			env[EnvPrivilegedURL] = test.privileged
+		}
+		target, err := NewTarget(t.TempDir(), lookupOf(env))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		got := target.Describe()
+		if got != test.want {
+			t.Errorf("%s: Describe = %q, want %q", name, got, test.want)
+		}
+		for _, secret := range []string{"app:", "apppw", "root7", "r00tpw"} {
+			if strings.Contains(got, secret) {
+				t.Errorf("%s: Describe leaks %q: %q", name, secret, got)
+			}
+		}
+	}
+}

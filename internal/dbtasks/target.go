@@ -192,12 +192,18 @@ func (t *Target) ProtectionReason() string {
 func (t *Target) SetLookPath(lookPath func(string) (string, error)) { t.lookPath = lookPath }
 
 // Describe names the database for messages: adapter, name, and for servers
-// the host and port. It never includes a user or password.
+// the host and port the commands talk to, which are the privileged URL's
+// when it is set; the application's follow when they differ. It never
+// includes a user or password (url.URL.Host holds neither).
 func (t *Target) Describe() string {
 	if t.Adapter == config.AdapterSQLite {
 		return fmt.Sprintf("sqlite database %s", t.Name)
 	}
-	return fmt.Sprintf("%s database %q on %s", t.Adapter, t.Name, t.app.Host)
+	description := fmt.Sprintf("%s database %q on %s", t.Adapter, t.Name, t.priv.Host)
+	if !strings.EqualFold(t.priv.Host, t.app.Host) {
+		description += fmt.Sprintf(" (application: %s)", t.app.Host)
+	}
+	return description
 }
 
 func (t *Target) connectTimeout() time.Duration {
