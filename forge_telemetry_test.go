@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -466,5 +467,45 @@ func TestExecuteLogExportFailureStaysOutOfTheLogQueue(t *testing.T) {
 	// the failure warning must not be among them.
 	if records > 2 || logRequests == 0 {
 		t.Fatalf("log export requests %d, records %d", logRequests, records)
+	}
+}
+
+// The production logger writes JSON; the exported record must not carry what
+// that JSON leaves out, such as a URL's password.
+func TestExportedLogsNeverCarryMoreThanJSONStandardOutput(t *testing.T) {
+	const password = "zz-hunter2-qq"
+	collector := &otlpCollector{}
+	otlp := httptest.NewServer(collector)
+	defer otlp.Close()
+	cfg, err := config.LoadWithLookup(envLookup(map[string]string{
+		"FORGE_ENV":                     "test",
+		"FORGE_TELEMETRY_SERVICE_NAME":  "orders",
+		"FORGE_TELEMETRY_OTLP_ENDPOINT": otlp.URL,
+		"FORGE_TELEMETRY_LOGS_EXPORTER": "otlp",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	app, err := forge.New(forge.WithConfig(cfg), forge.WithLogger(slog.New(telemetry.NewLogHandler(slog.NewJSONHandler(&stdout, nil)))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := url.Parse("postgres://u:" + password + "@db/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.Logger().Info("db", "url", dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := app.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	exported := collector.get("/v1/logs")
+	if !strings.Contains(exported, `"key":"url"`) || !strings.Contains(stdout.String(), `"User":{}`) {
+		t.Fatalf("exported %s\nstdout %s", exported, stdout.String())
+	}
+	if strings.Contains(exported, password) || strings.Contains(stdout.String(), password) {
+		t.Fatalf("password exported: %s", exported)
 	}
 }

@@ -1,12 +1,16 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
+	"encoding"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +37,25 @@ const (
 	severityWarn  = 13
 	severityError = 17
 	severityFatal = 21
+)
+
+// LogFormat is how the log exporter encodes attribute values that are not
+// strings, numbers, booleans, durations or times (slog's KindAny: structs,
+// pointers, errors, maps...). It must match the handler that writes standard
+// output, so the exporter never carries more than standard output shows.
+type LogFormat uint8
+
+const (
+	// LogFormatJSON encodes like slog.JSONHandler, the production format:
+	// an error by its message unless it implements json.Marshaler, any
+	// other value with encoding/json, which honors MarshalJSON, MarshalText,
+	// json:"-" and leaves unexported fields out. A value encoded as a JSON
+	// string exports its text without the quotes.
+	LogFormatJSON LogFormat = iota
+	// LogFormatText encodes like slog.TextHandler, the development format:
+	// AppendText or MarshalText when the value has one, a byte slice as its
+	// text, anything else as fmt's %+v (which uses Error and String).
+	LogFormatText
 )
 
 // LogRecord is one log entry queued for export: the data model of
@@ -80,11 +103,14 @@ func (t *Telemetry) LogStats() Stats {
 // NewTeeHandler; forge.New does this when the log exporter comes from the
 // FORGE_TELEMETRY_* configuration.
 //
-// The record carries exactly what the logger would write: message and
-// attributes, flattened with dotted group names, with values resolved
-// through slog.LogValuer (config.Secret therefore exports its redaction, not
-// its value). The trace context comes from the ctx given to InfoContext and
-// friends, or from trace_id and span_id attributes (the request logger's).
+// The record carries what the standard-output handler writes and nothing
+// more: message and attributes, flattened with dotted group names, with
+// values resolved through slog.LogValuer (config.Secret therefore exports its
+// redaction, not its value) and other values encoded as Options.LogFormat
+// says, the way slog.JSONHandler (the default) or slog.TextHandler encodes
+// them; a value that fails to encode exports a placeholder naming its type.
+// The trace context comes from the ctx given to InfoContext and friends, or
+// from trace_id and span_id attributes (the request logger's).
 func (t *Telemetry) LogHandler() slog.Handler {
 	if t == nil || t.logs == nil {
 		return nil
@@ -181,7 +207,7 @@ func (h *otlpLogHandler) Handle(ctx context.Context, record slog.Record) error {
 	attrs := make([]Attribute, 0, len(h.attrs)+record.NumAttrs())
 	attrs = append(attrs, h.attrs...)
 	record.Attrs(func(attr slog.Attr) bool {
-		attrs = appendLogAttr(attrs, h.prefix, attr)
+		attrs = appendLogAttr(attrs, h.telemetry.logFormat, h.prefix, attr)
 		return true
 	})
 
@@ -215,7 +241,7 @@ func (h *otlpLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	next := *h
 	next.attrs = append(make([]Attribute, 0, len(h.attrs)+len(attrs)), h.attrs...)
 	for _, attr := range attrs {
-		next.attrs = appendLogAttr(next.attrs, h.prefix, attr)
+		next.attrs = appendLogAttr(next.attrs, h.telemetry.logFormat, h.prefix, attr)
 	}
 	return &next
 }
@@ -272,7 +298,7 @@ func decodeHexID(dst []byte, s string) bool {
 // appendLogAttr flattens attr, resolved through slog.LogValuer, into dst.
 // Groups become dotted prefixes ("http.status"), as OpenTelemetry has no
 // nested attribute maps in Forge's encoding.
-func appendLogAttr(dst []Attribute, prefix string, attr slog.Attr) []Attribute {
+func appendLogAttr(dst []Attribute, format LogFormat, prefix string, attr slog.Attr) []Attribute {
 	value := attr.Value.Resolve()
 	if attr.Key == "" && value.Kind() == slog.KindAny && value.Any() == nil {
 		return dst // slog ignores empty attributes
@@ -286,7 +312,7 @@ func appendLogAttr(dst []Attribute, prefix string, attr slog.Attr) []Attribute {
 			prefix += attr.Key + "."
 		}
 		for _, member := range group {
-			dst = appendLogAttr(dst, prefix, member)
+			dst = appendLogAttr(dst, format, prefix, member)
 		}
 		return dst
 	}
@@ -310,12 +336,77 @@ func appendLogAttr(dst []Attribute, prefix string, attr slog.Attr) []Attribute {
 	case slog.KindTime:
 		return append(dst, String(key, value.Time().Format(time.RFC3339Nano)))
 	}
-	// KindAny: what the text handler would print. Errors print their
-	// message, like on standard output.
-	if err, ok := value.Any().(error); ok {
-		return append(dst, String(key, err.Error()))
+	return append(dst, String(key, encodeLogValue(format, value.Any())))
+}
+
+// encodeLogValue encodes a KindAny value as the standard-output handler of
+// format does. Like slog's handlers, it survives a panicking method: a nil
+// pointer reads "<nil>", any other panic a placeholder without the panic's
+// message, which could quote the value.
+func encodeLogValue(format LogFormat, v any) (encoded string) {
+	defer func() {
+		if recover() != nil {
+			if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer && rv.IsNil() {
+				encoded = "<nil>"
+				return
+			}
+			encoded = "!PANIC: encoding " + fmt.Sprintf("%T", v)
+		}
+	}()
+	if format == LogFormatText {
+		return encodeTextLogValue(v)
 	}
-	return append(dst, String(key, fmt.Sprintf("%+v", value.Any())))
+	return encodeJSONLogValue(v)
+}
+
+// encodeJSONLogValue mirrors slog.JSONHandler.
+func encodeJSONLogValue(v any) string {
+	if err, ok := v.(error); ok {
+		if _, marshaler := v.(json.Marshaler); !marshaler {
+			return err.Error()
+		}
+	}
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(v); err != nil {
+		// The error can quote what a MarshalJSON method returned.
+		return unencodableLogValue(v)
+	}
+	data := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+	var text string
+	if len(data) > 0 && data[0] == '"' && json.Unmarshal(data, &text) == nil {
+		return text
+	}
+	return string(data)
+}
+
+// encodeTextLogValue mirrors slog.TextHandler.
+func encodeTextLogValue(v any) string {
+	switch value := v.(type) {
+	case encoding.TextAppender:
+		data, err := value.AppendText(nil)
+		if err != nil {
+			return unencodableLogValue(v)
+		}
+		return string(data)
+	case encoding.TextMarshaler:
+		data, err := value.MarshalText()
+		if err != nil {
+			return unencodableLogValue(v)
+		}
+		return string(data)
+	}
+	if t := reflect.TypeOf(v); t != nil && t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+		return string(reflect.ValueOf(v).Bytes())
+	}
+	return fmt.Sprintf("%+v", v)
+}
+
+// unencodableLogValue is the placeholder for a value whose encoding failed.
+// It names the type only.
+func unencodableLogValue(v any) string {
+	return fmt.Sprintf("!ERROR: cannot encode %T", v)
 }
 
 // severityOf maps a slog level to an OpenTelemetry severity number and

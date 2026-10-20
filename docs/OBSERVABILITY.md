@@ -181,10 +181,16 @@ headers, timeout, gzip and the production https rule are the
 | time, observed time | the record's time; when Forge queued it |
 
 Values are resolved through `slog.LogValuer` before export, so a
-`config.Secret` is exported as `[REDACTED]`, exactly as on standard output. The
-exporter sends what the logger writes, no more and no less: keep personal data
-and secrets out of log calls as you would for standard output (error values are
-exported as their message, like on standard output).
+`config.Secret` is exported as `[REDACTED]`, exactly as on standard output.
+Other values (structs, pointers, maps, errors) are encoded the way the
+standard-output handler encodes them: like `slog.JSONHandler` in production
+(an error as its message, anything else through `encoding/json`, so
+`json:"-"` and unexported fields stay out and `MarshalJSON`/`MarshalText`
+redactions apply; a `*url.URL` exports without its password), like
+`slog.TextHandler` in `development` and `test`. A value that fails to encode
+exports a placeholder naming its type. The exporter therefore never sends more
+than standard output shows: keep personal data and secrets out of log calls as
+you would for standard output.
 
 Backpressure and lifecycle: records wait in a bounded queue (2048 records);
 one goroutine owned by the `Telemetry` exports batches of up to 512 at least

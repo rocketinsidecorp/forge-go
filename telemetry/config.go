@@ -37,6 +37,7 @@ func FromConfig(cfg config.Config, logger *slog.Logger) (*Telemetry, error) {
 		MetricsInterval: settings.MetricsInterval,
 		ExportTimeout:   settings.OTLPTimeout,
 		Logger:          logger,
+		LogFormat:       logFormatOf(logger),
 	}
 	var otlp *OTLPExporter
 	if settings.Exporter == config.TelemetryExporterOTLP || settings.LogsExporter == config.TelemetryLogsExporterOTLP {
@@ -65,4 +66,22 @@ func FromConfig(cfg config.Config, logger *slog.Logger) (*Telemetry, error) {
 		opts.LogLevel, _ = settings.LogLevel()
 	}
 	return New(opts)
+}
+
+// logFormatOf returns the format of the handler logger writes standard
+// output with: text for slog.TextHandler, directly or wrapped by
+// NewLogHandler (what forge's development and test environments use), JSON
+// otherwise, the production format.
+func logFormatOf(logger *slog.Logger) LogFormat {
+	if logger == nil {
+		return LogFormatJSON
+	}
+	handler := logger.Handler()
+	if wrapped, ok := handler.(*logHandler); ok {
+		handler = wrapped.next
+	}
+	if _, ok := handler.(*slog.TextHandler); ok {
+		return LogFormatText
+	}
+	return LogFormatJSON
 }

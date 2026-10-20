@@ -42,8 +42,11 @@ and the same retrying, no-redirect exporter as spans and metrics.
   logger and become the record's own fields, not attributes; the resource is the
   one of traces and metrics, so `service.name` joins the three signals. Values are
   resolved through `slog.LogValuer` first, so `config.Secret` exports its
-  redaction. Body (4096 bytes), string values (1024) and attribute count (64) are
-  bounded.
+  redaction; other values are encoded as the standard-output handler encodes
+  them (`slog.JSONHandler` semantics in production, `slog.TextHandler` in
+  `development`/`test`, chosen by `FromConfig` from the logger it is given), so
+  the exporter never carries a field standard output hides. Body (4096 bytes),
+  string values (1024) and attribute count (64) are bounded.
 - **Backpressure.** The span batcher became generic and serves log records
   too: a bounded queue (2048), one goroutine owned by `Telemetry`, batches of up
   to 512 every second, a full queue drops and counts

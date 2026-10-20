@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -399,5 +402,186 @@ func TestFromConfigLogExporterIsOptIn(t *testing.T) {
 	}
 	if tel.Stats() != (Stats{}) || tel.spans != nil {
 		t.Fatal("logs-only configuration must not start a span exporter")
+	}
+}
+
+// Values that standard output's slog.JSONHandler hides or redacts. Each
+// carries logValueSecret somewhere the JSON encoding leaves out.
+const logValueSecret = "zz-hunter2-qq"
+
+type hiddenFields struct {
+	Name     string
+	Password string `json:"-"`
+	token    string
+}
+
+type redactingJSON struct{ Token string }
+
+func (redactingJSON) MarshalJSON() ([]byte, error) { return []byte(`"[hidden]"`), nil }
+
+type redactingText struct{ Token string }
+
+func (redactingText) MarshalText() ([]byte, error) { return []byte("[hidden]"), nil }
+
+// redactingString hides itself from fmt but not from encoding/json.
+type redactingString string
+
+func (redactingString) String() string { return "[hidden]" }
+
+type failingJSON struct{}
+
+func (failingJSON) MarshalJSON() ([]byte, error) { return nil, errors.New(logValueSecret) }
+
+type panickingJSON struct{}
+
+func (panickingJSON) MarshalJSON() ([]byte, error) { panic(logValueSecret) }
+
+func hiddenLogValues(t *testing.T) []slog.Attr {
+	t.Helper()
+	dsn, err := url.Parse("postgres://app:" + logValueSecret + "@db/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []slog.Attr{
+		slog.Any("fields", hiddenFields{Name: "n", Password: logValueSecret, token: logValueSecret}),
+		slog.Any("fields_ptr", &hiddenFields{Name: "n", Password: logValueSecret, token: logValueSecret}),
+		slog.Any("url", dsn),
+		slog.Any("marshal_json", redactingJSON{Token: logValueSecret}),
+		slog.Any("marshal_text", redactingText{Token: logValueSecret}),
+		slog.Any("error", errors.New("card declined")),
+		slog.Any("map", map[string]any{"ok": true, "n": 2}),
+		slog.Any("failing", failingJSON{}),
+		slog.Any("panicking", panickingJSON{}),
+		slog.Any("nil", nil),
+	}
+}
+
+// exportedLogValues logs attrs through LogHandler with format and returns
+// the exported attribute values by key.
+func exportedLogValues(t *testing.T, format LogFormat, attrs []slog.Attr) map[string]string {
+	t.Helper()
+	exporter := &recordingLogExporter{}
+	tel := newTestTelemetry(t, Options{LogExporter: exporter, LogFormat: format})
+	logsLogger(tel).LogAttrs(context.Background(), slog.LevelInfo, "values", attrs...)
+	shutdown(t, tel)
+	records := exporter.exported()
+	if len(records) != 1 {
+		t.Fatalf("records: %+v", records)
+	}
+	return attrMap(records[0])
+}
+
+func TestLogExportEncodesValuesLikeTheJSONHandler(t *testing.T) {
+	attrs := hiddenLogValues(t)
+	exported := exportedLogValues(t, LogFormatJSON, attrs)
+
+	var stdout bytes.Buffer
+	slog.New(slog.NewJSONHandler(&stdout, nil)).LogAttrs(context.Background(), slog.LevelInfo, "values", attrs...)
+	var line map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &line); err != nil {
+		t.Fatalf("standard output %q: %v", stdout.String(), err)
+	}
+	for _, attr := range attrs {
+		got, ok := exported[attr.Key]
+		if !ok {
+			t.Fatalf("%s not exported: %v", attr.Key, exported)
+		}
+		if strings.Contains(got, logValueSecret) {
+			t.Fatalf("%s exported the secret: %q", attr.Key, got)
+		}
+		raw := line[attr.Key]
+		if strings.Contains(string(raw), logValueSecret) {
+			continue // slog's error text; checked below to stay out of the export
+		}
+		want := string(raw)
+		var text string
+		if len(raw) > 0 && raw[0] == '"' && json.Unmarshal(raw, &text) == nil {
+			want = text
+		}
+		if attr.Key == "failing" || attr.Key == "panicking" {
+			if !strings.HasPrefix(got, "!") || !strings.HasPrefix(want, "!") {
+				t.Fatalf("%s: exported %q, standard output %q", attr.Key, got, want)
+			}
+			continue
+		}
+		if got != want {
+			t.Fatalf("%s: exported %q, standard output %q", attr.Key, got, want)
+		}
+	}
+	for key, want := range map[string]string{
+		"fields":       `{"Name":"n"}`,
+		"url":          "",
+		"marshal_json": "[hidden]",
+		"marshal_text": "[hidden]",
+		"error":        "card declined",
+		"failing":      "!ERROR: cannot encode telemetry.failingJSON",
+		"panicking":    "!PANIC: encoding telemetry.panickingJSON",
+		"nil":          "null",
+	} {
+		if want != "" && exported[key] != want {
+			t.Fatalf("%s = %q, want %q", key, exported[key], want)
+		}
+	}
+	if !strings.Contains(exported["url"], `"Host":"db"`) || !strings.Contains(exported["url"], `"User":{}`) {
+		t.Fatalf("url = %q", exported["url"])
+	}
+}
+
+func TestLogExportEncodesValuesLikeTheTextHandler(t *testing.T) {
+	attrs := append(hiddenLogValues(t), slog.Any("stringer", redactingString(logValueSecret)), slog.Any("bytes", []byte("raw")))
+	exported := exportedLogValues(t, LogFormatText, attrs)
+	for _, attr := range attrs {
+		var stdout bytes.Buffer
+		drop := func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey || a.Key == slog.LevelKey || a.Key == slog.MessageKey {
+				return slog.Attr{}
+			}
+			return a
+		}
+		slog.New(slog.NewTextHandler(&stdout, &slog.HandlerOptions{ReplaceAttr: drop})).LogAttrs(context.Background(), slog.LevelInfo, "", attr)
+		want := strings.TrimSuffix(strings.TrimPrefix(stdout.String(), attr.Key+"="), "\n")
+		if unquoted, err := strconv.Unquote(want); err == nil {
+			want = unquoted
+		}
+		got := exported[attr.Key]
+		switch attr.Key {
+		case "url":
+			// The text handler prints a URL with its password; the
+			// exporter shows what standard output shows, no more.
+			if got != want {
+				t.Fatalf("url: exported %q, standard output %q", got, want)
+			}
+			continue
+		}
+		if strings.Contains(got, logValueSecret) && !strings.Contains(want, logValueSecret) {
+			t.Fatalf("%s exported %q, more than standard output %q", attr.Key, got, want)
+		}
+		if got != want {
+			t.Fatalf("%s: exported %q, standard output %q", attr.Key, got, want)
+		}
+	}
+	if exported["stringer"] != "[hidden]" || exported["marshal_text"] != "[hidden]" || exported["error"] != "card declined" || exported["bytes"] != "raw" {
+		t.Fatalf("exported %v", exported)
+	}
+}
+
+func TestFromConfigMatchesTheStandardOutputFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		logger *slog.Logger
+		want   LogFormat
+	}{
+		{"nil", nil, LogFormatJSON},
+		{"json", slog.New(NewLogHandler(slog.NewJSONHandler(io.Discard, nil))), LogFormatJSON},
+		{"text", slog.New(NewLogHandler(slog.NewTextHandler(io.Discard, nil))), LogFormatText},
+		{"bare text", slog.New(slog.NewTextHandler(io.Discard, nil)).With("a", 1), LogFormatText},
+		{"other", slog.New(slog.DiscardHandler), LogFormatJSON},
+	} {
+		if got := logFormatOf(tc.logger); got != tc.want {
+			t.Errorf("%s: format %d, want %d", tc.name, got, tc.want)
+		}
+	}
+	if _, err := New(Options{ServiceName: "x", LogFormat: LogFormatText + 1}); err == nil {
+		t.Fatal("an unknown log format must be rejected")
 	}
 }

@@ -95,6 +95,12 @@ type Options struct {
 	LogExporter LogRecordExporter
 	// LogLevel is the lowest level LogHandler queues. Default slog.LevelInfo.
 	LogLevel slog.Leveler
+	// LogFormat is how LogHandler encodes values that are not strings,
+	// numbers, booleans, durations or times. Set it to the format of the
+	// handler that writes standard output: LogFormatJSON (default) for
+	// slog.JSONHandler, LogFormatText for slog.TextHandler. FromConfig sets
+	// it from the logger it is given.
+	LogFormat LogFormat
 	// LogMaxQueueSize bounds the log records waiting for export; when the
 	// queue is full new records are dropped and counted. Default 2048.
 	LogMaxQueueSize int
@@ -122,6 +128,7 @@ type Telemetry struct {
 	spans         *batcher[SpanData]
 	logs          *batcher[LogRecord]
 	logLevel      slog.Leveler
+	logFormat     LogFormat
 	metrics       *Registry
 
 	metricExporter MetricExporter
@@ -154,6 +161,9 @@ func New(opts Options) (*Telemetry, error) {
 		opts.BatchTimeout < 0 || opts.ExportTimeout < 0 || opts.MetricsInterval < 0 ||
 		opts.LogMaxQueueSize < 0 || opts.LogMaxQueueSize > maxQueueSizeLimit || opts.LogMaxExportBatch < 0 || opts.LogBatchTimeout < 0 {
 		return nil, errors.New("telemetry: queue sizes and intervals must not be negative or too large")
+	}
+	if opts.LogFormat > LogFormatText {
+		return nil, errors.New("telemetry: unknown log format")
 	}
 	if opts.MaxQueueSize == 0 {
 		opts.MaxQueueSize = DefaultMaxQueueSize
@@ -212,6 +222,7 @@ func New(opts Options) (*Telemetry, error) {
 		exportTimeout:  opts.ExportTimeout,
 		tracers:        make(map[string]*Tracer),
 		logLevel:       opts.LogLevel,
+		logFormat:      opts.LogFormat,
 	}
 	var err error
 	if t.droppedSpans, err = t.metrics.Counter("forge.telemetry.spans.dropped", "Spans dropped because the export queue was full or export failed.", "{span}"); err != nil {
