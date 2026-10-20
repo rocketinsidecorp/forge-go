@@ -146,6 +146,7 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 // Defaults.
 const (
 	DefaultRetain        = 5
+	MinRetain            = 2
 	DefaultStopTimeout   = 35 * time.Second
 	DefaultBootTimeout   = 60 * time.Second
 	DefaultAppPort       = 8080
@@ -171,7 +172,8 @@ var (
 	volumePattern       = regexp.MustCompile(`^[A-Za-z0-9_./-]+:/[A-Za-z0-9_./-]*(:(ro|rw))?$`)
 	healthPathPattern   = regexp.MustCompile(`^/[A-Za-z0-9._~/-]*$`)
 	emailPattern        = regexp.MustCompile(`^[^@\s]+@[^@\s]+$`)
-	registryHostPattern = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`)
+	registryHostPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$`)
+	proxyJumpPattern    = regexp.MustCompile(`^([a-z_][a-z0-9_.-]*@)?[A-Za-z0-9_][A-Za-z0-9._-]*(:[0-9]{1,5})?$`)
 	platformPattern     = regexp.MustCompile(`^[a-z0-9]+/[a-z0-9]+(/[a-z0-9]+)?(,[a-z0-9]+/[a-z0-9]+(/[a-z0-9]+)?)*$`)
 	argPattern          = regexp.MustCompile(`^[^\x00-\x1f]*$`)
 )
@@ -340,8 +342,10 @@ func (c *Config) normalize() error {
 	if c.Retain == 0 {
 		c.Retain = DefaultRetain
 	}
-	if c.Retain < 1 || c.Retain > 100 {
-		add("retain must be between 1 and 100")
+	// Containers are counted newest first including the running one, so
+	// retain: 1 would prune the previous version and make rollback impossible.
+	if c.Retain < MinRetain || c.Retain > 100 {
+		add("retain must be between 2 and 100 (1 would remove the previous version, so rollback would be impossible)")
 	}
 	durationDefault(&c.StopTimeout, DefaultStopTimeout, time.Second, 10*time.Minute, "stop_timeout", add)
 	durationDefault(&c.BootTimeout, DefaultBootTimeout, time.Second, time.Hour, "boot_timeout", add)
@@ -354,7 +358,7 @@ func (c *Config) normalize() error {
 	if c.SSH.Port < 0 || c.SSH.Port > 65535 {
 		add("ssh.port must be between 1 and 65535")
 	}
-	if c.SSH.ProxyJump != "" && !regexp.MustCompile(`^([a-z_][a-z0-9_.-]*@)?[A-Za-z0-9._-]+(:[0-9]{1,5})?$`).MatchString(c.SSH.ProxyJump) {
+	if c.SSH.ProxyJump != "" && !proxyJumpPattern.MatchString(c.SSH.ProxyJump) {
 		add("ssh.proxy_jump must look like [user@]host[:port]")
 	}
 	if c.Parallelism == 0 {

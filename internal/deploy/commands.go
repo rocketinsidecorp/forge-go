@@ -19,6 +19,11 @@ const (
 	labelVersion       = "forge.version"
 	labelAccessory     = "forge.accessory"
 	lockHeldExitStatus = 75
+	// lockNotOursExitStatus: the lock is gone or its record is not ours.
+	lockNotOursExitStatus = 76
+	// staleLockNotice is printed by acquireLock on stderr after it removed
+	// a lock that never got its record.
+	staleLockNotice = "removed a stale lock without a record (an earlier acquire was interrupted)"
 )
 
 // commands builds the remote commands for one configuration. Keeping them
@@ -311,21 +316,46 @@ func (c commands) waitReady(name string) Command {
 		`[ "$(date +%s)" -ge "$end" ] && { echo "container ` + name + ` not ready after ` + fmt.Sprint(seconds) + `s" >&2; exit 1; }; sleep 1; done`}
 }
 
+// acquireLock takes the lock with an atomic mkdir and then writes the record.
+// A lock directory without a record means an acquire was killed between the
+// two steps; once it is older than a minute it is removed (rmdir, which
+// cannot delete a lock that has a record) and taken again, and the script
+// says so on stderr. A failed record write gives the directory back.
 func (c commands) acquireLock(record []byte) Command {
+	lock, info := Quote(c.lockDir()), Quote(c.lockDir()+"/info")
 	return Command{
-		Script: Join("mkdir", "-p", c.stateDir()) + " && if " + Join("mkdir", c.lockDir()) + " 2>/dev/null; then " +
-			Join("cat") + " > " + Quote(c.lockDir()+"/info") + "; else " +
+		Script: Join("mkdir", "-p", c.stateDir()) + " && if " + Join("mkdir", c.lockDir()) + " 2>/dev/null || { [ ! -s " + info + " ] && " +
+			"[ -n \"$(find " + lock + " -maxdepth 0 -mmin +1 2>/dev/null)\" ] && rmdir " + lock + " 2>/dev/null && " +
+			"echo " + Quote(staleLockNotice) + " >&2 && " + Join("mkdir", c.lockDir()) + " 2>/dev/null; }; then " +
+			Join("cat") + " > " + info + " || { rm -rf " + lock + "; exit 1; }; else " +
 			Join("cat", c.lockDir()+"/info") + " 2>/dev/null; exit " + fmt.Sprint(lockHeldExitStatus) + "; fi",
 		Stdin:     record,
 		StdinNote: "lock record (holder, time, message)",
 	}
 }
 
+// lockStatus prints the record, or {} for a lock without one.
 func (c commands) lockStatus() Command {
-	return Command{Script: "if [ -d " + Quote(c.lockDir()) + " ]; then " + Join("cat", c.lockDir()+"/info") + "; fi", ReadOnly: true}
+	info := Quote(c.lockDir() + "/info")
+	return Command{Script: "if [ -d " + Quote(c.lockDir()) + " ]; then if [ -s " + info + " ]; then " + Join("cat", c.lockDir()+"/info") + "; else echo '{}'; fi; fi", ReadOnly: true}
 }
 
-func (c commands) releaseLock() Command {
+// releaseLock removes the lock only while its record is the one on stdin, so
+// a lock somebody else took after a --force release is left alone (exit
+// lockNotOursExitStatus). The compare and the rm are not atomic; the window
+// needs a force release and a new acquire inside it.
+func (c commands) releaseLock(record []byte) Command {
+	lock, info := Quote(c.lockDir()), Quote(c.lockDir()+"/info")
+	return Command{
+		Script: "record=$(cat) && if [ -n \"$record\" ] && [ \"$(cat " + info + " 2>/dev/null)\" = \"$record\" ]; then rm -rf " + lock +
+			"; else echo 'lock is not held by this process; left in place' >&2; exit " + fmt.Sprint(lockNotOursExitStatus) + "; fi",
+		Stdin:     record,
+		StdinNote: "own lock record (release only if unchanged)",
+	}
+}
+
+// forceReleaseLock removes the lock whoever holds it.
+func (c commands) forceReleaseLock() Command {
 	return Command{Script: Join("rm", "-rf", c.lockDir())}
 }
 

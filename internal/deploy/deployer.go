@@ -265,6 +265,20 @@ type LockInfo struct {
 	AcquiredAt time.Time `json:"acquired_at"`
 }
 
+// parseLockInfo reads the stdout of the lock commands. An empty record or
+// {} is a lock whose acquire was interrupted before it wrote the record.
+func parseLockInfo(stdout string) LockInfo {
+	text := strings.TrimSpace(stdout)
+	if text == "" || text == "{}" {
+		return LockInfo{Holder: "unknown", Message: "lock without a record: an acquire was interrupted; deploys remove it once it is a minute old, or use forge deploy lock release --force"}
+	}
+	var info LockInfo
+	if json.Unmarshal([]byte(text), &info) != nil {
+		return LockInfo{Holder: "unknown", Message: "unreadable lock record"}
+	}
+	return info
+}
+
 func (d *Deployer) acquire(ctx context.Context, hosts []string, message string) (func(), error) {
 	record, err := json.Marshal(LockInfo{Holder: d.Performer, Message: message, AcquiredAt: d.Now().UTC()})
 	if err != nil {
@@ -282,12 +296,11 @@ func (d *Deployer) acquire(ctx context.Context, hosts []string, message string) 
 		switch {
 		case err == nil:
 			acquired = append(acquired, host)
-		case errors.As(err, &remote) && remote.ExitCode == lockHeldExitStatus:
-			var info LockInfo
-			if json.Unmarshal([]byte(result.Stdout), &info) != nil {
-				info = LockInfo{Holder: "unknown", Message: "unreadable lock record"}
+			if strings.Contains(result.Stderr, staleLockNotice) {
+				d.logf("warning", "%s: %s", host, staleLockNotice)
 			}
-			held[host] = info
+		case errors.As(err, &remote) && remote.ExitCode == lockHeldExitStatus:
+			held[host] = parseLockInfo(result.Stdout)
 			return nil
 		}
 		return err
@@ -296,7 +309,13 @@ func (d *Deployer) acquire(ctx context.Context, hosts []string, message string) 
 		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		if err := d.eachHost(releaseCtx, acquired, func(ctx context.Context, host string) error {
-			_, err := d.run(ctx, host, d.cmds.releaseLock())
+			_, err := d.run(ctx, host, d.cmds.releaseLock(record))
+			var remote *RemoteError
+			if errors.As(err, &remote) && remote.ExitCode == lockNotOursExitStatus {
+				// Somebody force-released and took the lock: not ours to remove.
+				d.logf("warning", "%s: the deploy lock is no longer ours and was left in place", host)
+				return nil
+			}
 			return err
 		}); err != nil {
 			d.logf("warning", "releasing the deploy lock failed: %v", err)
@@ -324,14 +343,11 @@ func (d *Deployer) LockAcquire(ctx context.Context, message string) error {
 	return err
 }
 
-// LockStatus returns the lock record per host; hosts without a lock are
-// absent.
-func (d *Deployer) LockStatus(ctx context.Context) (map[string]LockInfo, error) {
-	if err := d.prepare(); err != nil {
-		return nil, err
-	}
+// lockRecords returns the raw record per host; hosts without a lock are
+// absent, and a lock without a record is "{}".
+func (d *Deployer) lockRecords(ctx context.Context) (map[string]string, error) {
 	var mu sync.Mutex
-	locks := map[string]LockInfo{}
+	records := map[string]string{}
 	err := d.eachHost(ctx, d.Config.AllHosts(), func(ctx context.Context, host string) error {
 		result, err := d.run(ctx, host, d.cmds.lockStatus())
 		if err != nil {
@@ -340,37 +356,59 @@ func (d *Deployer) LockStatus(ctx context.Context) (map[string]LockInfo, error) 
 		if strings.TrimSpace(result.Stdout) == "" {
 			return nil
 		}
-		var info LockInfo
-		if json.Unmarshal([]byte(result.Stdout), &info) != nil {
-			info = LockInfo{Holder: "unknown", Message: "unreadable lock record"}
-		}
 		mu.Lock()
-		locks[host] = info
+		records[host] = strings.TrimSpace(result.Stdout)
 		mu.Unlock()
 		return nil
 	})
+	return records, err
+}
+
+// LockStatus returns the lock record per host; hosts without a lock are
+// absent. A lock left without a record reports holder "unknown".
+func (d *Deployer) LockStatus(ctx context.Context) (map[string]LockInfo, error) {
+	if err := d.prepare(); err != nil {
+		return nil, err
+	}
+	records, err := d.lockRecords(ctx)
+	locks := map[string]LockInfo{}
+	for host, record := range records {
+		locks[host] = parseLockInfo(record)
+	}
 	return locks, err
 }
 
-// LockRelease removes the deploy lock. Without force it refuses to release
-// a lock held by someone else.
+// LockRelease removes the deploy lock. Without force it removes only locks
+// held by this performer, and only while the record is unchanged; it
+// refuses one held by someone else (or without a record).
 func (d *Deployer) LockRelease(ctx context.Context, force bool) error {
 	if err := d.prepare(); err != nil {
 		return err
 	}
-	if !force {
-		locks, err := d.LockStatus(ctx)
-		if err != nil {
-			return err
-		}
-		for _, host := range sortedKeys(locks) {
-			if locks[host].Holder != d.Performer {
-				return withCode(ExitLockHeld, fmt.Errorf("%s: lock is held by %s (%s); pass --force to release it anyway", host, locks[host].Holder, locks[host].Message))
+	if force {
+		return d.eachHost(ctx, d.Config.AllHosts(), func(ctx context.Context, host string) error {
+			_, err := d.run(ctx, host, d.cmds.forceReleaseLock())
+			if err == nil {
+				d.logf(host, "lock released")
 			}
+			return err
+		})
+	}
+	records, err := d.lockRecords(ctx)
+	if err != nil {
+		return err
+	}
+	for _, host := range sortedKeys(records) {
+		if info := parseLockInfo(records[host]); records[host] == "{}" || info.Holder != d.Performer {
+			return withCode(ExitLockHeld, fmt.Errorf("%s: lock is held by %s (%s); pass --force to release it anyway", host, info.Holder, info.Message))
 		}
 	}
-	return d.eachHost(ctx, d.Config.AllHosts(), func(ctx context.Context, host string) error {
-		_, err := d.run(ctx, host, d.cmds.releaseLock())
+	return d.eachHost(ctx, sortedKeys(records), func(ctx context.Context, host string) error {
+		_, err := d.run(ctx, host, d.cmds.releaseLock([]byte(records[host]+"\n")))
+		var remote *RemoteError
+		if errors.As(err, &remote) && remote.ExitCode == lockNotOursExitStatus {
+			return withCode(ExitLockHeld, fmt.Errorf("%s: the lock changed while releasing it; left in place (pass --force to release it anyway)", host))
+		}
 		if err == nil {
 			d.logf(host, "lock released")
 		}

@@ -762,7 +762,7 @@ forge app exec migrate status          # one-off container of the deployed image
 forge app shell --image busybox:1.37   # debug sidecar (distroless has no shell)
 forge deploy rollback 3f2a9c1d07be     # back to a retained version
 forge deploy prune                     # drop stopped versions beyond retain
-forge deploy lock acquire --message 'db maintenance'   # hold the deploy lock (status | acquire | release)
+forge deploy lock acquire --message 'db maintenance'   # hold the deploy lock (status | acquire | release [--force])
 forge deploy maintenance on            # forge-proxy serves its 503 page; `off` restores the application
 forge deploy maintenance off
 ssh deploy@host docker exec forge-proxy /usr/local/bin/forge-proxy status   # forge-proxy: current targets per host

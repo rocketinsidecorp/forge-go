@@ -298,7 +298,7 @@ func TestRevertFailureIsInconsistent(t *testing.T) {
 func TestLockHeldIsReported(t *testing.T) {
 	d, runner, _, _ := planFixture(t, false)
 	runner.fail = func(host string, cmd Command) error {
-		if host == "192.0.2.11" && strings.Contains(cmd.Script, "mkdir .forge/shop/lock") {
+		if host == "192.0.2.11" && strings.Contains(cmd.Script, "if mkdir .forge/shop/lock") {
 			return &RemoteError{Host: host, ExitCode: lockHeldExitStatus}
 		}
 		return nil
@@ -308,7 +308,7 @@ func TestLockHeldIsReported(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 	calls := strings.Join(runner.calls, "\n")
-	if !strings.Contains(calls, "192.0.2.10: rm -rf .forge/shop/lock") || strings.Contains(calls, "192.0.2.11: rm -rf") {
+	if !strings.Contains(calls, "192.0.2.10: record=$(cat) && ") || !strings.Contains(calls, "rm -rf .forge/shop/lock; else") || strings.Contains(calls, "192.0.2.11: record=$(cat)") {
 		t.Fatalf("partial lock not released correctly:\n%s", calls)
 	}
 }

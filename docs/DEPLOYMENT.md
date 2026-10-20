@@ -554,7 +554,7 @@ accessories:
     volumes: ["shop-postgres:/var/lib/postgresql"]
     env: {secret: [POSTGRES_PASSWORD]}
 builder: {context: ., dockerfile: Dockerfile, platform: linux/amd64, args: {GO_VERSION: "1.27"}}
-retain: 5                                    # stopped versions kept for rollback
+retain: 5                                    # versions kept per role (2 to 100; the running one counts)
 stop_timeout: 35s                            # > FORGE_HTTP_SHUTDOWN_TIMEOUT
 boot_timeout: 60s                            # readiness wait for non-proxied roles
 hooks: .forge/hooks
@@ -564,11 +564,20 @@ ssh: {user: deploy, port: 22, proxy_jump: bastion.example.com}
 
 Decoding is strict: unknown or duplicate keys, a second YAML document,
 durations that are not strings (`30s`), a tag in `image`, a password in
-`registry.password`, host names starting with `-`, and more than one proxied
-role are errors. `servers.web` is proxied by default; set `proxy: true` or
+`registry.password`, host names starting with `-` (also `ssh.proxy_jump` and
+`registry.server`, which `ssh -J` and `docker login` would read as options),
+`retain` below 2, and more than one proxied role are errors. `retain` counts
+the running version, so `retain: 1` would prune the previous version after
+every deploy and leave nothing to roll back to; it is refused (the default
+is 5). `servers.web` is proxied by default; set `proxy: true` or
 `false` on a role to change that. An accessory `port` of `5432` or
 `6543:5432` binds `127.0.0.1`; write `IP:HOST_PORT:CONTAINER_PORT` to choose
 another address deliberately.
+
+YAML nesting is bounded by the decoder: Forge-Go relies on yaml.v3's own
+maximum depth (10,000 levels), while Forge-Rust refuses nesting deeper than
+100 levels (and files over 1 MiB) with a line-numbered error. No real
+`deploy.yml` comes near either limit.
 
 ### Secrets
 
@@ -606,7 +615,7 @@ exact containers that would be stopped or pruned.
 | `forge deploy rollback VERSION [--json]` | Restart the retained containers of VERSION on every host through the same health-gated switch. Migrations are not reverted. |
 | `forge deploy prune [--json]` | Remove stopped containers beyond `retain` per role, and images no remaining container uses. Never touches running containers. |
 | `forge deploy details [--json]` | Containers and versions per host and role, proxy routing and maintenance, lock holder, last deploys. |
-| `forge deploy lock status\|acquire\|release [--message M] [--force]` | Inspect or hold the lock (for maintenance windows). `release` refuses a lock held by someone else without `--force`. |
+| `forge deploy lock status\|acquire\|release [--message M] [--force]` | Inspect or hold the lock (for maintenance windows). `release` removes only a lock this performer holds, and only while its record is unchanged; it refuses one held by someone else (or without a record) unless `--force`. |
 | `forge deploy maintenance on\|off` | Serve forge-proxy's static 503 page (with `Retry-After`) instead of the application. |
 | `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream `docker logs` of the current role container from every matching host, each line prefixed `host\|`. `--grep` filters locally. Ctrl-C stops the remote `docker logs` processes too. |
 | `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...` | Run CMD on one host (the first of the role unless `--host`): by default in a one-off container of the image the role currently runs, with its env file, where CMD goes to the image entrypoint (`forge app exec migrate status`); `--reuse` runs inside the running container (`forge app exec --reuse /app/server healthcheck`). |
@@ -623,7 +632,15 @@ printed on stdout also on failure, with `ok`, `error` and `exit_code`.
 
 1. Take the lock on every host (`mkdir ~/.forge/SERVICE/lock`, atomic; the
    holder, time and message are recorded). It is released at the end, also
-   on failure.
+   on failure, but only if its record is still the deploy's own: a lock
+   somebody else took after a `--force` release is left in place with a
+   warning. A lock without a record (the process was killed between the
+   `mkdir` and writing it) older than a minute is removed by the next deploy
+   or `lock acquire` without `--force`, with a warning naming it; a younger
+   one reports holder `unknown` and `lock release --force` clears it at once.
+   The check and the removal are separate shell steps, so the release is
+   race-aware, not transactional: it needs a force release and a new acquire
+   inside the same few milliseconds to remove a foreign lock.
 2. Run `pre-build`, build and push the image (unless `--skip-build`), run
    `pre-deploy`.
 3. On all hosts in parallel (at most `parallelism`): registry login, `docker

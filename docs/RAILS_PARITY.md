@@ -55,9 +55,21 @@ the work is finished and waiting for its review; **Planned** means not started.
 
 - Benchmarks: [BENCHMARKS.md](BENCHMARKS.md) defines the scenario names, the
   variants and the output format of both suites; Forge-Rust adopts them in
-  its own benchmark pull request (planned, no date; tracked here until a
-  forge-rust issue exists). Its first results table must use the same
+  its own benchmark pull request (tracked in
+  [forge-rust#41](https://github.com/rocketinsidecorp/forge-rust/issues/41)). Its first results table must use the same
   scenarios and the same columns, so the two can be read side by side.
+
+- Deploy hardening (forge-go#36, from the review of forge-rust#39):
+  `ssh.proxy_jump` and `registry.server` refuse a leading `-` with the same
+  patterns in both frameworks, `retain` must be 2 or more (1 pruned the
+  previous version, so rollback was impossible), and the deploy lock is
+  released only while its record is the deploy's own, with a record-less lock
+  older than a minute recovered without `--force`. One difference is
+  deliberate: Forge-Rust refuses YAML nesting deeper than 100 levels (and a
+  `deploy.yml` over 1 MiB) with a line-numbered error, while Forge-Go relies
+  on yaml.v3's own maximum depth (10,000 levels) and reads the file without a
+  size cap. Forge-Rust mirrors the lock scripts and the four golden plan
+  files in `internal/deploy/testdata` and the `retain` minimum.
 
 ## Review gate
 

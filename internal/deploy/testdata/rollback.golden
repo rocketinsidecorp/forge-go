@@ -1,6 +1,6 @@
-192.0.2.10      $ mkdir -p .forge/shop && if mkdir .forge/shop/lock 2>/dev/null; then cat > .forge/shop/lock/info; else cat .forge/shop/lock/info 2>/dev/null; exit 75; fi
+192.0.2.10      $ mkdir -p .forge/shop && if mkdir .forge/shop/lock 2>/dev/null || { [ ! -s .forge/shop/lock/info ] && [ -n "$(find .forge/shop/lock -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir .forge/shop/lock 2>/dev/null && echo 'removed a stale lock without a record (an earlier acquire was interrupted)' >&2 && mkdir .forge/shop/lock 2>/dev/null; }; then cat > .forge/shop/lock/info || { rm -rf .forge/shop/lock; exit 1; }; else cat .forge/shop/lock/info 2>/dev/null; exit 75; fi
 192.0.2.10      < stdin: lock record (holder, time, message)
-192.0.2.11      $ mkdir -p .forge/shop && if mkdir .forge/shop/lock 2>/dev/null; then cat > .forge/shop/lock/info; else cat .forge/shop/lock/info 2>/dev/null; exit 75; fi
+192.0.2.11      $ mkdir -p .forge/shop && if mkdir .forge/shop/lock 2>/dev/null || { [ ! -s .forge/shop/lock/info ] && [ -n "$(find .forge/shop/lock -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir .forge/shop/lock 2>/dev/null && echo 'removed a stale lock without a record (an earlier acquire was interrupted)' >&2 && mkdir .forge/shop/lock 2>/dev/null; }; then cat > .forge/shop/lock/info || { rm -rf .forge/shop/lock; exit 1; }; else cat .forge/shop/lock/info 2>/dev/null; exit 75; fi
 192.0.2.11      < stdin: lock record (holder, time, message)
 192.0.2.10      # lock acquired (rollback to v1)
 192.0.2.11      # lock acquired (rollback to v1)
@@ -37,5 +37,7 @@
 192.0.2.11      $ docker image rm registry.example.com/acme/shop:v0
 192.0.2.11      $ umask 077 && mkdir -p .forge/shop && cat >> .forge/shop/deploys.log
 192.0.2.11      < stdin: deploy log entry
-192.0.2.10      $ rm -rf .forge/shop/lock
-192.0.2.11      $ rm -rf .forge/shop/lock
+192.0.2.10      $ record=$(cat) && if [ -n "$record" ] && [ "$(cat .forge/shop/lock/info 2>/dev/null)" = "$record" ]; then rm -rf .forge/shop/lock; else echo 'lock is not held by this process; left in place' >&2; exit 76; fi
+192.0.2.10      < stdin: own lock record (release only if unchanged)
+192.0.2.11      $ record=$(cat) && if [ -n "$record" ] && [ "$(cat .forge/shop/lock/info 2>/dev/null)" = "$record" ]; then rm -rf .forge/shop/lock; else echo 'lock is not held by this process; left in place' >&2; exit 76; fi
+192.0.2.11      < stdin: own lock record (release only if unchanged)
