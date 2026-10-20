@@ -654,6 +654,7 @@ CI (`.github/workflows/ci.yml`):
 - [Deployment](docs/DEPLOYMENT.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Rails parity (Forge-Go and Forge-Rust)](docs/RAILS_PARITY.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Multi-tenancy](docs/MULTI_TENANCY.md)
 - [Security policy](SECURITY.md)
