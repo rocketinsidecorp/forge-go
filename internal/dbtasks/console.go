@@ -99,9 +99,15 @@ func mysqlDefaults(optionFile string) string { return "--defaults-file=" + optio
 // mysqlDefaults(optionFile). MySQL's clients read the login-path file
 // (~/.mylogin.cnf) even with --defaults-file, after it; pointing
 // MYSQL_TEST_LOGIN_FILE at a name in the option file's private directory,
-// which never exists, keeps it out. MariaDB's clients ignore both.
+// which never exists, keeps it out. MariaDB's clients ignore both. An
+// inherited MYSQL_PWD (used when the URL has no password) and
+// LIBMYSQL_ENABLE_CLEARTEXT_PLUGIN (which lets the client send the password
+// unencrypted) are dropped.
 func mysqlEnvironment(base []string, optionFile string) []string {
-	env := withoutPrefix(base, "MYSQL_TEST_LOGIN_FILE=")
+	env := base
+	for _, variable := range []string{"MYSQL_TEST_LOGIN_FILE=", "MYSQL_PWD=", "LIBMYSQL_ENABLE_CLEARTEXT_PLUGIN="} {
+		env = withoutPrefix(env, variable)
+	}
 	return append(env, "MYSQL_TEST_LOGIN_FILE="+filepath.Join(filepath.Dir(optionFile), "no-login-path.cnf"))
 }
 

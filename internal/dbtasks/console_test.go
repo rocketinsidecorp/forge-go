@@ -67,6 +67,8 @@ func TestPostgresConsoleKeepsThePasswordOutOfArguments(t *testing.T) {
 
 func TestMySQLConsoleUsesAPrivateOptionFile(t *testing.T) {
 	t.Setenv("MYSQL_TEST_LOGIN_FILE", "/home/someone/.mylogin.cnf")
+	t.Setenv("MYSQL_PWD", "from-the-shell")
+	t.Setenv("LIBMYSQL_ENABLE_CLEARTEXT_PLUGIN", "1")
 	target := consoleTarget(t, "mysql://alice:p%40ss%22w%27rd%5C@db.internal:3307/shop?tls=true", nil)
 	console, err := target.PrepareConsole([]string{"-e", "select 1"})
 	if err != nil {
@@ -78,6 +80,11 @@ func TestMySQLConsoleUsesAPrivateOptionFile(t *testing.T) {
 		t.Fatalf("the option file must be the first argument: %v", console.Args)
 	}
 	assertNoLoginPathFile(t, console.Env, strings.TrimPrefix(console.Args[0], "--defaults-file="))
+	for _, entry := range console.Env {
+		if strings.HasPrefix(entry, "MYSQL_PWD=") || strings.HasPrefix(entry, "LIBMYSQL_ENABLE_CLEARTEXT_PLUGIN=") {
+			t.Errorf("an inherited variable reaches the client: %q", entry)
+		}
+	}
 	for _, arg := range console.Args {
 		if strings.Contains(arg, "p@ss") || strings.Contains(arg, "alice") {
 			t.Errorf("an argument carries credentials: %q", arg)
