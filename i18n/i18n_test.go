@@ -3,6 +3,7 @@ package i18n_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -214,13 +215,34 @@ func TestMissingTranslationsInProductionFallBackAndLogOnce(t *testing.T) {
 	if !strings.Contains(logs.String(), "translation missing") || !strings.Contains(logs.String(), "locale=pt-BR") {
 		t.Fatalf("log = %s", logs.String())
 	}
-	// Distinct missing keys from request input cannot grow the log forever.
-	logs.Reset()
-	for i := range 2000 {
-		translator.Translate("en", "flood.k"+strings.Repeat("x", i%50)+string(rune('a'+i%26))+string(rune('a'+i/26%26)))
+}
+
+// Distinct missing keys from request input cannot grow the log or the memory
+// forever; the first one past the bound says so once, and the rest are
+// counted.
+func TestMissingTranslationWarningsAreBoundedAndTheCapIsAnnounced(t *testing.T) {
+	t.Parallel()
+	var logs bytes.Buffer
+	translator := load(t, i18n.Options{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	for i := range 1024 {
+		translator.Translate("en", fmt.Sprintf("flood.k%d", i))
 	}
-	if lines := strings.Count(logs.String(), "\n"); lines > 1024 {
-		t.Fatalf("logged %d warnings", lines)
+	if got := strings.Count(logs.String(), "\n"); got != 1024 || translator.SuppressedWarnings() != 0 {
+		t.Fatalf("below the cap: %d lines, %d suppressed", got, translator.SuppressedWarnings())
+	}
+	for i := 1024; i < 3000; i++ {
+		translator.Translate("en", fmt.Sprintf("flood.k%d", i))
+	}
+	// A key that was logged stays quiet and is not counted again.
+	translator.Translate("en", "flood.k0")
+	if lines := strings.Count(logs.String(), "\n"); lines != 1025 {
+		t.Fatalf("logged %d lines, want 1024 warnings and one suppression notice", lines)
+	}
+	if got := strings.Count(logs.String(), "missing-translation warnings suppressed"); got != 1 {
+		t.Fatalf("suppression notice logged %d times", got)
+	}
+	if got := translator.SuppressedWarnings(); got != 3000-1024 {
+		t.Fatalf("SuppressedWarnings = %d, want %d", got, 3000-1024)
 	}
 }
 
