@@ -298,7 +298,7 @@ func TestLogShutdownFlushesAndIsBoundedByItsDeadline(t *testing.T) {
 func TestLogExportFailureCountsAndDoesNotRecurse(t *testing.T) {
 	exporter := &recordingLogExporter{err: errors.New("collector down")}
 	var diagnostics bytes.Buffer
-	tel := newTestTelemetry(t, Options{LogExporter: exporter, Logger: slog.New(slog.NewTextHandler(&diagnostics, nil))})
+	tel := newTestTelemetry(t, Options{LogExporter: exporter, Logger: slog.New(slog.NewJSONHandler(&diagnostics, nil))})
 	logsLogger(tel).Info("one")
 	if err := tel.ForceFlush(context.Background()); err != nil {
 		t.Fatal(err)
@@ -306,7 +306,7 @@ func TestLogExportFailureCountsAndDoesNotRecurse(t *testing.T) {
 	if stats := tel.LogStats(); stats.Failed != 1 || stats.Exported != 0 {
 		t.Fatalf("stats %+v", stats)
 	}
-	if !strings.Contains(diagnostics.String(), "log export failed") {
+	if !strings.Contains(diagnostics.String(), `"msg":"telemetry: log export failed; log records dropped","log_records":1,`) {
 		t.Fatalf("diagnostics: %q", diagnostics.String())
 	}
 	// The failure went to the diagnostics logger, not into the queue.

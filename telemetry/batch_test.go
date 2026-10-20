@@ -1,9 +1,12 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -203,13 +206,18 @@ func TestForceFlushExportsQueuedSpans(t *testing.T) {
 
 func TestExportFailuresAreCountedAndLogged(t *testing.T) {
 	exporter := &recordingExporter{err: errors.New("collector down")}
-	tel := newTestTelemetry(t, Options{SampleRatio: 1, SpanExporter: exporter, BatchTimeout: time.Hour})
+	var diagnostics bytes.Buffer
+	tel := newTestTelemetry(t, Options{SampleRatio: 1, SpanExporter: exporter, BatchTimeout: time.Hour, Logger: slog.New(slog.NewJSONHandler(&diagnostics, nil))})
 	endSpans(tel, 2)
 	if err := tel.ForceFlush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if stats := tel.Stats(); stats.Failed != 2 || stats.Dropped != 2 {
 		t.Fatalf("stats %+v", stats)
+	}
+	// Existing alerts match this message and key.
+	if !strings.Contains(diagnostics.String(), `"msg":"telemetry: span export failed; spans dropped","spans":2,`) {
+		t.Fatalf("diagnostics: %s", diagnostics.String())
 	}
 }
 

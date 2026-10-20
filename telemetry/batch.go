@@ -25,8 +25,12 @@ type SpanExporter interface {
 // Every export runs under runCtx, which shutdown cancels when its own context
 // ends, so a hung collector cannot hold the process past its shutdown budget.
 type batcher[T any] struct {
-	// signal names the kind of item in messages: "span" or "log record".
+	// signal names the kind of item in messages: "span" or "log".
 	signal string
+	// failedMessage and countKey make the warning logged when an export
+	// fails; the span ones are kept verbatim for existing log alerts.
+	failedMessage string
+	countKey      string
 	// export sends one batch; shutdownExporter is called once, after the
 	// last export and never concurrently with one.
 	export           func(ctx context.Context, resource Resource, batch []T) error
@@ -67,6 +71,8 @@ func newRunContext() (context.Context, context.CancelFunc) {
 // batcherConfig configures newBatcher.
 type batcherConfig[T any] struct {
 	signal           string
+	failedMessage    string
+	countKey         string
 	export           func(ctx context.Context, resource Resource, batch []T) error
 	shutdownExporter func(ctx context.Context) error
 	resource         Resource
@@ -81,6 +87,8 @@ type batcherConfig[T any] struct {
 func newBatcher[T any](c batcherConfig[T]) *batcher[T] {
 	b := &batcher[T]{
 		signal:           c.signal,
+		failedMessage:    c.failedMessage,
+		countKey:         c.countKey,
 		export:           c.export,
 		shutdownExporter: c.shutdownExporter,
 		resource:         c.resource,
@@ -175,7 +183,7 @@ func (b *batcher[T]) drain(fullOnly bool) {
 			if b.onError != nil {
 				b.onError(n)
 			}
-			b.logger.Warn("telemetry: "+b.signal+" export failed; items dropped", "items", n, "signal", b.signal, "error_type", ErrorType(err), "error", err)
+			b.logger.Warn(b.failedMessage, b.countKey, n, "error_type", ErrorType(err), "error", err)
 		} else {
 			b.exported.Add(uint64(n)) // #nosec G115 -- n is a slice length
 		}

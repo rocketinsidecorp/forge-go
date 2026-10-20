@@ -248,6 +248,8 @@ func New(opts Options) (*Telemetry, error) {
 		}
 		t.spans = newBatcher(batcherConfig[SpanData]{
 			signal:           "span",
+			failedMessage:    "telemetry: span export failed; spans dropped",
+			countKey:         "spans",
 			export:           opts.SpanExporter.ExportSpans,
 			shutdownExporter: opts.SpanExporter.Shutdown,
 			resource:         t.resource,
@@ -266,6 +268,8 @@ func New(opts Options) (*Telemetry, error) {
 		}
 		t.logs = newBatcher(batcherConfig[LogRecord]{
 			signal:           "log",
+			failedMessage:    "telemetry: log export failed; log records dropped",
+			countKey:         "log_records",
 			export:           opts.LogExporter.ExportLogs,
 			shutdownExporter: opts.LogExporter.Shutdown,
 			resource:         t.resource,
