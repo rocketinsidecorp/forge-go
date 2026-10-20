@@ -29,7 +29,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Preconfigured Prometheus, Grafana, Tempo, Loki | — | Done (`compose.observability.yaml`, [ADR 0038](adr/0038-local-observability-stack.md)) | Planned |
 | Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge-proxy`) | Planned |
 | Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | Planned |
-| Rollback never reverts framework migrations; disabled framework sets tolerated | (engine migrations copied into the app) | In review (`rollback`, `Migrator.DownFramework`, ADR 0039) | In review (`rollback`, `rollback_framework`, ADR 0030) |
+| Rollback never reverts framework migrations; disabled framework sets tolerated | (engine migrations copied into the app) | Done (`rollback`, `Migrator.DownFramework`, ADR 0039) | Done (`rollback`, `rollback_framework`, ADR 0030) |
 | Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`) | Planned |
 | i18n | I18n | Planned | Planned |
 | OpenAPI from typed routes | — | Planned | Planned |
