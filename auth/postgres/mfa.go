@@ -141,6 +141,21 @@ func (r *Repository) ConfirmTOTPEnrollment(
 		if storedDigest != secretDigest {
 			return errors.New("MFA enrollment digest changed while locked")
 		}
+		// The pending key of a rotation sits in the same table as an
+		// enrollment's. With the user row locked, an account that has a
+		// factor is refused here, explicitly, rather than by the INSERT
+		// below failing on the factor's primary key.
+		var noFactor bool
+		if err := tx.QueryRow(ctx, `
+			SELECT NOT EXISTS (
+				SELECT 1 FROM forge_totp_factors WHERE user_id = $1
+			)
+		`, subjectID).Scan(&noFactor); err != nil {
+			return postgres.Translate(err)
+		}
+		if !noFactor {
+			return auth.ErrMFAAlreadyEnabled
+		}
 
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO forge_totp_factors

@@ -7,6 +7,7 @@
 {{else if .Enabled}}
 <p>{{t "mfa.show.enabled"}} {{t "mfa.show.remaining" "count" .Remaining}}</p>
 <h2>{{t "mfa.show.rotate_title"}}</h2>
+<p><small>{{t "mfa.show.rotate_hint"}}</small></p>
 <form method="post" action="/mfa/rotation" class="auth-form">
 	{{csrfField}}
 	{{template "mfa/_step_up" (dict "ID" "rotate")}}

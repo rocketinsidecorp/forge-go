@@ -741,3 +741,33 @@ func TestBrowserMFAEnrollmentConfirmCannotFinishARotation(t *testing.T) {
 		t.Fatal("the rotation was confirmed without a current code")
 	}
 }
+
+// TestBrowserMFAEnrollmentRoutesDoNotRevealThePasswordOfAnEnrolledAccount:
+// POST /mfa and POST /mfa/confirm need no code, so for an account that
+// already has a factor a right and a wrong password must get the same
+// answer, or a session holder could test passwords through them.
+func TestBrowserMFAEnrollmentRoutesDoNotRevealThePasswordOfAnEnrolledAccount(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"/mfa", "/mfa/confirm"} {
+		t.Run(strings.TrimPrefix(path, "/"), func(t *testing.T) {
+			f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
+			key, _ := f.enable(f.ada)
+			answer := func(password string) (int, string, string) {
+				form := url.Values{"password": {password}, "code": {f.code(key)}}
+				refused := f.post(f.ada, path, form, true)
+				return refused.Code, refused.Header().Get("X-Error"), refused.Header().Get("X-Key")
+			}
+			rightStatus, rightError, rightKey := answer(mfaTestPassword)
+			wrongStatus, wrongError, wrongKey := answer("wrong password")
+			if rightStatus != wrongStatus || rightError != wrongError || rightKey != wrongKey {
+				t.Fatalf("right password: %d %q, wrong password: %d %q", rightStatus, rightError, wrongStatus, wrongError)
+			}
+			if rightError != ErrMFAAlreadyEnabled.Error() || rightKey != "" {
+				t.Fatalf("status=%d error=%q key=%q, want ErrMFAAlreadyEnabled and no key", rightStatus, rightError, rightKey)
+			}
+			if !f.status(f.ada).Enabled || f.accounts.account(f.ada).pending != nil {
+				t.Fatal("the refused request changed the account")
+			}
+		})
+	}
+}

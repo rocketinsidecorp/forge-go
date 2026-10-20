@@ -138,10 +138,13 @@ func formatAddresses(list []Address) []string {
 }
 
 // encodeText renders unstructured header text (a subject, a display name).
-// Text that is not plain printable ASCII is Q-encoded per RFC 2047. Text
-// that is plain ASCII but contains "=?" is encoded too, entirely, because a
-// client would otherwise decode a hand-written "=?utf-8?b?...?=" into
-// attacker-chosen text, bypassing every check applied to the literal value.
+// Text that, with its surrounding spaces trimmed, contains "=?" or a double
+// space is encoded entirely as base64 ("B") encoded-words of the trimmed
+// text: a client would otherwise decode a hand-written "=?utf-8?b?...?="
+// into attacker-chosen text, bypassing every check applied to the literal
+// value, and header folding would collapse the run of spaces. Any other text
+// is Q-encoded per RFC 2047 (mime.QEncoding): plain printable ASCII stays as
+// it is, and text with anything else becomes encoded-words.
 func encodeText(s string) string {
 	// Text with "=?" could be decoded as an encoded-word; runs of spaces
 	// inside the text would be collapsed where the header is folded.

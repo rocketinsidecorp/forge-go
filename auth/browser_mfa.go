@@ -12,8 +12,11 @@ import (
 
 var (
 	// ErrMFAStepUpInvalid means the password, or the current code, given to
-	// re-authenticate before a two-factor change was wrong. It does not say
-	// which, so show one message.
+	// re-authenticate before a two-factor change was wrong. On the routes
+	// that also need a code it does not say which, so show one message. The
+	// routes that need no code refuse an account that already has a factor
+	// with ErrMFAAlreadyEnabled before the password is checked, so a wrong
+	// password there is ErrMFAStepUpInvalid only for an account without one.
 	ErrMFAStepUpInvalid = fault.New("mfa_step_up_invalid", "password or code is invalid", fault.CategoryUnauthorized, 0)
 	// ErrMFAUnavailable means the two-factor settings cannot work: the
 	// Browser has no MFA service (FORGE_AUTH_MFA_KEY is not set) or no
@@ -69,7 +72,8 @@ func (b *Browser) MFAStatus(r *http.Request) (MFAStatus, error) {
 // A wrong password is ErrMFAStepUpInvalid; attempts are counted per account
 // and per network source on the MFA throttler before anything is checked
 // (*LoginThrottledError, with Retry-After set). An account that already has a
-// factor is ErrMFAAlreadyEnabled. Like every method that changes
+// factor is ErrMFAAlreadyEnabled, whatever the password: it is refused before
+// the password is checked, so the answer does not reveal it. Like every method that changes
 // credentials, it requires csrf.Verified and an authenticated principal.
 func (b *Browser) BeginMFAEnrollment(w http.ResponseWriter, r *http.Request, issuer string, proof MFAStepUp) (TOTPEnrollment, error) {
 	return b.beginMFAChange(w, r, issuer, proof, false)
@@ -141,12 +145,6 @@ func (b *Browser) confirmMFAChange(w http.ResponseWriter, r *http.Request, issue
 		return nil, err
 	}
 	ctx := r.Context()
-	if !rotation && step.hasFactor {
-		// A pending rotation must be confirmed with a current code
-		// (ConfirmMFARotation), never through the password-only enrollment
-		// path; its key is not shown and no code of it is checked.
-		return nil, ErrMFAAlreadyEnabled
-	}
 	var confirmation TOTPConfirmation
 	if rotation {
 		confirmation, err = b.mfa.ConfirmTOTPRotation(ctx, step.subject, code)
@@ -217,23 +215,25 @@ func (b *Browser) DisableMFA(w http.ResponseWriter, r *http.Request, proof MFASt
 	return nil
 }
 
-// verifiedStepUp is a passed re-authentication. resettable is true when the
-// step-up may clear the throttle counters once the change succeeds: a code
-// was verified, or the account had no factor. A password alone never clears
-// the counters of an account with a factor, or interleaving password-only
-// requests would give a session holding the password unlimited code guesses.
+// verifiedStepUp is a passed re-authentication. The step-up may clear the
+// throttle counters once the change succeeds: a code was verified, or the
+// account had no factor (an account with one never passes with a password
+// alone, or interleaving password-only requests would give a session holding
+// the password unlimited code guesses).
 type verifiedStepUp struct {
-	subject    uuid.UUID
-	login      string
-	key        LoginThrottleKey
-	resettable bool
-	hasFactor  bool
+	subject uuid.UUID
+	login   string
+	key     LoginThrottleKey
 }
 
 // stepUp re-authenticates the signed-in account for action: the CSRF token,
 // then one attempt on the MFA throttler (per account and per source) before
-// anything is checked, then the password and, with needCode, a current code
-// that is used up. A refusal is audited as action denied. The throttle
+// anything is checked, then, without needCode, a refusal of an account that
+// already has a factor (ErrMFAAlreadyEnabled, so the password is not
+// revealed by the answer; a pending rotation is confirmed with
+// ConfirmMFARotation and a current code, never through the password-only
+// path), then the password and, with needCode, a current code that is used
+// up. A refusal other than ErrMFAAlreadyEnabled is audited as action denied. The throttle
 // counter is reset only when the whole change succeeds (stepUpSucceeded).
 func (b *Browser) stepUp(w http.ResponseWriter, r *http.Request, action SecurityEventKind, proof MFAStepUp, needCode bool) (verifiedStepUp, error) {
 	noStore(w)
@@ -259,6 +259,20 @@ func (b *Browser) stepUp(w http.ResponseWriter, r *http.Request, action Security
 		w.Header().Set("Retry-After", retryAfterHeader(decision.RetryAfter))
 		return verifiedStepUp{}, &LoginThrottledError{RetryAfter: decision.RetryAfter}
 	}
+	if !needCode {
+		// With no code to give, the answer to a password must not depend on
+		// whether it is right: an account that already has a factor is
+		// refused before the password is checked (ErrMFAAlreadyEnabled), or
+		// the refusal (422) and the success (303) of the next step would
+		// tell a session holder the password.
+		status, err := b.mfa.MFAStatus(ctx, subject)
+		if err != nil {
+			return verifiedStepUp{}, err
+		}
+		if status.Enabled {
+			return verifiedStepUp{}, ErrMFAAlreadyEnabled
+		}
+	}
 	login, ok, err := verifySubjectPassword(ctx, b.passwords, subject, proof.Password)
 	if err != nil {
 		return verifiedStepUp{}, err
@@ -267,7 +281,6 @@ func (b *Browser) stepUp(w http.ResponseWriter, r *http.Request, action Security
 		b.recordStepUpDenied(r, action, subject, key)
 		return verifiedStepUp{}, ErrMFAStepUpInvalid
 	}
-	resettable, hasFactor := needCode, needCode
 	if needCode {
 		if err := b.mfa.VerifyMFACode(ctx, subject, proof.Code); err != nil {
 			if errors.Is(err, ErrMFAInvalid) {
@@ -280,24 +293,13 @@ func (b *Browser) stepUp(w http.ResponseWriter, r *http.Request, action Security
 			}
 		}
 	}
-	if !needCode {
-		status, err := b.mfa.MFAStatus(ctx, subject)
-		if err != nil {
-			return verifiedStepUp{}, err
-		}
-		resettable, hasFactor = !status.Enabled, status.Enabled
-	}
-	return verifiedStepUp{subject: subject, login: login, key: key, resettable: resettable, hasFactor: hasFactor}, nil
+	return verifiedStepUp{subject: subject, login: login, key: key}, nil
 }
 
-// stepUpSucceeded resets the step-up counter after a completed change, when
-// the step-up may (verifiedStepUp.resettable). A failed reset only leaves the
-// counter higher, so it is logged, not returned: the change (and any
-// one-time backup codes) already happened.
+// stepUpSucceeded resets the step-up counter after a completed change. A
+// failed reset only leaves the counter higher, so it is logged, not returned:
+// the change (and any one-time backup codes) already happened.
 func (b *Browser) stepUpSucceeded(r *http.Request, step verifiedStepUp) {
-	if !step.resettable {
-		return
-	}
 	if err := b.mfa.throttler.Success(r.Context(), step.key); err != nil {
 		web.Logger(r.Context()).Error("MFA step-up throttle reset failed", "path", r.URL.Path, "error", err)
 	}

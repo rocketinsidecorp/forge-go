@@ -188,7 +188,10 @@ export FORGE_AUTH_MFA_KEY=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
 | `DELETE` | `/mfa` | turn off (the password and a current code); signs out everywhere |
 
 A "current code" is a code of the active authenticator or an unused backup
-code; either is used up, so it works once. Every one of these requests:
+code; either is used up, so it works once. Starting a rotation therefore uses
+up the current code of the authenticator app, and confirming it needs a
+current code again: wait for the next code or use a backup code (the pages
+say so). Every one of these requests:
 
 - needs the CSRF token (`403` without it) and a session (signed-out browsers
   go to `/session/new`);
@@ -199,7 +202,10 @@ code; either is used up, so it works once. Every one of these requests:
   wrong password or code, `429` with `Retry-After` when throttled. A wrong
   code of a new key counts too. The counters are cleared only after a change
   succeeds, and a password alone never clears them for an account that has a
-  factor;
+  factor. `POST /mfa` and `POST /mfa/confirm`, which need no code, answer an
+  account that already has a factor the same way (a `303` back to `/mfa`)
+  before the password is checked, so they cannot tell a right password from
+  a wrong one;
 - is audited, refusals as the target action with outcome `denied`
   ([AUDIT.md](AUDIT.md)).
 

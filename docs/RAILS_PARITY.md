@@ -13,30 +13,44 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Database selection | `rails new -d` | Done (PostgreSQL, MySQL, MariaDB, SQLite) | Done (PostgreSQL, MySQL, MariaDB, SQLite) |
 | Server-rendered HTML, layouts, partials, forms, flash, CSRF | Action View | Done | Done |
 | HTML + JSON CRUD generator | `rails g scaffold` | Done | Done |
-| Authentication pages, password reset | `rails g authentication` | Done | In review |
-| First tenant and owner, seeds | `db:seed` | Done (`forge setup`, `forge seed`) | In review (`setup`, `seed`) |
+| Authentication pages, password reset | `rails g authentication` | Done | Done |
+| First tenant and owner, seeds | `db:seed` | Done (`forge setup`, `forge seed`) | In review (`forge setup`, `forge seed`; the application commands `setup` and `seed` are Done) |
 | Multi-tenancy with database enforcement | (gems) | Done (PostgreSQL RLS) | Done (PostgreSQL RLS) |
-| TOTP MFA | (gems) | Done (sign-in code step and generated `/mfa` settings pages: enrollment, rotation, backup codes, disable; [ADR 0045](adr/0045-generated-mfa-settings-pages.md)) | Done (sign-in code step and generated `/mfa` settings pages; Forge-Rust ADR 0040) |
-| Persistent jobs, cron, outbox | Solid Queue | Done | In review |
-| Mailer with previews | Action Mailer | Done | Done (`forge-mail`, Forge-Rust ADR 0035) |
-| Rate limiting | `rate_limit` | Done | In review |
-| Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | Done (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Done (`FORGE_HTTP_TRUSTED_PROXIES`, Forge-Rust ADR 0032) |
-| Cache | Solid Cache | Done | In review |
-| File storage with signed URLs | Active Storage | Done (disk) | In review (disk) |
+| TOTP MFA | (gems) | Done (sign-in code step and generated `/mfa` settings pages: enrollment, rotation, backup codes, disable; [ADR 0045](adr/0045-generated-mfa-settings-pages.md)) | Done (`FORGE_AUTH_MFA_KEY`, `/session/mfa`, generated `/mfa` settings pages; Forge-Rust ADR 0040) |
+| Persistent jobs, cron, outbox | Solid Queue | Done | Done (framework crates; `forge new` wiring planned) |
+| Mailer with previews | Action Mailer | Done | Done (`forge::mail`, password-reset emails, `/_mail` previews, `forge generate mailer`; Forge-Rust ADR 0035 and 0038) |
+| Rate limiting | `rate_limit` | Done | Done |
+| Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | Done (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Done (`FORGE_HTTP_TRUSTED_PROXIES`, Forge-Rust ADR 0032; `forge deploy` sets it once ported) |
+| Cache | Solid Cache | Done | Done |
+| File storage with signed URLs | Active Storage | Done (disk) | Done (disk) |
 | Import maps, Turbo, Stimulus | Hotwire | Done | Done |
 | Turbo Streams over SSE | Action Cable | Done | Done (`scaffold --broadcast`, Forge-Rust ADR 0031) |
-| Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Done (Forge-owned OTLP exporter, Forge-Rust ADR 0033) |
+| Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Done (OpenTelemetry, Prometheus; Forge-Rust ADR 0033) |
 | Preconfigured Prometheus, Grafana, Tempo, Loki | — | Done (`compose.observability.yaml`, [ADR 0038](adr/0038-local-observability-stack.md)) | Done (`compose.observability.yaml`, Forge-Rust ADR 0034) |
 | Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge-proxy`) | Planned |
-| Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | Done (`forge dev`, `forge db`, Forge-Rust ADR 0036) |
+| Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | In review (`forge dev`, `forge db create\|drop\|reset\|setup\|prepare\|migrate\|rollback\|status\|seed`, `forge migrate\|rollback\|setup\|seed`, `forge doctor`, `forge version`; `forge routes`, `forge db schema:dump\|schema:load\|console`, browser reload and `.env` files are still open; Forge-Rust ADR 0036) |
 | Rollback never reverts framework migrations; disabled framework sets tolerated | (engine migrations copied into the app) | Done (`rollback`, `Migrator.DownFramework`, ADR 0039) | Done (`rollback`, `rollback_framework`, ADR 0030) |
-| Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`; PostgreSQL tenant tables rotate per tenant with `postgres.WithTenant`, unscoped runs under row-level security are refused) | In review (`forge credentials`, `forge::encryption`, `EncryptedColumn::tenant`, Forge-Rust ADR 0041) |
-| i18n | I18n | Done (`config/locales/*.json`, `t`, CLDR plurals, `forge new --locale`, `forge i18n check`, [ADR 0042](adr/0042-internationalization.md)) | Done (`forge-i18n`, `forge new --locale`, `forge i18n check`, Forge-Rust ADR 0037) |
-| OpenAPI from typed routes | — | Done (`openapi.Describe`, `openapi.Typed`, `GET /openapi.json`, `forge openapi [--output\|--check]`, `FORGE_OPENAPI_ENABLED`, [ADR 0043](adr/0043-openapi-from-typed-routes.md)) | Planned ([forge-rust#25](https://github.com/rocketinsidecorp/forge-rust/issues/25)) |
+| Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`; PostgreSQL tenant tables rotate per tenant with `postgres.WithTenant`, unscoped runs under row-level security are refused) | Done (`forge credentials init\|edit\|show\|rotate-key`, `forge::credentials`, `forge::encryption`; PostgreSQL tenant tables rotate per tenant with `EncryptedColumn::tenant`, unscoped runs under row-level security are refused; forge-rust#37, Forge-Rust ADR 0041) |
+| i18n | I18n | Done (`config/locales/*.json`, `t`, CLDR plurals, `forge new --locale`, `forge i18n check`, [ADR 0042](adr/0042-internationalization.md)) | Done (`config/locales/*.json`, `layout.i18n.t`, CLDR plurals, `forge new --locale`, `forge i18n check`, Forge-Rust ADR 0037) |
+| OpenAPI from typed routes | — | Done (`openapi.Describe`, `openapi.Typed`, `GET /openapi.json`, `forge openapi [--output\|--check]`, `FORGE_OPENAPI_ENABLED`, [ADR 0043](adr/0043-openapi-from-typed-routes.md)) | Done (`#[derive(OpenApiSchema)]`, `forge::openapi::typed`/`describe`, `GET /openapi.json`, `FORGE_OPENAPI_ENABLED`, `forge openapi`, Forge-Rust ADR 0039) |
 | Controller, model, mailer and job generators, `destroy` | `rails g`, `rails d` | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, [ADR 0041](adr/0041-generators-and-destroy.md)) | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, Forge-Rust ADR 0038) |
 | Continuous fuzzing, SBOM, signed images | — | Done (every fuzz target per PR and nightly, `scripts/fuzz.sh`; CycloneDX/SPDX SBOMs; keyless cosign-signed images from `v*` tags; [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), [ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)) | Planned |
 | Published benchmarks | — | Planned | Planned |
 | Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Planned |
+
+## Parity follow-ups
+
+- Two-factor settings hardening (forge-go#32, from the review of the `/mfa`
+  pages): Forge-Go now refuses `POST /mfa` and `POST /mfa/confirm` for an
+  account that already has a factor before it checks the password (a wrong and
+  a right password got `422` and `303`), refuses `ConfirmTOTPEnrollment` of an
+  account with a factor explicitly (no 500 from the primary key), and the
+  generated pages tell the user to wait for the next code or use a backup code
+  after starting a rotation (`mfa.show.rotate_hint` in `en`, `es`, `pt-BR`).
+  Forge-Rust's generated `step_up` has the same password-oracle ordering and
+  its pages lack the hint (its `docs/mfa.md` has the sentence); its store's
+  confirmation needs the same explicit-refusal review. Forge-Rust adopts all
+  three in its next pull request that touches `/mfa`.
 
 ## Review gate
 

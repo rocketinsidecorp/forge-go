@@ -364,3 +364,69 @@ func TestMFARotationAndDisableAgainstPostgres(t *testing.T) {
 		t.Fatalf("pre-disable session found=%v err=%v", found, err)
 	}
 }
+
+// TestConfirmTOTPEnrollmentRefusesAnAccountWithAFactorAgainstPostgres: the
+// pending key of a rotation sits where an enrollment's does, so confirming
+// it as an enrollment must be refused explicitly, leaving the factor, the
+// pending rotation and the sessions untouched.
+func TestConfirmTOTPEnrollmentRefusesAnAccountWithAFactorAgainstPostgres(t *testing.T) {
+	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repo, err := authpostgres.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	userID := uuid.MustNew()
+	if _, err := db.Exec(ctx, "INSERT INTO forge_users (id, email, email_normalized, password_hash) VALUES ($1, 'factor@example.com', 'factor@example.com', 'x')", userID); err != nil {
+		t.Fatal(err)
+	}
+	oldDigest := sha256.Sum256([]byte("old-totp-secret"))
+	if _, err := db.Exec(ctx, `
+		INSERT INTO forge_totp_factors (user_id, secret_digest, secret_ciphertext, last_counter)
+		VALUES ($1, $2, $3, 7)
+	`, userID, oldDigest[:], []byte("old-ciphertext")); err != nil {
+		t.Fatal(err)
+	}
+	pendingDigest := sha256.Sum256([]byte("pending-totp-secret"))
+	if err := repo.BeginTOTPRotation(ctx, userID, pendingDigest, []byte("pending-ciphertext"), time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	backupDigests := make([]auth.Digest, auth.DefaultMFABackupCodeCount)
+	for i := range backupDigests {
+		backupDigests[i] = sha256.Sum256([]byte(fmt.Sprintf("backup-%d", i)))
+	}
+
+	confirmed, err := repo.ConfirmTOTPEnrollment(ctx, userID, pendingDigest, 123, backupDigests)
+	if !errors.Is(err, auth.ErrMFAAlreadyEnabled) || confirmed {
+		t.Fatalf("confirmed=%v err=%v, want auth.ErrMFAAlreadyEnabled", confirmed, err)
+	}
+
+	var (
+		factorDigest []byte
+		counter      int64
+		pending      int
+		backupCount  int
+		version      int64
+	)
+	if err := db.QueryRow(ctx, "SELECT secret_digest, last_counter FROM forge_totp_factors WHERE user_id = $1", userID).Scan(&factorDigest, &counter); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM forge_totp_enrollments WHERE user_id = $1 AND secret_digest = $2", userID, pendingDigest[:]).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM forge_mfa_backup_codes WHERE user_id = $1", userID).Scan(&backupCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(ctx, "SELECT session_version FROM forge_users WHERE id = $1", userID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if string(factorDigest) != string(oldDigest[:]) || counter != 7 || pending != 1 || backupCount != 0 || version != 1 {
+		t.Fatalf("factor=%x counter=%d pending=%d backup=%d version=%d, want them untouched", factorDigest, counter, pending, backupCount, version)
+	}
+
+	// The pending rotation is still confirmable with a current code.
+	rotated, err := repo.ConfirmTOTPRotation(ctx, userID, pendingDigest, 124, backupDigests)
+	if err != nil || !rotated {
+		t.Fatalf("rotation confirmed=%v err=%v", rotated, err)
+	}
+}
