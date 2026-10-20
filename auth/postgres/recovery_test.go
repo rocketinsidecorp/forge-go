@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -235,4 +236,86 @@ func TestPasswordRecoveryRejectsExpiredToken(t *testing.T) {
 	if err != nil || consumed {
 		t.Fatalf("consumed=%v err=%v", consumed, err)
 	}
+}
+
+func TestRecoveryTokenUsableRequiresAnUnusedUnexpiredToken(t *testing.T) {
+	db := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repo, err := authpostgres.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	userID, orgID, tenantID, membershipID := uuid.MustNew(), uuid.MustNew(), uuid.MustNew(), uuid.MustNew()
+	insertIdentityFixture(t, db, userID, orgID, tenantID, membershipID, "usable@example.com", "usable@example.com", "Usable", "usable")
+
+	usable := func(token auth.RecoveryToken) bool {
+		t.Helper()
+		ok, err := repo.RecoveryTokenUsable(ctx, token.Digest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	unknown, _ := auth.NewRecoveryToken()
+	if usable(unknown) {
+		t.Fatal("an unknown token is usable")
+	}
+
+	live, _ := auth.NewRecoveryToken()
+	if err := repo.CreateRecovery(ctx, userID, live.Digest(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if !usable(live) {
+		t.Fatal("a fresh token is not usable")
+	}
+
+	expired, _ := auth.NewRecoveryToken()
+	expiredDigest := expired.Digest()
+	if _, err := db.Exec(ctx, "INSERT INTO forge_password_recovery (token_digest, user_id, expires_at) VALUES ($1, $2, now() - interval '1 second')", expiredDigest[:], userID); err != nil {
+		t.Fatal(err)
+	}
+	if usable(expired) {
+		t.Fatal("an expired token is usable")
+	}
+
+	// A newer request supersedes the older token.
+	newer, _ := auth.NewRecoveryToken()
+	if err := repo.CreateRecovery(ctx, userID, newer.Digest(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if usable(live) || !usable(newer) {
+		t.Fatal("a superseded token is still usable, or the newest is not")
+	}
+
+	hash, err := auth.HashPassword("replacement password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumed, err := repo.ConsumeRecovery(ctx, newer.Digest(), hash); err != nil || !consumed {
+		t.Fatalf("consumed=%v err=%v", consumed, err)
+	}
+	if usable(newer) {
+		t.Fatal("a used token is usable")
+	}
+
+	// Through the service: unknown, used and expired tokens are refused
+	// without the password being hashed (a password HashPassword rejects would
+	// otherwise answer ErrPasswordInvalid).
+	service, err := auth.NewRecoveryService(repo, nopSender{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tooLong := string(make([]byte, 5000))
+	for name, token := range map[string]auth.RecoveryToken{"unknown": unknown, "used": newer, "expired": expired} {
+		err := service.Reset(ctx, auth.PasswordReset{Token: token.Reveal(), NewPassword: tooLong})
+		if !errors.Is(err, auth.ErrRecoveryInvalid) {
+			t.Errorf("%s token: %v, want ErrRecoveryInvalid before any password work", name, err)
+		}
+	}
+}
+
+type nopSender struct{}
+
+func (nopSender) SendPasswordRecovery(context.Context, auth.PasswordRecoveryMessage) error {
+	return nil
 }

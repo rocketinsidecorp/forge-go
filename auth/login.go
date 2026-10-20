@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"regexp"
 	"strings"
@@ -164,13 +165,25 @@ func NewLoginService(passwords PasswordStore, sessions CredentialSessionCreator,
 // Login verifies an active identity in an explicitly named tenant and creates
 // an opaque session. All authentication misses return ErrCredentialsInvalid;
 // infrastructure and corrupted persisted hashes remain server-side failures.
+//
+// A login or tenant that is not canonical (a non-ASCII address, a malformed
+// slug) names no account, but it is not answered faster than one that does:
+// it is throttled, the credential store is queried with random identifiers
+// and a password hash is computed, so neither the response nor its timing
+// tells a malformed organization from an unknown one or a wrong password.
 func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult, error) {
-	email, tenant, ok := normalizeLogin(input.Email, input.TenantSlug)
-	if !ok || input.Password == "" || len(input.Password) > maxPasswordBytes {
+	if input.Password == "" || len(input.Password) > maxPasswordBytes {
 		return LoginResult{}, ErrCredentialsInvalid
 	}
+	email, emailOK := CanonicalLogin(input.Email)
+	tenant, tenantOK := canonicalTenant(input.TenantSlug)
+	wellFormed := emailOK && tenantOK
+	account := email
+	if !emailOK {
+		account = invalidLoginAccount(input.Email)
+	}
 
-	throttleKey := deriveLoginThrottleKey(email, input.Source)
+	throttleKey := deriveLoginThrottleKey(account, input.Source)
 	decision, err := s.throttler.Attempt(ctx, throttleKey)
 	if err != nil {
 		return LoginResult{}, err
@@ -181,11 +194,15 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, errors.Join(throttled, auditErr)
 	}
 
-	identity, found, err := s.passwords.LookupPassword(ctx, email, tenant)
+	lookupEmail, lookupTenant := email, tenant
+	if !wellFormed {
+		lookupEmail, lookupTenant = randomLookup()
+	}
+	identity, found, err := s.passwords.LookupPassword(ctx, lookupEmail, lookupTenant)
 	if err != nil {
 		return LoginResult{}, err
 	}
-	if !found {
+	if !found || !wellFormed {
 		_, _, verifyErr := VerifyPassword(dummyPasswordHash, input.Password)
 		if verifyErr != nil {
 			return LoginResult{}, verifyErr
@@ -279,6 +296,25 @@ func (s *LoginService) recordLoginEvent(
 		return &SecurityAuditError{Cause: err}
 	}
 	return nil
+}
+
+// randomLookup returns a login and a tenant slug that no account has, for the
+// credential lookup of a malformed sign-in.
+func randomLookup() (email, tenant string) {
+	return strings.ToLower(rand.Text()) + "@invalid.example", "z" + strings.ToLower(rand.Text())
+}
+
+// invalidLoginAccount is the account a login that is not canonical is
+// counted under: its trimmed text, bounded. Such a login names no account, so
+// no guess is possible, but the attempt still costs a password hash, and the
+// source limits and a limit on the typed text stop it being a free
+// computation.
+func invalidLoginAccount(typed string) string {
+	typed = strings.TrimSpace(typed)
+	if len(typed) > 256 {
+		typed = typed[:256]
+	}
+	return "invalid\x00" + typed
 }
 
 // MaxLoginBytes is the longest login (an email address) Forge accepts.

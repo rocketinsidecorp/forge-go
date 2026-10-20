@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	ErrRecoveryIdentityRequired                    = errors.New("active recovery identity is required")
-	_                           auth.RecoveryStore = (*Repository)(nil)
+	ErrRecoveryIdentityRequired                           = errors.New("active recovery identity is required")
+	_                           auth.RecoveryStore        = (*Repository)(nil)
+	_                           auth.RecoveryTokenChecker = (*Repository)(nil)
 )
 
 func (r *Repository) LookupRecovery(ctx context.Context, emailNormalized, tenantSlug string) (auth.RecoveryIdentity, bool, error) {
@@ -39,6 +40,28 @@ func (r *Repository) LookupRecovery(ctx context.Context, emailNormalized, tenant
 		return auth.RecoveryIdentity{}, false, postgres.Translate(err)
 	}
 	return identity, true, nil
+}
+
+// RecoveryTokenUsable reports whether digest names a recovery that is unused,
+// unexpired and belongs to an active user. It reads without locking; the
+// authoritative check is still ConsumeRecovery's.
+func (r *Repository) RecoveryTokenUsable(ctx context.Context, digest auth.Digest) (bool, error) {
+	var usable bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM forge_password_recovery r
+			JOIN forge_users u ON u.id = r.user_id
+			WHERE r.token_digest = $1
+			  AND r.consumed_at IS NULL
+			  AND r.expires_at > now()
+			  AND u.status = 'active'
+		)
+	`, digest[:]).Scan(&usable)
+	if err != nil {
+		return false, postgres.Translate(err)
+	}
+	return usable, nil
 }
 
 func (r *Repository) CreateRecovery(ctx context.Context, subjectID uuid.UUID, digest auth.Digest, expiresAt time.Time) error {

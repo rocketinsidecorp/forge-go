@@ -25,15 +25,15 @@ func TestCanonicalLoginRefusesLookAlikesAndMalformedLogins(t *testing.T) {
 		"a@b@example.com",
 		"@example.com",
 		"user@",
-		"user@İcloud.com",       // LATIN CAPITAL LETTER I WITH DOT ABOVE
-		"Kelvin@example.com",    // KELVIN SIGN lowercases to ASCII k
-		"café@example.com",      // non-ASCII local part
-		"user@icloud.com\u0000", // NUL
-		"us er@example.com",     // inner space
-		"user@ex\tample.com",    // control
-		"user@example.com x",    // inner no-break space
-		"user@example.com\x7f",  // DEL
-		"user@ｅxample.com",      // fullwidth e
+		"user@\u0130cloud.com",    // LATIN CAPITAL LETTER I WITH DOT ABOVE
+		"\u212aelvin@example.com", // KELVIN SIGN lowercases to ASCII k
+		"caf\u00e9@example.com",   // non-ASCII local part
+		"user@icloud.com\u0000",   // NUL
+		"us er@example.com",       // inner space
+		"user@ex\tample.com",      // control
+		"user@example.com\u00a0x", // inner no-break space
+		"user@example.com\x7f",    // DEL
+		"user@\uff45xample.com",   // fullwidth e
 		strings.Repeat("a", MaxLoginBytes) + "@x", // over the length limit
 	} {
 		if login, ok := CanonicalLogin(invalid); ok {
@@ -50,8 +50,8 @@ func TestNormalizeIdentityLowercasesTenantsAsASCIIOnly(t *testing.T) {
 	if !ok || email != "owner@example.com" || tenant != "acme-1" {
 		t.Fatalf("identity=(%q,%q,%v)", email, tenant, ok)
 	}
-	// strings.ToLower would turn "acKe" into "acke", a different tenant.
-	if _, _, ok := NormalizeIdentity("a@example.com", "acKe"); ok {
+	// strings.ToLower would turn "ac\u212ae" into "acke", a different tenant.
+	if _, _, ok := NormalizeIdentity("a@example.com", "ac\u212ae"); ok {
 		t.Fatal("a tenant slug with a Kelvin sign was accepted")
 	}
 }
@@ -72,7 +72,7 @@ func TestLoginTreatsLookAlikeLoginsAsUnknownAccounts(t *testing.T) {
 	}
 	// strings.ToLower folds the Kelvin sign to an ASCII 'k', so the previous
 	// normalization signed this look-alike in as the real account.
-	for _, typed := range []string{"Kelvin@example.com", "kelvin@İxample.com"} {
+	for _, typed := range []string{"\u212aelvin@example.com", "kelvin@\u0130xample.com"} {
 		_, err := service.Login(context.Background(), LoginInput{Email: typed, Password: "correct horse battery staple", TenantSlug: "acme"})
 		if !errors.Is(err, ErrCredentialsInvalid) {
 			t.Fatalf("%q error=%v, want ErrCredentialsInvalid", typed, err)
@@ -119,9 +119,9 @@ func TestRecoveryNeverLooksUpOrDeliversToALookAlike(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// PostgreSQL can fold the typed address to the victim's (İ -> i), and a
+	// PostgreSQL can fold the typed address to the victim's (\u0130 -> i), and a
 	// mail system can deliver it to the same mailbox.
-	for _, typed := range []string{"user@İcloud.com", "USER@ıcloud.com", "Kser@icloud.com"} {
+	for _, typed := range []string{"user@\u0130cloud.com", "USER@\u0131cloud.com", "\u212aser@icloud.com"} {
 		if err := service.Request(context.Background(), RecoveryRequest{Email: typed, TenantSlug: "acme", Source: "192.0.2.10"}); err != nil {
 			t.Fatalf("%q error=%v", typed, err)
 		}

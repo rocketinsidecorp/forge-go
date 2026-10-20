@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -28,7 +29,21 @@ var (
 	ErrRecoveryThrottled    = fault.New("recovery_throttled", "too many recovery requests", fault.CategoryRateLimited, 0)
 	ErrPasswordInvalid      = fault.New("password_invalid", "password is invalid", fault.CategoryInvalid, 0)
 	ErrRecoveryDelivery     = errors.New("password recovery delivery failed")
+
+	// ErrRecoveryQueueFull is returned by a RecoveryDispatcher that holds as
+	// much work as it is allowed to: the request is dropped and logged, never
+	// queued without bound and never made to wait.
+	ErrRecoveryQueueFull = errors.New("password recovery queue is full")
+	// ErrRecoveryQueueClosed is returned by a RecoveryDispatcher that has
+	// stopped accepting work (the application is shutting down).
+	ErrRecoveryQueueClosed = errors.New("password recovery queue is closed")
 )
+
+// DefaultRecoveryResponseTime is the least time RecoveryService.Request takes
+// to answer.
+const DefaultRecoveryResponseTime = 100 * time.Millisecond
+
+const maxRecoveryResponseTime = 5 * time.Second
 
 type RecoveryToken struct {
 	secret string
@@ -83,6 +98,38 @@ type RecoveryStore interface {
 	ConsumeRecovery(ctx context.Context, digest Digest, nextPasswordHash string) (consumed bool, err error)
 }
 
+// RecoveryTokenChecker is an optional RecoveryStore capability: it reports
+// whether a token digest names a recovery that exists, is unused and has not
+// expired. RecoveryService.Reset asks it before hashing the new password, so
+// a request with an unknown, used or expired token costs a lookup, not a
+// password hash. auth/postgres.Repository implements it; a store without it
+// still works and hashes first.
+type RecoveryTokenChecker interface {
+	RecoveryTokenUsable(ctx context.Context, digest Digest) (bool, error)
+}
+
+// RecoveryJob is the work of one password-recovery request, once the request
+// has been accepted: a canonical login and tenant slug, whether or not they
+// name an account, and the throttle key (digests only) the request was
+// counted under, for the audit event. It carries no token: RecoveryService
+// issues the token when it processes the job, and the token never leaves the
+// process except through the RecoverySender.
+type RecoveryJob struct {
+	Email      string
+	TenantSlug string
+	Key        LoginThrottleKey
+}
+
+// RecoveryDispatcher takes accepted requests off the request path. When a
+// RecoveryService has one, Request answers without looking the account up,
+// issuing a token or delivering anything, and the dispatcher arranges for
+// RecoveryService.Process to run: the in-process RecoveryQueue, or the job
+// queue adapter auth/recoveryqueue. Implementations must not block: they
+// return ErrRecoveryQueueFull instead.
+type RecoveryDispatcher interface {
+	DispatchRecovery(ctx context.Context, job RecoveryJob) error
+}
+
 type PasswordRecoveryMessage struct {
 	Email      string
 	TenantSlug string
@@ -116,12 +163,15 @@ type PasswordReset struct {
 }
 
 type RecoveryService struct {
-	store     RecoveryStore
-	sender    RecoverySender
-	throttler LoginThrottler
-	auditor   SecurityAuditor
-	now       func() time.Time
-	ttl       time.Duration
+	store        RecoveryStore
+	sender       RecoverySender
+	throttler    LoginThrottler
+	auditor      SecurityAuditor
+	dispatcher   RecoveryDispatcher
+	logger       *slog.Logger
+	now          func() time.Time
+	ttl          time.Duration
+	responseTime time.Duration
 }
 
 type RecoveryOption func(*RecoveryService) error
@@ -170,6 +220,47 @@ func WithRecoveryAuditor(auditor SecurityAuditor) RecoveryOption {
 // 3 requests per login and source, 10 per login (so a victim's mailbox cannot
 // be flooded from many sources) and 30 per source, with at most 20,000
 // in-memory counters.
+// WithRecoveryDispatcher moves issuing and delivering reset links off the
+// request path. Without it, Request does that work inline, so an existing
+// account answers more slowly than an unknown one (the minimum response time
+// only hides the difference while delivery is faster than that). Set it
+// wherever the request is answered to the public.
+func WithRecoveryDispatcher(dispatcher RecoveryDispatcher) RecoveryOption {
+	return func(service *RecoveryService) error {
+		if dispatcher == nil {
+			return errors.New("recovery dispatcher is required")
+		}
+		service.dispatcher = dispatcher
+		return nil
+	}
+}
+
+// WithRecoveryLogger sets the logger for requests dropped by a full or closed
+// dispatcher. Nothing identifying (login, tenant, source, token) is logged.
+// The default is slog.Default().
+func WithRecoveryLogger(logger *slog.Logger) RecoveryOption {
+	return func(service *RecoveryService) error {
+		if logger == nil {
+			return errors.New("recovery logger is required")
+		}
+		service.logger = logger
+		return nil
+	}
+}
+
+// WithRecoveryResponseTime sets the least time Request takes to answer
+// (default DefaultRecoveryResponseTime, at most 5 seconds). Zero disables
+// the floor; use that only in tests.
+func WithRecoveryResponseTime(d time.Duration) RecoveryOption {
+	return func(service *RecoveryService) error {
+		if d < 0 || d > maxRecoveryResponseTime {
+			return errors.New("recovery response time must be between 0 and 5 seconds")
+		}
+		service.responseTime = d
+		return nil
+	}
+}
+
 func DefaultRecoveryThrottleConfig() LoginThrottleConfig {
 	return LoginThrottleConfig{
 		Window:       time.Hour,
@@ -189,11 +280,13 @@ func NewRecoveryService(store RecoveryStore, sender RecoverySender, options ...R
 		return nil, err
 	}
 	service := &RecoveryService{
-		store:     store,
-		sender:    sender,
-		throttler: throttler,
-		now:       time.Now,
-		ttl:       defaultRecoveryTTL,
+		store:        store,
+		sender:       sender,
+		throttler:    throttler,
+		logger:       slog.Default(),
+		now:          time.Now,
+		ttl:          defaultRecoveryTTL,
+		responseTime: DefaultRecoveryResponseTime,
 	}
 	for _, option := range options {
 		if option == nil {
@@ -206,18 +299,34 @@ func NewRecoveryService(store RecoveryStore, sender RecoverySender, options ...R
 	return service, nil
 }
 
-// Request treats syntactically invalid and unknown identities as accepted
-// no-ops for public semantics. With auditing configured, an audit-persistence
-// failure may still be returned to non-HTTP callers; the HTTP adapter masks
-// that account-dependent failure as the same 202 response. Infrastructure,
-// throttling, persistence and delivery failures remain errors.
+// Request counts the request against the throttle, hands accepted work to
+// the dispatcher and answers no sooner than the response time (100 ms by
+// default). Syntactically invalid and unknown identities are accepted no-ops
+// for public semantics, and so are accepted requests a full or closed
+// dispatcher drops (logged). Infrastructure, throttling and enqueue failures
+// remain errors; they do not depend on whether the account exists.
+//
+// Without a dispatcher the request is processed inline (see Process), and
+// then delivery failures, and audit-persistence failures with auditing
+// configured, are returned too; the HTTP adapter masks those account-dependent
+// failures as the same 202 response. With a dispatcher they happen later,
+// in Process.
 func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) error {
-	email, tenant, ok := normalizeLogin(request.Email, request.TenantSlug)
-	if !ok {
-		return nil
+	started := time.Now()
+	err := s.request(ctx, request)
+	s.waitUntil(ctx, started.Add(s.responseTime))
+	return err
+}
+
+func (s *RecoveryService) request(ctx context.Context, request RecoveryRequest) error {
+	login, loginOK := CanonicalLogin(request.Email)
+	tenant, tenantOK := canonicalTenant(request.TenantSlug)
+	account := login
+	if !loginOK {
+		account = invalidLoginAccount(request.Email)
 	}
 
-	key := deriveRecoveryThrottleKey(email, request.Source)
+	key := deriveRecoveryThrottleKey(account, request.Source)
 	decision, err := s.throttler.Attempt(ctx, key)
 	if err != nil {
 		return err
@@ -227,7 +336,41 @@ func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) 
 		auditErr := s.recordRecoveryRequestEvent(ctx, SecurityOutcomeDenied, uuid.UUID{}, key, Digest{}, false)
 		return errors.Join(throttled, auditErr)
 	}
+	if !loginOK || !tenantOK {
+		// Names no account: nothing to look up, issue or deliver.
+		return nil
+	}
 
+	job := RecoveryJob{Email: login, TenantSlug: tenant, Key: key}
+	if s.dispatcher == nil {
+		return s.Process(ctx, job)
+	}
+	err = s.dispatcher.DispatchRecovery(ctx, job)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrRecoveryQueueFull), errors.Is(err, ErrRecoveryQueueClosed):
+		s.logger.WarnContext(ctx, "password recovery request dropped", "reason", err.Error())
+		return nil
+	default:
+		return fmt.Errorf("dispatch password recovery: %w", err)
+	}
+}
+
+// Process looks up the identity of an accepted request and, when it names an
+// active account, issues a token and delivers it to the address the
+// credential store holds for that account, never to the address a visitor
+// typed. Unknown identities are a no-op (audited as denied). Run it from a
+// RecoveryDispatcher's worker, or let Request run it inline. Delivery failures
+// invalidate the token and are returned as *RecoveryDeliveryError, so a job
+// queue can retry; a retry issues a new token and invalidates the previous
+// one, so only the newest link works.
+func (s *RecoveryService) Process(ctx context.Context, job RecoveryJob) error {
+	email, tenant, ok := normalizeLogin(job.Email, job.TenantSlug)
+	if !ok {
+		return nil
+	}
+	key := job.Key
 	identity, found, err := s.store.LookupRecovery(ctx, email, tenant)
 	if err != nil {
 		return err
@@ -264,6 +407,20 @@ func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) 
 	return s.recordRecoveryRequestEvent(ctx, SecurityOutcomeSucceeded, identity.SubjectID, key, token.Digest(), true)
 }
 
+// waitUntil blocks until deadline (wall clock) or until ctx ends.
+func (s *RecoveryService) waitUntil(ctx context.Context, deadline time.Time) {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
 func (s *RecoveryService) Reset(ctx context.Context, reset PasswordReset) error {
 	token, err := ParseRecoveryToken(strings.TrimSpace(reset.Token))
 	if err != nil {
@@ -278,6 +435,18 @@ func (s *RecoveryService) Reset(ctx context.Context, reset PasswordReset) error 
 		throttled := &RecoveryThrottledError{RetryAfter: decision.RetryAfter}
 		auditErr := s.recordPasswordResetEvent(ctx, SecurityOutcomeDenied, key, token.Digest(), false)
 		return errors.Join(throttled, auditErr)
+	}
+	if checker, ok := s.store.(RecoveryTokenChecker); ok {
+		// An unknown, used or expired token ends here, before the expensive
+		// password hash an unauthenticated visitor could otherwise demand.
+		usable, err := checker.RecoveryTokenUsable(ctx, token.Digest())
+		if err != nil {
+			return err
+		}
+		if !usable {
+			auditErr := s.recordPasswordResetEvent(ctx, SecurityOutcomeDenied, key, token.Digest(), false)
+			return errors.Join(ErrRecoveryInvalid, auditErr)
+		}
 	}
 	nextHash, err := HashPassword(reset.NewPassword)
 	if err != nil {

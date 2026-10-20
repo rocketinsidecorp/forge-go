@@ -242,7 +242,10 @@ func (b *Browser) SignOut(w http.ResponseWriter, r *http.Request) error {
 // sender and the request log record those), so the page must show the same
 // message whatever happened. Only throttling (*RecoveryThrottledError, with
 // Retry-After set, keyed on the submitted identity whether or not it exists)
-// and infrastructure failures are errors.
+// and infrastructure failures are errors. The call takes at least the
+// RecoveryService's response time (100 ms by default), and with a
+// RecoveryDispatcher configured (auth.WithRecoveryDispatcher) the account is
+// looked up, and the link issued and delivered, after it returned.
 func (b *Browser) RequestPasswordReset(w http.ResponseWriter, r *http.Request, email, tenant string) error {
 	noStore(w)
 	if !csrf.Verified(r) {
