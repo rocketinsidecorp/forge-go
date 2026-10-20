@@ -18,7 +18,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Multi-tenancy with database enforcement | (gems) | Done (PostgreSQL RLS) | Done (PostgreSQL RLS) |
 | TOTP MFA | (gems) | Done | Planned |
 | Persistent jobs, cron, outbox | Solid Queue | Done | In review |
-| Mailer with previews | Action Mailer | Done | Planned |
+| Mailer with previews | Action Mailer | Done | Done (`forge-mail`, Forge-Rust ADR 0035) |
 | Rate limiting | `rate_limit` | Done | In review |
 | Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | Done (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Done (`FORGE_HTTP_TRUSTED_PROXIES`, Forge-Rust ADR 0032) |
 | Cache | Solid Cache | Done | In review |
