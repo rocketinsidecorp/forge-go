@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -524,6 +526,84 @@ func TestReturnPathAcceptsOnlyLocalPaths(t *testing.T) {
 	} {
 		if got := ReturnPath(candidate, "/home"); got != want {
 			t.Errorf("ReturnPath(%q) = %q, want %q", candidate, got, want)
+		}
+	}
+}
+
+// TestAuthenticateBrowserKeepsTheLocalePrefix: behind a path-prefix i18n
+// middleware the return path is the page the visitor asked for, with its
+// locale prefix, and still only a local path.
+func TestAuthenticateBrowserKeepsTheLocalePrefix(t *testing.T) {
+	t.Parallel()
+	translator, err := i18n.Load(fstest.MapFS{
+		"en.json":    {Data: []byte(`{"en": {"hello": "Hello"}}`)},
+		"pt-BR.json": {Data: []byte(`{"pt-BR": {"hello": "Olá"}}`)},
+	}, i18n.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := NewMiddleware(ResolverFunc(func(context.Context, Digest) (Session, bool, error) {
+		return Session{}, false, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guarded, err := middleware.AuthenticateBrowser("/session/new", http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	locationFor := func(prefixed bool, target string) (string, int) {
+		t.Helper()
+		i18nMiddleware, err := translator.Middleware(i18n.NegotiationOptions{PathPrefix: prefixed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler := i18nMiddleware(guarded)
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.Header.Set("Accept", "text/html")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		return recorder.Header().Get("Location"), recorder.Code
+	}
+	returnTo := func(location string) string {
+		t.Helper()
+		parsed, err := url.Parse(location)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed.Query().Get(ReturnToParameter)
+	}
+
+	cases := []struct {
+		name     string
+		prefixed bool // PathPrefix on
+		target   string
+		want     string // return_to; "" for none
+	}{
+		{"prefix on", true, "/pt-BR/products?page=2", "/pt-BR/products?page=2"},
+		{"prefix on, root", true, "/pt-BR", "/pt-BR/"},
+		{"prefix on, no prefix in the request", true, "/products?page=2", "/products?page=2"},
+		{"prefix off", false, "/pt-BR/products?page=2", "/pt-BR/products?page=2"}, // routed as is
+		{"prefix on, unknown locale is a plain segment", true, "/fr/products", "/fr/products"},
+		// Hostile paths stay rejected, with and without a prefix.
+		{"double slash", true, "//evil.example/x", ""},
+		{"double slash after the prefix", true, "/pt-BR//evil.example/x", ""},
+		{"backslash after the prefix", true, "/pt-BR/\\evil.example", "/pt-BR/%5Cevil.example"}, // escaped, still local
+		{"encoded slash after the prefix", true, "/pt-BR%2F%2Fevil.example", ""},
+		{"encoded prefix is not a locale", true, "/%2Fevil.example/x", "/%2Fevil.example/x"},
+	}
+	for _, test := range cases {
+		location, status := locationFor(test.prefixed, test.target)
+		if status != http.StatusSeeOther || !strings.HasPrefix(location, "/session/new") {
+			t.Errorf("%s: status=%d Location=%q", test.name, status, location)
+			continue
+		}
+		got := returnTo(location)
+		if got != test.want {
+			t.Errorf("%s: return_to = %q, want %q", test.name, got, test.want)
+		}
+		if got != "" && ReturnPath(got, "/home") != got {
+			t.Errorf("%s: return_to %q does not pass ReturnPath", test.name, got)
 		}
 	}
 }

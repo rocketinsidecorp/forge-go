@@ -472,6 +472,46 @@ func TestNegotiate(t *testing.T) {
 	}
 }
 
+func TestMiddlewareKeepsThePathPrefix(t *testing.T) {
+	t.Parallel()
+	translator := load(t, i18n.Options{})
+	serve := func(opts i18n.NegotiationOptions, target string) string {
+		middleware, err := translator.Middleware(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got string
+		recorder := httptest.NewRecorder()
+		middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			got = i18n.PathPrefix(r.Context())
+		})).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		return got
+	}
+	on := i18n.NegotiationOptions{PathPrefix: true}
+	for target, want := range map[string]string{
+		"/pt-BR/posts": "/pt-BR",
+		"/pt":          "/pt",
+		"/posts":       "",
+		"/fr/posts":    "",
+		"//evil/posts": "",
+		"/pt-BRx":      "",
+	} {
+		if got := serve(on, target); got != want {
+			t.Errorf("PathPrefix on, %s: %q, want %q", target, got, want)
+		}
+	}
+	if got := serve(i18n.NegotiationOptions{}, "/pt-BR/posts"); got != "" {
+		t.Errorf("PathPrefix off: %q, want none", got)
+	}
+	if got := i18n.PathPrefix(context.Background()); got != "" {
+		t.Errorf("PathPrefix without middleware: %q", got)
+	}
+	//nolint:staticcheck // a nil context must not panic
+	if got := i18n.PathPrefix(nil); got != "" {
+		t.Errorf("PathPrefix(nil): %q", got)
+	}
+}
+
 func TestMiddleware(t *testing.T) {
 	t.Parallel()
 	translator := load(t, i18n.Options{})

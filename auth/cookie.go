@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -51,8 +52,9 @@ func (m *Middleware) AuthenticateCookie(next http.Handler) http.Handler {
 // prefers HTML (web.PrefersHTML: browser navigations and form submissions),
 // the request is answered with 303 See Other to signInPath instead of the
 // JSON 401. For GET and HEAD the requested path and query travel in the
-// ReturnToParameter query parameter, so the sign-in form can send the user
-// back; the sign-in handler must validate it again with ReturnPath. Other
+// ReturnToParameter query parameter (with the locale path prefix of an
+// i18n.Translator.Middleware using PathPrefix put back), so the sign-in form
+// can send the user back; the sign-in handler must validate it again with ReturnPath. Other
 // methods are redirected without a return path, because the submitted form
 // cannot be replayed. JSON and API clients keep AuthenticateCookie's 401, and
 // resolver failures stay 500. Authenticated responses are marked
@@ -82,7 +84,7 @@ func (m *Middleware) AuthenticateBrowser(signInPath string, next http.Handler) (
 		}
 		target := signInPath
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
-			if requested := r.URL.RequestURI(); web.IsLocalPath(requested) {
+			if requested := browserReturnTo(r); requested != "" {
 				target += "?" + url.Values{ReturnToParameter: {requested}}.Encode()
 			}
 		}
@@ -91,6 +93,24 @@ func (m *Middleware) AuthenticateBrowser(signInPath string, next http.Handler) (
 			web.Error(w, r, err)
 		}
 	}), nil
+}
+
+// browserReturnTo is the page a visitor asked for, as a local path or "". It
+// is built from the stripped request URI, with the locale path prefix that
+// i18n.Translator.Middleware removed (PathPrefix) put back, so the visitor
+// returns to the page in the language they used. A prefixed path that is not
+// a safe local path is not used: the unprefixed one is.
+func browserReturnTo(r *http.Request) string {
+	requested := r.URL.RequestURI()
+	if !web.IsLocalPath(requested) {
+		return ""
+	}
+	if prefix := i18n.PathPrefix(r.Context()); prefix != "" {
+		if prefixed := prefix + requested; web.IsLocalPath(prefixed) {
+			return prefixed
+		}
+	}
+	return requested
 }
 
 // cookieContext authenticates exactly one non-empty session cookie.

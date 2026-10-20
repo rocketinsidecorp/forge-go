@@ -173,10 +173,14 @@ HTML, so escaping must be decided once, by the framework.
   check` never reports that scope. The generator refuses them with an error
   naming the scopes.
 - **Path prefix.** Middleware passed to `WithHTTPMiddleware` sees the
-  prefixed path; the stripped path is what routing, the auth return-to path
-  and `ServeMux` redirects see ([I18N.md](../I18N.md#choosing-the-locale)). A
-  prefix whose escaped form differs from its decoded form (`/pt-BR%2F..`)
-  clears `RawPath` so it stays consistent with `Path`.
+  prefixed path, so path-sensitive security middleware (allow/deny by path,
+  admin guards) must be added with `App.Use` after the i18n middleware, or
+  attached to the routes it protects; the stripped path is what routing and
+  `ServeMux` redirects see ([I18N.md](../I18N.md#choosing-the-locale)). The
+  middleware keeps the removed segment in the request context
+  (`i18n.PathPrefix`) and the auth return-to path puts it back, still behind
+  `web.IsLocalPath`. A prefix whose escaped form differs from its decoded
+  form (`/pt-BR%2F..`) clears `RawPath` so it stays consistent with `Path`.
 - **`_html` and URLs.** `href="%{url}"` escapes but does not filter schemes
   (same as Rails); documented in the guide and the threat model.
 
