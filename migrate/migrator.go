@@ -79,10 +79,15 @@ type Migrator struct {
 // New returns a migrator that owns db; Close closes it. db must be dedicated
 // to migrations and must accept several statements in one Exec (MySQL needs
 // multiStatements). New makes sure sessions are never reused, so the session
-// settings a migration changes cannot leak anywhere.
+// settings a migration changes cannot leak anywhere. It refuses a migration
+// that reuses a framework migration's version under another name
+// (*ReservedVersionError).
 func New(db *sql.DB, dialect Dialect, migrations []Migration, logger *slog.Logger) (*Migrator, error) {
 	if db == nil || dialect == nil || logger == nil {
 		return nil, errors.New("migrate: database, dialect and logger are required")
+	}
+	if err := checkReservedVersions(migrations); err != nil {
+		return nil, err
 	}
 	db.SetMaxIdleConns(0)
 	return &Migrator{db: db, dialect: dialect, migrations: slices.Clone(migrations), logger: logger}, nil
@@ -94,6 +99,8 @@ func (m *Migrator) Close() error { return m.db.Close() }
 // Up applies all pending migrations in version order and returns them. It
 // refuses to run when an applied migration was modified or is unknown to this
 // build, which usually means an older release is deploying over a newer schema.
+// An applied framework migration whose set the build no longer composes (the
+// feature was turned off) is not unknown: it stays applied and untouched.
 func (m *Migrator) Up(ctx context.Context) ([]Migration, error) {
 	var done []Migration
 	err := m.withLock(ctx, func(conn *sql.Conn, identity string) error {
@@ -126,9 +133,39 @@ func (m *Migrator) Up(ctx context.Context) ([]Migration, error) {
 	return done, err
 }
 
-// Down reverts the steps most recently applied migrations. It checks that
-// every one of them is reversible before reverting any.
+// Down is the application rollback: it reverts the steps most recently
+// applied application migrations, last applied first. Framework migrations
+// (FrameworkMigrations) are never reverted, even when they were applied
+// after the application's; Down skips over them. When steps exceeds the
+// applied application migrations, it reverts those there are. When only
+// framework migrations remain applied it reverts nothing and returns a
+// *FrameworkMigrationOnlyError; when nothing is applied it returns nothing.
+// Every target is checked to be reversible before any is reverted.
 func (m *Migrator) Down(ctx context.Context, steps int) ([]Migration, error) {
+	return m.down(ctx, steps, scopeApplication)
+}
+
+// DownFramework reverts the steps most recently applied framework migrations
+// that this migrator contains, last applied first, and never an application
+// migration. It is the deliberate way to drop a framework table, for example
+// after turning a feature off; no command exposes it. Framework migrations
+// shipped without a down script (the job queue, rate limit, cache and outbox
+// schemas) are irreversible and make it fail before anything is reverted.
+func (m *Migrator) DownFramework(ctx context.Context, steps int) ([]Migration, error) {
+	return m.down(ctx, steps, scopeFramework)
+}
+
+// revertScope selects which applied migrations a revert may touch.
+type revertScope int
+
+const (
+	// scopeApplication is every version that is not a framework migration.
+	scopeApplication revertScope = iota
+	// scopeFramework is the framework migrations the migrator contains.
+	scopeFramework
+)
+
+func (m *Migrator) down(ctx context.Context, steps int, scope revertScope) ([]Migration, error) {
 	if steps < 1 {
 		return nil, errors.New("steps must be at least 1")
 	}
@@ -158,8 +195,23 @@ func (m *Migrator) Down(ctx context.Context, steps int) ([]Migration, error) {
 			return cmp.Compare(b, a)
 		})
 		var targets []Migration
-		for _, version := range versions[:min(steps, len(versions))] {
-			targets = append(targets, known[version]) // verify guarantees presence
+		var newestFramework *FrameworkMigration
+		for _, version := range versions {
+			framework, isFramework := frameworkMigration(version)
+			if isFramework && newestFramework == nil {
+				newestFramework = &framework
+			}
+			migration, contained := known[version]
+			switch {
+			case len(targets) == steps:
+			case scope == scopeApplication && !isFramework:
+				targets = append(targets, migration) // verify guarantees presence
+			case scope == scopeFramework && isFramework && contained:
+				targets = append(targets, migration)
+			}
+		}
+		if len(targets) == 0 && scope == scopeApplication && newestFramework != nil {
+			return &FrameworkMigrationOnlyError{Newest: *newestFramework}
 		}
 		for _, migration := range targets {
 			if migration.Down.SQL == "" {
@@ -218,7 +270,11 @@ func (m *Migrator) Status(ctx context.Context) ([]MigrationStatus, error) {
 	}
 	for version, row := range state {
 		if !known[version] {
-			statuses = append(statuses, MigrationStatus{Version: version, Name: row.name, State: StateUnknown, AppliedAt: row.appliedAt})
+			rowState := StateUnknown
+			if framework, ok := frameworkMigration(version); ok && framework.Name == row.name {
+				rowState = StateDisabled
+			}
+			statuses = append(statuses, MigrationStatus{Version: version, Name: row.name, State: rowState, AppliedAt: row.appliedAt})
 		}
 	}
 	slices.SortFunc(statuses, func(a, b MigrationStatus) int { return cmp.Compare(a.Version, b.Version) })
@@ -236,11 +292,25 @@ func (m *Migrator) verify(state map[int64]applied) error {
 	}
 	slices.Sort(versions)
 	for _, version := range versions {
+		row := state[version]
+		// Ownership is decided by version: a row recorded under a framework
+		// version with another name was not written by that framework
+		// migration, so it is neither tolerated nor protected.
+		framework, reserved := frameworkMigration(version)
+		if reserved && row.name != framework.Name {
+			return &ReservedVersionError{Version: version, Name: row.name, Reserved: framework}
+		}
 		migration, ok := known[version]
 		if !ok {
-			return fmt.Errorf("database has migration %d_%s, which this build does not contain", version, state[version].name)
+			if reserved {
+				// Its feature was turned off: the table and the row stay,
+				// and turning it on again finds it applied and verifies
+				// its checksum.
+				continue
+			}
+			return fmt.Errorf("database has migration %d_%s, which this build does not contain", version, row.name)
 		}
-		if state[version].checksum != migration.Checksum {
+		if row.checksum != migration.Checksum {
 			return fmt.Errorf("migration %d_%s was modified after it was applied; add a new migration instead", version, migration.Name)
 		}
 	}

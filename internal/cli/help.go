@@ -82,11 +82,11 @@ func currentCommandCatalog() commandCatalog {
 		{Name: "migrate", Usage: "forge migrate [status]", Summary: "Apply pending migrations or report migration status.", SideEffects: []string{"database_write", "database_read"}, Examples: []string{"forge migrate", "forge migrate status"}, Environment: runtimeEnvironment()},
 		{
 			Name: "rollback", Usage: "forge rollback [-steps N]",
-			Summary:     "Run down migrations; may destroy application data.",
+			Summary:     "Run down migrations of the application (never Forge framework migrations); may destroy application data.",
 			SideEffects: []string{"database_destructive"},
 			Examples:    []string{"forge rollback", "forge rollback -steps 2"},
 			Environment: runtimeEnvironment(),
-			Flags:       []flagDetail{{Name: "-steps", Value: "N", Default: "1", Description: "Number of migrations to revert."}},
+			Flags:       []flagDetail{{Name: "-steps", Value: "N", Default: "1", Description: "Number of application migrations to revert."}},
 		},
 		{
 			Name: "setup", Usage: "forge setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]",

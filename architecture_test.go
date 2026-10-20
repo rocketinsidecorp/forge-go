@@ -35,6 +35,7 @@ var corePackages = []string{
 	modulePath + "/mail/mailtest",
 	modulePath + "/jobs",
 	modulePath + "/migrate",
+	modulePath + "/migrate/migratetest",
 	modulePath + "/httpserver",
 	modulePath + "/pagination",
 	modulePath + "/queue",

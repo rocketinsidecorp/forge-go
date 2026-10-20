@@ -20,7 +20,7 @@ type Opener func(ctx context.Context, cfg config.Database, migrations []Migratio
 //
 //	app migrate           apply pending migrations
 //	app migrate status    list migrations and their state
-//	app rollback [-steps N]
+//	app rollback [-steps N]  revert application migrations only
 //
 // Because the migrations are embedded in the binary, the production image can
 // migrate its own database (for example as a one-off container or a
@@ -31,6 +31,9 @@ func Commands(migrations fs.FS, open Opener) []forge.Command {
 
 // CommandsFromSets is Commands for several independent migration filesystems.
 // Sets are validated and merged by version before a database connection opens.
+// rollback reverts application migrations only (Migrator.Down): framework
+// migrations composed here (FrameworkMigrations) stay applied, and a rollback
+// with only framework migrations left fails without reverting anything.
 func CommandsFromSets(migrationSets []fs.FS, open Opener) []forge.Command {
 	return []forge.Command{
 		{Name: "migrate", Summary: "apply pending database migrations; \"migrate status\" lists them", Run: func(ctx context.Context, env forge.CommandEnv, args []string) error {
@@ -65,10 +68,10 @@ func CommandsFromSets(migrationSets []fs.FS, open Opener) []forge.Command {
 				return fmt.Errorf("%w: migrate [status]", forge.ErrUsage)
 			}
 		}},
-		{Name: "rollback", Summary: "revert the most recent migrations (-steps N, default 1)", Run: func(ctx context.Context, env forge.CommandEnv, args []string) error {
+		{Name: "rollback", Summary: "revert the most recent application migrations (-steps N, default 1); Forge framework migrations are never reverted", Run: func(ctx context.Context, env forge.CommandEnv, args []string) error {
 			flags := flag.NewFlagSet("rollback", flag.ContinueOnError)
 			flags.SetOutput(env.Stderr)
-			steps := flags.Int("steps", 1, "number of migrations to revert")
+			steps := flags.Int("steps", 1, "number of application migrations to revert")
 			if err := flags.Parse(args); err != nil {
 				return fmt.Errorf("%w: %v", forge.ErrUsage, err)
 			}
