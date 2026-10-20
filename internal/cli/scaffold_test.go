@@ -333,7 +333,7 @@ func TestScaffoldRefusesTheFormattingScopesAsPlurals(t *testing.T) {
 // An application created with --locale pt-BR has no pt-BR text for a
 // scaffold unless the scaffold writes it: production would show humanized
 // keys. The file starts as the English text, so `forge i18n check` is clean.
-func TestScaffoldWritesTheDefaultLocalesFileAndDestroyRemovesItOnlyWhenUnchanged(t *testing.T) {
+func TestScaffoldWritesTheDefaultLocalesFileAndDestroyKeepsItOnlyWhenTranslated(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, locales string
@@ -382,23 +382,36 @@ func TestScaffoldWritesTheDefaultLocalesFileAndDestroyRemovesItOnlyWhenUnchanged
 				t.Errorf("%s is not the English text under %q:\n%s", test.want, locale, text)
 			}
 
-			// Edited since: destroy refuses, and removes nothing.
-			writeFile(t, filepath.Join(root, "config", "locales", test.want), strings.Replace(text, "Back to posts", "Voltar", 1))
-			if _, err := destroy(root, "scaffold", "post", "title:string", "--global"); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("destroy of an edited %s: err = %v", test.want, err)
-			}
-			if _, err := os.Stat(filepath.Join(root, "config", "locales", "posts.en.json")); err != nil {
-				t.Errorf("a refused destroy removed posts.en.json: %v", err)
-			}
-			// Unchanged: both go.
-			writeFile(t, filepath.Join(root, "config", "locales", test.want), text)
-			if _, err := destroy(root, "scaffold", "post", "title:string", "--global"); err != nil {
+			// Unchanged: both go (with the migrations, so it can be generated
+			// again below).
+			if _, err := destroy(root, "scaffold", "post", "title:string", "--global", "--migrations"); err != nil {
 				t.Fatal(err)
 			}
 			for _, name := range want {
 				if _, err := os.Stat(filepath.Join(root, "config", "locales", name)); !os.IsNotExist(err) {
 					t.Errorf("%s survived the destroy: %v", name, err)
 				}
+			}
+
+			// Translated since: destroy keeps the translation, removes the
+			// rest, and says so.
+			if _, err := runScaffold(root, "post", "title:string", "--global"); err != nil {
+				t.Fatal(err)
+			}
+			translated := strings.Replace(text, "Back to posts", "Voltar", 1)
+			writeFile(t, filepath.Join(root, "config", "locales", test.want), translated)
+			out, err := destroy(root, "scaffold", "post", "title:string", "--global")
+			if err != nil {
+				t.Fatalf("destroy with a translated %s: %v", test.want, err)
+			}
+			if !strings.Contains(out, "keep") || !strings.Contains(out, test.want) {
+				t.Errorf("destroy output does not report the kept translation:\n%s", out)
+			}
+			if got := readFile(t, filepath.Join(root, "config", "locales", test.want)); got != translated {
+				t.Errorf("destroy changed the translated %s:\n%s", test.want, got)
+			}
+			if _, err := os.Stat(filepath.Join(root, "config", "locales", "posts.en.json")); !os.IsNotExist(err) {
+				t.Errorf("posts.en.json survived the destroy: %v", err)
 			}
 		})
 	}

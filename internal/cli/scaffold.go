@@ -107,7 +107,11 @@ func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFil
 		if err != nil {
 			return nil, err
 		}
-		files = append(files, generatedFile{path: filepath.Join(localesDir, spec.Plural+"."+locale+".json"), content: translations})
+		files = append(files, generatedFile{
+			path:        filepath.Join(localesDir, spec.Plural+"."+locale+".json"),
+			content:     translations,
+			translation: locale != i18n.DefaultLocale,
+		})
 	}
 	for _, page := range scaffoldPages {
 		if page.broadcastOnly && !spec.Broadcast {

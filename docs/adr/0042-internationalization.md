@@ -163,7 +163,8 @@ HTML, so escaping must be decided once, by the framework.
   reporting a gap that is visible only in the file listing; a file the
   developer sees, edits and translates leaves the fallback chain unchanged
   and `forge i18n check` clean. `forge destroy` removes the
-  file only when it is unchanged, like `en`; it is planned from the same
+  file when it is unchanged and keeps it (reporting `keep`) once it has been
+  translated, since translating it is what the scaffold asks for; it is planned from the same
   default locale, so an application whose default changed since generation
   keeps the old file (delete it by hand).
 - **Reserved plurals.** `date`, `time` and `number` are formatting scopes
