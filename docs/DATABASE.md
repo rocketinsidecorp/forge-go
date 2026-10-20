@@ -717,6 +717,79 @@ During development:
 [README](../README.md#development-environment-files)) and require a single
 command under `cmd/`.
 
+### Database lifecycle (`forge db`)
+
+`forge db` is the Rails `db:*` family for the development loop
+([ADR 0035](adr/0035-development-loop.md)). `forge migrate`, `forge rollback`
+and `forge seed` stay as aliases of `forge db migrate|rollback|seed`.
+
+| Command | Effect |
+| ------- | ------ |
+| `forge db create` | Create the database named in `FORGE_DATABASE_URL`; a no-op when it exists |
+| `forge db drop` | Drop it (PostgreSQL: `WITH (FORCE)`, ending open sessions); a no-op when absent |
+| `forge db setup` | `create`, then `migrate`, then `seed` |
+| `forge db prepare` | `setup` when the database is missing, else `migrate`; safe to run on every start |
+| `forge db reset` | `drop`, then `setup` |
+| `forge db migrate` / `status` / `rollback [-steps N]` / `seed` | Build the application and run its command of that name |
+| `forge db schema:dump` | Write `db/schema.sql` |
+| `forge db schema:load` | Run `db/schema.sql` into an existing, empty database |
+| `forge db console [-- ARGS]` | Open `psql`, `mysql` or `sqlite3` on the database; `ARGS` go to the client |
+
+```sh
+forge db prepare
+forge db schema:dump && git add db/schema.sql
+# CI or a test database:
+forge db create && forge db schema:load
+```
+
+**Which server connection.** `create` and `drop` cannot connect to the database
+they create or remove. PostgreSQL uses the `postgres` maintenance database
+(then `template1`), MySQL and MariaDB `information_schema`; SQLite creates or
+deletes the file (`0600`) and its `-wal`, `-shm`, `-journal` and
+`-migrate.lock` companions. By default the credentials are those of
+`FORGE_DATABASE_URL`, so that role needs `CREATEDB` (PostgreSQL) or
+`CREATE`/`DROP` (MySQL). Set `FORGE_MIGRATION_DATABASE_URL` to a privileged
+role instead: it is validated like `FORGE_DATABASE_URL`, must use the same
+adapter, and its database is ignored (the target is always the one in
+`FORGE_DATABASE_URL`). It is used by `create`, `drop`, `schema:*` and
+`console`; the application's own `migrate` still uses `FORGE_DATABASE_URL`. A
+database name must be 1-63 characters of letters, digits, `_`, `-` or `$`;
+`postgres`, `template0`, `template1`, `mysql`, `information_schema`,
+`performance_schema` and `sys` are never created or dropped.
+
+**Schema file.** `schema:dump` runs `pg_dump --schema-only --no-owner
+--no-privileges`, `mysqldump --no-data --skip-add-drop-table` or `sqlite3
+.schema` (the tool must be on `PATH`; a PostgreSQL `pg_dump` must be at least
+the server's major version) and makes the output deterministic: version and
+date comments, `pg_dump`'s random `\restrict` tokens and MySQL `AUTO_INCREMENT`
+counters are removed. Row-level-security policies are part of the dump. The
+applied migrations follow as `INSERT INTO forge_schema_migrations ... applied_at
+= 0` statements, so a database built by `schema:load` already knows its history
+and `forge db migrate` reports it up to date. `schema:load` uses
+`psql --single-transaction`, `mysql` or `sqlite3` inside a transaction and fails
+instead of replacing tables that already exist. Migrations remain the history of
+record; the schema file is for fresh databases.
+
+**Credentials are never arguments.** PostgreSQL tools receive `PGHOST`,
+`PGUSER`, `PGPASSWORD`, `PGDATABASE` and `PGSSL*` in their environment (any
+inherited `PG*` variable is dropped first); MySQL tools read a `0600` temporary
+option file passed as the first argument and removed afterwards; SQLite takes
+an absolute path. Error messages name the host and database, never the URL.
+
+**Protected databases.** `drop`, `reset`, `schema:load` and `rollback` refuse to
+run unless the database is local and `FORGE_ENV` is `development` or `test`.
+Production and staging, and any server that is not on this machine (loopback,
+`localhost`, a Unix socket path and SQLite files are local), need
+`--force-production` and either typing the database name at the prompt, or
+`--yes` with `FORGE_ALLOW_DESTRUCTIVE=true` in the process environment (an env
+file cannot set it). This holds even when `FORGE_ENV` is unset, which defaults to
+`development`: the server address decides. `schema:load` and `console` also
+refuse system databases such as `postgres`. Ctrl-C in `forge db console` goes to
+the client, not to forge. PostgreSQL-only capabilities
+(row-level security, roles, `LISTEN/NOTIFY`) are not emulated on other backends;
+`forge db` behaves the same on every adapter, and tenant isolation on MySQL,
+MariaDB and SQLite remains the repositories' predicates.
+
 ### Production
 
 Migrations are an explicit release step; `serve` never applies them.

@@ -23,13 +23,20 @@ import (
 )
 
 const (
-	testTenant   = "acme"
-	testEmail    = "owner@example.com"
+	testTenant = "kimco"
+	// testEmail is the canonical login; the account's stored address keeps
+	// its own spelling, and reset links go to that one.
+	testEmail    = "kim.owner@example.com"
+	storedEmail  = "Kim.Owner@Example.com"
 	testPassword = "correct horse battery staple"
 )
 
 // memoryIdentity is one account in one tenant, enough to drive the pages
 // without a database. TestPagesAgainstPostgres uses the real repository.
+//
+// Like a database with a case-insensitive Unicode collation, it matches logins
+// with strings.ToLower (which folds the Kelvin sign to "k"): the pages must
+// keep look-alike spellings away from it, because it would accept them.
 type memoryIdentity struct {
 	mu           sync.Mutex
 	subjectID    uuid.UUID
@@ -37,6 +44,13 @@ type memoryIdentity struct {
 	hash         string
 	sessions     map[auth.Digest]bool
 	resets       map[auth.Digest]bool
+	lookups      []string // logins and tenants of every credential lookup
+	tokenChecks  int
+	consumes     int
+}
+
+func (m *memoryIdentity) matches(email, tenant string) bool {
+	return strings.ToLower(email) == testEmail && strings.ToLower(tenant) == testTenant
 }
 
 func newMemoryIdentity(t *testing.T) *memoryIdentity {
@@ -54,7 +68,8 @@ func newMemoryIdentity(t *testing.T) *memoryIdentity {
 func (m *memoryIdentity) LookupPassword(_ context.Context, email, tenant string) (auth.PasswordIdentity, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if email != testEmail || tenant != testTenant {
+	m.lookups = append(m.lookups, email+" "+tenant)
+	if !m.matches(email, tenant) {
 		return auth.PasswordIdentity{}, false, nil
 	}
 	return auth.PasswordIdentity{SubjectID: m.subjectID, MembershipID: m.membershipID, PasswordHash: m.hash, CredentialVersion: 1}, true, nil
@@ -83,10 +98,10 @@ func (m *memoryIdentity) RevokeSession(_ context.Context, token auth.Token) erro
 }
 
 func (m *memoryIdentity) LookupRecovery(_ context.Context, email, tenant string) (auth.RecoveryIdentity, bool, error) {
-	if email != testEmail || tenant != testTenant {
+	if !m.matches(email, tenant) {
 		return auth.RecoveryIdentity{}, false, nil
 	}
-	return auth.RecoveryIdentity{SubjectID: m.subjectID, Email: testEmail}, true, nil
+	return auth.RecoveryIdentity{SubjectID: m.subjectID, Email: storedEmail}, true, nil
 }
 
 func (m *memoryIdentity) CreateRecovery(_ context.Context, _ uuid.UUID, digest auth.Digest, _ time.Time) error {
@@ -103,9 +118,19 @@ func (m *memoryIdentity) InvalidateRecovery(_ context.Context, digest auth.Diges
 	return nil
 }
 
+// RecoveryTokenUsable lets a reset be refused before the new password is
+// hashed (auth.RecoveryTokenChecker).
+func (m *memoryIdentity) RecoveryTokenUsable(_ context.Context, digest auth.Digest) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tokenChecks++
+	return m.resets[digest], nil
+}
+
 func (m *memoryIdentity) ConsumeRecovery(_ context.Context, digest auth.Digest, hash string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.consumes++
 	if !m.resets[digest] {
 		return false, nil
 	}
@@ -127,17 +152,67 @@ func (m *memoryIdentity) hasSession(digest auth.Digest) bool {
 	return m.sessions[digest]
 }
 
-// mailbox captures reset messages instead of sending email.
+// mailbox captures reset messages instead of sending email. Delivery happens
+// on the recovery queue, after the page answered, so tests wait for it. A
+// non-nil hold makes every delivery wait until it is closed (holdDeliveries).
 type mailbox struct {
 	mu       sync.Mutex
 	messages []auth.PasswordRecoveryMessage
+	hold     chan struct{}
 }
 
-func (b *mailbox) SendPasswordRecovery(_ context.Context, message auth.PasswordRecoveryMessage) error {
+func (b *mailbox) SendPasswordRecovery(ctx context.Context, message auth.PasswordRecoveryMessage) error {
+	b.mu.Lock()
+	b.messages = append(b.messages, message)
+	hold := b.hold
+	b.mu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// holdDeliveries makes every later delivery wait, like a slow mail server,
+// until the returned function is called.
+func (b *mailbox) holdDeliveries() (release func()) {
+	hold := make(chan struct{})
+	b.mu.Lock()
+	b.hold = hold
+	b.mu.Unlock()
+	return func() { close(hold) }
+}
+
+// delivered waits for want messages and returns them.
+func (b *mailbox) delivered(t *testing.T, want int) []auth.PasswordRecoveryMessage {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		b.mu.Lock()
+		messages := append([]auth.PasswordRecoveryMessage(nil), b.messages...)
+		b.mu.Unlock()
+		if len(messages) >= want || time.Now().After(deadline) {
+			if len(messages) != want {
+				t.Fatalf("%d reset messages, want %d", len(messages), want)
+			}
+			return messages
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// none fails if a message is delivered within a short grace period.
+func (b *mailbox) none(t *testing.T) {
+	t.Helper()
+	time.Sleep(200 * time.Millisecond)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.messages = append(b.messages, message)
-	return nil
+	if len(b.messages) != 0 {
+		t.Fatalf("%d reset messages delivered, want none", len(b.messages))
+	}
 }
 
 // serve mounts the pages behind the middleware app/bootstrap installs.
@@ -174,10 +249,24 @@ func memoryPages(t *testing.T, loginOptions ...auth.LoginOption) (http.Handler, 
 		t.Fatal(err)
 	}
 	mail := &mailbox{}
-	recovery, err := auth.NewRecoveryService(identity, mail)
+	// The wiring app/bootstrap uses: reset requests go to a bounded queue the
+	// test's lifecycle owns, and the page answers after at least 100 ms.
+	queue, err := auth.NewRecoveryQueue(auth.RecoveryQueueConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	recovery, err := auth.NewRecoveryService(identity, mail, auth.WithRecoveryDispatcher(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.Start(recovery); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = queue.Shutdown(ctx)
+	})
 	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: identity, Recovery: recovery})
 	if err != nil {
 		t.Fatal(err)
@@ -414,11 +503,10 @@ func TestPasswordResetDoesNotRevealAccounts(t *testing.T) {
 		known.Body.String() != unknown.Body.String() {
 		t.Fatalf("known: %d %v; unknown: %d %v", known.Code, known.Header(), unknown.Code, unknown.Header())
 	}
-	mail.mu.Lock()
-	messages := mail.messages
-	mail.mu.Unlock()
-	if len(messages) != 1 || messages[0].Email != testEmail {
-		t.Fatalf("messages=%d", len(messages))
+	// Only the known account gets mail, to the address as stored.
+	messages := mail.delivered(t, 1)
+	if messages[0].Email != storedEmail {
+		t.Fatalf("delivered to %q, want the stored address %q", messages[0].Email, storedEmail)
 	}
 	token := messages[0].Token.Reveal()
 
@@ -444,6 +532,161 @@ func TestPasswordResetDoesNotRevealAccounts(t *testing.T) {
 	}
 	if signedIn := newClient(t, handler).signIn(newPassword, ""); signedIn.Code != http.StatusSeeOther {
 		t.Fatalf("the new password does not work: status=%d", signedIn.Code)
+	}
+}
+
+// TestResetLinksGoToTheStoredAddressAndLookAlikesGetNothing: the identity
+// store folds case like a database collation, so a look-alike spelling of the
+// account's login would find it there. The pages refuse such logins before
+// the store sees them, and a request that does name the account delivers to
+// the stored address, never to what was typed.
+func TestResetLinksGoToTheStoredAddressAndLookAlikesGetNothing(t *testing.T) {
+	t.Parallel()
+	handler, identity, mail := memoryPages(t)
+	request := func(email string) {
+		t.Helper()
+		browser := newClient(t, handler)
+		browser.do(http.MethodGet, "/passwords/new", nil)
+		if answered := browser.submit("/passwords", url.Values{"tenant": {testTenant}, "email": {email}}); answered.Code != http.StatusSeeOther {
+			t.Fatalf("%q: status=%d", email, answered.Code)
+		}
+	}
+	for _, lookAlike := range []string{"\u212aim.owner@example.com", "kim.owner@\u0435xample.com", "kim.owner@example.com\u00a0.evil"} {
+		request(lookAlike)
+	}
+	mail.none(t)
+	identity.mu.Lock()
+	pending := len(identity.resets)
+	identity.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("%d reset tokens issued for look-alike logins", pending)
+	}
+
+	request("  KIM.OWNER@EXAMPLE.COM ")
+	if messages := mail.delivered(t, 1); messages[0].Email != storedEmail {
+		t.Fatalf("delivered to %q, want %q", messages[0].Email, storedEmail)
+	}
+}
+
+// TestResetRequestsAnswerWithoutWaitingForDelivery: the page never answers in
+// less than 100 ms, and what depends on the account (the lookup, the token,
+// the mail) happens after it answered, so a slow mail server cannot tell
+// anyone that the account exists.
+func TestResetRequestsAnswerWithoutWaitingForDelivery(t *testing.T) {
+	t.Parallel()
+	handler, _, mail := memoryPages(t)
+	t.Cleanup(mail.holdDeliveries())
+	for name, email := range map[string]string{"known": testEmail, "unknown": "nobody@example.com", "malformed": "not an email"} {
+		browser := newClient(t, handler)
+		browser.do(http.MethodGet, "/passwords/new", nil)
+		started := time.Now()
+		answered := browser.submit("/passwords", url.Values{"tenant": {testTenant}, "email": {email}})
+		elapsed := time.Since(started)
+		if answered.Code != http.StatusSeeOther {
+			t.Fatalf("%s: status=%d", name, answered.Code)
+		}
+		if elapsed < 100*time.Millisecond {
+			t.Errorf("%s: answered in %v, before the 100 ms floor", name, elapsed)
+		}
+		if elapsed > 5*time.Second {
+			t.Errorf("%s: answered in %v: the page waited for the account's delivery", name, elapsed)
+		}
+	}
+	mail.delivered(t, 1) // the known account's mail is held, not lost
+}
+
+// TestSignInLooksTheStoreUpWhateverIsTyped: a malformed organization or login
+// costs the same credential lookup as an unknown one, with identifiers the
+// visitor did not choose, and a look-alike login never matches.
+func TestSignInLooksTheStoreUpWhateverIsTyped(t *testing.T) {
+	t.Parallel()
+	handler, identity, _ := memoryPages(t)
+	for name, form := range map[string]url.Values{
+		"unknown tenant":          {"tenant": {"other"}, "email": {testEmail}, "password": {testPassword}},
+		"malformed tenant":        {"tenant": {"../global"}, "email": {testEmail}, "password": {testPassword}},
+		"look-alike tenant":       {"tenant": {"\u212aIMCO"}, "email": {testEmail}, "password": {testPassword}},
+		"look-alike login":        {"tenant": {testTenant}, "email": {"\u212aim.owner@example.com"}, "password": {testPassword}},
+		"non-ASCII domain login":  {"tenant": {testTenant}, "email": {"kim.owner@\u0435xample.com"}, "password": {testPassword}},
+	} {
+		identity.mu.Lock()
+		identity.lookups = nil
+		identity.mu.Unlock()
+		browser := newClient(t, handler)
+		browser.do(http.MethodGet, htmlauth.SignInPath, nil)
+		failed := browser.submit("/session", form)
+		if failed.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: status=%d, want the uniform failure", name, failed.Code)
+		}
+		if _, ok := browser.cookies[auth.SessionCookieName]; ok {
+			t.Fatalf("%s: a session was created", name)
+		}
+		identity.mu.Lock()
+		lookups := identity.lookups
+		identity.mu.Unlock()
+		if len(lookups) != 1 {
+			t.Fatalf("%s: %d credential lookups, want 1", name, len(lookups))
+		}
+		if name != "unknown tenant" && strings.Contains(lookups[0], testEmail) {
+			t.Fatalf("%s: looked up the typed login: %q", name, lookups[0])
+		}
+	}
+}
+
+// TestLetterCaseAndUnicodeVariantsDoNotGetFreshGuesses: every spelling of one
+// login shares one throttle budget, and a look-alike that the store would
+// fold onto the account cannot be used to guess its password.
+func TestLetterCaseAndUnicodeVariantsDoNotGetFreshGuesses(t *testing.T) {
+	t.Parallel()
+	throttler, err := auth.NewMemoryLoginThrottler(auth.LoginThrottleConfig{Window: time.Minute, PairLimit: 2, AccountLimit: 10, SourceLimit: 100, MaxEntries: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, _, _ := memoryPages(t, auth.WithLoginThrottler(throttler))
+	attempt := func(email string) *httptest.ResponseRecorder {
+		browser := newClient(t, handler)
+		browser.do(http.MethodGet, htmlauth.SignInPath, nil)
+		return browser.submit("/session", url.Values{"tenant": {testTenant}, "email": {email}, "password": {"wrong password"}})
+	}
+	for _, email := range []string{"KIM.OWNER@example.com", " Kim.Owner@EXAMPLE.com "} {
+		if failed := attempt(email); failed.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%q: status=%d", email, failed.Code)
+		}
+	}
+	if throttled := attempt("kim.owner@example.com"); throttled.Code != http.StatusTooManyRequests {
+		t.Fatalf("a third spelling of one login got a fresh guess: status=%d", throttled.Code)
+	}
+	signedIn := newClient(t, handler)
+	signedIn.do(http.MethodGet, htmlauth.SignInPath, nil)
+	lookAlike := signedIn.submit("/session", url.Values{"tenant": {testTenant}, "email": {"\u212aim.owner@example.com"}, "password": {testPassword}})
+	if lookAlike.Code == http.StatusSeeOther {
+		t.Fatal("a look-alike login signed in as the account")
+	}
+}
+
+// TestUnknownResetTokensAreRefusedBeforeHashing: a token that was never
+// issued ends the reset before the (expensive) hash of the submitted
+// password, so it cannot be used to make the server compute hashes. A
+// password the hash would reject shows which step answered: the invalid link,
+// not the password error.
+func TestUnknownResetTokensAreRefusedBeforeHashing(t *testing.T) {
+	t.Parallel()
+	handler, identity, _ := memoryPages(t)
+	unknown, err := auth.NewRecoveryToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser := newClient(t, handler)
+	browser.do(http.MethodGet, "/passwords/edit?token="+unknown.Reveal(), nil)
+	oversized := strings.Repeat("x", 5000)
+	refused := browser.submit("/passwords", url.Values{"_method": {"PATCH"}, "token": {unknown.Reveal()}, "password": {oversized}, "password_confirmation": {oversized}})
+	if refused.Code != http.StatusSeeOther || refused.Header().Get("Location") != "/passwords/new" {
+		t.Fatalf("status=%d Location=%q, want the invalid-link redirect", refused.Code, refused.Header().Get("Location"))
+	}
+	identity.mu.Lock()
+	checks, consumes := identity.tokenChecks, identity.consumes
+	identity.mu.Unlock()
+	if checks != 1 || consumes != 0 {
+		t.Fatalf("token checks=%d consumes=%d, want the token checked and nothing consumed", checks, consumes)
 	}
 }
 

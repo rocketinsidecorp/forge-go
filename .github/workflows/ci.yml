@@ -61,6 +61,13 @@ jobs:
           # every package with "export data version ... is greater than
           # maximum supported version".
           install-mode: goinstall
+      - name: PostgreSQL 18 client tools
+        # forge db schema dump needs a pg_dump of the server's major version
+        # or newer; the runner image ships an older one.
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends postgresql-client-18
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
       - name: Test (race)
         run: go test -race -count=1 ./...
       - name: Fuzz

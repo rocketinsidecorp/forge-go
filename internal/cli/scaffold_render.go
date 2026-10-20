@@ -24,6 +24,9 @@ type scaffoldView struct {
 
 	HasBool      bool
 	NeedsStrconv bool // the pages format an integer or an optional bool
+
+	// Broadcast publishes changes to open index pages (--broadcast).
+	Broadcast bool
 }
 
 func newScaffoldView(spec resourceSpec) scaffoldView {
@@ -33,6 +36,7 @@ func newScaffoldView(spec resourceSpec) scaffoldView {
 		PluralCamel:  lowerCamel(spec.Plural),
 		Human:        strings.ReplaceAll(spec.Name, "_", " "),
 		PluralHuman:  strings.ReplaceAll(spec.Plural, "_", " "),
+		Broadcast:    spec.Broadcast,
 	}
 	view.HumanTitle = capitalize(view.Human)
 	view.PluralHumanTitle = capitalize(view.PluralHuman)
@@ -218,6 +222,9 @@ func (v scaffoldView) Marker() *pageMarker {
 	return nil
 }
 
+// ColumnCount is the number of cells in a row of the index table.
+func (v scaffoldView) ColumnCount() int { return len(v.IndexColumns()) + 1 }
+
 // InvalidField is the field the problem tests break: the first one.
 func (v scaffoldView) InvalidField() fieldView { return v.Fields[0] }
 
@@ -248,15 +255,19 @@ func (v scaffoldView) InvalidValue() string {
 }
 
 // scaffoldPage is one generated view of a resource.
-type scaffoldPage struct{ name, template string }
+type scaffoldPage struct {
+	name, template string
+	broadcastOnly  bool // only with --broadcast
+}
 
 var scaffoldPages = []scaffoldPage{
-	{"index", "index.gohtml.tmpl"},
-	{"show", "show.gohtml.tmpl"},
-	{"new", "new.gohtml.tmpl"},
-	{"edit", "edit.gohtml.tmpl"},
-	{"_form", "_form.gohtml.tmpl"},
-	{"not_found", "not_found.gohtml.tmpl"},
+	{name: "index", template: "index.gohtml.tmpl"},
+	{name: "show", template: "show.gohtml.tmpl"},
+	{name: "new", template: "new.gohtml.tmpl"},
+	{name: "edit", template: "edit.gohtml.tmpl"},
+	{name: "_form", template: "_form.gohtml.tmpl"},
+	{name: "_item", template: "_item.gohtml.tmpl", broadcastOnly: true},
+	{name: "not_found", template: "not_found.gohtml.tmpl"},
 }
 
 func renderScaffoldTemplate(name string, data any) (string, error) {

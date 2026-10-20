@@ -21,8 +21,13 @@ type resourceWiringParts struct {
 	CookieGuard string
 	// Renderer builds the view renderer a scaffold's pages share. Defined once.
 	Renderer string
-	Usage    string // wires this resource
-	Notes    []string
+	// StreamSigner and StreamsRegister are the live-update wiring of
+	// `--broadcast`, defined once per application: the signer must exist
+	// before the renderer, the registration needs the guard's middleware.
+	StreamSigner    string
+	StreamsRegister string
+	Usage           string // wires this resource
+	Notes           []string
 }
 
 // buildResourceWiring is what `forge generate resource` and `forge generate
@@ -134,15 +139,26 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 	title := exportedName(spec.Name)
 	plural := exportedName(spec.Plural)
 	parts.Imports = append(parts.Imports, spec.Module+"/app/adapters/htmlui")
+	rendererCall := "views.New()"
+	if spec.Broadcast {
+		rendererCall = "views.New(views.WithStreams(streamSigner))"
+	}
 	if spec.ViewRenderer {
-		parts.Notes = append(parts.Notes, "The pages reuse the renderer that bootstrap.go already builds with views.New().")
+		if spec.Broadcast {
+			parts.Notes = append(parts.Notes, "bootstrap.go already builds the renderer with views.New(): define streamSigner (below) before that line and change it to `views.New(views.WithStreams(streamSigner))`, so the pages can sign their stream names.")
+		} else {
+			parts.Notes = append(parts.Notes, "The pages reuse the renderer that bootstrap.go already builds with views.New().")
+		}
 	} else {
 		parts.Imports = append(parts.Imports, spec.Module+"/app/views")
-		parts.Renderer = `	renderer, err := views.New()
+		parts.Renderer = "	renderer, err := " + rendererCall + `
 	if err != nil {
 		return err
 	}
 `
+	}
+	if spec.Broadcast {
+		addBroadcastWiring(spec, parts)
 	}
 	guard := "protect"
 	if spec.Identity {
@@ -180,6 +196,9 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 	}
 `, plural, lowerCamel(spec.Name), guard)
 	}
+	if spec.Broadcast {
+		parts.Usage = addBroadcastOption(parts.Usage, plural, title)
+	}
 	parts.Notes = append(parts.Notes, fmt.Sprintf("The %s pages are served at /%s and the JSON API at /v1/%s. New and edit forms need %s:write like the routes that save them.", title, spec.Plural, spec.Plural, spec.Plural))
 	if !spec.BrowserPipeline {
 		parts.Notes = append(parts.Notes, "WARNING: app/bootstrap/bootstrap.go does not appear to install csrf.Protection, web.MethodOverride and web.Flash (forge new generates useBrowserPipeline for them). Without them the forms are not CSRF-protected and update and delete do not work: add them before serving these pages (docs/VIEWS.md).")
@@ -207,8 +226,14 @@ func resourceWiring(spec resourceSpec) string {
 	if parts.CookieGuard != "" {
 		fmt.Fprintf(&out, "\n  The HTML pages authenticate the session cookie, so also define (once) their guard:\n\n%s", parts.CookieGuard)
 	}
+	if parts.StreamSigner != "" {
+		fmt.Fprintf(&out, "\n  Live updates (--broadcast), define once, before the view renderer:\n\n%s", parts.StreamSigner)
+	}
 	if parts.Renderer != "" {
 		fmt.Fprintf(&out, "\n  Build the view renderer the pages share (once):\n\n%s", parts.Renderer)
+	}
+	if parts.StreamsRegister != "" {
+		fmt.Fprintf(&out, "\n  Then mount the event stream (once, after the guard above):\n\n%s", parts.StreamsRegister)
 	}
 	fmt.Fprintf(&out, "\n  3. For this resource, right after it:\n\n%s", parts.Usage)
 	for _, note := range parts.Notes {
@@ -224,4 +249,79 @@ func lowerCamel(name string) string {
 	title := exportedName(name)
 	first := strings.SplitN(name, "_", 2)[0]
 	return strings.ToLower(first) + title[len(first):]
+}
+
+// addBroadcastOption appends the broker option to the Register<Plural> call,
+// whose guard argument is a name or a function literal.
+func addBroadcastOption(usage, plural, title string) string {
+	option := "htmlui.With" + title + "Broadcast(streams.Broker)"
+	call := "htmlui.Register" + plural + "("
+	start := strings.Index(usage, call)
+	if start < 0 {
+		return usage
+	}
+	end := start + strings.Index(usage[start:], "); err != nil {")
+	if end < start {
+		return usage
+	}
+	return usage[:end] + ", " + option + usage[end:]
+}
+
+// addBroadcastWiring prints the once-per-application live-update wiring.
+func addBroadcastWiring(spec resourceSpec, parts *resourceWiringParts) {
+	parts.Imports = append(parts.Imports,
+		"os",
+		"github.com/rocketinsidecorp/forge-go/broadcast",
+		spec.Module+"/app/adapters/htmlstreams",
+	)
+	parts.StreamSigner = `	streamSigner, err := htmlstreams.NewSigner(app.Config().Environment, os.Getenv(htmlstreams.KeyEnvironment), app.Logger())
+	if err != nil {
+		return err
+	}
+`
+	if spec.Identity {
+		parts.StreamsRegister = `	streams, err := htmlstreams.Register(ctx, app, streamSigner, htmlstreams.Options{
+		Authenticate: middleware.AuthenticateCookie,
+		// A channel is read with the permission of the resource it carries:
+		// the "posts" channel needs posts:read. Tenant channels are already
+		// limited to the caller's tenant.
+		Authorize: func(r *http.Request, channel broadcast.Channel) error {
+			principal, ok := auth.FromContext(r.Context())
+			if !ok {
+				return auth.ErrCredentialsRequired
+			}
+			required, err := auth.NewPermission(channel.Name + ":read")
+			if err != nil || !principal.Can(required) {
+				return auth.ErrPermissionDenied
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return err
+	}
+`
+		parts.Notes = append(parts.Notes, "Live updates: ctx must be in scope in identityRoutes (forge new passes it: identityRoutes(ctx, app, database)). Define streamSigner and streams once, in this order: streamSigner before the view renderer, streams after `middleware, err := auth.NewMiddleware(repository)`.")
+	} else {
+		parts.Imports = append(parts.Imports, "github.com/rocketinsidecorp/forge-go/fault", "github.com/rocketinsidecorp/forge-go/web")
+		parts.StreamsRegister = `	// This application has no Forge identity, so authenticating the caller
+	// (attach the principal and tenant to the request context) and deciding
+	// who may read each channel are yours to write. Until then both refuse
+	// everyone: live updates stay closed rather than public.
+	denyStreams := fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0)
+	streams, err := htmlstreams.Register(ctx, app, streamSigner, htmlstreams.Options{
+		Authenticate: func(http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { web.Error(w, r, denyStreams) })
+		},
+		Authorize: func(*http.Request, broadcast.Channel) error { return denyStreams },
+	})
+	if err != nil {
+		return err
+	}
+`
+		parts.Notes = append(parts.Notes, "Live updates: define streamSigner and streams once, streamSigner before the view renderer and streams before the pages that publish.")
+	}
+	parts.Notes = append(parts.Notes,
+		"Set FORGE_STREAMS_KEY to `openssl rand -base64 32` (the same value on every replica) before running in staging or production; development and tests fall back to a random per-process key. The in-memory broker serves one process: for several replicas, build the broker with forge-go's broadcast/postgres package (docs/VIEWS.md).",
+	)
 }

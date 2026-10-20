@@ -95,6 +95,23 @@ func Negotiate(r *http.Request, offers ...string) string {
 	return best
 }
 
+// AcceptsExplicitly reports whether the Accept header names mediaType itself
+// with a quality above zero. Wildcards ("*/*", "text/*") do not count, so a
+// client that accepts anything is not mistaken for one that asked for a
+// special type, such as Turbo's text/vnd.turbo-stream.html.
+func AcceptsExplicitly(r *http.Request, mediaType string) bool {
+	typ, subtype, ok := strings.Cut(strings.ToLower(mediaType), "/")
+	if !ok {
+		return false
+	}
+	for _, accepted := range parseAccept(r.Header.Values("Accept")) {
+		if accepted.typ == typ && accepted.subtype == subtype && accepted.quality > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // PrefersHTML reports whether the client prefers text/html over
 // application/json. Browser navigations and form submissions do; API clients,
 // fetch() defaults ("*/*") and requests without Accept do not.

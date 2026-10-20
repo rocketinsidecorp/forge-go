@@ -9,7 +9,11 @@ import (
 	"embed"
 	"io/fs"
 
+	"github.com/rocketinsidecorp/forge-go/broadcast"
+	"github.com/rocketinsidecorp/forge-go/hotwire"
 	forgeviews "github.com/rocketinsidecorp/forge-go/views"
+
+	"{{.Module}}/app/assets"
 )
 
 // files holds every template one directory below app/views, partials
@@ -21,8 +25,43 @@ var files embed.FS
 // Files returns the embedded templates.
 func Files() fs.FS { return files }
 
+// Option customizes the renderer New builds.
+type Option func(*forgeviews.Options)
+
+// WithStreams lets pages subscribe to real-time updates with
+// {{"{{"}}turboStreamFrom "posts"{{"}}"}}: signer signs the channel names the
+// browser later presents to the event stream handler (see Forge's broadcast
+// package and docs/VIEWS.md).
+func WithStreams(signer *broadcast.Signer) Option {
+	return func(opts *forgeviews.Options) { opts.Streams = signer }
+}
+
+// Options returns the options New passes to forgeviews.Load: the asset bundle
+// for {{"{{"}}stylesheetTag{{"}}"}} and {{"{{"}}javascriptImportmapTags{{"}}"}}, and the
+// Content-Security-Policy additions they need (the import map's hash and
+// Turbo's progress bar style).
+func Options(options ...Option) (forgeviews.Options, error) {
+	bundle, err := assets.Load()
+	if err != nil {
+		return forgeviews.Options{}, err
+	}
+	opts := forgeviews.Options{
+		Assets:      bundle.Set,
+		ImportMap:   bundle.ImportMap,
+		StyleHashes: hotwire.StyleHashes(),
+	}
+	for _, option := range options {
+		option(&opts)
+	}
+	return opts, nil
+}
+
 // New parses the templates. Build one renderer at startup and share it: it
 // is safe for concurrent use.
-func New() (*forgeviews.Renderer, error) {
-	return forgeviews.Load(files, forgeviews.Options{})
+func New(options ...Option) (*forgeviews.Renderer, error) {
+	opts, err := Options(options...)
+	if err != nil {
+		return nil, err
+	}
+	return forgeviews.Load(files, opts)
 }

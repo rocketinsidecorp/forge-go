@@ -133,6 +133,10 @@ func TestProvisionOwnerIsAtomicAndSerialized(t *testing.T) {
 		{Organization: "", TenantSlug: "acme", Email: "owner@example.com", Password: ownerPassword},
 		{Organization: "Ac\x00me", TenantSlug: "acme", Email: "owner@example.com", Password: ownerPassword},
 		{Organization: "Acme", TenantSlug: "acme", Email: "owner@example.com", Password: ""},
+		// A non-ASCII login could never sign in (auth.CanonicalLogin), so it is
+		// refused before anything is stored.
+		{Organization: "Acme", TenantSlug: "acme", Email: "owner@\u0130cloud.com", Password: ownerPassword},
+		{Organization: "Acme", TenantSlug: "acme", Email: "\u212aelvin@example.com", Password: ownerPassword},
 	} {
 		if _, err := repository.ProvisionOwner(ctx, invalid); err == nil {
 			t.Fatalf("invalid account accepted: %+v", invalid)
@@ -195,6 +199,7 @@ func TestSetupCommandReadsThePasswordSafely(t *testing.T) {
 		{"password flag", append(slices.Clone(valid), "--password", ownerPassword), nil, nil},
 		{"positional password", append(slices.Clone(valid), ownerPassword), nil, nil},
 		{"invalid tenant", []string{"--tenant", "A B", "--email", "owner@example.com"}, nil, nil},
+		{"non-ASCII email", []string{"--tenant", "acme", "--email", "owner@\u0130cloud.com"}, nil, nil},
 		{"no password source", valid, strings.NewReader(ownerPassword + "\n"), nil},
 		{"two password sources", append(slices.Clone(valid), "--password-stdin"), strings.NewReader(ownerPassword + "\n"), map[string]string{authpostgres.SetupPasswordVariable: ownerPassword}},
 	} {

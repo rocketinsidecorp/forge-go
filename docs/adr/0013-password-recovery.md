@@ -56,6 +56,20 @@ workers can run concurrently.
 - Issuing a new recovery link supersedes previous unused links.
 - Successful use invalidates every other outstanding recovery link.
 - Delivery infrastructure remains application-owned through a narrow port.
-- Recovery request timing still depends on the application's sender behavior;
-  sender implementations should enqueue rather than perform synchronous SMTP.
+- Recovery request timing used to depend on the application's sender
+  behavior; see the addendum: the account-dependent work now runs after the
+  answer.
 - Phase 4 scheduling can automate bounded cleanup later.
+
+## Addendum (2026-10-20): off the request path
+
+`RecoveryService.Request` no longer does account-dependent work inline when a
+`RecoveryDispatcher` is configured: it canonicalizes the login
+(`auth.CanonicalLogin`; a non-ASCII address is an unknown account), counts the
+request (3 per login and source, 10 per login, 30 per source per hour; IPv6
+per `/64`), dispatches it and answers no sooner than 100 ms. `Process` looks the
+account up, issues the token and delivers it to the stored address. The
+dispatcher is the bounded, lifecycle-owned `auth.RecoveryQueue` or the
+persistent-queue adapter `auth/recoveryqueue` (docs/ACCOUNT_RECOVERY.md).
+`Reset` asks a `RecoveryTokenChecker` store (PostgreSQL implements it) whether
+the token exists, is unused and unexpired before hashing the new password.

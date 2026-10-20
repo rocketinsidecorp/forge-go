@@ -4,8 +4,8 @@ package bootstrap
 
 import (
 	"context"
-	{{- if and .DB .DB.Identity}}
 	"errors"
+	{{- if and .DB .DB.Identity}}
 	"log/slog"
 	{{- end}}
 	"net/http"
@@ -27,8 +27,9 @@ import (
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
 {{- end}}
 	"github.com/rocketinsidecorp/forge-go/web"
-{{- if and .DB .DB.Identity}}
 
+	appassets "{{.Module}}/app/assets"
+{{- if and .DB .DB.Identity}}
 	"{{.Module}}/app/adapters/htmlauth"
 	"{{.Module}}/app/views"
 {{- end}}
@@ -58,7 +59,7 @@ func Configure(ctx context.Context, app *forge.App) error {
 		return err
 	}
 {{- if and .DB .DB.Identity}}
-	return identityRoutes(app, database)
+	return identityRoutes(ctx, app, database)
 {{- else}}
 	return nil
 {{- end}}
@@ -98,11 +99,21 @@ func routes(ctx context.Context, app *forge.App) error {
 	if err := useBrowserPipeline(app); err != nil {
 		return err
 	}
-	// Public routes
-	if err := app.HandleFunc("GET /{$}", welcome); err != nil {
+	// Digested, immutable static files: the stylesheet, the logo, the
+	// JavaScript and the vendored Turbo and Stimulus (app/assets).
+	bundle, err := appassets.Load()
+	if err != nil {
 		return err
 	}
-	if err := app.Handle("GET /assets/", brandAssetsHandler()); err != nil {
+	logo, ok := bundle.Set.Path("forge-go-logo.png")
+	if !ok {
+		return errors.New("app/assets does not embed forge-go-logo.png")
+	}
+	// Public routes
+	if err := app.HandleFunc("GET /{$}", welcomeHandler(logo)); err != nil {
+		return err
+	}
+	if err := app.Handle("GET /assets/", bundle.Set.Handler()); err != nil {
 		return err
 	}
 	if err := app.HandleFunc("GET /v1/status", status); err != nil {
@@ -137,7 +148,7 @@ func status(w http.ResponseWriter, _ *http.Request) {
 
 {{- if and .DB .DB.Identity}}
 
-func identityRoutes(app *forge.App, database *postgres.DB) error {
+func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB) error {
 	repository, err := authpostgres.New(database)
 	if err != nil {
 		return err
@@ -219,8 +230,34 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 	if err != nil {
 		return err
 	}
-	recoveryService, err := auth.NewRecoveryService(repository, delivery, auth.WithRecoveryThrottler(throttler), auth.WithRecoveryAuditor(repository))
+	// Reset requests are answered at once (never sooner than 100 ms) and the
+	// account lookup, token issuance and mail delivery run on a bounded queue
+	// the application's lifecycle owns, so neither the response nor its timing
+	// tells whether an account exists. A full queue drops the request and logs
+	// it. Applications with a persistent job queue can use
+	// auth/recoveryqueue instead (docs/ACCOUNT_RECOVERY.md).
+	recoveryThrottler, err := authpostgres.NewRecoveryThrottler(database)
 	if err != nil {
+		return err
+	}
+	recoveryQueue, err := auth.NewRecoveryQueue(auth.RecoveryQueueConfig{Logger: app.Logger()})
+	if err != nil {
+		return err
+	}
+	// Registered after the database's hook, so it runs before the pool closes.
+	if err := app.OnShutdown(recoveryQueue.Shutdown); err != nil {
+		return err
+	}
+	recoveryService, err := auth.NewRecoveryService(repository, delivery,
+		auth.WithRecoveryThrottler(recoveryThrottler),
+		auth.WithRecoveryAuditor(repository),
+		auth.WithRecoveryDispatcher(recoveryQueue),
+		auth.WithRecoveryLogger(app.Logger()),
+	)
+	if err != nil {
+		return err
+	}
+	if err := recoveryQueue.Start(recoveryService); err != nil {
 		return err
 	}
 	recoveryRequestHandler, err := auth.NewAuditedPasswordRecoveryRequestHandler(recoveryService, repository)
@@ -307,9 +344,8 @@ func identityRoutes(app *forge.App, database *postgres.DB) error {
 //	FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit
 //
 // Without FORGE_MAIL_URL it returns recoveryDeliveryNotConfigured and false.
-// The SMTP sender delivers inline, so a reset request for an existing account
-// takes longer than one for an unknown account; in production put a
-// queue-backed mail.Sender in front of recoverymail (docs/MAIL.md).
+// Delivery runs on the recovery queue (see identityRoutes), off the request
+// path, so a slow mail server neither slows the page nor reveals accounts.
 // FORGE_MAIL_URL without FORGE_AUTH_PASSWORD_RESET_URL is a startup error, so
 // a half-configured deployment never advertises a reset it cannot send.
 func passwordRecoveryDelivery(app *forge.App) (auth.RecoverySender, bool, error) {

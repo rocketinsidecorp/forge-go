@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="app/bootstrap/assets/forge-go-logo.png" alt="Forge Go — Go Framework" width="280">
+  <img src="app/assets/forge-go-logo.png" alt="Forge Go — Go Framework" width="220">
 </p>
 
 # {{.Name}}
@@ -73,11 +73,39 @@ forge rollback                           # revert the latest migration
 Server-rendered pages live in `app/views`: `layouts/application.gohtml`
 wraps every page that defines a `content` block, partials are named
 `_NAME.gohtml` (`shared/_flash.gohtml` shows flash messages), and the
-stylesheet is `app/bootstrap/assets/application.css`. Build the renderer
+stylesheet is `app/assets/application.css`. Build the renderer
 once with `views.New()` and render pages with `RenderRequest`.
 `bootstrap.Configure` installs method override (`_method` in forms), CSRF
 protection (`{{"{{"}}csrfField{{"}}"}}` in every form) and flash messages
 for all routes. See the Forge views guide (`docs/VIEWS.md`).
+
+## JavaScript and styles
+
+There is no Node toolchain. Static files are embedded in the binary and
+served with content-digested names (`/assets/application-<digest>.css`) and
+immutable caching; Turbo and Stimulus are vendored by Forge and loaded
+through an import map (no inline scripts: the page policy allows the map by
+hash).
+
+| Path | Purpose |
+| ---- | ------- |
+| `app/assets/` | stylesheet and images (add the file name to the `go:embed` line in `assets.go`) |
+| `app/javascript/application.js` | entry point: `import "@hotwired/turbo"` and `import "controllers"` |
+| `app/javascript/controllers/` | Stimulus controllers, one `NAME_controller.js` each, registered in `index.js` |
+
+Add a Stimulus controller:
+
+```bash
+cp app/javascript/controllers/hello_controller.js app/javascript/controllers/clipboard_controller.js
+# then add to app/javascript/controllers/index.js:
+#   import ClipboardController from "controllers/clipboard_controller"
+#   application.register("clipboard", ClipboardController)
+```
+
+and use it in a template with `data-controller="clipboard"`. Files in
+`controllers/` are embedded and pinned automatically; rebuild (`forge dev`
+does) to serve a change under its new digested URL. Real-time updates:
+`forge generate scaffold NAME ... --broadcast` (see `docs/VIEWS.md`).
 {{- if and .DB .DB.Identity}}
 
 ## Sign in
@@ -254,6 +282,23 @@ Set `FORGE_TELEMETRY_SERVICE_NAME={{.Name}}` in deployments. Incoming
 than loopback, such as `0.0.0.0:9464` in a container, needs
 `FORGE_TELEMETRY_METRICS_PUBLIC=true`; never publish that port. See the Forge
 observability guide (docs/OBSERVABILITY.md) for every variable.
+
+## Credentials
+
+Secrets that do not belong in `.env` files live encrypted in
+`config/credentials/<environment>.json.enc`, which is committed. The key
+stays out of git: `config/credentials/development.key` (created by `forge new`,
+mode 0600) or the `FORGE_MASTER_KEY` variable in deployed environments.
+
+```bash
+forge credentials edit                          # edit development credentials in $EDITOR
+forge credentials show                          # structure only; values are redacted
+forge credentials init --environment production # new key and encrypted file for production
+FORGE_MASTER_KEY="$(cat config/credentials/production.key)"  # what the deployed app needs
+```
+
+Back up every key; without it the encrypted file cannot be read. Read values
+with `credentials.Open` from `github.com/rocketinsidecorp/forge-go/credentials`.
 
 ## Deploy
 

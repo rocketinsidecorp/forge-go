@@ -170,8 +170,9 @@ func isLoopback(host string) bool {
 // public request identically either way.
 func (s *Sender) SendPasswordRecovery(ctx context.Context, message auth.PasswordRecoveryMessage) error {
 	if _, err := mail.NewAddress("", message.Email); err != nil {
-		// Includes mail.ErrAddressUnsupported: an internationalised address
-		// can sign in (auth accepts it) but cannot receive mail from Forge.
+		// Includes mail.ErrAddressUnsupported: auth stores only ASCII
+		// logins (auth.CanonicalLogin), but an account provisioned before
+		// that rule can still hold an internationalised address.
 		return s.fail(ctx, "recipient", err, errors.New("recoverymail: recipient address cannot be used"))
 	}
 	token := message.Token.Reveal()

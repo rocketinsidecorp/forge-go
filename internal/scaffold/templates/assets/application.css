@@ -1,8 +1,9 @@
 /*
- * Application stylesheet, served at /assets/application.css and linked by
- * app/views/layouts/application.gohtml. Keep styles in files like this one:
- * the page Content-Security-Policy allows same-origin stylesheets only, so
- * inline style attributes and <style> elements are blocked.
+ * Application stylesheet, served with a digested name (/assets/application-
+ * <digest>.css) and linked by app/views/layouts/application.gohtml with
+ * stylesheetTag. Keep styles in files like this one: the page
+ * Content-Security-Policy allows same-origin stylesheets only, so inline style
+ * attributes and <style> elements are blocked.
  */
 :root {
 	color-scheme: light dark;

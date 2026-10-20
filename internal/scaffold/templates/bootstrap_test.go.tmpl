@@ -18,6 +18,10 @@ import (
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/web"
+
+{{- if not .DB}}
+	appassets "{{.Module}}/app/assets"
+{{- end}}
 {{- if .DB}}
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}/{{.DB.TestPackage}}"
@@ -42,7 +46,7 @@ func TestRoutes(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET %s status=%d body=%s", path, recorder.Code, recorder.Body.String())
 		}
-		if path == "/" && (!strings.Contains(recorder.Body.String(), "Welcome to {{.Name}}") || !strings.Contains(recorder.Body.String(), "/assets/forge-go-logo.png")) {
+		if path == "/" && (!strings.Contains(recorder.Body.String(), "Welcome to {{.Name}}") || !strings.Contains(recorder.Body.String(), `src="/assets/forge-go-logo-`)) {
 			t.Fatalf("welcome page is missing generated branding: %s", recorder.Body.String())
 		}
 		if path == "/" && recorder.Header().Get("Content-Security-Policy") != "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'" {
@@ -55,19 +59,50 @@ func TestRoutes(t *testing.T) {
 		t.Fatalf("GET /not-a-route status=%d body=%s", notFound.Code, notFound.Body.String())
 	}
 
+	bundle, err := appassets.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	logoPath, _ := bundle.Set.Path("forge-go-logo.png")
+	if !strings.Contains(welcomeBody(t, app), logoPath) {
+		t.Fatalf("the welcome page does not link the digested logo %s", logoPath)
+	}
 	logo := httptest.NewRecorder()
-	app.Handler().ServeHTTP(logo, httptest.NewRequest(http.MethodGet, "/assets/forge-go-logo.png", nil))
+	app.Handler().ServeHTTP(logo, httptest.NewRequest(http.MethodGet, logoPath, nil))
 	if logo.Code != http.StatusOK || logo.Header().Get("Content-Type") != "image/png" || len(logo.Body.Bytes()) < 8 {
 		t.Fatalf("GET logo status=%d content-type=%q bytes=%d", logo.Code, logo.Header().Get("Content-Type"), logo.Body.Len())
 	}
+	if logo.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Fatalf("logo Cache-Control = %q", logo.Header().Get("Cache-Control"))
+	}
 
+	stylesheetPath, _ := bundle.Set.Path("application.css")
 	stylesheet := httptest.NewRecorder()
-	app.Handler().ServeHTTP(stylesheet, httptest.NewRequest(http.MethodGet, "/assets/application.css", nil))
+	app.Handler().ServeHTTP(stylesheet, httptest.NewRequest(http.MethodGet, stylesheetPath, nil))
 	if stylesheet.Code != http.StatusOK || !strings.HasPrefix(stylesheet.Header().Get("Content-Type"), "text/css") || stylesheet.Header().Get("Set-Cookie") != "" {
 		t.Fatalf("GET stylesheet status=%d headers=%v", stylesheet.Code, stylesheet.Header())
 	}
+
+	// Only the digested names are served: no undigested name, no listing.
+	for _, path := range []string{"/assets/application.css", "/assets/", "/assets/forge-go-logo.png"} {
+		missing := httptest.NewRecorder()
+		app.Handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, path, nil))
+		if missing.Code != http.StatusNotFound {
+			t.Fatalf("GET %s status=%d, want 404", path, missing.Code)
+		}
+	}
 {{- end}}
 }
+
+{{- if not .DB}}
+
+func welcomeBody(t *testing.T, app *forge.App) string {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	return recorder.Body.String()
+}
+{{- end}}
 
 // TestBrowserPipelineRequiresCSRFToken drives the middleware Configure
 // installs: a form POST without the CSRF token is rejected, the same POST

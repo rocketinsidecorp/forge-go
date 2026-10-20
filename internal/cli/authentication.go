@@ -155,6 +155,14 @@ func authenticationWiring(plan authenticationPlan) string {
 		return err
 	}
 
+     Reset requests answer after at least 100 ms and are processed off the
+     request path. If your recovery service predates this release, build it as
+     forge new does: with auth.WithRecoveryDispatcher(recoveryQueue), a queue
+     from auth.NewRecoveryQueue that you Start with the service and stop with
+     app.OnShutdown (or auth/recoveryqueue on a persistent queue), and
+     authpostgres.NewRecoveryThrottler. Run migrate: the throttle table gained
+     a counter scope (docs/ACCOUNT_RECOVERY.md).
+
   3. Send signed-out browsers to the sign-in page instead of a JSON 401: guard
      HTML pages with
 

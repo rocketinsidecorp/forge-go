@@ -1,0 +1,20 @@
+// Package javascript embeds {{.Name}}'s JavaScript: application.js, the entry
+// point, and the Stimulus controllers in controllers/. There is no bundler and
+// no Node toolchain: package assets serves these files with digested names and
+// an import map, and the layout loads them with
+// {{"{{"}}javascriptImportmapTags "application"{{"}}"}}.
+package javascript
+
+import (
+	"embed"
+	"io/fs"
+)
+
+// files holds application.js and every file in controllers/. Files added to
+// controllers/ are picked up by the pattern and pinned in the import map.
+//
+//go:embed application.js controllers/*.js
+var files embed.FS
+
+// Files returns the embedded JavaScript, rooted at app/javascript.
+func Files() fs.FS { return files }

@@ -75,9 +75,10 @@ func currentCommandCatalog() commandCatalog {
 				{Name: "--skip-deps", Description: "Do not resolve Go dependencies."},
 			},
 		},
-		{Name: "dev", Usage: "forge dev [NAME]", Summary: "Run the application in development mode.", SideEffects: []string{"subprocess", "application_defined"}, Examples: []string{"forge dev", "forge dev api"}, Environment: runtimeEnvironment()},
+		devCommandDetail(),
 		{Name: "test", Usage: "forge test [ARGS]", Summary: "Run Go tests with Forge environment files loaded.", SideEffects: []string{"subprocess", "application_defined"}, Examples: []string{"forge test", "forge test ./... -run TestHealth"}, Environment: testEnvironment()},
 		{Name: "build", Usage: "forge build [NAME]", Summary: "Build the application binary under bin/.", SideEffects: []string{"filesystem_write", "subprocess"}, Examples: []string{"forge build", "forge build worker"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "The Go build subprocess inherits the caller environment; Forge .env files are not loaded."}},
+		dbCommandDetail(),
 		{Name: "migrate", Usage: "forge migrate [status]", Summary: "Apply pending migrations or report migration status.", SideEffects: []string{"database_write", "database_read"}, Examples: []string{"forge migrate", "forge migrate status"}, Environment: runtimeEnvironment()},
 		{
 			Name: "rollback", Usage: "forge rollback [-steps N]",
@@ -122,7 +123,30 @@ func currentCommandCatalog() commandCatalog {
 				{Name: "--dry-run", Description: "Read-only: print exact planned paths without creating directories or files."},
 				{Name: "--tenant-scoped", Description: "resource and scaffold: rows belong to one tenant (tenant_id bound in every statement; PostgreSQL also enables row-level security)."},
 				{Name: "--global", Description: "resource and scaffold: rows are shared by all tenants."},
+				{Name: "--broadcast", Description: "scaffold only: publish created, updated and deleted rows to open index pages as Turbo Streams over Server-Sent Events (adds app/adapters/htmlstreams, the _item partial and the live-update wiring)."},
 				{Name: "--plural", Value: "PLURAL", Description: "resource and scaffold: snake_case plural used for the table and routes (default: built-in English rules)."},
+			},
+		},
+		{
+			Name: "credentials", Usage: "forge credentials <init|edit|show|rotate-key> [--environment E] [flags]",
+			Summary:     "Manage encrypted per-environment credentials (config/credentials/ENV.json.enc, AES-256-GCM): create a key and skeleton, edit in $VISUAL/$EDITOR, show redacted or revealed, rotate the key.",
+			SideEffects: []string{"filesystem_read", "filesystem_write", "subprocess", "interactive_input"},
+			Examples: []string{
+				"forge credentials init --environment production", "forge credentials edit --environment production",
+				"forge credentials show", "forge credentials show --environment production --reveal",
+				"forge credentials rotate-key --environment production --print-key --keep-old",
+			},
+			Environment: environmentInfo{
+				Files:     []string{"config/credentials/ENV.json.enc", "config/credentials/ENV.key", ".gitignore"},
+				Variables: []string{"FORGE_MASTER_KEY", "FORGE_ENV", "VISUAL", "EDITOR"},
+				Notes:     "The key is read from FORGE_MASTER_KEY, else config/credentials/ENV.key, which must be mode 0600 and is added to .gitignore by init. `edit` decrypts to a 0600 file in a private temporary directory (memory-backed on Linux), runs the editor without a shell, validates the JSON and re-encrypts atomically; the temporary directory is overwritten and removed on every exit path except SIGKILL. `show` redacts every value unless --reveal, which refuses to run unless standard output is a terminal. `rotate-key` re-encrypts with a new random key and needs --print-key or a key file to store it in; the key is never printed unless asked.",
+			},
+			Flags: []flagDetail{
+				{Name: "--environment", Value: "ENV", Default: "$FORGE_ENV or development", Description: "Environment whose credentials to use (also -e)."},
+				{Name: "--reveal", Description: "show: print values; requires an interactive terminal."},
+				{Name: "--keep-old", Description: "rotate-key: keep the previous keys readable alongside the new one (migration window)."},
+				{Name: "--print-key", Description: "rotate-key: print the new key list to standard output, for a secret manager."},
+				{Name: "--write-key-file", Description: "rotate-key: store the new key in the key file even when the current key came from FORGE_MASTER_KEY."},
 			},
 		},
 		{Name: "doctor", Usage: "forge doctor [--json]", Summary: "Validate local Forge configuration and show redacted diagnostics.", SideEffects: []string{"environment_read", "filesystem_read"}, Examples: []string{"forge doctor", "forge doctor --json"}, Environment: configEnvironment("Checks configuration values and intentionally omits their contents from JSON output."), Flags: []flagDetail{{Name: "--json", Description: "Print schema-versioned diagnostics with stable remediation codes."}}},
@@ -139,6 +163,7 @@ func currentCommandCatalog() commandCatalog {
 		{Name: "version", Usage: "forge version", Summary: "Print the Forge version.", SideEffects: []string{"read_only"}, Examples: []string{"forge version"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}},
 		{Name: "help", Usage: "forge help [--json]", Summary: "Show human-readable help or the versioned command catalog.", SideEffects: []string{"read_only"}, Examples: []string{"forge help", "forge help --json"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}, Flags: []flagDetail{{Name: "--json", Description: "Print the stable machine-readable command catalog."}}},
 	}
+	commands = append(commands, deployCommandDetails()...)
 	for i := range commands {
 		if commands[i].Examples == nil {
 			commands[i].Examples = []string{}
@@ -149,21 +174,21 @@ func currentCommandCatalog() commandCatalog {
 		if commands[i].Environment.Variables == nil {
 			commands[i].Environment.Variables = []string{}
 		}
-		commands[i].ExitCodes = []exitCodeDetail{
+		commands[i].ExitCodes = append([]exitCodeDetail{
 			{Code: 0, Meaning: "The command completed successfully."},
 			{Code: 1, Meaning: "The command failed, its arguments or configuration were invalid, or delegated application work failed."},
-		}
+		}, commands[i].ExitCodes...)
 	}
 	return commandCatalog{
 		SchemaVersion: 1,
 		Name:          "forge",
 		Version:       version.Version,
 		GlobalOptions: []flagDetail{{Name: jsonErrorFormatFlag, Description: "Emit schema-versioned, secret-safe errors on stderr when a command fails."}},
-		ProcessExitCodes: []exitCodeDetail{
+		ProcessExitCodes: append([]exitCodeDetail{
 			{Code: 0, Meaning: "The requested command completed successfully."},
 			{Code: 1, Meaning: "A command failed or its arguments/configuration were invalid."},
 			{Code: 2, Meaning: "No command was supplied or the top-level command is unknown."},
-		},
+		}, deployExitCodes...),
 		Commands: commands,
 	}
 }
@@ -176,7 +201,7 @@ func runtimeEnvironment() environmentInfo {
 			"FORGE_HTTP_READ_HEADER_TIMEOUT", "FORGE_HTTP_READ_TIMEOUT", "FORGE_HTTP_WRITE_TIMEOUT", "FORGE_HTTP_IDLE_TIMEOUT", "FORGE_HTTP_SHUTDOWN_TIMEOUT",
 			"FORGE_HTTP_MAX_HEADER_BYTES", "FORGE_HTTP_MAX_BODY_BYTES", "FORGE_DATABASE_URL", "FORGE_DATABASE_MAX_CONNS", "FORGE_DATABASE_MIN_CONNS",
 			"FORGE_DATABASE_MAX_CONN_LIFETIME", "FORGE_DATABASE_MAX_CONN_IDLE_TIME", "FORGE_DATABASE_CONNECT_TIMEOUT", "FORGE_DATABASE_STATEMENT_TIMEOUT",
-			"FORGE_DATABASE_ALLOW_PLAINTEXT", "FORGE_AUTH_MFA_KEY", "FORGE_AUTH_PASSWORD_RESET_URL",
+			"FORGE_DATABASE_ALLOW_PLAINTEXT", "FORGE_AUTH_MFA_KEY", "FORGE_AUTH_PASSWORD_RESET_URL", "FORGE_MASTER_KEY",
 		},
 		Notes: "The process environment overrides .env.local, which overrides .env.development. Values are passed to the generated application.",
 	}

@@ -52,12 +52,23 @@ func TestGenerateViewAddsAPageToTheSharedViewTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The page, the views package and its layout, and what the layout loads:
+	// the asset bundle (app/assets) and the JavaScript (app/javascript).
 	want := []string{
 		filepath.Join("app", "views", "pages", "welcome.gohtml"),
+		filepath.Join("app", "assets", "assets.go"),
+		filepath.Join("app", "assets", "assets_test.go"),
+		filepath.Join("app", "javascript", "javascript.go"),
 		filepath.Join("app", "views", "views.go"),
 		filepath.Join("app", "views", "views_test.go"),
 		filepath.Join("app", "views", "layouts", "application.gohtml"),
 		filepath.Join("app", "views", "shared", "_flash.gohtml"),
+		filepath.Join("app", "assets", "forge-go-logo.png"),
+		filepath.Join("app", "assets", "application.css"),
+		filepath.Join("app", "javascript", "application.js"),
+		filepath.Join("app", "javascript", "controllers", "application.js"),
+		filepath.Join("app", "javascript", "controllers", "index.js"),
+		filepath.Join("app", "javascript", "controllers", "hello_controller.js"),
 	}
 	if strings.Join(paths, "|") != strings.Join(want, "|") {
 		t.Fatalf("generated paths = %v, want %v", paths, want)
@@ -68,11 +79,11 @@ func TestGenerateViewAddsAPageToTheSharedViewTree(t *testing.T) {
 			t.Fatalf("generated page is missing %q: %s", fragment, page)
 		}
 	}
-	viewsGo := readFile(t, filepath.Join(root, paths[1]))
-	if !strings.Contains(viewsGo, "//go:embed */*.gohtml") || !strings.Contains(viewsGo, "func New()") {
+	viewsGo := readFile(t, filepath.Join(root, "app", "views", "views.go"))
+	if !strings.Contains(viewsGo, "//go:embed */*.gohtml") || !strings.Contains(viewsGo, "func New(") {
 		t.Fatalf("views package does not embed the view tree: %s", viewsGo)
 	}
-	if layout := readFile(t, filepath.Join(root, paths[3])); !strings.Contains(layout, `{{block "content" .}}`) || !strings.Contains(layout, "<title>{{block \"title\" .}}shop{{end}}</title>") {
+	if layout := readFile(t, filepath.Join(root, "app", "views", "layouts", "application.gohtml")); !strings.Contains(layout, `{{block "content" .}}`) || !strings.Contains(layout, "<title>{{block \"title\" .}}shop{{end}}</title>") {
 		t.Fatalf("layout = %s", layout)
 	}
 

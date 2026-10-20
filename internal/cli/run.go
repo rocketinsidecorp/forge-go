@@ -21,11 +21,6 @@ import (
 // after an interrupt; it exceeds the default HTTP shutdown timeout.
 const appShutdownGrace = 35 * time.Second
 
-// runDev serves the application with development settings.
-func runDev(args []string, stdout, stderr io.Writer) error {
-	return runAppCommand(args, nil, stdout, stderr)
-}
-
 // runMigrate and runRollback delegate to the application binary's own
 // commands, so development and production share one implementation.
 func runMigrate(args []string, stdout, stderr io.Writer) error {

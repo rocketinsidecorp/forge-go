@@ -363,6 +363,27 @@ otherwise):
   runs vet, build, the generated tests and migrate/rollback; Docker smoke
   checks run in CI.)
 
+## Developer loop (Rails parity)
+
+[ADR 0035](adr/0035-development-loop.md); commands in the
+[README](../README.md#development-loop).
+
+- [x] M4: `forge dev` watches Go sources, templates, assets, migrations and
+  `.env.*` files with a bounded polling watcher, rebuilds, keeps the old process
+  serving until the build succeeds, restarts it gracefully (SIGTERM, wait) and
+  reports build errors without stopping the application; `--no-reload`,
+  `--poll-interval`, `--debounce`.
+- [x] M4: browser reload in development only, through a proxy inside the forge
+  CLI that injects a same-origin script (CSP nonce when needed) and streams
+  reload and build-error events; nothing is compiled into applications.
+- [x] M4: `forge db create|drop|reset|setup|prepare|migrate|rollback|status|
+  seed|schema:dump|schema:load|console` for PostgreSQL, MySQL/MariaDB and
+  SQLite, with a production guard, credentials kept out of arguments and a
+  deterministic `db/schema.sql`.
+- [ ] Partial hot swap for template and asset changes without a rebuild;
+  `forge stats`; a Procfile-style `bin/dev` that also runs background
+  processes.
+
 ## Server-rendered HTML (Rails parity)
 
 Rails-style HTML CRUD on the standard-library core
@@ -384,10 +405,18 @@ Rails-style HTML CRUD on the standard-library core
 - [x] G1b: `forge generate scaffold` (HTML resource on top of the above); a
   test generates a tenant-scoped and a global scaffold per database, wires
   them as printed, and vets, builds, lints and tests the application.
+- [x] M5 Hotwire ([ADR 0029](adr/0029-hotwire-assets-and-live-updates.md)):
+  digested embedded assets and an import map allowed by CSP hash, vendored
+  integrity-pinned Turbo 8.0.23 and Stimulus 3.2.2, `app/javascript` with a
+  hello controller, Turbo Stream responses (`turbo`), real-time broadcasts over
+  Server-Sent Events with HMAC-signed, tenant-scoped, expiring channel names
+  (`broadcast`), PostgreSQL LISTEN/NOTIFY fan-out across replicas
+  (`broadcast/postgres`), and `forge generate scaffold --broadcast`.
+- [ ] Hotwire follow-ups: replay of missed messages, WebSocket transport,
+  Turbo Frame helpers, morphing/page refreshes, a controller generator.
 - [ ] Multipart HTML forms (`csrf.Protection` reads urlencoded bodies only;
   upload routes send the token in `X-CSRF-Token`, see
-  [STORAGE.md](STORAGE.md)), per-page layout selection, fingerprinted assets,
-  Turbo/Hotwire. (The upload helper and file storage themselves are done; see
+  [STORAGE.md](STORAGE.md)), per-page layout selection. (The upload helper and file storage themselves are done; see
   "Runtime services".)
 
 ## Runtime services (Rails 8 parity)
@@ -423,6 +452,56 @@ cache) and a conformance suite
   rate limit, a `forge generate` attachment helper), image variants, malware
   scanning hook, cache tags/pattern invalidation, a distributed cache lock.
 
+## Deployment (Kamal parity)
+
+`forge deploy`, `forge logs`, `forge app` and forge-proxy
+([ADR 0030](adr/0030-forge-deploy.md),
+[DEPLOYMENT.md](DEPLOYMENT.md#forge-deploy)).
+
+- [x] Strict `config/deploy.yml`, `.forge/secrets` with environment
+  passthrough, 0600 env files on hosts, redaction of every output.
+- [x] `setup`, `deploy`, `rollback`, `prune`, `details`, `lock`,
+  `maintenance`, `init`; `--dry-run` and `--json`; stable exit codes; hooks.
+- [x] All-or-nothing health-gated switch with automatic revert; migration
+  before any switch; retained versions.
+- [x] forge-proxy: host routing, atomic switch with draining, ACME TLS,
+  body limits, maintenance page, JSON access logs, persisted state; a test
+  switches targets under concurrent load without a failed request.
+- [x] Integration tests over real `sshd` with a docker shim (deploy,
+  migration failure, partial health failure, lock contention, rollback,
+  prune, log streaming and cancellation, exec, dry run).
+- [ ] End-to-end test against a Docker daemon in CI (build and run the
+  forge-proxy image, deploy a generated application).
+- [ ] Static TLS certificates, several proxied roles, accessory
+  upgrade/reboot commands, proxy image upgrade without a restart gap,
+  `destinations` (staging/production files).
+
+## Secrets (Rails credentials and Active Record Encryption parity)
+
+Encrypted per-environment credentials and attribute encryption on the
+standard-library core ([ADR 0036](adr/0036-encrypted-credentials-and-attribute-encryption.md)).
+
+- [x] `credentials`: `config/credentials/<env>.json.enc` (AES-256-GCM, versioned
+  envelope, key id; environment, version and key id authenticated), key from
+  `FORGE_MASTER_KEY` or a 0600 git-ignored `<env>.key`, typed `Store`
+  (`String`, `Secret`, `Decode`, `KeyRing`), fail-fast `Required` credentials
+  outside development and test ([CREDENTIALS.md](CREDENTIALS.md)).
+- [x] `forge credentials init | edit | show | rotate-key`: private temporary
+  directory shredded on every exit path, JSON validation, atomic write,
+  redacted `show`, `--reveal` only on a terminal, safe key rotation.
+- [x] `encryption`: key rings with HKDF-derived per-purpose keys, randomized
+  AES-256-GCM bound to table, column and record id, opt-in HMAC blind index,
+  `Value[T]` (`sql.Scanner`/`driver.Valuer`), batch resumable `Reencrypt` with
+  database/sql and pgx rewriters ([ENCRYPTION.md](ENCRYPTION.md)).
+- [x] `forge new` creates the development credentials and ignores their key.
+- [ ] `forge generate scaffold NAME ssn:string:encrypted`: generated persistence
+  that encrypts the column with `encryption.Value`, optional blind index and the
+  migration; touches the domain, persistence and view generators.
+- [ ] A KMS-backed `encryption` key source (envelope encryption with per-record
+  data keys) as an adapter.
+- [ ] `forge credentials` check that no `*.key` file is tracked by git.
+- [ ] Multi-key `auth.SecretCipher` for MFA seeds on `encryption.Cipher`.
+
 ## Phase 9 - Performance
 
 Benchmarks, profiling, and allocation work on hot paths (router, middleware,
@@ -435,5 +514,4 @@ supply-chain hardening (pinned base images and actions, SBOM, signed images).
 
 ## Also planned (unscheduled)
 
-- Kamal-style deploy configuration.
 - Dev container definition.

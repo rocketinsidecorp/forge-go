@@ -68,6 +68,11 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())",
 			"auth.NewLoginService(",
 			"auth.WithSecurityAuditor(repository)",
+			"authpostgres.NewRecoveryThrottler(database)",
+			"auth.NewRecoveryQueue(auth.RecoveryQueueConfig{Logger: app.Logger()})",
+			"auth.WithRecoveryDispatcher(recoveryQueue)",
+			"app.OnShutdown(recoveryQueue.Shutdown)",
+			"recoveryQueue.Start(recoveryService)",
 			"password recovery delivery is not configured",
 			"auth.NewAESGCMSecretCipherBase64(app.Config().Auth.MFAKey.Reveal())",
 			"auth.NewMFAService(",
@@ -392,7 +397,7 @@ func TestGenerateServerRenderedHTML(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, required := range []string{"app/views/views.go", "app/views/views_test.go", "app/views/layouts/application.gohtml", "app/views/shared/_flash.gohtml", "app/bootstrap/assets/application.css"} {
+			for _, required := range []string{"app/views/views.go", "app/views/views_test.go", "app/views/layouts/application.gohtml", "app/views/shared/_flash.gohtml", "app/assets/application.css", "app/assets/forge-go-logo.png", "app/assets/assets.go", "app/assets/assets_test.go", "app/javascript/javascript.go", "app/javascript/application.js", "app/javascript/controllers/index.js", "app/javascript/controllers/application.js", "app/javascript/controllers/hello_controller.js"} {
 				if !contains(paths, filepath.FromSlash(required)) {
 					t.Fatalf("missing %s in %v", required, paths)
 				}
@@ -402,19 +407,25 @@ func TestGenerateServerRenderedHTML(t *testing.T) {
 					`<html lang="en">`,
 					`<title>{{block "title" .}}shop{{end}}</title>`,
 					"{{csrfMeta}}",
-					`<link rel="stylesheet" href="/assets/application.css">`,
+					`{{stylesheetTag "application"}}`,
+					`{{javascriptImportmapTags "application"}}`,
 					`<a class="skip-link" href="#main">`,
 					`{{template "shared/_flash" .}}`,
 					`{{block "content" .}}{{end}}`,
 				},
-				"app/views/shared/_flash.gohtml": {"{{range flashes}}", `role="{{if eq .Kind "alert"}}alert{{else}}status{{end}}"`, "{{.Text}}"},
-				"app/views/views.go":             {"//go:embed */*.gohtml", "forgeviews.Load(files, forgeviews.Options{})"},
-				"app/bootstrap/welcome.go":       {"//go:embed assets/forge-go-logo.png assets/application.css"},
+				"app/views/shared/_flash.gohtml":      {"{{range flashes}}", `role="{{if eq .Kind "alert"}}alert{{else}}status{{end}}"`, "{{.Text}}"},
+				"app/views/views.go":                  {"//go:embed */*.gohtml", "forgeviews.Load(files, opts)", "hotwire.StyleHashes()", "func WithStreams("},
+				"app/assets/assets.go":                {"//go:embed application.css forge-go-logo.png", "hotwire.Files()", `forgeassets.PinAllFrom(set, "controllers")`},
+				"app/javascript/javascript.go":        {"//go:embed application.js controllers/*.js"},
+				"app/javascript/application.js":       {`import "@hotwired/turbo"`, `import "controllers"`},
+				"app/javascript/controllers/index.js": {`application.register("hello", HelloController)`},
+				"app/bootstrap/welcome.go":            {`<meta name="turbo-visit-control" content="reload">`, "@@LOGO@@"},
 				"app/bootstrap/bootstrap.go": {
 					"if err := useBrowserPipeline(app); err != nil {",
 					"csrf.New(csrf.Options{})",
 					"[]func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash}",
 					"app.Use(middleware)",
+					`app.Handle("GET /assets/", bundle.Set.Handler())`,
 				},
 				"app/bootstrap/bootstrap_test.go": {"func TestBrowserPipelineRequiresCSRFToken(t *testing.T) {"},
 			})
@@ -519,7 +530,7 @@ func TestAuthenticationFilesMatchForgeNew(t *testing.T) {
 			t.Errorf("%s differs between forge new and AuthenticationFiles", file.Path)
 		}
 	}
-	base, err := scaffold.ViewBase("shop")
+	base, err := scaffold.ViewBase("shop", "example.com/shop")
 	if err != nil {
 		t.Fatal(err)
 	}

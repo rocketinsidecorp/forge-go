@@ -194,7 +194,7 @@ before routing from `Configure`; it freezes after the first request, like
 the router.
 
 `forge new` generates `app/views` (embedded views package, application
-layout, flash partial, tests) and `app/bootstrap/assets/application.css`,
+layout, flash partial, tests) and `app/bootstrap/assets/application.css` (moved to `app/assets` by [ADR 0029](0029-hotwire-assets-and-live-updates.md)),
 and `Configure` installs `web.MethodOverride`, `csrf.Protection.Handler` and
 `web.Flash`, in that order, for every database option. `forge routes` prints
 the statically discovered routes, including the routes of `Resources` calls.
@@ -216,5 +216,6 @@ the statically discovered routes, including the routes of `Resources` calls.
 - Rendering a page clones its template set the first time each pooled
   instance is used; the pool keeps escaped clones for reuse.
 - Not yet provided: multipart forms and file uploads, per-page layout
-  selection, digested or fingerprinted assets, Turbo/Hotwire, and
-  `flash.now`-style messages for the current request.
+  selection, and `flash.now`-style messages for the current request.
+  Digested assets, Turbo and Stimulus arrived with
+  [ADR 0029](0029-hotwire-assets-and-live-updates.md).

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="internal/scaffold/templates/assets/forge-go-logo.png" alt="Forge Go — Go Framework" width="220">
+</p>
+
 # Forge
 
 Forge is a Go framework for building HTTP services on PostgreSQL, MySQL,
@@ -50,6 +54,8 @@ Core packages import only the standard library and each other; a test
 | `agent`      | Provider-neutral allowlisted action pipeline with policy, validation, principal permissions, explicit approval and mandatory journaling |
 | `tenancy`    | Fail-closed tenant context; used by authentication and tenant-aware database transactions |
 | `config`     | Environment configuration with fail-fast validation; database selection by URL scheme; `config.Secret` for redacted values |
+| `credentials` | Encrypted per-environment credentials (`config/credentials/<env>.json.enc`, AES-256-GCM, key from `FORGE_MASTER_KEY` or a git-ignored key file), typed `Store`, fail-fast required credentials; `forge credentials edit` |
+| `encryption` | Attribute encryption with key rotation: randomized AES-256-GCM bound to table, column and record id, key rings, opt-in HMAC blind index, `Value[T]` for `database/sql`, resumable batch re-encryption |
 | `router`     | Route registry on `net/http.ServeMux` (Go 1.22 patterns), frozen after the first request; JSON `400`/`404`/`405`; conventional `Resources` routes |
 | `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown, and composable application middleware |
 | `web`        | JSON responses, the single error format, strict JSON and form decoding, safe redirects, content negotiation, flash messages, method override, request ID and request-scoped logger |
@@ -82,7 +88,9 @@ Adapter packages (third-party dependencies allowed):
 | `postgres/postgrestest`, `mysql/mysqltest`, `sqlite/sqlitetest` | A fresh database per test |
 
 An application links only the adapter it imports. The `forge` CLI lives in
-`cmd/forge`.
+`cmd/forge`; the deploy proxy, forge-proxy, in `cmd/forge-proxy` (its
+`go.yaml.in/yaml/v3` and `golang.org/x/crypto` dependencies are not linked
+into applications, [ADR 0030](docs/adr/0030-forge-deploy.md)).
 
 ## Quickstart
 
@@ -116,12 +124,55 @@ Running the application outside Docker (server databases):
 
 ```sh
 docker compose up -d postgres   # or mysql, mariadb
-forge migrate
-forge dev
+forge db prepare                # create the database if missing, then migrate (and seed a new one)
+forge dev                       # rebuilds, restarts and reloads the browser when files change
 ```
 
-With SQLite, `forge migrate` and `forge dev` use `storage/development.db`
+With SQLite, `forge db prepare` and `forge dev` use `storage/development.db`
 directly.
+
+### Development loop
+
+```sh
+forge dev                        # http://127.0.0.1:8080, reloads on save
+forge dev --poll-interval 1s     # scan less often (large trees, slow disks)
+forge dev --no-reload            # build and run once, no watching
+
+forge db setup                   # create + migrate + seed
+forge db prepare                 # setup if the database is missing, else migrate (safe to repeat)
+forge db reset                   # drop + setup: a clean development database
+forge db status                  # applied / pending migrations
+forge db rollback -steps 1
+forge db schema:dump             # write db/schema.sql (pg_dump, mysqldump or sqlite3 on PATH)
+forge db schema:load             # load db/schema.sql into an existing, empty database (CI, tests)
+forge db console                 # psql, mysql or sqlite3 on the application's database
+forge db console -- -c 'select count(*) from forge_schema_migrations'
+```
+
+`forge dev` watches Go sources, templates, assets, migrations and
+`.env.development`/`.env.local`. The old process keeps serving until the new
+build succeeds, then gets `SIGTERM` and is replaced; build errors are printed
+and shown over the page, and the running app is not stopped. With
+`FORGE_ENV=development` (the default under `forge dev`) the forge process
+listens on `FORGE_HTTP_ADDR` as a development-only proxy, runs the application
+on a private loopback port and injects the reload script into HTML pages; the
+page's Content-Security-Policy gets a per-response nonce only if it would block
+that one script. Nothing of this is in your application binary
+([ADR 0035](docs/adr/0035-development-loop.md), [Database](docs/DATABASE.md#database-lifecycle-forge-db)).
+
+`drop`, `reset`, `schema:load` and `rollback` are refused unless the database is
+local and `FORGE_ENV` is `development` or `test`: in production and staging, and
+for any server that is not on this machine, you must pass `--force-production`
+and either type the database name at the prompt or pass `--yes` with
+`FORGE_ALLOW_DESTRUCTIVE=true` in the process environment:
+
+```sh
+FORGE_ALLOW_DESTRUCTIVE=true forge db drop --force-production --yes
+```
+
+`FORGE_MIGRATION_DATABASE_URL` optionally names a privileged role for
+`create`, `drop`, `schema:*` and `console`; the database itself always comes
+from `FORGE_DATABASE_URL`.
 
 ### Sign in (PostgreSQL)
 
@@ -170,6 +221,18 @@ FORGE_MAIL_URL=file:tmp/mail
 FORGE_MAIL_FROM="myapp <no-reply@example.com>"
 FORGE_AUTH_PASSWORD_RESET_URL=http://localhost:8080/passwords/edit
 ENV
+```
+
+Logins are ASCII email addresses (`setup` refuses others) and the reset page
+answers at once, no sooner than 100 ms: the email is issued and sent a moment
+later by a bounded queue the application owns. After upgrading an existing
+application, run `forge migrate` (the login throttle gains a counter) and list
+accounts whose stored login is not ASCII, which can no longer sign in
+([docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#canonical-logins)):
+
+```sh
+forge migrate
+psql "$FORGE_DATABASE_URL" -c "SELECT id, email FROM forge_users WHERE email_normalized !~ '^[!-~]+\$' OR email_normalized <> lower(email_normalized)"
 ```
 
 In production set `FORGE_MAIL_URL=smtps://user:password@smtp.example.com:465`
@@ -282,15 +345,62 @@ configured for production behind a TLS-terminating proxy. See
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
 [docs/DATABASE.md](docs/DATABASE.md).
 
+## Credentials and attribute encryption
+
+Rails' `credentials:edit` and Active Record Encryption, with the sharp edges
+removed. `forge new` already created `config/credentials/development.json.enc`
+(committed) and `development.key` (git-ignored, mode 0600).
+
+```sh
+forge credentials edit                                   # edit development secrets in $EDITOR
+forge credentials show                                   # structure only; values redacted
+forge credentials init --environment production          # new key + encrypted file
+forge credentials edit --environment production
+forge credentials show --environment production --reveal # needs an interactive terminal
+git add config/credentials/production.json.enc           # the key file is ignored
+
+# deploy: the server needs only the key
+docker run --rm -p 8080:8080 -e FORGE_ENV=production \
+  -e FORGE_MASTER_KEY="$(cat config/credentials/production.key)" myapp
+
+# rotate the key, keeping the old one readable while deployments catch up
+forge credentials rotate-key --environment production --keep-old --print-key
+```
+
+Read secrets in the composition root, failing at startup if one is missing:
+
+```go
+creds, err := credentials.Open(string(cfg.Environment), credentials.Options{
+	Required: []string{"stripe.api_key"}, // enforced outside development and test
+})
+stripeKey, err := creds.Secret("stripe", "api_key") // config.Secret: prints as [REDACTED]
+```
+
+Encrypt a column (the ciphertext is bound to table, column and row, so it cannot
+be moved to another row; `ssn` is a `TEXT` column):
+
+```go
+ring, _ := creds.KeyRing("encryption")        // created by `init`
+cipher, _ := encryption.NewCipher(ring)
+ssn := encryption.NewValue[string](cipher, "people", "ssn").ForRecord(id.String())
+ssn.Set("123-45-6789")
+_, err = db.Exec(ctx, `INSERT INTO people (id, ssn) VALUES ($1, $2)`, id, ssn)
+```
+
+Key rotation, blind indexes for exact-match search and batch re-encryption are
+in [docs/ENCRYPTION.md](docs/ENCRYPTION.md); the credentials workflow, CI and
+rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
+
 ## CLI
 
 | Command | Description |
 | ------- | ----------- |
 | `forge new NAME [--database DB] [--module PATH] [--dir DIR] [--framework-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
-| `forge dev [NAME]` | Build `./cmd/<name>` into a temporary directory and run it, forwarding interrupts for graceful shutdown |
+| `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
-| `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command |
+| `forge db COMMAND` | Database lifecycle like Rails' `db:*`: `create`, `drop`, `reset`, `setup`, `prepare`, `migrate`, `rollback`, `status`, `seed`, `schema:dump`, `schema:load`, `console`; see [Development loop](#development-loop) |
+| `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command (same as `forge db migrate`) |
 | `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step) |
 | `forge setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | PostgreSQL: create the first organization, tenant and owner account; the password is prompted for (or piped, or `FORGE_SETUP_PASSWORD`), never an argument; refuses once a tenant exists |
 | `forge seed` | Run the application's `seed` command: `db.Seed` in one transaction |
@@ -298,8 +408,12 @@ configured for production behind a TLS-terminating proxy. See
 | `forge generate view [DIR/]NAME [--dry-run]` | Create or preview a server-rendered page, `app/views/DIR/NAME.gohtml` (DIR defaults to `pages`), in the layout `forge new` generates |
 | `forge generate job NAME [--dry-run]` | Create or preview a cancellation-aware recurring job stub and tests; registration and schedule remain explicit |
 | `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
-| `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests. Never public: see below |
+| `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--broadcast] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests; `--broadcast` adds live updates over Server-Sent Events. Never public: see below |
 | `forge generate authentication [--dry-run]` | PostgreSQL: add the sign-in, sign-out, two-factor and password-reset pages `forge new` generates to an application that lacks them, and print their wiring; other databases are refused (identity persistence is PostgreSQL-only) |
+| `forge deploy [init\|setup\|rollback VERSION\|prune\|details\|lock\|maintenance] [--dry-run] [--json]` | Deploy the image to your servers over SSH with zero-downtime switches through forge-proxy, Kamal-style: see [Deploy](#deploy) |
+| `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream container logs from every host, prefixed `host\|` |
+| `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...`, `forge app shell [--image IMAGE]` | Run a command or a shell next to the deployed application |
+| `forge credentials init \| edit \| show \| rotate-key [--environment E]` | Encrypted credentials: create a key and skeleton, edit in `$EDITOR` (plaintext shredded on every exit path), show redacted (`--reveal` on a terminal only), rotate the key. See [docs/CREDENTIALS.md](docs/CREDENTIALS.md) |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes` | Read-only table of the routes found in the source (including `Resources` routes) and Forge's health routes |
@@ -308,7 +422,7 @@ configured for production behind a TLS-terminating proxy. See
 | `forge version` | Print CLI version, commit, and build date |
 
 `NAME` for `dev` and `build` is needed only if `cmd/` has several commands.
-`migrate`, `rollback`, `setup` and `seed` require exactly one.
+`migrate`, `rollback`, `setup`, `seed` and `db` require exactly one.
 
 Flags for `forge new`:
 
@@ -385,7 +499,7 @@ database (`FORGE_TEST_DATABASE_URL`, set by `.env.development`) and fail instead
 of skipping when `FORGE_TEST_REQUIRE_DATABASE=true`.
 
 `forge generate scaffold NAME field:type... (--tenant-scoped | --global)
-[--plural PLURAL] [--dry-run]` is `forge generate resource` plus the HTML
+[--plural PLURAL] [--broadcast] [--dry-run]` is `forge generate resource` plus the HTML
 pages, the equivalent of `rails g scaffold`. It takes exactly the same
 arguments, writes exactly the same resource files, and adds:
 
@@ -408,12 +522,99 @@ cookie rather than a bearer token and sends signed-out browsers to the
 sign-in page. On PostgreSQL the migration also grants the new permissions to
 the `owner` role `forge setup` creates. See [docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud).
 
+### Hotwire: JavaScript, Turbo and live updates
+
+Generated applications are full-stack like Rails 8, without Node. Static files
+are embedded and served with digested, immutable URLs; Turbo and Stimulus are
+vendored by Forge (pinned by SHA-256, licences retained) and loaded through an
+import map that the strict Content-Security-Policy allows by hash. Forms and
+links work under Turbo Drive with no changes.
+
+```sh
+forge new myapp && cd myapp
+cat app/javascript/application.js                       # import "@hotwired/turbo"; import "controllers"
+cat app/javascript/controllers/hello_controller.js      # a Stimulus controller
+curl -s localhost:8080/session/new | grep -E 'importmap|modulepreload|stylesheet'   # with forge dev running (PostgreSQL)
+
+# add a Stimulus controller
+cp app/javascript/controllers/hello_controller.js app/javascript/controllers/clipboard_controller.js
+#   in app/javascript/controllers/index.js:
+#     import ClipboardController from "controllers/clipboard_controller"
+#     application.register("clipboard", ClipboardController)
+#   in a template: <div data-controller="clipboard"> ... </div>
+```
+
+Real-time updates: Turbo Streams pushed to every open page over
+Server-Sent Events, with signed, tenant-scoped channel names, and PostgreSQL
+`LISTEN/NOTIFY` to reach every replica:
+
+```sh
+export FORGE_STREAMS_KEY=$(openssl rand -base64 32)     # required in staging and production
+forge generate scaffold post title:string body:text --tenant-scoped --broadcast
+forge migrate
+forge test                                              # includes an end-to-end event stream test on PostgreSQL
+```
+
+Paste the printed wiring into `app/bootstrap/bootstrap.go` (it defines the
+stream signer, mounts `GET /streams` behind the session cookie and the
+`posts:read` permission, and passes the broker to the pages). Open `/posts` in
+two browsers as users of the same organization: creating, editing or deleting a
+post in one updates the other without a reload. In your own code:
+
+```go
+channel, _ := broadcast.ForTenant(tenant.ID, "posts")
+row, _ := renderer.Fragment(nil, "posts/_item", data)      // escaped partial, no request-bound content
+stream, _ := turbo.Prepend("posts", row)
+_ = broadcast.Publish(ctx, broker, channel, stream)         // and {{turboStreamFrom "posts"}} in the page
+```
+
+Details, the multi-replica setup and the delivery guarantees (best effort, at
+most once) are in [docs/VIEWS.md](docs/VIEWS.md#assets-javascript-and-hotwire)
+and [ADR 0029](docs/adr/0029-hotwire-assets-and-live-updates.md).
+
+### Deploy
+
+`forge deploy` ships the application image to servers that have only SSH and
+Docker ([DEPLOYMENT.md](docs/DEPLOYMENT.md#forge-deploy),
+[ADR 0030](docs/adr/0030-forge-deploy.md)). Build the proxy image once from
+this repository and reference it by digest in `proxy.image`:
+
+```sh
+docker build -f cmd/forge-proxy/Dockerfile -t registry.example.com/acme/forge-proxy:0.1.0 .
+docker push registry.example.com/acme/forge-proxy:0.1.0
+```
+
+Then, in the application:
+
+```sh
+forge deploy init                      # config/deploy.yml + .forge/secrets (0600, git-ignored)
+$EDITOR config/deploy.yml .forge/secrets
+forge deploy setup --dry-run           # every remote command, secrets redacted
+forge deploy setup                     # docker check, network, forge-proxy, accessories
+forge deploy                           # build, push, migrate, health-gated switch on every host
+forge deploy details                   # versions per host and role, proxy target, lock
+forge logs -f --grep ERROR             # host|line from every web host
+forge app exec migrate status          # one-off container of the deployed image
+forge app shell --image busybox:1.37   # debug sidecar (distroless has no shell)
+forge deploy rollback 3f2a9c1d07be     # back to a retained version
+forge deploy prune                     # drop stopped versions beyond retain
+forge deploy lock acquire --message 'db maintenance'   # hold the deploy lock (status | acquire | release)
+forge deploy maintenance on            # forge-proxy serves its 503 page; `off` restores the application
+forge deploy maintenance off
+ssh deploy@host docker exec forge-proxy /usr/local/bin/forge-proxy status   # forge-proxy: current targets per host
+```
+
+A deploy migrates before any switch, keeps the previous containers running
+until every host passed its health gate, and routes all hosts back if one
+fails. Exit codes: `3` lock held, `4` unhealthy (reverted), `5` migration
+failed, `6` hook failed, `7` not fully reverted.
+
 ### Development environment files
 
-`forge dev`, `forge test`, `forge migrate`, `forge rollback`, and
+`forge dev`, `forge test`, `forge db`, `forge migrate`, `forge rollback`, and
 `forge doctor` read `.env.development` and then `.env.local` from the current
 directory; a later file overrides an earlier one, and variables already set in
-the process environment always win. `dev`, `test`, `migrate`, and `rollback`
+the process environment always win. `dev`, `test`, `db`, `migrate`, and `rollback`
 set `FORGE_ENV=development` when no source sets it.
 
 The format is deliberately small: `KEY=VALUE` lines, blank lines and lines
@@ -599,7 +800,9 @@ CI (`.github/workflows/ci.yml`):
 - [Rate limiting](docs/RATE_LIMITING.md), [caching](docs/CACHING.md) and [file storage](docs/STORAGE.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Observability](docs/OBSERVABILITY.md)
+- [Credentials](docs/CREDENTIALS.md) and [attribute encryption](docs/ENCRYPTION.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Rails parity (Forge-Go and Forge-Rust)](docs/RAILS_PARITY.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Multi-tenancy](docs/MULTI_TENANCY.md)
 - [Security policy](SECURITY.md)
@@ -613,6 +816,9 @@ CI (`.github/workflows/ci.yml`):
   - [0007 PostgreSQL adapter with pgx, in the main module](docs/adr/0007-postgresql-adapter-with-pgx.md)
   - [0008 SQL migrations embedded in the application binary](docs/adr/0008-sql-migrations-embedded-in-the-binary.md)
   - [0009 Multiple databases: PostgreSQL, MySQL, MariaDB and SQLite](docs/adr/0009-multiple-databases.md)
+  - [0030 `forge deploy` and forge-proxy](docs/adr/0030-forge-deploy.md)
+  - [0035 Development loop and database lifecycle](docs/adr/0035-development-loop.md)
   - [0031 Rate limiting](docs/adr/0031-rate-limiting.md)
   - [0032 Application cache](docs/adr/0032-cache.md)
   - [0033 File storage](docs/adr/0033-file-storage.md)
+  - [0036 Encrypted credentials and attribute encryption](docs/adr/0036-encrypted-credentials-and-attribute-encryption.md)

@@ -113,7 +113,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
 		t.Fatalf("decode command catalog: %v\n%s", err, stdout.String())
 	}
-	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 15 || len(catalog.ProcessExitCodes) != 3 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
+	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 20 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
 		t.Fatalf("unexpected catalog header: %+v", catalog)
 	}
 	rollbackDeclaredDestructive := false
@@ -122,11 +122,12 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	commandsSeen := make(map[string]bool, len(catalog.Commands))
 	processExitCodesSeen := make(map[int]bool, len(catalog.ProcessExitCodes))
 	expectedCommands := map[string]bool{
-		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true, "setup": true, "seed": true,
+		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true, "setup": true, "seed": true, "db": true,
 		"generate": true, "doctor": true, "inspect": true, "routes": true, "uuid": true, "version": true, "help": true,
+		"credentials": true, "deploy": true, "logs": true, "app": true,
 	}
 	for _, command := range catalog.Commands {
-		if !expectedCommands[command.Name] || commandsSeen[command.Name] || len(command.Examples) == 0 || command.Environment.Files == nil || command.Environment.Variables == nil || len(command.ExitCodes) != 2 {
+		if !expectedCommands[command.Name] || commandsSeen[command.Name] || len(command.Examples) == 0 || command.Environment.Files == nil || command.Environment.Variables == nil || len(command.ExitCodes) < 2 {
 			t.Errorf("command is missing complete machine-readable metadata: %+v", command)
 		}
 		commandsSeen[command.Name] = true
@@ -540,6 +541,15 @@ func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 		if i == 0 {
 			guard = parts.Guard
 		}
+		// Live updates: the signer comes before the view renderer.
+		if parts.StreamSigner != "" && !strings.Contains(source, "streamSigner, err :=") && !strings.Contains(guard, "streamSigner, err :=") {
+			const identityRenderer = "\trenderer, err := views.New()\n"
+			if strings.Contains(source, identityRenderer) {
+				source = strings.Replace(source, identityRenderer, parts.StreamSigner+"\trenderer, err := views.New(views.WithStreams(streamSigner))\n", 1)
+			} else {
+				guard += "\n" + parts.StreamSigner
+			}
+		}
 		if parts.PlatformGuard != "" && !strings.Contains(guard, "protectPlatformWrite :=") {
 			guard += "\n" + parts.PlatformGuard
 		}
@@ -548,6 +558,9 @@ func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 		}
 		if parts.Renderer != "" && !strings.Contains(guard, "renderer, err :=") {
 			guard += "\n" + parts.Renderer
+		}
+		if parts.StreamsRegister != "" && !strings.Contains(guard, "streams, err :=") {
+			guard += "\n" + parts.StreamsRegister
 		}
 		for _, importPath := range parts.Imports {
 			if !strings.Contains(source, `"`+importPath+`"`) && !strings.Contains(imports.String(), `"`+importPath+`"`) {

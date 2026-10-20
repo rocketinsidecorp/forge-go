@@ -258,8 +258,8 @@ func viewBaseFiles(projectRoot *os.Root, module string) ([]generatedFile, error)
 	source, err := projectRoot.ReadFile(viewsPath)
 	switch {
 	case err == nil:
-		if !strings.Contains(string(source), "//go:embed */*.gohtml") || !strings.Contains(string(source), "func New()") {
-			return nil, fmt.Errorf("refusing to modify existing %s; expected the Forge-generated views package (//go:embed */*.gohtml and func New())", viewsPath)
+		if !strings.Contains(string(source), "//go:embed */*.gohtml") || !strings.Contains(string(source), "func New(") {
+			return nil, fmt.Errorf("refusing to modify existing %s; expected the Forge-generated views package (//go:embed */*.gohtml and func New)", viewsPath)
 		}
 		layout := filepath.Join("app", "views", "layouts", "application.gohtml")
 		if _, err := projectRoot.Lstat(layout); err != nil {
@@ -270,9 +270,9 @@ func viewBaseFiles(projectRoot *os.Root, module string) ([]generatedFile, error)
 		return nil, err
 	}
 	name := module[strings.LastIndex(module, "/")+1:]
-	base, err := scaffold.ViewBase(name)
+	base, err := scaffold.ViewBase(name, module)
 	if err != nil {
-		if base, err = scaffold.ViewBase("app"); err != nil {
+		if base, err = scaffold.ViewBase("app", module); err != nil {
 			return nil, err
 		}
 	}

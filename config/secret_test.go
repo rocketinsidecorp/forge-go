@@ -42,3 +42,37 @@ func TestSecretIsRedactedEverywhere(t *testing.T) {
 		t.Fatal("Reveal must return the original value")
 	}
 }
+
+type holder struct {
+	secret config.Secret
+	Public config.Secret
+}
+
+type embeddedHolder struct{ config.Secret }
+
+// TestSecretIsRedactedInUnexportedFields: fmt cannot call methods on
+// unexported fields, so the representation itself must not hold the text.
+func TestSecretIsRedactedInUnexportedFields(t *testing.T) {
+	t.Parallel()
+	const value = "hunter2-unexported"
+	secret := config.NewSecret(value)
+	for name, v := range map[string]any{
+		"unexported field": holder{secret: secret, Public: secret},
+		"pointer":          &holder{secret: secret},
+		"embedded":         embeddedHolder{secret},
+		"slice":            []config.Secret{secret},
+		"map":              map[string]config.Secret{"k": secret},
+	} {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+			if out := fmt.Sprintf(verb, v); strings.Contains(out, value) {
+				t.Errorf("%s with %s leaked the secret: %s", name, verb, out)
+			}
+		}
+	}
+	if !secret.Equal(config.NewSecret(value)) || secret.Equal(config.NewSecret("other")) || !config.NewSecret("").Equal(config.Secret{}) {
+		t.Error("Equal is wrong")
+	}
+	if !config.NewSecret("").IsZero() || secret.IsZero() || secret.Reveal() != value {
+		t.Error("zero or reveal is wrong")
+	}
+}

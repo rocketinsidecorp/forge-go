@@ -16,6 +16,7 @@ import (
 type Renderer struct {
 	templates *template.Template
 	pages     map[string]*page
+	fragments map[string]*page
 	csp       string
 }
 

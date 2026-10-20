@@ -82,7 +82,7 @@ type ProvisionedOwner struct {
 func (r *Repository) ProvisionOwner(ctx context.Context, account OwnerAccount) (ProvisionedOwner, error) {
 	email, tenant, ok := auth.NormalizeIdentity(account.Email, account.TenantSlug)
 	if !ok {
-		return ProvisionedOwner{}, errors.New("owner email or tenant slug is invalid (slug: lowercase letter, then 1-62 lowercase letters, digits or hyphens)")
+		return ProvisionedOwner{}, errors.New("owner email or tenant slug is invalid (email: ASCII only; slug: lowercase letter, then 1-62 lowercase letters, digits or hyphens)")
 	}
 	organization := strings.TrimSpace(account.Organization)
 	if err := validOrganizationName(organization); err != nil {
@@ -196,7 +196,7 @@ func runSetup(ctx context.Context, env forge.CommandEnv, args []string) error {
 	}
 	normalizedEmail, normalizedTenant, ok := auth.NormalizeIdentity(*email, *tenant)
 	if !ok {
-		return fmt.Errorf("%w: --email must be an email address and --tenant a slug (lowercase letter, then 1-62 lowercase letters, digits or hyphens)", forge.ErrUsage)
+		return fmt.Errorf("%w: --email must be an ASCII email address and --tenant a slug (lowercase letter, then 1-62 lowercase letters, digits or hyphens)", forge.ErrUsage)
 	}
 	if *organization == "" {
 		*organization = normalizedTenant

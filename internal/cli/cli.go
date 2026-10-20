@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/deploy"
 	"github.com/rocketinsidecorp/forge-go/internal/version"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
@@ -59,6 +60,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runBuild(args[1:], stdout, commandStderr)
 	case "test":
 		err = runTest(args[1:], stdout, commandStderr)
+	case "db":
+		err = runDB(args[1:], stdout, commandStderr)
 	case "migrate":
 		err = runMigrate(args[1:], stdout, commandStderr)
 	case "rollback":
@@ -69,6 +72,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runSeed(args[1:], stdout, commandStderr)
 	case "generate":
 		err = runGenerate(args[1:], stdout)
+	case "deploy":
+		err = deploy.RunDeploy(args[1:], stdout, commandStderr)
+	case "logs":
+		err = deploy.RunLogs(args[1:], stdout, commandStderr)
+	case "app":
+		err = deploy.RunApp(args[1:], stdout, commandStderr)
+	case "credentials":
+		err = runCredentials(args[1:], stdout, commandStderr)
 	case "help":
 		err = runHelp(args[1:], stdout)
 	case "-h", "--help":
@@ -90,12 +101,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, errInspectIncomplete) {
 			return 1
 		}
+		code := 1
+		var coded interface{ ExitCode() int }
+		if errors.As(err, &coded) {
+			code = coded.ExitCode()
+		}
 		if jsonErrors {
-			writeCLIError(stderr, "command.failed", "Command failed.", 1, args[0])
-			return 1
+			writeCLIError(stderr, "command.failed", "Command failed.", code, args[0])
+			return code
 		}
 		fmt.Fprintf(stderr, "forge: %v\n", err)
-		return 1
+		return code
 	}
 	return 0
 }
@@ -275,9 +291,14 @@ func usage(output io.Writer) {
 commands:
   new NAME            generate an application with Dockerfile, compose and CI;
                       --database postgresql (default), mysql, mariadb, sqlite or none
-  dev                 run the application in development mode
+  dev [NAME] [--no-reload] [--poll-interval D]
+                      run the application; rebuild, restart gracefully and
+                      reload the browser when files change
   test [ARGS]         go test with .env.development loaded (default ./...)
   build               compile the application into bin/
+  db COMMAND          database lifecycle: create, drop, reset, setup, prepare,
+                      migrate, rollback, status, seed, schema:dump,
+                      schema:load, console (see README)
   migrate [status]    apply pending migrations, or list them
   rollback [-steps N] revert the latest migrations
   setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]
@@ -299,6 +320,13 @@ commands:
   generate authentication [--dry-run]
                       add the sign-in, sign-out, two-factor and password-reset
                       pages forge new generates (PostgreSQL)
+  deploy [init|setup|rollback VERSION|prune|details|lock|maintenance]
+                      deploy containers to hosts over SSH behind forge-proxy;
+                      --dry-run prints the remote commands, secrets redacted
+  logs [-f]           stream container logs from every host (host| prefix)
+  app exec|shell      run a command or a shell next to the deployed app
+  credentials <init|edit|show|rotate-key> [--environment E]
+                      encrypted per-environment credentials (config/credentials)
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
   routes              list the routes found in the source, as a table

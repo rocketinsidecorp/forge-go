@@ -77,6 +77,10 @@ type resourceRequest struct {
 	// server-rendered HTML pages. It changes only what is generated around
 	// the resource, never the resource itself.
 	Scaffold bool
+	// Broadcast (`forge generate scaffold --broadcast`) makes the scaffold's
+	// pages publish created, updated and deleted rows to open index pages as
+	// Turbo Streams over Server-Sent Events.
+	Broadcast bool
 }
 
 // resourceField is one user-declared column.
@@ -100,12 +104,21 @@ type resourceSpec struct {
 	// renderer (renderer, err := views.New()), as PostgreSQL applications
 	// from `forge new` do for the sign-in pages. Only scaffolds look.
 	ViewRenderer bool
+	// AddsViewBase reports that the scaffold also adds the views base
+	// (layout, asset bundle, JavaScript) because the application has none.
+	AddsViewBase bool
+	// AddsStreams reports that the scaffold also adds app/adapters/htmlstreams
+	// (the first --broadcast scaffold of the application).
+	AddsStreams bool
 }
 
 func runGenerateResource(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
 	request, err := parseResourceArgs(args)
 	if err != nil {
 		return err
+	}
+	if request.Broadcast {
+		return fmt.Errorf("--broadcast is only for `forge generate scaffold`: a JSON resource has no pages to update\n%s", resourceUsage)
 	}
 	spec, files, err := planResource(root, request, env, now)
 	if err != nil {
@@ -156,6 +169,11 @@ func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 				return resourceRequest{}, errors.New("--dry-run given more than once")
 			}
 			request.DryRun = true
+		case arg == "--broadcast":
+			if request.Broadcast {
+				return resourceRequest{}, errors.New("--broadcast given more than once")
+			}
+			request.Broadcast = true
 		case arg == "--tenant-scoped":
 			tenantScoped = true
 		case arg == "--global":
