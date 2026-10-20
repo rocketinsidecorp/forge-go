@@ -31,7 +31,8 @@ controller, model and mailer generators, as missing, and there was no
    routes are never public unless `--public` says so: `Register...` demands a
    guard, the printed guard denies everyone until written (without Forge
    identity) or checks `NAME:read` (with it, and a migration registers that
-   permission). Routes use literal patterns so `forge routes` lists them.
+   permission, unless one already does: see 7). Routes use literal patterns
+   so `forge routes` lists them.
 3. **Mailers are typed and fail closed.** One type per mailer, one method and
    one data struct per email, text and HTML templates under
    `app/mailers/templates/NAME/`, previews as `mail.Preview` values served only
@@ -52,11 +53,36 @@ controller, model and mailer generators, as missing, and there was no
    makes "refuse if modified" an exact comparison. Migrations are kept unless
    `--migrations` (a migration that ran is history); shared files (views base,
    live-update transport) are never planned for removal; nothing is removed
-   through a symlink; `--force` overrides only the modification check.
+   through a symlink. Files a bigger generation still needs are refused too:
+   `destroy model` while the resource's JSON adapter or the scaffold's pages
+   of that name exist, `destroy resource` while the scaffold's pages exist,
+   and `destroy view DIR/NAME` while the `DIR` controller renders that page
+   (its views are the stub `generate view` writes, byte for byte). `--force`
+   overrides the modification and ownership checks, nothing else.
 6. **Names are validated before anything is built.** All names and fields are
    strict snake_case, bounded in length, and checked against Go keywords, file
    name build-constraint suffixes and reserved paths, so they cannot inject
    into Go identifiers, SQL, file paths or templates.
+7. **Every permission has exactly one owner migration.** With Forge identity a
+   model, resource or scaffold registers `PLURAL:read` and `PLURAL:write`, and
+   a guarded controller registers `NAME:read`; a migration's rollback removes
+   what it registered, so two migrations registering one permission would
+   each revoke the other's. The generators therefore never give a permission
+   a second owner: they scan `db/migrations/*.up.sql` for the permission as a
+   SQL string literal (`'posts:read'`, any mention counts, hand-written
+   migrations included), and
+   - `generate controller NAME` reuses `NAME:read` when a migration names it,
+     generates no permission migration and says which migration owns it;
+   - `generate model|resource|scaffold` refuses when a migration already
+     names either of its permissions, and explains the options (another name
+     or `--plural`, or revert and delete the other migration first).
+   The controller's own permission migration is idempotent (`ON CONFLICT DO
+   NOTHING`), and its down removes only what its up added: the owner roles'
+   grant and the permission. While another role still holds the permission,
+   `forge_role_permissions` restricts the delete and the rollback fails
+   without changing anything, so grants an administrator made are never
+   revoked silently. A resource's down keeps its earlier behaviour (it drops
+   its table and every grant of its permissions).
 
 ## Consequences
 
@@ -64,16 +90,28 @@ controller, model and mailer generators, as missing, and there was no
   differ from the original, files that differ are listed (or, if they do not
   exist, skipped) and nothing is removed.
 - A destroyed generation leaves its kept migrations behind until
-  `forge rollback` and `--migrations`; generating again meanwhile is refused.
+  `forge rollback` and `--migrations`; generating again meanwhile is refused,
+  and destroying again points to `--migrations`.
 - The mailer previews are compiled into the binary and are only reachable
   through the explicit development opt-in.
+- A controller that reuses a resource's `NAME:read` depends on the resource's
+  migration: rolling that back (or destroying the resource with
+  `--migrations`) removes the permission, and the controller's routes then
+  refuse everyone, which fails closed.
+- Destroy removes a directory that becomes empty even if it existed before the
+  generator ran (it keeps no record of who made a directory); the
+  application's layout directories are always kept. It compares a file, then
+  removes it: a file another process rewrites in between is removed. Do not
+  run it while an editor or another command writes the same files.
 
 ## Forge-Rust port
 
 Same commands (`generate model|controller|mailer|job --queue`, `destroy`), same
 argument grammar and flags, same file roles (domain, application, persistence;
 handlers, views and routes; mailer, templates, previews; job handler and
-enqueue function), same guard and permission names (`NAME:read`), same
+enqueue function), same guard and permission names (`NAME:read`), the same
+one-owner rule for permissions (reuse in the controller, refusal in
+model/resource/scaffold, the same restricted controller rollback), same
 `/_mail/NAME/` preview prefix, same refusal of write actions in controllers and
 the same destroy rules. The Rust port keeps its own idioms (typed handlers,
 compile-time checked templates, its own queue and mail crates) and its
