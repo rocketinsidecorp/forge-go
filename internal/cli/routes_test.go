@@ -48,6 +48,7 @@ func TestRunRoutesPrintsATable(t *testing.T) {
 		"GET /health - forge (built in)",
 		"GET /health/live - forge (built in)",
 		"GET /health/ready - forge (built in)",
+		"GET /openapi.json - forge (built in; development and test, or FORGE_OPENAPI_ENABLED=true)",
 		"GET /posts index app/bootstrap/bootstrap.go:9",
 		"POST /posts create app/bootstrap/bootstrap.go:9",
 		"GET /posts/new new app/bootstrap/bootstrap.go:9",

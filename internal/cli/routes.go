@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/token"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -113,6 +114,7 @@ func runRoutesAt(args []string, output io.Writer, rootPath string) error {
 		method, path := splitRoutePattern(pattern)
 		rows = append(rows, routeRow{method: method, path: path, source: "forge (built in)"})
 	}
+	rows = append(rows, routeRow{method: http.MethodGet, path: "/openapi.json", source: "forge (built in; development and test, or FORGE_OPENAPI_ENABLED=true)"})
 	slices.SortStableFunc(rows, func(a, b routeRow) int {
 		return cmp.Or(strings.Compare(a.path, b.path), strings.Compare(a.method, b.method), strings.Compare(a.source, b.source))
 	})

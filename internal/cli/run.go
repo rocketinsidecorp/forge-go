@@ -34,6 +34,30 @@ func runRollback(args []string, stdout, stderr io.Writer) error {
 	return runAppCommand(nil, append([]string{"rollback"}, args...), stdout, stderr)
 }
 
+// runOpenAPI delegates to the application's built-in openapi command, which
+// runs Configure without serving and prints or writes the document of the
+// described routes (ADR 0043). It needs what Configure needs, such as the
+// development database.
+func runOpenAPI(args []string, stdout, stderr io.Writer) error {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--output", "--check":
+			if i+1 == len(args) {
+				return errors.New(openAPIUsage)
+			}
+			i++
+		default:
+			return errors.New(openAPIUsage)
+		}
+	}
+	if len(args) > 2 {
+		return errors.New(openAPIUsage)
+	}
+	return runAppCommand(nil, append([]string{"openapi"}, args...), stdout, stderr)
+}
+
+const openAPIUsage = "usage: forge openapi [--output FILE | --check FILE]"
+
 // runSetup delegates to the application's setup command, which creates the
 // first tenant and owner. Standard input is passed through so the password
 // can be typed at the terminal (without echo) or piped with
