@@ -42,6 +42,8 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 ├── events       Versioned application-event envelope with bounded JSON payloads
 ├── ratelimit    Fixed-window rate limiting: bounded in-memory limiter, HTTP middleware, shared-store interface
 ├── cache        Application cache: bounded LRU+TTL memory store, Fetch stampede protection, typed JSON helpers
+├── credentials  Encrypted per-environment credentials (config/credentials/<env>.json.enc), typed Store
+├── encryption   Attribute encryption: key rings, AES-256-GCM bound to table/column/record, blind index, rotation
 ├── storage      File storage port, HMAC-signed links, safe serving handler, multipart upload; storage/disk adapter
 ├── telemetry    Tracing, W3C propagation, metrics, Prometheus and OTLP/HTTP JSON export, log correlation
 ├── health       Readiness check registry
@@ -74,7 +76,7 @@ Dependency direction (imports within the module):
 | Package                 | Imports |
 | ----------------------- | ------- |
 | `forge`                 | `config`, `health`, `httpserver`, `router`, `telemetry`, `web` |
-| `auth`                  | `csrf`, `fault`, `tenancy`, `uuid`, `web` |
+| `auth`                  | `csrf`, `encryption`, `fault`, `tenancy`, `uuid`, `web` |
 | `csrf`                  | `fault`, `web` |
 | `views`                 | `csrf`, `uuid`, `web` |
 | `tenancy`               | `fault`, `uuid` |
@@ -91,6 +93,8 @@ Dependency direction (imports within the module):
 | `cache`                 | `config`, `fault`, `web` |
 | `storage`               | `config`, `fault`, `uuid`, `web` |
 | `storage/disk`          | `config`, `storage` |
+| `encryption`            | standard library only |
+| `credentials`           | `config`, `encryption` |
 | `ratelimit/postgres`, `cache/postgres` | `ratelimit` or `cache`, `postgres`, pgx v5 |
 | `ratelimit/mysql`, `cache/mysql` | `ratelimit` or `cache`, `mysql`, `sqldb` |
 | `ratelimit/sqlite`, `cache/sqlite` | `ratelimit` or `cache`, `sqlite`, `sqldb` |
@@ -569,6 +573,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0032](adr/0032-cache.md) | Application cache |
 | [0033](adr/0033-file-storage.md) | File storage |
 | [0034](adr/0034-dependency-free-telemetry.md) | Dependency-free telemetry speaking OpenTelemetry protocols |
+| [0036](adr/0036-encrypted-credentials-and-attribute-encryption.md) | Encrypted credentials and attribute encryption |
 
 ## Not yet implemented
 

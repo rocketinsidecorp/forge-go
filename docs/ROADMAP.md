@@ -476,6 +476,32 @@ cache) and a conformance suite
   upgrade/reboot commands, proxy image upgrade without a restart gap,
   `destinations` (staging/production files).
 
+## Secrets (Rails credentials and Active Record Encryption parity)
+
+Encrypted per-environment credentials and attribute encryption on the
+standard-library core ([ADR 0036](adr/0036-encrypted-credentials-and-attribute-encryption.md)).
+
+- [x] `credentials`: `config/credentials/<env>.json.enc` (AES-256-GCM, versioned
+  envelope, key id; environment, version and key id authenticated), key from
+  `FORGE_MASTER_KEY` or a 0600 git-ignored `<env>.key`, typed `Store`
+  (`String`, `Secret`, `Decode`, `KeyRing`), fail-fast `Required` credentials
+  outside development and test ([CREDENTIALS.md](CREDENTIALS.md)).
+- [x] `forge credentials init | edit | show | rotate-key`: private temporary
+  directory shredded on every exit path, JSON validation, atomic write,
+  redacted `show`, `--reveal` only on a terminal, safe key rotation.
+- [x] `encryption`: key rings with HKDF-derived per-purpose keys, randomized
+  AES-256-GCM bound to table, column and record id, opt-in HMAC blind index,
+  `Value[T]` (`sql.Scanner`/`driver.Valuer`), batch resumable `Reencrypt` with
+  database/sql and pgx rewriters ([ENCRYPTION.md](ENCRYPTION.md)).
+- [x] `forge new` creates the development credentials and ignores their key.
+- [ ] `forge generate scaffold NAME ssn:string:encrypted`: generated persistence
+  that encrypts the column with `encryption.Value`, optional blind index and the
+  migration; touches the domain, persistence and view generators.
+- [ ] A KMS-backed `encryption` key source (envelope encryption with per-record
+  data keys) as an adapter.
+- [ ] `forge credentials` check that no `*.key` file is tracked by git.
+- [ ] Multi-key `auth.SecretCipher` for MFA seeds on `encryption.Cipher`.
+
 ## Phase 9 - Performance
 
 Benchmarks, profiling, and allocation work on hot paths (router, middleware,

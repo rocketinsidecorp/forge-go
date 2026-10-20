@@ -54,6 +54,8 @@ Core packages import only the standard library and each other; a test
 | `agent`      | Provider-neutral allowlisted action pipeline with policy, validation, principal permissions, explicit approval and mandatory journaling |
 | `tenancy`    | Fail-closed tenant context; used by authentication and tenant-aware database transactions |
 | `config`     | Environment configuration with fail-fast validation; database selection by URL scheme; `config.Secret` for redacted values |
+| `credentials` | Encrypted per-environment credentials (`config/credentials/<env>.json.enc`, AES-256-GCM, key from `FORGE_MASTER_KEY` or a git-ignored key file), typed `Store`, fail-fast required credentials; `forge credentials edit` |
+| `encryption` | Attribute encryption with key rotation: randomized AES-256-GCM bound to table, column and record id, key rings, opt-in HMAC blind index, `Value[T]` for `database/sql`, resumable batch re-encryption |
 | `router`     | Route registry on `net/http.ServeMux` (Go 1.22 patterns), frozen after the first request; JSON `400`/`404`/`405`; conventional `Resources` routes |
 | `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown, and composable application middleware |
 | `web`        | JSON responses, the single error format, strict JSON and form decoding, safe redirects, content negotiation, flash messages, method override, request ID and request-scoped logger |
@@ -331,6 +333,52 @@ configured for production behind a TLS-terminating proxy. See
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
 [docs/DATABASE.md](docs/DATABASE.md).
 
+## Credentials and attribute encryption
+
+Rails' `credentials:edit` and Active Record Encryption, with the sharp edges
+removed. `forge new` already created `config/credentials/development.json.enc`
+(committed) and `development.key` (git-ignored, mode 0600).
+
+```sh
+forge credentials edit                                   # edit development secrets in $EDITOR
+forge credentials show                                   # structure only; values redacted
+forge credentials init --environment production          # new key + encrypted file
+forge credentials edit --environment production
+forge credentials show --environment production --reveal # needs an interactive terminal
+git add config/credentials/production.json.enc           # the key file is ignored
+
+# deploy: the server needs only the key
+docker run --rm -p 8080:8080 -e FORGE_ENV=production \
+  -e FORGE_MASTER_KEY="$(cat config/credentials/production.key)" myapp
+
+# rotate the key, keeping the old one readable while deployments catch up
+forge credentials rotate-key --environment production --keep-old --print-key
+```
+
+Read secrets in the composition root, failing at startup if one is missing:
+
+```go
+creds, err := credentials.Open(string(cfg.Environment), credentials.Options{
+	Required: []string{"stripe.api_key"}, // enforced outside development and test
+})
+stripeKey, err := creds.Secret("stripe", "api_key") // config.Secret: prints as [REDACTED]
+```
+
+Encrypt a column (the ciphertext is bound to table, column and row, so it cannot
+be moved to another row; `ssn` is a `TEXT` column):
+
+```go
+ring, _ := creds.KeyRing("encryption")        // created by `init`
+cipher, _ := encryption.NewCipher(ring)
+ssn := encryption.NewValue[string](cipher, "people", "ssn").ForRecord(id.String())
+ssn.Set("123-45-6789")
+_, err = db.Exec(ctx, `INSERT INTO people (id, ssn) VALUES ($1, $2)`, id, ssn)
+```
+
+Key rotation, blind indexes for exact-match search and batch re-encryption are
+in [docs/ENCRYPTION.md](docs/ENCRYPTION.md); the credentials workflow, CI and
+rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
+
 ## CLI
 
 | Command | Description |
@@ -353,6 +401,7 @@ configured for production behind a TLS-terminating proxy. See
 | `forge deploy [init\|setup\|rollback VERSION\|prune\|details\|lock\|maintenance] [--dry-run] [--json]` | Deploy the image to your servers over SSH with zero-downtime switches through forge-proxy, Kamal-style: see [Deploy](#deploy) |
 | `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream container logs from every host, prefixed `host\|` |
 | `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...`, `forge app shell [--image IMAGE]` | Run a command or a shell next to the deployed application |
+| `forge credentials init \| edit \| show \| rotate-key [--environment E]` | Encrypted credentials: create a key and skeleton, edit in `$EDITOR` (plaintext shredded on every exit path), show redacted (`--reveal` on a terminal only), rotate the key. See [docs/CREDENTIALS.md](docs/CREDENTIALS.md) |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes` | Read-only table of the routes found in the source (including `Resources` routes) and Forge's health routes |
@@ -735,6 +784,7 @@ CI (`.github/workflows/ci.yml`):
 - [Rate limiting](docs/RATE_LIMITING.md), [caching](docs/CACHING.md) and [file storage](docs/STORAGE.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Observability](docs/OBSERVABILITY.md)
+- [Credentials](docs/CREDENTIALS.md) and [attribute encryption](docs/ENCRYPTION.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Rails parity (Forge-Go and Forge-Rust)](docs/RAILS_PARITY.md)
 - [Threat model](docs/THREAT_MODEL.md)
@@ -755,3 +805,4 @@ CI (`.github/workflows/ci.yml`):
   - [0031 Rate limiting](docs/adr/0031-rate-limiting.md)
   - [0032 Application cache](docs/adr/0032-cache.md)
   - [0033 File storage](docs/adr/0033-file-storage.md)
+  - [0036 Encrypted credentials and attribute encryption](docs/adr/0036-encrypted-credentials-and-attribute-encryption.md)

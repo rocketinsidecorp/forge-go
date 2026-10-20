@@ -287,10 +287,37 @@ See [RATE_LIMITING.md](RATE_LIMITING.md), [CACHING.md](CACHING.md),
 | Missing or weak signing key | S, E | There is no default key: signing fails without `FORGE_STORAGE_SIGNING_KEY`; `config` requires a canonical base64url key of at least 32 bytes, and requires one in production when storage is configured; the key is a `config.Secret` and errors never echo it. |
 | Stored XSS from served files | T, I | See hostile file content above: active content never renders on the application origin, and every response is `nosniff` with `default-src 'none'; sandbox`. |
 
+## Credentials and attribute encryption
+
+See [CREDENTIALS.md](CREDENTIALS.md), [ENCRYPTION.md](ENCRYPTION.md) and
+[ADR 0036](adr/0036-encrypted-credentials-and-attribute-encryption.md).
+
+| Threat | STRIDE | Mitigation |
+| ------ | ------ | ---------- |
+| Key committed to the repository | I | `init` and `forge new` add `/config/credentials/*.key` to `.gitignore` and `config/credentials/*.key` to `.dockerignore`; the key file is created 0600 and `init` never prints a key. **Residual:** nothing stops `git add -f`; add a secret scanner to CI, and rotate the key if it was ever committed (history keeps it). |
+| Key loss | D | Deliberately unrecoverable. The docs tell operators to back keys up and to store the key list of each deployment; `rotate-key` never re-encrypts before the new key has a destination, and updates the key file in an order that keeps the on-disk pair readable at every instant. Data-encryption keys stored in the file are lost with it; back them up separately if the data matters. |
+| Key exposed through the environment or a key file | I | Key files readable by group or others are refused; they are opened through `os.Root`, so a symlink cannot point outside the credentials directory; errors never echo key text. **Residual:** `FORGE_MASTER_KEY` is as visible as any environment variable (container inspect, `/proc/<pid>/environ` for the same user and root, crash reports). Use a mounted key file from a secret store where that matters. |
+| Plaintext left by `credentials edit` (temporary file, editor swap, backup, undo, viminfo) | I | The file lives in a fresh 0700 directory, memory-backed `/dev/shm` on Linux, mode 0600; the whole directory (swap files included) is overwritten and removed on success, failure, invalid input and `SIGTERM`/`SIGHUP`; Vim/Neovim run without swap, backup, undo and viminfo. **Residual:** `SIGKILL` and power loss can leave the directory; overwriting is best effort on copy-on-write or journaling filesystems; editors other than Vim/Neovim may keep their own copies (check their settings); the editor and anything in `$EDITOR` is trusted. |
+| Another process or user reads the editor file | I | 0700 directory, 0600 file, random directory name, created by the current user. Root and the same user can read it by definition. |
+| Edit lost or torn: concurrent change, crash while writing | T, D | The encrypted file is replaced with temporary file, `fsync` and `rename`; a file changed while the editor was open is not overwritten; invalid JSON, duplicate keys or a non-object are refused before anything is written. |
+| Staging (or another environment's) file swapped in for production | T, S | The environment name, format version and key id are part of the GCM associated data, taken from the caller, not from the file; the swap fails authentication even when both environments share a key (tested). **Residual:** an older, valid file of the same environment decrypts (rollback to a previous commit); git history and review are the control. |
+| Ciphertext tampering or downgrade of the credentials file | T | Authenticated encryption; strict envelope parsing (known fields only, version 1, no trailing data, bounded size); any failure is one indistinguishable `ErrDecrypt`. |
+| Secrets shown by `show`, logs or errors | I | `show` redacts all values and `--reveal` refuses a non-terminal stdout; `Store` prints as `[REDACTED]` through `fmt`, `slog` and JSON; `Secret` returns `config.Secret`; parse, decode and lookup errors give a path or a line and column, never a value (tested with distinctive secrets). **Residual:** the application can still log `Reveal()` output. |
+| Duplicate keys hide a value from review | T | Duplicate JSON keys at any depth are rejected on save and on load. |
+| Missing credential found only at runtime | D | Outside development and test, a missing file, key or `Options.Required` path stops startup, listing every missing path. |
+| Ciphertext copied between rows, columns or tables (privilege escalation, account takeover through a swapped token) | T, E | The associated data is `(key id, table, column, record id)`; `Decrypt` fails with `ErrDecrypt`; tests swap rows, columns and tables, in memory and on PostgreSQL, and the re-encryption helper stops on a swapped row. **Residual:** the same ciphertext restored to the same row (replay of an old value) is accepted; use a version column. |
+| Equality leaks from encryption | I | Encryption is always randomized (fresh 96-bit nonce); there is no deterministic mode. Equality search needs an explicit blind index. |
+| Blind index reveals values or distribution | I | `HMAC-SHA256` under a key derived separately from the encryption key, bound to table and column: equal values in one column match, nothing else leaks without the key. **Residual:** anyone with the table sees equal values and their frequencies; with the key, low-entropy values can be enumerated. Docs restrict it to opt-in, high-entropy, normalized columns. |
+| Key or nonce misuse | T, I | Master keys are 32 bytes from `crypto/rand`; AES and blind-index subkeys come from HKDF-SHA256 with distinct purposes (no key reuse across primitives); nonces are random per value, documented limit 2^32 values per key before rotation. GCM is not key-committing: key selection is by identifier from a ring the operator controls, never by an attacker. |
+| Rotation destroys or reverts data | T, D | `Reencrypt` is a compare-and-set on the old ciphertext (concurrent writes win), bounded batches, resumable by `LastID`, idempotent, and stops on a row that does not decrypt; removing a key before rotation completes yields `ErrUnknownKey`, not wrong data. |
+| Oversized or hostile ciphertexts | D | Plaintext, ciphertext and file sizes are bounded (1 MiB / 2 MiB); malformed values fail before any allocation proportional to their length. |
+| Memory disclosure | I | Keys and plaintexts are cleared best effort; Go gives no guarantee, and swap and core dumps can hold them (**residual**). |
+
 ## Future components (Planned)
 
 | Area | Planned mitigation |
 | ---- | ------------------ |
+| Credentials and encryption | `forge generate scaffold ... field:string:encrypted`; KMS-backed key rings behind `encryption.Cipher` (envelope encryption with per-record data keys); a `forge credentials` check for committed keys. |
 | Storage adapters | An S3-compatible adapter behind the `storage.Storage` port (it needs a reviewed SigV4 implementation); malware-scanning and image-variant hooks. |
 | Trusted proxies | An explicit trusted-proxy policy so that limiter keys and audit sources can use forwarded client addresses safely. |
 | Identity completion (Phase 3) | MFA, generated application wiring, remaining identity-flow audit instrumentation, and a decided tenancy-enforcement strategy for MySQL, MariaDB, and SQLite. |
