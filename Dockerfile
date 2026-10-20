@@ -5,18 +5,25 @@
 #   docker build -t forge-example .
 #   docker build --build-arg EXAMPLE=basic-api -t forge-example .
 
-ARG GO_VERSION=1.27
+# Base images are pinned by the digest of their multi-architecture index, like
+# cmd/forge-proxy/Dockerfile (same images, same date: golang 1.27.2 on Alpine
+# 3.24); this is the image the release workflow publishes and signs.
+# Dependabot (docker, /) proposes new digests. The build stage runs on the
+# builder's platform and cross-compiles for the target one, so a
+# multi-platform build (--platform linux/amd64,linux/arm64) needs no emulator.
 
-FROM golang:${GO_VERSION}-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
 WORKDIR /src
 ENV CGO_ENABLED=0
 COPY . .
 ARG EXAMPLE=basic-api
+ARG TARGETOS
+ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -ldflags="-s -w" -o /out/server ./examples/${EXAMPLE}
+    GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/server ./examples/${EXAMPLE}
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 WORKDIR /app
 COPY --from=build /out/server /app/server
 ENV FORGE_ENV=production \

@@ -17,3 +17,5 @@ testapp/
 # OS
 .DS_Store
 Thumbs.db
+# SBOMs written by scripts/sbom.sh dist/sbom
+/dist/
