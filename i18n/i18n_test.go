@@ -467,6 +467,10 @@ func TestMiddleware(t *testing.T) {
 		"/pt-BRx/posts": "/pt-BRx/posts||en|Hello, Ana!",
 		"/posts":        "/posts||en|Hello, Ana!",
 		"/pt/a%2Fb":     "/a/b|/a%2Fb|pt|Olá, Ana!",
+		// The encoded slash ends the decoded segment, not the escaped one:
+		// RawPath is dropped, not left as "%2F..%2Fadmin" without its "/".
+		"/pt-BR%2F..%2Fadmin": "/../admin||pt-BR|Oi, Ana!",
+		"/pt%2Fa/b":           "/a/b||pt|Olá, Ana!",
 	}
 	for target, want := range cases {
 		recorder := httptest.NewRecorder()
