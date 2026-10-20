@@ -16,6 +16,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/internal/dbtasks"
+	"github.com/rocketinsidecorp/forge-go/internal/devloop"
 )
 
 const dbUsage = "usage: forge db <create|drop|reset|setup|prepare|migrate|rollback|status|seed|schema:dump|schema:load|console> [flags]"
@@ -387,7 +388,9 @@ func buildAppRunner(ctx context.Context, root string, stdout, stderr io.Writer) 
 		return nil, err
 	}
 	app := &builtApp{root: root, dir: dir, binary: filepath.Join(dir, name), env: env, stdout: stdout, stderr: stderr}
-	if err := goCommand(ctx, root, nil, stdout, stderr, "build", "-o", app.binary, "./cmd/"+name).Run(); err != nil {
+	build := goCommand(ctx, root, nil, stdout, stderr, "build", "-o", app.binary, "./cmd/"+name)
+	devloop.IsolateCommand(build)
+	if err := build.Run(); err != nil {
 		app.Close()
 		return nil, fmt.Errorf("build: %w", err)
 	}

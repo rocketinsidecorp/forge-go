@@ -40,6 +40,7 @@ func StartProcess(binary string, args []string, dir string, env []string, stdout
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.WaitDelay = processWaitDelay
+	isolate(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start application: %w", err)
 	}
@@ -64,19 +65,39 @@ func (p *Process) Stop(grace time.Duration) error {
 		return nil
 	default:
 	}
-	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := signalGroup(p.cmd.Process, syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("signal application: %w", err)
 	}
 	timer := time.NewTimer(grace)
 	defer timer.Stop()
 	select {
 	case <-p.done:
+		p.reapGroup()
 		return nil
 	case <-timer.C:
 	}
-	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := signalGroup(p.cmd.Process, syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("kill application: %w", err)
 	}
 	<-p.done
 	return fmt.Errorf("application did not stop within %s and was killed", grace)
+}
+
+// reapGroup kills what the application left running in its process group
+// once it has exited, so a restart never leaves orphans (workers, helpers)
+// behind.
+func (p *Process) reapGroup() { _ = signalGroup(p.cmd.Process, syscall.SIGKILL) }
+
+// IsolateCommand runs cmd in its own process group and makes cancelling its
+// context kill the whole group, so a cancelled `go build` does not leave
+// compiler and linker processes running. Elsewhere than Unix only the
+// command itself is killed.
+func IsolateCommand(cmd *exec.Cmd) {
+	isolate(cmd)
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return signalGroup(cmd.Process, syscall.SIGKILL)
+	}
 }

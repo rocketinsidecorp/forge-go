@@ -15,14 +15,25 @@ import (
 //   - the event stream is a same-origin fetch, so connect-src gains 'self'
 //     when it does not allow it.
 //
-// A policy that restricts neither is returned unchanged. The proxy applies
-// this in development only; the application's own policy is never edited.
+// A policy that relies on 'unsafe-inline' gets 'self' instead of a nonce,
+// because a nonce would disable the page's inline scripts. A policy that
+// restricts neither is returned unchanged. The proxy applies this in
+// development only; the application's own policy is never edited. Policies
+// delivered in a <meta http-equiv> tag are not seen by the proxy and are not
+// edited: if one blocks the reload script, the browser reports it in the
+// console and the page just does not reload itself.
 func allowReload(policy, nonce string) string {
 	directives := parsePolicy(policy)
 
 	scripts := firstDirective(directives, "script-src-elem", "script-src", "default-src")
 	if scripts != nil && !allowsSelfScripts(scripts.sources) {
 		token := "'nonce-" + nonce + "'"
+		if keepsUnsafeInline(scripts.sources) {
+			// A nonce switches 'unsafe-inline' off, which would break the
+			// page's own inline scripts in development. The injected tag
+			// is same-origin, so admit it by origin instead.
+			token = "'self'"
+		}
 		if scripts.name == "default-src" {
 			// Do not widen every fetch type: add an element-specific
 			// directive that keeps the default's sources.
@@ -80,6 +91,23 @@ func firstDirective(directives []directive, names ...string) *directive {
 		}
 	}
 	return nil
+}
+
+// keepsUnsafeInline reports whether the sources rely on 'unsafe-inline'
+// working: it is present and nothing already disables it (a nonce, a hash or
+// 'strict-dynamic' each make browsers ignore it).
+func keepsUnsafeInline(sources []string) bool {
+	unsafeInline := false
+	for _, s := range sources {
+		lower := strings.ToLower(s)
+		switch {
+		case lower == "'unsafe-inline'":
+			unsafeInline = true
+		case lower == "'strict-dynamic'", strings.HasPrefix(lower, "'nonce-"), strings.HasPrefix(lower, "'sha256-"), strings.HasPrefix(lower, "'sha384-"), strings.HasPrefix(lower, "'sha512-"):
+			return false
+		}
+	}
+	return unsafeInline
 }
 
 func allowsSelfScripts(sources []string) bool {

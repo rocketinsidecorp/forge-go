@@ -232,7 +232,7 @@ func (p *Proxy) serveEvents(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	failed := p.buildErr
 	p.mu.Unlock()
-	reveal := p.opts.ShowBuildErrors && loopbackHost(r.Host)
+	reveal := p.mayShowBuildErrors(r)
 	if failed != "" && !write(buildErrorEvent(failed, reveal)) {
 		return
 	}
@@ -280,7 +280,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	status := p.status
 	p.mu.Unlock()
 	if target == nil {
-		p.statusPage(w, http.StatusServiceUnavailable, status)
+		p.statusPage(w, http.StatusServiceUnavailable, status, p.mayShowBuildErrors(r))
 		return
 	}
 	p.rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), upstreamKey{}, target)))
@@ -295,17 +295,24 @@ func (p *Proxy) rewrite(pr *httputil.ProxyRequest) {
 	pr.Out.Header.Set("Accept-Encoding", "identity")
 }
 
-func (p *Proxy) upstreamError(w http.ResponseWriter, _ *http.Request, err error) {
+func (p *Proxy) upstreamError(w http.ResponseWriter, r *http.Request, err error) {
 	if p.opts.Logf != nil && !errors.Is(err, context.Canceled) {
 		p.opts.Logf("proxy: %v", err)
 	}
-	p.statusPage(w, http.StatusBadGateway, "The application is not answering")
+	p.statusPage(w, http.StatusBadGateway, "The application is not answering", p.mayShowBuildErrors(r))
+}
+
+// mayShowBuildErrors reports whether compiler output may be shown to the
+// requester: the proxy listens on loopback and the request names a loopback
+// Host, which a DNS-rebound page cannot fake.
+func (p *Proxy) mayShowBuildErrors(r *http.Request) bool {
+	return p.opts.ShowBuildErrors && loopbackHost(r.Host)
 }
 
 // statusPage is the page shown while there is no application to proxy to. It
 // connects to the event stream, so it reloads itself when the application
 // is back.
-func (p *Proxy) statusPage(w http.ResponseWriter, code int, status string) {
+func (p *Proxy) statusPage(w http.ResponseWriter, code int, status string, reveal bool) {
 	nonce, err := randomToken()
 	if err != nil {
 		http.Error(w, status, code)
@@ -315,7 +322,7 @@ func (p *Proxy) statusPage(w http.ResponseWriter, code int, status string) {
 	failed := p.buildErr
 	p.mu.Unlock()
 	detail := ""
-	if failed != "" && p.opts.ShowBuildErrors {
+	if failed != "" && reveal {
 		detail = "<pre>" + html.EscapeString(failed) + "</pre>"
 	}
 	header := w.Header()
@@ -332,9 +339,22 @@ func (p *Proxy) statusPage(w http.ResponseWriter, code int, status string) {
 }
 
 // modifyResponse injects the reload script into HTML pages and relaxes the
-// page's Content-Security-Policy just enough for it.
+// page's Content-Security-Policy just enough for it. A response of known
+// length is buffered (up to MaxInjectBytes) so Content-Length stays right; a
+// chunked or streamed one is passed on as it arrives, holding back only the
+// last few kilobytes in which the closing tag lives.
 func (p *Proxy) modifyResponse(resp *http.Response) error {
 	if !injectable(resp) {
+		return nil
+	}
+	nonce, err := randomToken()
+	if err != nil {
+		return err
+	}
+	if resp.ContentLength < 0 {
+		resp.Header.Del("Content-Length")
+		p.relax(resp, nonce)
+		resp.Body = &injectingBody{src: resp.Body, nonce: nonce}
 		return nil
 	}
 	limit := p.opts.MaxInjectBytes
@@ -348,10 +368,6 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 	_ = resp.Body.Close()
-	nonce, err := randomToken()
-	if err != nil {
-		return err
-	}
 	injected, ok := injectScript(body, nonce)
 	if !ok {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
@@ -360,19 +376,64 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 	resp.Body = io.NopCloser(bytes.NewReader(injected))
 	resp.ContentLength = int64(len(injected))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(injected)))
+	p.relax(resp, nonce)
+	return nil
+}
+
+// relax makes an injected response uncacheable and lets the script run under
+// the page's policies.
+func (p *Proxy) relax(resp *http.Response, nonce string) {
 	resp.Header.Set("Cache-Control", "no-store")
 	resp.Header.Del("ETag")
 	resp.Header.Del("Last-Modified")
-	values := resp.Header.Values("Content-Security-Policy")
-	if len(values) > 0 {
+	if values := resp.Header.Values("Content-Security-Policy"); len(values) > 0 {
 		relaxed := make([]string, len(values))
 		for i, value := range values {
 			relaxed[i] = allowReload(value, nonce)
 		}
 		resp.Header["Content-Security-Policy"] = relaxed
 	}
-	return nil
 }
+
+// injectingBody streams an HTML body, holding back its last injectionWindow
+// bytes; at the end it adds the script to that tail if it holds the closing
+// body tag.
+type injectingBody struct {
+	src   io.ReadCloser
+	nonce string
+	hold  []byte // the most recent bytes, at most injectionWindow after a read
+	out   []byte // bytes ready to be handed to the reader
+	done  bool
+	err   error
+	chunk [32 << 10]byte
+}
+
+func (b *injectingBody) Read(p []byte) (int, error) {
+	for len(b.out) == 0 && !b.done {
+		n, err := b.src.Read(b.chunk[:])
+		b.hold = append(b.hold, b.chunk[:n]...)
+		if extra := len(b.hold) - injectionWindow; extra > 0 {
+			b.out = append(b.out, b.hold[:extra]...)
+			b.hold = append(b.hold[:0], b.hold[extra:]...)
+		}
+		if err != nil {
+			tail := b.hold
+			if injected, ok := injectScript(tail, b.nonce); ok {
+				tail = injected
+			}
+			b.out = append(b.out, tail...)
+			b.hold, b.done, b.err = nil, true, err
+		}
+	}
+	if len(b.out) > 0 {
+		n := copy(p, b.out)
+		b.out = b.out[n:]
+		return n, nil
+	}
+	return 0, b.err
+}
+
+func (b *injectingBody) Close() error { return b.src.Close() }
 
 type joinedBody struct {
 	io.Reader
@@ -409,8 +470,7 @@ func injectScript(body []byte, nonce string) ([]byte, bool) {
 		return nil, false
 	}
 	start := max(0, len(body)-injectionWindow)
-	tail := bytes.ToLower(body[start:])
-	index := bytes.LastIndex(tail, []byte("</body"))
+	index := lastIndexFoldASCII(body[start:], "</body")
 	if index < 0 {
 		return nil, false
 	}
@@ -421,6 +481,30 @@ func injectScript(body []byte, nonce string) ([]byte, bool) {
 	out = append(out, tag...)
 	out = append(out, body[index:]...)
 	return out, true
+}
+
+// lastIndexFoldASCII finds the last occurrence of the lowercase ASCII needle
+// in b, ignoring ASCII case, on the original bytes. bytes.ToLower is not an
+// option: it rewrites invalid UTF-8 (Latin-1 pages) and some runes into
+// sequences of another length, which moves every offset.
+func lastIndexFoldASCII(b []byte, needle string) int {
+	for i := len(b) - len(needle); i >= 0; i-- {
+		match := true
+		for j := 0; j < len(needle); j++ {
+			c := b[i+j]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }
 
 func randomToken() (string, error) {

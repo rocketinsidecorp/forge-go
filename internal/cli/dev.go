@@ -124,7 +124,7 @@ func devLoop(ctx context.Context, root, name string, env []string, options devOp
 		defer func() { cancel(); served.Wait() }()
 	}
 
-	changes, err := devloop.Watch(runCtx, devloop.Options{Root: root, PollInterval: options.pollInterval, Debounce: options.debounce})
+	changes, err := devloop.Watch(runCtx, devloop.Options{Root: root, PollInterval: options.pollInterval, Debounce: options.debounce, Logf: logf})
 	if err != nil {
 		return fmt.Errorf("watch %s: %w", root, err)
 	}
@@ -212,7 +212,9 @@ type devApp struct {
 
 func (a *devApp) build(ctx context.Context, output string) error {
 	var out cappedBuffer
-	err := goCommand(ctx, a.root, nil, &out, &out, "build", "-o", output, "./cmd/"+a.name).Run()
+	command := goCommand(ctx, a.root, nil, &out, &out, "build", "-o", output, "./cmd/"+a.name)
+	devloop.IsolateCommand(command) // cancelling the build ends the compiler and linker too
+	err := command.Run()
 	if err == nil {
 		return nil
 	}

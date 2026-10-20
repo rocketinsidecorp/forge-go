@@ -94,6 +94,9 @@ type Options struct {
 	Debounce     time.Duration
 	MaxFiles     int
 	Rules        *Rules
+	// Logf reports scan failures after startup, once per run of failures;
+	// nil discards them.
+	Logf func(format string, args ...any)
 }
 
 // Change is one debounced batch of file changes.
@@ -146,6 +149,7 @@ func Watch(ctx context.Context, opts Options) (<-chan Change, error) {
 		ticker := time.NewTicker(opts.PollInterval)
 		defer ticker.Stop()
 		pending := map[string]bool{} // path -> envOnly
+		failing := false
 		var lastChange time.Time
 		for {
 			select {
@@ -156,9 +160,18 @@ func Watch(ctx context.Context, opts Options) (<-chan Change, error) {
 			current, err := scan(root, rules, opts.MaxFiles)
 			if err != nil {
 				// The tree vanished or grew past the bound; keep the
-				// last good baseline and try again.
+				// last good baseline and try again. Say so once, not on
+				// every poll.
+				if !failing && opts.Logf != nil {
+					opts.Logf("file watcher cannot scan %s, changes are not seen until it can: %v", root, err)
+				}
+				failing = true
 				continue
 			}
+			if failing && opts.Logf != nil {
+				opts.Logf("file watcher is scanning %s again", root)
+			}
+			failing = false
 			for name, state := range diff(previous, current) {
 				pending[name] = state
 				lastChange = time.Now()

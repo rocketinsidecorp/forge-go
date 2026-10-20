@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -533,5 +534,107 @@ func TestInjectScriptSearchesOnlyTheTail(t *testing.T) {
 	}
 	if _, ok := injectScript([]byte("<body>"+strings.Repeat("a", 10_000)), "n"); ok {
 		t.Fatal("a body without a closing tag must be left alone")
+	}
+}
+
+func TestInjectScriptIsByteExactOnNonASCIIPages(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{
+		"latin-1 bytes in the window":     "<html><body>" + strings.Repeat("\xe7\xe3o ", 2000) + "</body></html>",
+		"utf-8 ção heavy":                 "<html><body>" + strings.Repeat("ção ", 3000) + "</BODY></html>",
+		"runes that change length":        "<html><body>" + strings.Repeat("İ", 3000) + "</body></html>",
+		"window starts inside a rune":     "<html><body>" + strings.Repeat("é", 4090/2) + "x</body>" + strings.Repeat("ã", 40),
+		"invalid bytes after the tag":     "<html><body>x</body>\xff\xfe\xfd</html>",
+		"only invalid bytes before a tag": strings.Repeat("\xff", 5000) + "</body>",
+	}
+	for name, page := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			index := max(strings.LastIndex(page, "</body"), strings.LastIndex(page, "</BODY")) // not ToUpper: it rewrites invalid bytes
+			want := page[:index] + `<script src="` + scriptPath + `" nonce="n"></script>` + page[index:]
+			got, ok := injectScript([]byte(page), "n")
+			if !ok || string(got) != want {
+				t.Fatalf("ok=%v: the script must land exactly before the closing tag (byte %d)", ok, index)
+			}
+		})
+	}
+}
+
+func TestProxyInjectsIntoLatin1PagesWithoutPanicking(t *testing.T) {
+	t.Parallel()
+	body := "<html><body>" + strings.Repeat("\xe7\xe3o", 3000) + "</body></html>"
+	f := newFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=iso-8859-1")
+		_, _ = io.WriteString(w, body)
+	})
+	_, got := f.get(t, "/", nil)
+	if !strings.Contains(got, scriptPath) || !strings.HasSuffix(got, "</body></html>") || !strings.Contains(got, strings.Repeat("\xe7\xe3o", 3000)) {
+		t.Fatalf("page corrupted or not injected (%d bytes)", len(got))
+	}
+}
+
+func TestStatusPageHidesBuildErrorsFromNonLoopbackHosts(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, servePage(page))
+	f.proxy.BuildFailed("secret/path/main.go:3: undefined: x")
+	f.proxy.Unavailable("The build failed")
+	for host, reveal := range map[string]bool{"": true, "127.0.0.1:8080": true, "dev.example.com": false, "rebound.evil.test:8080": false} {
+		request, err := http.NewRequest(http.MethodGet, f.server.URL+"/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if host != "" {
+			request.Host = host
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if got := strings.Contains(string(body), "undefined: x"); got != reveal {
+			t.Errorf("Host %q: build output shown = %v, want %v", host, got, reveal)
+		}
+	}
+}
+
+func TestProxyStreamsChunkedHTMLInsteadOfBufferingIt(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	open := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(open) // a failing test must not leave the handler blocked
+	first := "<html><body>" + strings.Repeat("a", 20_000)
+	f := newFixture(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, first)
+		w.(http.Flusher).Flush() // no Content-Length: chunked
+		<-release
+		_, _ = io.WriteString(w, strings.Repeat("b", 100)+"</body></html>")
+	})
+	client := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 3 * time.Second}}
+	response, err := client.Get(f.server.URL + "/")
+	if err != nil {
+		t.Fatalf("the proxy held the response back until the application finished: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	got := make(chan int, 1)
+	go func() {
+		buf := make([]byte, 8192)
+		n, _ := io.ReadFull(response.Body, buf)
+		got <- n
+	}()
+	select {
+	case n := <-got:
+		if n != 8192 {
+			t.Fatalf("read %d bytes before the application finished", n)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the proxy buffered a streaming HTML response instead of passing it on")
+	}
+	open()
+	rest, _ := io.ReadAll(response.Body)
+	if all := string(rest); !strings.Contains(all, scriptPath) || !strings.HasSuffix(all, "</body></html>") {
+		t.Fatalf("script not injected into the streamed page's tail: %q", all[max(0, len(all)-200):])
 	}
 }

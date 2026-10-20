@@ -2,9 +2,11 @@ package devloop
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -203,5 +205,47 @@ func TestWatchRequiresAnExistingRoot(t *testing.T) {
 	t.Parallel()
 	if _, err := Watch(context.Background(), Options{Root: filepath.Join(t.TempDir(), "missing")}); err == nil {
 		t.Fatal("want an error for a missing root")
+	}
+}
+
+func TestWatchReportsScanFailuresOncePerRun(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	write(t, root, "a.go", "package x\n")
+	write(t, root, "b.go", "package x\n")
+	var mu sync.Mutex
+	var messages []string
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	_, err := Watch(ctx, Options{Root: root, PollInterval: testPoll, MaxFiles: 2, Logf: func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		messages = append(messages, fmt.Sprintf(format, args...))
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func() []string { mu.Lock(); defer mu.Unlock(); return append([]string(nil), messages...) }
+	count := func() int { return len(snapshot()) }
+
+	write(t, root, "c.go", "package x\n") // now beyond the bound: every poll fails
+	deadline := time.Now().Add(testWait)
+	for count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(testPoll)
+	}
+	time.Sleep(20 * testPoll) // many more failing polls
+	if got := snapshot(); len(got) != 1 || !strings.Contains(got[0], "cannot scan") {
+		t.Fatalf("want exactly one \"cannot scan\" message for one run of failures, got %v", got)
+	}
+
+	if err := os.Remove(filepath.Join(root, "c.go")); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(testWait)
+	for count() < 2 && time.Now().Before(deadline) {
+		time.Sleep(testPoll)
+	}
+	if got := snapshot(); len(got) != 2 || !strings.Contains(got[1], "again") {
+		t.Fatalf("recovery must be reported once: %v", got)
 	}
 }

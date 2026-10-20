@@ -42,6 +42,21 @@ func TestAllowReload(t *testing.T) {
 			want:   "frame-ancestors 'none'; img-src 'self'",
 		},
 		{
+			name:   "unsafe-inline keeps working: the script is admitted by origin, not by nonce",
+			policy: "script-src 'unsafe-inline'; connect-src 'self'",
+			want:   "script-src 'unsafe-inline' 'self'; connect-src 'self'",
+		},
+		{
+			name:   "unsafe-inline under default-src",
+			policy: "default-src 'unsafe-inline'",
+			want:   "default-src 'unsafe-inline'; script-src-elem 'unsafe-inline' 'self'; connect-src 'unsafe-inline' 'self'",
+		},
+		{
+			name:   "a nonce already disabled unsafe-inline, so another nonce is harmless",
+			policy: "script-src 'unsafe-inline' 'nonce-abc'",
+			want:   "script-src 'unsafe-inline' 'nonce-abc' 'nonce-N0NCE'",
+		},
+		{
 			name:   "wildcards already allow the stream",
 			policy: "script-src *; connect-src *",
 			want:   "script-src *; connect-src *",
