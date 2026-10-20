@@ -91,7 +91,7 @@ func TestGenerateAuthenticationAddsWhatForgeNewGenerates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{filepath.Join("app", "adapters", "htmlauth"), filepath.Join("app", "views", "sessions"), filepath.Join("app", "views", "passwords")} {
+	for _, path := range []string{filepath.Join("app", "adapters", "htmlauth"), filepath.Join("app", "views", "sessions"), filepath.Join("app", "views", "passwords"), filepath.Join("config", "locales", "authentication.en.json")} {
 		if err := os.RemoveAll(filepath.Join(dir, path)); err != nil {
 			t.Fatal(err)
 		}

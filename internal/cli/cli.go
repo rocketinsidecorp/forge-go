@@ -82,6 +82,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = deploy.RunApp(args[1:], stdout, commandStderr)
 	case "credentials":
 		err = runCredentials(args[1:], stdout, commandStderr)
+	case "i18n":
+		err = runI18n(args[1:], stdout)
 	case "help":
 		err = runHelp(args[1:], stdout)
 	case "-h", "--help":
@@ -292,7 +294,8 @@ func usage(output io.Writer) {
 
 commands:
   new NAME            generate an application with Dockerfile, compose and CI;
-                      --database postgresql (default), mysql, mariadb, sqlite or none
+                      --database postgresql (default), mysql, mariadb, sqlite or none;
+                      --locale en (default), es or pt-BR
   dev [NAME] [--no-reload] [--poll-interval D]
                       run the application; rebuild, restart gracefully and
                       reload the browser when files change
@@ -343,6 +346,8 @@ commands:
   app exec|shell      run a command or a shell next to the deployed app
   credentials <init|edit|show|rotate-key> [--environment E]
                       encrypted per-environment credentials (config/credentials)
+  i18n check [--json] list translations missing per locale in config/locales
+                      and keys no template or Go code references
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
   routes              list the routes found in the source, as a table

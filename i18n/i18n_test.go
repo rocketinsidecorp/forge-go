@@ -536,3 +536,17 @@ func TestCustomPluralRules(t *testing.T) {
 		t.Fatal("invalid rule locale accepted")
 	}
 }
+
+func TestFileLocale(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]string{"en.json": "en", "posts.pt-BR.json": "pt-BR", "admin.users.zh-Hant-TW.json": "zh-Hant-TW"} {
+		if got, err := i18n.FileLocale(name); err != nil || got != want {
+			t.Errorf("FileLocale(%q) = %q, %v", name, got, err)
+		}
+	}
+	for _, name := range []string{"en.yml", "../en.json", "a/en.json", `a\en.json`, "pt-br.json", "Posts.en.json", ".json", "x..en.json"} {
+		if got, err := i18n.FileLocale(name); err == nil {
+			t.Errorf("FileLocale(%q) = %q, want an error", name, got)
+		}
+	}
+}

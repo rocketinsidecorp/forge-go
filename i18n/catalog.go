@@ -37,8 +37,17 @@ var (
 // []any (of string or nil) or tree.
 type tree = map[string]any
 
-// localeFile parses a translation file name: LOCALE.json or SCOPE.LOCALE.json
-// (such as posts.en.json), where LOCALE is canonical (see CanonicalLocale).
+// FileLocale returns the locale of a translation file name: LOCALE.json or
+// SCOPE.LOCALE.json (such as posts.en.json), where LOCALE is spelled
+// canonically (see CanonicalLocale) and SCOPE uses lowercase letters,
+// digits, '_', '-' and '.'.
+func FileLocale(name string) (string, error) {
+	if !strings.HasSuffix(name, ".json") || strings.ContainsAny(name, "/\\") {
+		return "", fmt.Errorf("i18n: %s is not a translation file name (LOCALE.json)", truncate(name))
+	}
+	return localeFile(name)
+}
+
 func localeFile(name string) (string, error) {
 	base := strings.TrimSuffix(name, ".json")
 	scope, locale := "", base

@@ -1,0 +1,40 @@
+// Package locales holds {{.Name}}'s translations: one JSON file per locale
+// (en.json, pt-BR.json) whose only top-level key is the locale, plus scoped
+// files such as posts.en.json that generators add. Keys are dotted paths
+// ("sessions.new.title"); see the Forge i18n guide (docs/I18N.md) and run
+// `forge i18n check` to list missing translations.
+package locales
+
+import (
+	"embed"
+	"io/fs"
+	"log/slog"
+
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/i18n"
+)
+
+//go:embed *.json
+var files embed.FS
+
+// DefaultLocale is the locale requests fall back to unless
+// FORGE_I18N_DEFAULT_LOCALE names another one.
+const DefaultLocale = "{{.Locale}}"
+
+// Files returns the embedded translation files.
+func Files() fs.FS { return files }
+
+// New loads the translations. Missing translations show as
+// "translation missing: LOCALE.KEY" in development and test, and fall back
+// to the default locale in staging and production; both log a warning.
+func New(cfg config.Config, logger *slog.Logger) (*i18n.Translator, error) {
+	locale := cfg.I18n.DefaultLocale
+	if locale == "" {
+		locale = DefaultLocale
+	}
+	return i18n.Load(files, i18n.Options{
+		DefaultLocale: locale,
+		ShowMissing:   cfg.ShowsMissingTranslations(),
+		Logger:        logger,
+	})
+}

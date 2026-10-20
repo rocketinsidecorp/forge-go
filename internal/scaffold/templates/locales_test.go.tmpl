@@ -1,0 +1,21 @@
+package locales_test
+
+import (
+	"slices"
+	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/config"
+
+	"{{.Module}}/config/locales"
+)
+
+func TestTranslationsLoad(t *testing.T) {
+	t.Parallel()
+	translator, err := locales.New(config.Default(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if translator.DefaultLocale() != locales.DefaultLocale || !slices.Contains(translator.Locales(), "en") {
+		t.Fatalf("default %s, locales %v", translator.DefaultLocale(), translator.Locales())
+	}
+}

@@ -10,13 +10,16 @@ import (
 	"testing"
 
 	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 [[- if not .Public]]
 	"github.com/rocketinsidecorp/forge-go/fault"
 [[- end]]
+	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/web"
 	"[[.Module]]/app/adapters/htmlui"
 	appviews "[[.Module]]/app/views"
+	"[[.Module]]/config/locales"
 )
 
 // [[.Camel]]ControllerPages lists every page of the controller: its path, its
@@ -29,7 +32,14 @@ var [[.Camel]]ControllerPages = []struct{ path, heading, view string }{
 
 func new[[.Title]]ControllerHandler(t *testing.T[[if not .Public]], protect htmlui.[[.Title]]ControllerProtect[[end]]) http.Handler {
 	t.Helper()
-	renderer, err := appviews.New()
+	// English, whatever the application's default locale.
+	cfg := config.Default()
+	cfg.I18n.DefaultLocale = "en"
+	translator, err := locales.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := appviews.New(appviews.WithI18n(translator))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,11 +48,15 @@ func new[[.Title]]ControllerHandler(t *testing.T[[if not .Public]], protect html
 		t.Fatal(err)
 	}
 	// The application layout needs the browser pipeline bootstrap installs.
+	translations, err := translator.Middleware(i18n.NegotiationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	protection, err := csrf.New(csrf.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, middleware := range []func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash} {
+	for _, middleware := range []func(http.Handler) http.Handler{translations, web.MethodOverride, protection.Handler, web.Flash} {
 		if err := app.Use(middleware); err != nil {
 			t.Fatal(err)
 		}

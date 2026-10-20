@@ -11,6 +11,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/broadcast"
 	"github.com/rocketinsidecorp/forge-go/hotwire"
+	"github.com/rocketinsidecorp/forge-go/i18n"
 	forgeviews "github.com/rocketinsidecorp/forge-go/views"
 
 	"{{.Module}}/app/assets"
@@ -34,6 +35,14 @@ type Option func(*forgeviews.Options)
 // package and docs/VIEWS.md).
 func WithStreams(signer *broadcast.Signer) Option {
 	return func(opts *forgeviews.Options) { opts.Streams = signer }
+}
+
+// WithI18n gives the {{"{{"}}t{{"}}"}}, {{"{{"}}l{{"}}"}} and {{"{{"}}number{{"}}"}} helpers a translator for
+// fragments rendered without a request, such as broadcasts, which then use
+// the default locale. Pages read the translator and the locale the
+// i18n middleware puts in the request (app/bootstrap installs it).
+func WithI18n(translator *i18n.Translator) Option {
+	return func(opts *forgeviews.Options) { opts.I18n = translator }
 }
 
 // Options returns the options New passes to forgeviews.Load: the asset bundle

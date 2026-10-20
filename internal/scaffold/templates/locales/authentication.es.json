@@ -1,0 +1,67 @@
+{
+  "es": {
+    "sessions": {
+      "new": {
+        "title": "Iniciar sesión",
+        "organization": "Organización",
+        "organization_hint_html": "El nombre corto de tu organización, como <code>acme</code>.",
+        "email": "Correo electrónico",
+        "password": "Contraseña",
+        "submit": "Iniciar sesión",
+        "forgot_password": "¿Olvidaste tu contraseña?"
+      },
+      "mfa": {
+        "title": "Autenticación en dos pasos",
+        "code": "Código",
+        "code_hint": "El código de 6 dígitos de tu aplicación de autenticación, o uno de tus códigos de respaldo.",
+        "submit": "Verificar",
+        "start_over": "Empezar de nuevo"
+      },
+      "sign_out": "Cerrar sesión",
+      "signed_in": "Sesión iniciada.",
+      "signed_out": "Sesión cerrada.",
+      "invalid_credentials": "Esa organización, correo electrónico y contraseña no coinciden con ninguna cuenta.",
+      "sign_in_to_continue": "Inicia sesión para continuar.",
+      "expired": "Tu inicio de sesión expiró. Inicia sesión de nuevo.",
+      "invalid_code": "Ese código no funcionó. Introduce el código actual de tu aplicación de autenticación, o un código de respaldo."
+    },
+    "passwords": {
+      "new": {
+        "title": "¿Olvidaste tu contraseña?",
+        "instructions": "Introduce tu organización y tu correo electrónico. Si coinciden con una cuenta, enviaremos un enlace para elegir una nueva contraseña.",
+        "organization": "Organización",
+        "email": "Correo electrónico",
+        "submit": "Enviarme un enlace de restablecimiento",
+        "back": "Volver a iniciar sesión"
+      },
+      "edit": {
+        "title": "Elige una nueva contraseña",
+        "password": "Nueva contraseña",
+        "password_confirmation": "Confirma la nueva contraseña",
+        "submit": "Cambiar contraseña"
+      },
+      "reset_requested": "Si esa cuenta existe, enviamos instrucciones para restablecer la contraseña a su correo electrónico.",
+      "invalid_link": "Ese enlace de restablecimiento no es válido o ha caducado. Solicita uno nuevo.",
+      "changed": "Tu contraseña se cambió. Inicia sesión con la nueva contraseña.",
+      "errors": {
+        "too_short": "La nueva contraseña debe tener al menos %{count} caracteres",
+        "mismatch": "La confirmación no coincide con la contraseña",
+        "invalid": "La nueva contraseña no es válida"
+      }
+    },
+    "throttled": {
+      "sign_in": {
+        "one": "Demasiados intentos de inicio de sesión. Inténtalo de nuevo en un minuto.",
+        "other": "Demasiados intentos de inicio de sesión. Inténtalo de nuevo en %{count} minutos."
+      },
+      "code": {
+        "one": "Demasiados intentos de código. Inténtalo de nuevo en un minuto.",
+        "other": "Demasiados intentos de código. Inténtalo de nuevo en %{count} minutos."
+      },
+      "reset": {
+        "one": "Demasiados intentos de restablecimiento. Inténtalo de nuevo en un minuto.",
+        "other": "Demasiados intentos de restablecimiento. Inténtalo de nuevo en %{count} minutos."
+      }
+    }
+  }
+}

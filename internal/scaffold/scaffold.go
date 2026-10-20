@@ -15,10 +15,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"text/template"
 
 	"github.com/rocketinsidecorp/forge-go/credentials"
+	"github.com/rocketinsidecorp/forge-go/i18n"
 )
 
 // FrameworkModule is the module path generated applications depend on.
@@ -44,7 +46,14 @@ type Options struct {
 	// "sqlite3" are accepted) or empty for none. It selects the adapter,
 	// the compose and CI services and the development settings.
 	Database string
+	// Locale is the default locale, one of Locales; empty means "en". Its
+	// translations are generated next to en.json.
+	Locale string
 }
+
+// Locales are the locales Forge ships translations of the generated pages
+// for: `forge new --locale` accepts them.
+var Locales = []string{"en", "es", "pt-BR"}
 
 // templateData is what templates see.
 type templateData struct {
@@ -100,6 +109,8 @@ var files = []file{
 	{"app_assets.go.tmpl", fixed(filepath.Join("app", "assets", "assets.go")), everyApplication},
 	{"app_assets_test.go.tmpl", fixed(filepath.Join("app", "assets", "assets_test.go")), everyApplication},
 	{"javascript.go.tmpl", fixed(filepath.Join("app", "javascript", "javascript.go")), everyApplication},
+	{"locales.go.tmpl", fixed(filepath.Join("config", "locales", "locales.go")), everyApplication},
+	{"locales_test.go.tmpl", fixed(filepath.Join("config", "locales", "locales_test.go")), everyApplication},
 	{"views.go.tmpl", fixed(filepath.Join("app", "views", "views.go")), everyApplication},
 	{"views_test.go.tmpl", fixed(filepath.Join("app", "views", "views_test.go")), everyApplication},
 	{"application.gohtml.tmpl", fixed(filepath.Join("app", "views", "layouts", "application.gohtml")), everyApplication},
@@ -165,7 +176,77 @@ func Normalize(opts Options) (Options, error) {
 		return Options{}, err
 	}
 	opts.Database = database
+	if opts.Locale == "" {
+		opts.Locale = i18n.DefaultLocale
+	}
+	locale, err := i18n.CanonicalLocale(opts.Locale)
+	if err != nil || !slices.Contains(Locales, locale) {
+		return Options{}, fmt.Errorf("unsupported locale %q: Forge generates translations for %s; add others to config/locales afterwards (docs/I18N.md)", opts.Locale, strings.Join(Locales, ", "))
+	}
+	opts.Locale = locale
 	return opts, nil
+}
+
+// localeAssets are the translation files of the generated pages: en.json,
+// and the default locale's when it is another one, plus the sign-in pages'
+// authentication.LOCALE.json with Forge identity.
+func localeAssets(locale string, identity bool) []asset {
+	locales := []string{i18n.DefaultLocale}
+	if locale != "" && locale != i18n.DefaultLocale {
+		locales = append(locales, locale)
+	}
+	var result []asset
+	for _, name := range locales {
+		result = append(result, asset{source: "templates/locales/" + name + ".json", target: filepath.Join("config", "locales", name+".json")})
+		if identity {
+			result = append(result, authenticationTranslation(name))
+		}
+	}
+	return result
+}
+
+func authenticationTranslation(locale string) asset {
+	name := "authentication." + locale + ".json"
+	return asset{source: "templates/locales/" + name, target: filepath.Join("config", "locales", name)}
+}
+
+// AuthenticationTranslation returns config/locales/authentication.LOCALE.json,
+// the text of the sign-in, two-factor and password-reset pages, for a locale
+// in Locales.
+func AuthenticationTranslation(locale string) (BaseFile, error) {
+	if !slices.Contains(Locales, locale) {
+		return BaseFile{}, fmt.Errorf("no authentication translations for %q", locale)
+	}
+	file := authenticationTranslation(locale)
+	content, err := templateFS.ReadFile(file.source)
+	if err != nil {
+		return BaseFile{}, err
+	}
+	return BaseFile{Path: file.target, Content: content}, nil
+}
+
+// I18nBase returns the translations package `forge new` generates
+// (config/locales: locales.go, its test and en.json). Generators add it to an
+// application that lacks it, so pages that use t have their translations.
+func I18nBase(name, module string) ([]BaseFile, error) {
+	opts, err := Normalize(Options{Name: name, Module: module})
+	if err != nil {
+		return nil, err
+	}
+	rendered, err := renderSelected(opts, func(f file) bool {
+		return strings.HasPrefix(f.path(""), filepath.Join("config", "locales")+string(filepath.Separator))
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, locale := range localeAssets(opts.Locale, false) {
+		content, err := templateFS.ReadFile(locale.source)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", locale.source, err)
+		}
+		rendered = append(rendered, BaseFile{Path: locale.target, Content: content})
+	}
+	return rendered, nil
 }
 
 // Generate renders every file and writes it under opts.Dir. It never
@@ -197,7 +278,7 @@ func Generate(opts Options) ([]string, error) {
 		}
 		paths = append(paths, relative)
 	}
-	for _, asset := range assets {
+	for _, asset := range append(slices.Clone(assets), localeAssets(opts.Locale, hasIdentity(opts))...) {
 		content, err := templateFS.ReadFile(asset.source)
 		if err != nil {
 			return nil, cleanup(opts.Dir, created, fmt.Errorf("read asset %s: %w", asset.source, err))
@@ -287,11 +368,15 @@ func render(opts Options) (map[string][]byte, error) {
 	return output, nil
 }
 
+// hasIdentity reports whether the application gets Forge identity (the
+// sign-in pages): PostgreSQL applications.
+func hasIdentity(opts Options) bool {
+	profile := profileFor(opts.Database, "", "")
+	return profile != nil && profile.Identity
+}
+
 func selectedFiles(opts Options) []file {
-	identity := false
-	if profile := profileFor(opts.Database, "", ""); profile != nil {
-		identity = profile.Identity
-	}
+	identity := hasIdentity(opts)
 	selected := make([]file, 0, len(files))
 	for _, f := range files {
 		switch {

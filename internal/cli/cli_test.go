@@ -114,7 +114,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
 		t.Fatalf("decode command catalog: %v\n%s", err, stdout.String())
 	}
-	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 21 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
+	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 22 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
 		t.Fatalf("unexpected catalog header: %+v", catalog)
 	}
 	rollbackDeclaredDestructive := false
@@ -125,7 +125,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	expectedCommands := map[string]bool{
 		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true, "setup": true, "seed": true, "db": true,
 		"generate": true, "doctor": true, "inspect": true, "routes": true, "uuid": true, "version": true, "help": true,
-		"credentials": true, "deploy": true, "logs": true, "app": true, "destroy": true,
+		"credentials": true, "deploy": true, "logs": true, "app": true, "destroy": true, "i18n": true,
 	}
 	for _, command := range catalog.Commands {
 		if !expectedCommands[command.Name] || commandsSeen[command.Name] || len(command.Examples) == 0 || command.Environment.Files == nil || command.Environment.Variables == nil || len(command.ExitCodes) < 2 {
@@ -576,9 +576,9 @@ func wireParts(t *testing.T, dir string, partsList []resourceWiringParts) {
 	for _, parts := range partsList {
 		// Live updates: the signer comes before the view renderer.
 		if parts.StreamSigner != "" && !strings.Contains(source, "streamSigner, err :=") && !strings.Contains(guard, "streamSigner, err :=") {
-			const identityRenderer = "\trenderer, err := views.New()\n"
+			const identityRenderer = "\trenderer, err := views.New(views.WithI18n(translator))\n"
 			if strings.Contains(source, identityRenderer) {
-				source = strings.Replace(source, identityRenderer, parts.StreamSigner+"\trenderer, err := views.New(views.WithStreams(streamSigner))\n", 1)
+				source = strings.Replace(source, identityRenderer, parts.StreamSigner+"\trenderer, err := views.New(views.WithI18n(translator), views.WithStreams(streamSigner))\n", 1)
 			} else {
 				addOnce(parts.StreamSigner)
 			}
@@ -599,7 +599,7 @@ func wireParts(t *testing.T, dir string, partsList []resourceWiringParts) {
 	anchor := "\treturn app.Handle(\"GET /v1/auth/session\""
 	insertAfter := false
 	if !strings.Contains(source, anchor) {
-		anchor = "\tif err := routes(ctx, app); err != nil {\n\t\treturn err\n\t}\n"
+		anchor = "\tif err := routes(ctx, app, translator); err != nil {\n\t\treturn err\n\t}\n"
 		insertAfter = true
 	}
 	if !strings.Contains(source, anchor) {

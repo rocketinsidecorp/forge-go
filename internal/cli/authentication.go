@@ -54,6 +54,7 @@ type authenticationPlan struct {
 	command         string // the cmd/<name> directory, or "<name>" when unknown
 	files           []generatedFile
 	browserPipeline bool
+	i18nMiddleware  bool
 }
 
 func planAuthentication(root string, env []string) (authenticationPlan, error) {
@@ -84,7 +85,7 @@ func planAuthentication(root string, env []string) (authenticationPlan, error) {
 	if !hasIdentityMigrations(projectRoot) {
 		return authenticationPlan{}, errors.New("cmd/<name>/main.go does not compose the Forge identity migrations (authpostgres.Migrations()); the pages need the identity tables: add them to the migrate commands first (see docs/AUTHENTICATION.md)")
 	}
-	plan := authenticationPlan{module: module, command: "<name>", browserPipeline: hasBrowserPipeline(projectRoot)}
+	plan := authenticationPlan{module: module, command: "<name>", browserPipeline: hasBrowserPipeline(projectRoot), i18nMiddleware: hasI18nMiddleware(projectRoot)}
 	if name, err := resolveCommand(root, nil); err == nil {
 		plan.command = name
 	}
@@ -104,6 +105,21 @@ func planAuthentication(root string, env []string) (authenticationPlan, error) {
 		return authenticationPlan{}, errors.Join(errors.New("the pages need the application's views package"), err)
 	}
 	plan.files = append(plan.files, base...)
+	// The pages' text in the other locales the application has and Forge
+	// ships translations for.
+	for _, locale := range scaffold.Locales {
+		if locale == "en" {
+			continue
+		}
+		if _, err := projectRoot.Lstat(filepath.Join(localesDir, locale+".json")); err != nil {
+			continue
+		}
+		translation, err := scaffold.AuthenticationTranslation(locale)
+		if err != nil {
+			return authenticationPlan{}, err
+		}
+		plan.files = append(plan.files, generatedFile{path: translation.Path, content: string(translation.Content)})
+	}
 
 	paths := make([]string, 0, len(plan.files))
 	for _, file := range plan.files {
@@ -147,7 +163,7 @@ func authenticationWiring(plan authenticationPlan) string {
 	if err != nil {
 		return err
 	}
-	renderer, err := views.New()
+	renderer, err := views.New(views.WithI18n(translator))
 	if err != nil {
 		return err
 	}
@@ -175,6 +191,9 @@ func authenticationWiring(plan authenticationPlan) string {
 	fmt.Fprintf(&out, "  4. Add the setup command to the commands in %s, so the first owner\n     can be created:\n\n\tauthpostgres.SetupCommand(),\n", main)
 	if !plan.browserPipeline {
 		out.WriteString("\n  WARNING: app/bootstrap/bootstrap.go does not appear to install csrf.Protection, web.MethodOverride and web.Flash (forge new generates useBrowserPipeline for them). auth.Browser refuses every form without a verified CSRF token, so sign-in cannot work until they are installed (docs/VIEWS.md).\n")
+	}
+	if !plan.i18nMiddleware {
+		out.WriteString("\n  WARNING: app/bootstrap/bootstrap.go does not appear to build the translator and install its middleware (forge new does: `translator, err := locales.New(app.Config(), app.Logger())` in Configure, passed to identityRoutes, and `translator.Middleware(i18n.NegotiationOptions{})` first in useBrowserPipeline). The pages' text comes from config/locales and needs them (docs/I18N.md).\n")
 	}
 	out.WriteString("\n  Then: forge test && forge setup --tenant acme --email you@example.com\n")
 	return out.String()

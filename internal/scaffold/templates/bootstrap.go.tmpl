@@ -17,6 +17,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/auth/recoverymail"
 {{- end}}
 	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/i18n"
 {{- if and .DB .DB.Jobs}}
 	"github.com/rocketinsidecorp/forge-go/jobs"
 {{- end}}
@@ -29,6 +30,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/web"
 
 	appassets "{{.Module}}/app/assets"
+	"{{.Module}}/config/locales"
 {{- if and .DB .DB.Identity}}
 	"{{.Module}}/app/adapters/htmlauth"
 	"{{.Module}}/app/views"
@@ -55,18 +57,30 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := app.Readiness("database", database.Ping); err != nil {
 		return err
 	}
-	if err := routes(ctx, app); err != nil {
+	// Translations (config/locales) for the pages and flash messages, in
+	// each request's locale.
+	translator, err := locales.New(app.Config(), app.Logger())
+	if err != nil {
+		return err
+	}
+	if err := routes(ctx, app, translator); err != nil {
 		return err
 	}
 {{- if and .DB .DB.Identity}}
-	return identityRoutes(ctx, app, database)
+	return identityRoutes(ctx, app, database, translator)
 {{- else}}
 	return nil
 {{- end}}
 }
 {{- else}}
 func Configure(_ context.Context, app *forge.App) error {
-	return routes(context.Background(), app)
+	// Translations (config/locales) for the pages and flash messages, in
+	// each request's locale.
+	translator, err := locales.New(app.Config(), app.Logger())
+	if err != nil {
+		return err
+	}
+	return routes(context.Background(), app, translator)
 }
 {{- end}}
 
@@ -95,8 +109,8 @@ func JobsConfigure(app *forge.App) error {
 }
 {{- end}}
 
-func routes(ctx context.Context, app *forge.App) error {
-	if err := useBrowserPipeline(app); err != nil {
+func routes(ctx context.Context, app *forge.App, translator *i18n.Translator) error {
+	if err := useBrowserPipeline(app, translator); err != nil {
 		return err
 	}
 	// Digested, immutable static files: the stylesheet, the logo, the
@@ -123,18 +137,26 @@ func routes(ctx context.Context, app *forge.App) error {
 }
 
 // useBrowserPipeline installs the middleware server-rendered HTML relies on,
-// ahead of routing: HTML forms reach PUT, PATCH and DELETE routes through a
-// _method field; unsafe requests need the CSRF token (csrfField in a form,
-// the X-CSRF-Token header in scripts) and must not come from another
-// origin; flash messages survive one redirect. Bearer-token and JSON API
-// requests are not affected by the token check. List webhook routes that
-// authenticate by signature in csrf.Options.Exempt.
-func useBrowserPipeline(app *forge.App) error {
+// ahead of routing: each request gets its locale (the "locale" cookie, then
+// Accept-Language, then the default) for i18n.T and the views' t helper;
+// HTML forms reach PUT, PATCH and DELETE routes through a _method field;
+// unsafe requests need the CSRF token (csrfField in a form, the
+// X-CSRF-Token header in scripts) and must not come from another origin;
+// flash messages survive one redirect. Bearer-token and JSON API requests
+// are not affected by the token check. List webhook routes that
+// authenticate by signature in csrf.Options.Exempt. Set PathPrefix (/pt-BR/...)
+// or Param (?locale=pt-BR) in i18n.NegotiationOptions to let URLs choose the
+// locale.
+func useBrowserPipeline(app *forge.App, translator *i18n.Translator) error {
+	translations, err := translator.Middleware(i18n.NegotiationOptions{})
+	if err != nil {
+		return err
+	}
 	protection, err := csrf.New(csrf.Options{})
 	if err != nil {
 		return err
 	}
-	for _, middleware := range []func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash} {
+	for _, middleware := range []func(http.Handler) http.Handler{translations, web.MethodOverride, protection.Handler, web.Flash} {
 		if err := app.Use(middleware); err != nil {
 			return err
 		}
@@ -148,7 +170,7 @@ func status(w http.ResponseWriter, _ *http.Request) {
 
 {{- if and .DB .DB.Identity}}
 
-func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB) error {
+func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, translator *i18n.Translator) error {
 	repository, err := authpostgres.New(database)
 	if err != nil {
 		return err
@@ -193,8 +215,10 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB) 
 	if err != nil {
 		return err
 	}
-	// The view renderer every HTML page shares (app/views).
-	renderer, err := views.New()
+	// The view renderer every HTML page shares (app/views). Pages translate
+	// for the request's locale; the translator serves fragments rendered
+	// without a request (broadcasts) in the default locale.
+	renderer, err := views.New(views.WithI18n(translator))
 	if err != nil {
 		return err
 	}

@@ -1,20 +1,25 @@
 package bootstrap
 
 import (
-	"io"
+	"bytes"
+	"html/template"
 	"net/http"
-	"strings"
+
+	"github.com/rocketinsidecorp/forge-go/i18n"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
-const welcomePage = `<!doctype html>
-<html lang="en">
+// welcomePage is an html/template with [[ ]] delimiters; its text comes from
+// the welcome.* keys of config/locales.
+var welcomePage = template.Must(template.New("welcome").Delims("[[", "]]").Parse(`<!doctype html>
+<html lang="[[.Locale]]">
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<meta name="theme-color" content="#100d0a">
-	<meta name="description" content="A Go service built with Forge Go.">
+	<meta name="description" content="[[.Description]]">
 	<meta name="turbo-visit-control" content="reload">
-	<title>Welcome to {{.Name}} · Forge Go</title>
+	<title>[[.PageTitle]]</title>
 	<style>
 		:root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #100d0a; color: #f2e9dd; }
 		* { box-sizing: border-box; }
@@ -46,24 +51,24 @@ const welcomePage = `<!doctype html>
 </head>
 <body>
 	<div class="frame">
-		<header class="masthead"><strong>Forge Go</strong><span>Go Framework</span></header>
+		<header class="masthead"><strong>Forge Go</strong><span>[[.Masthead]]</span></header>
 		<main>
 			<section class="welcome" aria-labelledby="welcome-title">
-				<img class="brand-art" src="@@LOGO@@" width="512" height="512" alt="Forge Go — Go Framework">
+				<img class="brand-art" src="[[.Logo]]" width="512" height="512" alt="[[.LogoAlt]]">
 				<div>
-					<p class="eyebrow">Your service is running</p>
-					<h1 id="welcome-title">Welcome to {{.Name}}</h1>
-					<p class="lede">Your Go service is ready. Replace this welcome page as you add the routes and capabilities your application needs.</p>
+					<p class="eyebrow">[[.Eyebrow]]</p>
+					<h1 id="welcome-title">[[.Title]]</h1>
+					<p class="lede">[[.Lede]]</p>
 					<div class="actions">
 {{- if and .DB .DB.Identity}}
-						<a class="button button-primary" href="/session/new">Sign in <span aria-hidden="true">→</span></a>
-						<a class="button button-secondary" href="/v1/status">View service status</a>
+						<a class="button button-primary" href="/session/new">[[.SignIn]] <span aria-hidden="true">→</span></a>
+						<a class="button button-secondary" href="/v1/status">[[.Status]]</a>
 {{- else}}
-						<a class="button button-primary" href="/v1/status">View service status <span aria-hidden="true">→</span></a>
+						<a class="button button-primary" href="/v1/status">[[.Status]] <span aria-hidden="true">→</span></a>
 {{- end}}
-						<a class="button button-secondary" href="https://github.com/rocketinsidecorp/forge-go">Forge documentation</a>
+						<a class="button button-secondary" href="https://github.com/rocketinsidecorp/forge-go">[[.Documentation]]</a>
 					</div>
-					<nav aria-label="Service health endpoints">
+					<nav aria-label="[[.HealthEndpoints]]">
 						<ul class="endpoints">
 							<li><a href="/health/live">/health/live</a></li>
 							<li><a href="/health/ready">/health/ready</a></li>
@@ -72,20 +77,51 @@ const welcomePage = `<!doctype html>
 				</div>
 			</section>
 		</main>
-		<footer><span>Forge Go · Go Framework</span><span>Built to get you moving</span></footer>
+		<footer><span>[[.Footer]]</span><span>[[.Tagline]]</span></footer>
 	</div>
 </body>
-</html>`
+</html>`))
 
-// welcomeHandler serves the welcome page. logoPath is the digested URL of the
-// logo (assets.Set.Path). The page is a complete document with its own inline
-// stylesheet, so it asks Turbo Drive to load it with a full page visit: the
-// strict policy of the pages that carry Turbo would block that stylesheet.
+// welcomeText is what the welcome page shows, in the request's locale.
+type welcomeText struct {
+	Locale, Logo                                       string
+	PageTitle, Description, Eyebrow, Title, Lede       string
+	SignIn, Status, Documentation, HealthEndpoints     string
+	LogoAlt, Masthead, Footer, Tagline                 string
+}
+
+// welcomeHandler serves the welcome page in the request's locale. logoPath
+// is the digested URL of the logo (assets.Set.Path). The page is a complete
+// document with its own inline stylesheet, so it asks Turbo Drive to load it
+// with a full page visit: the strict policy of the pages that carry Turbo
+// would block that stylesheet.
 func welcomeHandler(logoPath string) http.HandlerFunc {
-	page := strings.ReplaceAll(welcomePage, "@@LOGO@@", logoPath)
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		text := welcomeText{
+			Locale:          i18n.Locale(ctx),
+			Logo:            logoPath,
+			PageTitle:       i18n.T(ctx, "welcome.page_title", "app", "{{.Name}}"),
+			Description:     i18n.T(ctx, "welcome.description"),
+			Eyebrow:         i18n.T(ctx, "welcome.eyebrow"),
+			Title:           i18n.T(ctx, "welcome.title", "app", "{{.Name}}"),
+			Lede:            i18n.T(ctx, "welcome.lede"),
+			SignIn:          i18n.T(ctx, "welcome.sign_in"),
+			Status:          i18n.T(ctx, "welcome.status"),
+			Documentation:   i18n.T(ctx, "welcome.documentation"),
+			HealthEndpoints: i18n.T(ctx, "welcome.health_endpoints"),
+			LogoAlt:         i18n.T(ctx, "welcome.logo_alt"),
+			Masthead:        i18n.T(ctx, "welcome.masthead"),
+			Footer:          i18n.T(ctx, "welcome.footer"),
+			Tagline:         i18n.T(ctx, "welcome.tagline"),
+		}
+		var page bytes.Buffer
+		if err := welcomePage.Execute(&page, text); err != nil {
+			web.Error(w, r, err)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'")
-		_, _ = io.WriteString(w, page)
+		_, _ = w.Write(page.Bytes())
 	}
 }

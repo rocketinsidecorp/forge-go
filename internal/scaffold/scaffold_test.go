@@ -4,10 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
@@ -404,7 +406,8 @@ func TestGenerateServerRenderedHTML(t *testing.T) {
 			}
 			assertContains(t, dir, map[string][]string{
 				"app/views/layouts/application.gohtml": {
-					`<html lang="en">`,
+					`<html lang="{{locale}}">`,
+					`{{t "layout.skip_to_content"}}`,
 					`<title>{{block "title" .}}shop{{end}}</title>`,
 					"{{csrfMeta}}",
 					`{{stylesheetTag "application"}}`,
@@ -419,15 +422,18 @@ func TestGenerateServerRenderedHTML(t *testing.T) {
 				"app/javascript/javascript.go":        {"//go:embed application.js controllers/*.js"},
 				"app/javascript/application.js":       {`import "@hotwired/turbo"`, `import "controllers"`},
 				"app/javascript/controllers/index.js": {`application.register("hello", HelloController)`},
-				"app/bootstrap/welcome.go":            {`<meta name="turbo-visit-control" content="reload">`, "@@LOGO@@"},
+				"app/bootstrap/welcome.go":            {`<meta name="turbo-visit-control" content="reload">`, `src="[[.Logo]]"`, `i18n.T(ctx, "welcome.title", "app", "shop")`},
 				"app/bootstrap/bootstrap.go": {
-					"if err := useBrowserPipeline(app); err != nil {",
+					"translator, err := locales.New(app.Config(), app.Logger())",
+					"if err := useBrowserPipeline(app, translator); err != nil {",
+					"translator.Middleware(i18n.NegotiationOptions{})",
 					"csrf.New(csrf.Options{})",
-					"[]func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash}",
+					"[]func(http.Handler) http.Handler{translations, web.MethodOverride, protection.Handler, web.Flash}",
 					"app.Use(middleware)",
 					`app.Handle("GET /assets/", bundle.Set.Handler())`,
 				},
 				"app/bootstrap/bootstrap_test.go": {"func TestBrowserPipelineRequiresCSRFToken(t *testing.T) {"},
+				"config/locales/locales.go":       {"//go:embed *.json", `const DefaultLocale = "en"`, "cfg.ShowsMissingTranslations()"},
 			})
 			for _, path := range []string{"app/views/layouts/application.gohtml", "app/views/shared/_flash.gohtml"} {
 				content, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
@@ -518,7 +524,7 @@ func TestAuthenticationFilesMatchForgeNew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 7 {
+	if len(files) != 8 || files[7].Path != filepath.Join("config", "locales", "authentication.en.json") {
 		t.Fatalf("got %d authentication files", len(files))
 	}
 	for _, file := range files {
@@ -537,6 +543,90 @@ func TestAuthenticationFilesMatchForgeNew(t *testing.T) {
 	for _, file := range base {
 		if strings.Contains(filepath.ToSlash(file.Path), "sessions/") || strings.Contains(filepath.ToSlash(file.Path), "passwords/") {
 			t.Errorf("the views base must not include authentication pages: %s", file.Path)
+		}
+	}
+}
+
+// TestGenerateTranslations: en.json always, the default locale's file with
+// --locale, the same keys and complete plural forms in every shipped locale,
+// and no other locale accepted.
+func TestGenerateTranslations(t *testing.T) {
+	t.Parallel()
+	for _, locale := range scaffold.Locales {
+		t.Run(locale, func(t *testing.T) {
+			t.Parallel()
+			dir := filepath.Join(t.TempDir(), "shop")
+			paths, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: "postgresql", Locale: strings.ToLower(locale)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{filepath.Join("config", "locales", "en.json")}
+			if locale != "en" {
+				want = append(want, filepath.Join("config", "locales", locale+".json"))
+			}
+			for _, path := range want {
+				if !contains(paths, path) {
+					t.Fatalf("missing %s in %v", path, paths)
+				}
+			}
+			assertContains(t, dir, map[string][]string{"config/locales/locales.go": {`const DefaultLocale = "` + locale + `"`}})
+			translator, err := i18n.Load(os.DirFS(filepath.Join(dir, "config", "locales")), i18n.Options{DefaultLocale: locale})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := translator.Translate(locale, "welcome.title", "app", "shop"); strings.Contains(got, "missing") || !strings.Contains(got, "shop") {
+				t.Fatalf("welcome.title = %q", got)
+			}
+		})
+	}
+	if _, err := scaffold.Normalize(scaffold.Options{Name: "shop", Locale: "fr"}); err == nil || !strings.Contains(err.Error(), "en, es, pt-BR") {
+		t.Fatalf("unsupported locale: %v", err)
+	}
+	if _, err := scaffold.Normalize(scaffold.Options{Name: "shop", Locale: "../en"}); err == nil {
+		t.Fatal("invalid locale accepted")
+	}
+}
+
+// TestShippedTranslationsAgree compares every shipped locale with English
+// (LOCALE.json and authentication.LOCALE.json): same keys, and every plural
+// form the locale's CLDR rule uses.
+func TestShippedTranslationsAgree(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, locale := range scaffold.Locales {
+		app := filepath.Join(dir, "app-"+strings.ToLower(locale))
+		if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: app, Database: "postgresql", Locale: locale}); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{locale + ".json", "authentication." + locale + ".json"} {
+			data, err := os.ReadFile(filepath.Join(app, "config", "locales", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	translator, err := i18n.Load(os.DirFS(dir), i18n.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	english := translator.Keys("en")
+	for _, locale := range scaffold.Locales {
+		if keys := translator.Keys(locale); !slices.Equal(keys, english) {
+			t.Errorf("%s keys differ from en:\n%v\n%v", locale, keys, english)
+		}
+		for _, key := range english {
+			forms, plural := translator.PluralForms(locale, key)
+			if !plural {
+				continue
+			}
+			for _, category := range translator.PluralCategories(locale) {
+				if !slices.Contains(forms, category) {
+					t.Errorf("%s %s lacks the %s form", locale, key, category)
+				}
+			}
 		}
 	}
 }

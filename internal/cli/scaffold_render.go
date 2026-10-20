@@ -2,6 +2,7 @@ package cli
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -272,4 +273,66 @@ var scaffoldPages = []scaffoldPage{
 
 func renderScaffoldTemplate(name string, data any) (string, error) {
 	return renderEmbedded(scaffoldTemplates, "scaffoldtemplates/"+name, data)
+}
+
+// Translations returns config/locales/PLURAL.en.json: the English text of
+// the pages and flash messages, under the PLURAL key. Translate it into a
+// PLURAL.LOCALE.json per locale; `forge i18n check` lists what is missing.
+func (v scaffoldView) Translations() (string, error) {
+	fields := map[string]any{"created_at": "Created", "updated_at": "Updated"}
+	if len(v.IndexColumns()) == 0 {
+		fields["id"] = "ID"
+	}
+	optionalBool := false
+	for _, field := range v.Fields {
+		fields[field.Name] = field.Label()
+		optionalBool = optionalBool || (field.IsBool() && field.Optional)
+	}
+	form := map[string]any{
+		"errors": "This " + v.Human + " could not be saved:",
+		"submit": "Save " + v.Human,
+	}
+	if v.HasOptional {
+		form["not_set"] = "Not set"
+	}
+	if optionalBool {
+		form["yes"], form["no"] = "Yes", "No"
+	}
+	scope := map[string]any{
+		"back":   "Back to " + v.PluralHuman,
+		"fields": fields,
+		"form":   form,
+		"index": map[string]any{
+			"title":     v.PluralHumanTitle,
+			"new":       "New " + v.Human,
+			"actions":   "Actions",
+			"empty":     "No " + v.PluralHuman + " yet.",
+			"next_page": "Next page",
+			"show":      "Show",
+			"edit":      "Edit",
+		},
+		"show": map[string]any{"title": v.HumanTitle, "delete": "Delete " + v.Human},
+		"new":  map[string]any{"title": "New " + v.Human},
+		"edit": map[string]any{
+			"title":        "Edit " + v.Human,
+			"conflict":     "This " + v.Human + " was changed by someone else after you opened it, so your changes were not saved.",
+			"reload":       "Load the latest version and apply your changes again.",
+			"back_to_item": "Back to " + v.Human,
+		},
+		"not_found": map[string]any{
+			"title":   v.HumanTitle + " not found",
+			"message": "This " + v.Human + " does not exist, or it was deleted.",
+		},
+		"flash": map[string]any{
+			"created": v.HumanTitle + " was created.",
+			"updated": v.HumanTitle + " was updated.",
+			"deleted": v.HumanTitle + " was deleted.",
+			"stale":   v.HumanTitle + " was not deleted because it changed since you opened it. Review it and try again.",
+		},
+	}
+	content, err := json.MarshalIndent(map[string]any{"en": map[string]any{v.Plural: scope}}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(content) + "\n", nil
 }

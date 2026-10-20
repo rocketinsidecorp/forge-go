@@ -333,10 +333,10 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 	if !spec.API {
 		arguments += ", renderer"
 		if spec.ViewRenderer {
-			parts.Notes = append(parts.Notes, "The pages reuse the renderer that bootstrap.go already builds with views.New().")
+			parts.Notes = append(parts.Notes, "The pages reuse the renderer that bootstrap.go already builds with views.New(views.WithI18n(translator)).")
 		} else {
 			parts.Imports = append(parts.Imports, spec.Module+"/app/views")
-			parts.Renderer = "	renderer, err := views.New()\n	if err != nil {\n		return err\n	}\n"
+			parts.Renderer = "	renderer, err := views.New(views.WithI18n(translator))\n	if err != nil {\n		return err\n	}\n"
 		}
 	}
 	switch {
