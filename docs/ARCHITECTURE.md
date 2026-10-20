@@ -583,6 +583,8 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0034](adr/0034-dependency-free-telemetry.md) | Dependency-free telemetry speaking OpenTelemetry protocols |
 | [0036](adr/0036-encrypted-credentials-and-attribute-encryption.md) | Encrypted credentials and attribute encryption |
 | [0037](adr/0037-trusted-proxies-and-client-ip.md) | Trusted proxies and the client address |
+| [0038](adr/0038-local-observability-stack.md) | Local observability stack |
+| [0039](adr/0039-framework-migration-ownership.md) | Framework migration ownership in the application's migration table |
 
 ## Not yet implemented
 

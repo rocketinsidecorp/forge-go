@@ -124,6 +124,10 @@ forge.Main(bootstrap.Configure,
 limiter, err := ratelimitpostgres.NewLimiter(db, ratelimit.StoreOptions{})
 ```
 
+`app rollback` never reverts this framework migration, and removing the set
+from `CommandsFromSets` later keeps `migrate` working
+([framework migrations](DATABASE.md#framework-migrations)).
+
 A new store should pass `limitertest.Run`.
 
 ### Memory limits

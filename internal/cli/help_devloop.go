@@ -36,7 +36,7 @@ func dbCommandDetail() commandDetail {
 		Flags: []flagDetail{
 			{Name: "--force-production", Description: "drop, reset, schema:load, rollback: allow the command on a protected database (production, staging or a non-local server), after confirmation."},
 			{Name: "--yes", Description: "With --force-production: confirm without a prompt; requires FORGE_ALLOW_DESTRUCTIVE=true in the process environment."},
-			{Name: "-steps", Value: "N", Default: "1", Description: "rollback: number of migrations to revert."},
+			{Name: "-steps", Value: "N", Default: "1", Description: "rollback: number of application migrations to revert; Forge framework migrations are never reverted."},
 			{Name: "--", Description: "console: arguments after it go to the database client."},
 		},
 	}

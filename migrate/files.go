@@ -52,8 +52,13 @@ const (
 	StatePending MigrationState = "pending"
 	// StateModified means the file changed after the migration was applied.
 	StateModified MigrationState = "modified"
-	// StateUnknown means the database has a migration this build lacks.
+	// StateUnknown means the database has a migration this build lacks;
+	// migrate and rollback refuse to run.
 	StateUnknown MigrationState = "unknown"
+	// StateDisabled means the database has a framework migration whose set
+	// this build does not compose (its feature was turned off). It is
+	// tolerated: it stays applied, and composing the set again verifies it.
+	StateDisabled MigrationState = "disabled"
 )
 
 type MigrationStatus struct {
@@ -129,7 +134,8 @@ func LoadMigrations(fsys fs.FS) ([]Migration, error) {
 // LoadMigrationSets loads and merges several independent migration filesystems.
 // Every set is validated with LoadMigrations first. Versions must be globally
 // unique across all sets so framework and application migrations cannot
-// silently shadow or reorder each other.
+// silently shadow or reorder each other, and a framework migration's version
+// is reserved for it (*ReservedVersionError).
 func LoadMigrationSets(sets ...fs.FS) ([]Migration, error) {
 	if len(sets) == 0 {
 		return nil, nil
@@ -154,6 +160,9 @@ func LoadMigrationSets(sets ...fs.FS) ([]Migration, error) {
 			seen[migration.Version] = migration
 			merged = append(merged, migration)
 		}
+	}
+	if err := checkReservedVersions(merged); err != nil {
+		return nil, err
 	}
 	slices.SortFunc(merged, func(a, b Migration) int { return cmp.Compare(a.Version, b.Version) })
 	return merged, nil

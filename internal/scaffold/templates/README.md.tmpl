@@ -220,6 +220,7 @@ written to logs.
 {{- end}}
 | `Dockerfile` | Production image: static binary, distroless, non-root |
 | `compose.yaml` | Local stack running the same image in development mode |
+| `compose.observability.yaml`, `observability/` | Opt-in Grafana, Prometheus, Tempo, Loki and OpenTelemetry Collector stack, preconfigured |
 | `.env.development` | Development settings for the `forge` commands (no secrets) |
 {{- if and .DB .DB.Identity}}
 | `.env.local` | Git-ignored local MFA key and private overrides |
@@ -282,6 +283,44 @@ Set `FORGE_TELEMETRY_SERVICE_NAME={{.Name}}` in deployments. Incoming
 than loopback, such as `0.0.0.0:9464` in a container, needs
 `FORGE_TELEMETRY_METRICS_PUBLIC=true`; never publish that port. See the Forge
 observability guide (docs/OBSERVABILITY.md) for every variable.
+
+### Observability stack: Grafana, Prometheus, Tempo and Loki
+
+`compose.observability.yaml` adds a preconfigured stack to the compose
+project: an OpenTelemetry Collector, Prometheus (metrics), Tempo (traces),
+Loki (logs) and Grafana with the data sources and a starter dashboard already
+provisioned. It is opt-in: `docker compose up` does not start it. Everything
+stays on your machine and every published port is bound to `127.0.0.1`.
+
+```bash
+# 1. Start it (Grafana refuses to start without an admin password you choose)
+export GRAFANA_ADMIN_PASSWORD="$(openssl rand -base64 18)"   # or put it in .env
+docker compose -f compose.yaml -f compose.observability.yaml up --build
+
+# 2. Generate some data
+curl http://127.0.0.1:8080/v1/status
+
+# 3. Open Grafana: http://127.0.0.1:3000, user admin, the password above
+#    Dashboards > "Forge application"  request rate, latency, errors, database, jobs, logs, traces
+#    Explore > Tempo                   traces; "Logs for this span" opens the matching log lines
+#    Explore > Loki                    logs; a trace_id links to its trace
+#    Explore > Prometheus              metrics, also at http://127.0.0.1:9090
+
+# 4. Stop it (keeps the data); add -v to delete traces, logs and metrics too
+# compose interpolates the whole file, so GRAFANA_ADMIN_PASSWORD must be set for down too
+docker compose -f compose.yaml -f compose.observability.yaml down
+```
+
+The app sends traces and metrics to the collector over OTLP; Docker's fluentd
+log driver sends its logs to the same collector, which forwards everything to
+Tempo, Prometheus and Loki. To use another host port set `GRAFANA_PORT` or
+`PROMETHEUS_PORT`. The app logs only what it or the framework logs (startup,
+errors, your `logger.InfoContext(ctx, ...)` calls); each line made with a traced
+context carries `trace_id`, which is what ties logs and traces together. The
+stack keeps seven days of data and is meant for development, not production.
+To export from an app started with `forge dev`, run
+`FORGE_TELEMETRY_SERVICE_NAME={{.Name}} FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318 forge dev`
+while the stack runs; traces and metrics arrive, logs stay in your terminal.
 
 ## Credentials
 

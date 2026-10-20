@@ -142,7 +142,7 @@ forge db setup                   # create + migrate + seed
 forge db prepare                 # setup if the database is missing, else migrate (safe to repeat)
 forge db reset                   # drop + setup: a clean development database
 forge db status                  # applied / pending migrations
-forge db rollback -steps 1
+forge db rollback -steps 1       # your newest migration; never a Forge framework table
 forge db schema:dump             # write db/schema.sql (pg_dump, mysqldump or sqlite3 on PATH)
 forge db schema:load             # load db/schema.sql into an existing, empty database (CI, tests)
 forge db console                 # psql, mysql or sqlite3 on the application's database
@@ -327,10 +327,12 @@ myapp/
   Dockerfile                   # multi-stage, distroless, nonroot
   .dockerignore                # excludes .git, .github, storage, all .env* files
   compose.yaml                 # database server (if any), one-off migrate, app
+  compose.observability.yaml   # opt-in overlay: collector, Prometheus, Tempo, Loki, Grafana
+  observability/               # their configuration, Grafana data sources and dashboard
   .gitignore                   # ignores .env, .env.local, .env.*.local (and /storage/ for SQLite)
   README.md
   .github/workflows/ci.yml     # gofmt, vet, test -race (with a database service), govulncheck, docker build
-  .github/dependabot.yml       # weekly Go module, Actions and Docker updates
+  .github/dependabot.yml       # weekly Go module, Actions, Docker and Compose updates
 ```
 
 With `--database none`, `db/`, the database wiring, and the Compose and CI
@@ -401,7 +403,7 @@ rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
 | `forge db COMMAND` | Database lifecycle like Rails' `db:*`: `create`, `drop`, `reset`, `setup`, `prepare`, `migrate`, `rollback`, `status`, `seed`, `schema:dump`, `schema:load`, `console`; see [Development loop](#development-loop) |
 | `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command (same as `forge db migrate`) |
-| `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step) |
+| `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step): only the application's own migrations, never Forge's framework migrations |
 | `forge setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | PostgreSQL: create the first organization, tenant and owner account; the password is prompted for (or piped, or `FORGE_SETUP_PASSWORD`), never an argument; refuses once a tenant exists |
 | `forge seed` | Run the application's `seed` command: `db.Seed` in one transaction |
 | `forge generate migration NAME [--dry-run]` | Create or preview `db/migrations/<UTC timestamp>_NAME.{up,down}.sql` |
@@ -656,7 +658,7 @@ Binaries built with `forge.Main` accept:
 | `serve` | Default. Serve HTTP until `SIGINT`/`SIGTERM` |
 | `healthcheck` | Probe `/health/live` on loopback; used by the Docker `HEALTHCHECK` |
 | `help` | List the available commands |
-| `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database) |
+| `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database); `rollback` reverts application migrations only |
 | `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |
 | `setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | Added by `authpostgres.SetupCommand()` (PostgreSQL): the first tenant and owner, once |
 
@@ -711,8 +713,15 @@ c, _ := cachepostgres.NewStore(db, cache.StoreOptions{})
 ```
 
 ```sh
-app migrate   # creates forge_rate_limits and forge_cache_entries
+app migrate          # creates forge_rate_limits and forge_cache_entries
+app rollback         # reverts your newest migration, never these framework tables
+app migrate status   # a framework set you stopped composing shows as "disabled"
 ```
+
+`rollback` refuses (exit status 1) when only framework migrations are left, and
+removing a framework set from `CommandsFromSets` later keeps `migrate` working;
+reverting a framework migration is the explicit `Migrator.DownFramework` API
+([ADR 0039](docs/adr/0039-framework-migration-ownership.md)).
 
 File storage: uploads with size and type limits, signed expiring links, safe
 serving (only raster images inline, everything else a download):
@@ -761,6 +770,30 @@ Pass `app.Telemetry()` to adapters to trace database statements and jobs:
 applications already do). Collector and Prometheus configuration, the
 metric catalogue, cardinality rules and what is never recorded:
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
+
+### Grafana, Prometheus, Tempo and Loki, preconfigured
+
+Every generated application includes an opt-in observability stack
+(`compose.observability.yaml` and `observability/`): an OpenTelemetry
+Collector, Prometheus, Tempo (traces), Loki (logs) and Grafana with the data
+sources, trace-to-log links and a starter dashboard provisioned. Everything
+stays on your machine and every port is bound to `127.0.0.1`
+([ADR 0038](docs/adr/0038-local-observability-stack.md)).
+
+```bash
+forge new myapp && cd myapp
+export GRAFANA_ADMIN_PASSWORD="$(openssl rand -base64 18)"   # required; or put it in .env
+docker compose -f compose.yaml -f compose.observability.yaml up --build
+curl http://127.0.0.1:8080/v1/status
+# Grafana http://127.0.0.1:3000 (user admin): dashboard "Forge application",
+# Explore > Tempo (traces), Explore > Loki (logs); Prometheus http://127.0.0.1:9090
+# compose interpolates the whole file, so GRAFANA_ADMIN_PASSWORD must be set for down too
+docker compose -f compose.yaml -f compose.observability.yaml down      # add -v to delete the data
+```
+
+The default `docker compose up` does not start it. See
+[docs/OBSERVABILITY.md](docs/OBSERVABILITY.md#local-stack-grafana-prometheus-tempo-and-loki)
+for how logs reach Loki and what the dashboard shows.
 
 ## Example
 
@@ -844,3 +877,5 @@ CI (`.github/workflows/ci.yml`):
   - [0033 File storage](docs/adr/0033-file-storage.md)
   - [0036 Encrypted credentials and attribute encryption](docs/adr/0036-encrypted-credentials-and-attribute-encryption.md)
   - [0037 Trusted proxies and the client address](docs/adr/0037-trusted-proxies-and-client-ip.md)
+  - [0038 Local observability stack](docs/adr/0038-local-observability-stack.md)
+  - [0039 Framework migration ownership in the application's migration table](docs/adr/0039-framework-migration-ownership.md)

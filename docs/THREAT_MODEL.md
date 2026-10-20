@@ -39,7 +39,9 @@ disclosure, **D**enial of service, **E**levation of privilege.
 9. Test process -> the test servers in `FORGE_TEST_POSTGRES_URL`,
    `FORGE_TEST_MYSQL_URL`, or `FORGE_TEST_DATABASE_URL`.
 10. Application process -> telemetry collector (OTLP/HTTP) and metrics
-    scraper -> the process's separate metrics listener.
+    scraper -> the process's separate metrics listener. In the local
+    observability stack: Docker daemon -> collector (log driver), collector ->
+    Tempo, Prometheus and Loki, browser -> Grafana.
 11. Operator machine -> deploy hosts over SSH (`forge deploy`, `forge logs`,
     `forge app`), and -> the image registry.
 12. Internet client -> forge-proxy on the deploy hosts; forge-proxy ->
@@ -117,6 +119,10 @@ See [OBSERVABILITY.md](OBSERVABILITY.md) and [ADR 0034](adr/0034-dependency-free
 | Exporter SSRF or credential leak through configuration | S, I | The OTLP endpoint is operator configuration, never request input. It must be `http`/`https` without credentials, query or fragment; `production` requires `https` unless `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT=true`. The exporter never follows redirects, so headers cannot be sent to another host. `FORGE_TELEMETRY_OTLP_HEADERS` is a `config.Secret`, reserved headers and control characters are rejected, and errors name the entry position, never a value. Export errors carry the HTTP status, never the response body. |
 | Telemetry backend outage degrading the application | D | Exports run on one owned goroutine with per-call timeouts and bounded retries; spans are dropped and counted when the queue is full; shutdown flushes within the shutdown budget and then gives up. |
 | Development exporter leaking spans into production logs | I | `FORGE_TELEMETRY_EXPORTER=log` is refused in `production`. |
+| Local observability stack (`compose.observability.yaml`, [ADR 0038](adr/0038-local-observability-stack.md)) exposed on the network or opened with a guessable credential | I, S, E | Every published port is bound to `127.0.0.1` (Grafana, Prometheus, the collector's OTLP and log intake); Tempo and Loki publish nothing. Grafana's admin password has no default (`GRAFANA_ADMIN_PASSWORD` is required with `${...:?}`; a test enforces it), anonymous access and sign-up are off, and the stack's files contain no secrets. Configuration is mounted read-only. **Residual:** the password gates Grafana only; Prometheus (`127.0.0.1:9090`, OTLP write receiver on) and the collector's OTLP (`4318`) and log intake (`24224`) accept any local process, which can read metrics or inject telemetry. This is a single-developer local stack; do not run it on shared hosts. |
+| Local stack sending data off the machine, or running unpinned code | I, T | Grafana's usage reporting, update checks, news feed, plugin preinstall, Gravatar and external snapshots are off; Tempo and Loki usage reporting is off and the collector's own metrics are off; no exporter targets anything outside the compose network. Images are pinned by exact version and digest (a test rejects `latest` and unpinned references) and Dependabot's `docker-compose` ecosystem proposes updates. |
+| Any local process injecting or reading telemetry through the loopback ports | T, I | Accepted for a development stack: OTLP (4318), the log intake (24224) and Prometheus (9090) have no authentication, like the metrics listener; Grafana requires the password. Do not publish these ports and do not use the stack on shared machines or in production. |
+| Secrets in observability data | I | Logs reach Loki unredacted, so whatever the application logs is stored for seven days in a named volume and readable by Grafana users. ADR 0034's recording rules apply to spans and metrics; never log secrets. `docker compose ... down -v` deletes the data. |
 
 ## Configuration
 
@@ -189,7 +195,7 @@ See [OBSERVABILITY.md](OBSERVABILITY.md) and [ADR 0034](adr/0034-dependency-free
 | Threat | STRIDE | Mitigation |
 | ------ | ------ | ---------- |
 | Compromised or vulnerable dependency | T, E | Core packages have no third-party modules, enforced by `architecture_test.go` ([ADR 0006](adr/0006-zero-dependency-core.md), [ADR 0007](adr/0007-postgresql-adapter-with-pgx.md)). The adapters add their drivers (pgx v5, go-sql-driver/mysql, modernc.org/sqlite) and their transitive modules; an application links only the adapter it imports. The `forge` CLI links `go.yaml.in/yaml/v3` and forge-proxy links `golang.org/x/crypto` (ACME) and `golang.org/x/net` ([ADR 0030](adr/0030-forge-deploy.md)); applications link neither. The SQLite driver is pure Go, so no C toolchain or cgo enters the build. `govulncheck ./...` runs in framework and generated CI. |
-| Outdated dependencies | T, E | Framework and generated repositories include Dependabot configuration for Go modules, GitHub Actions, and Docker, checked weekly. |
+| Outdated dependencies | T, E | Framework and generated repositories include Dependabot configuration for Go modules, GitHub Actions, and Docker, checked weekly; generated repositories also cover the compose files (the pinned observability images). |
 | Mutable base image tags and CI action tags | T | CI uses `permissions: contents: read`. **Planned**: pin base images by digest and actions by commit SHA (Phase 10). |
 | Unverifiable build provenance | R, T | **Planned**: SBOM and signed images (Phase 10). |
 

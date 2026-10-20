@@ -300,7 +300,7 @@ commands:
                       migrate, rollback, status, seed, schema:dump,
                       schema:load, console (see README)
   migrate [status]    apply pending migrations, or list them
-  rollback [-steps N] revert the latest migrations
+  rollback [-steps N] revert the latest application migrations
   setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]
                       create the first tenant and its owner account (PostgreSQL;
                       the password is prompted for, never an argument)

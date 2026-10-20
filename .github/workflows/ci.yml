@@ -134,6 +134,50 @@ jobs:
           curl -fsS http://127.0.0.1:8080/v1/status
           curl -fsS http://127.0.0.1:8080/health/ready | grep -q '"healthy":true'
           docker compose run --rm migrate migrate status
+      - name: Validate the observability overlay
+        working-directory: ${{ runner.temp }}/ciapp
+        env:
+          GRAFANA_ADMIN_PASSWORD: ci-only-not-a-secret
+        run: |
+          docker compose -f compose.yaml -f compose.observability.yaml config --quiet
+          # The default stack must not need the password or mention the overlay.
+          env -u GRAFANA_ADMIN_PASSWORD docker compose config --quiet
+          if docker compose config --services | grep -E 'grafana|prometheus|tempo|loki|otel-collector'; then
+            echo "the default compose.yaml must not include the observability stack"; exit 1
+          fi
+      - name: Smoke test the observability stack
+        if: matrix.database == 'postgresql'
+        working-directory: ${{ runner.temp }}/ciapp
+        env:
+          GRAFANA_ADMIN_PASSWORD: ci-only-not-a-secret
+        run: |
+          overlay="-f compose.yaml -f compose.observability.yaml"
+          docker compose $overlay up --build --detach --wait
+          wait_for() { # description, command...
+            local what="$1"; shift
+            for _ in $(seq 1 45); do
+              if "$@" >/dev/null 2>&1; then echo "ok: $what"; return 0; fi
+              curl -fsS http://127.0.0.1:8080/v1/status >/dev/null 2>&1 || true
+              sleep 2
+            done
+            echo "timed out waiting for: $what"; return 1
+          }
+          grafana() { curl -fsS -u "admin:$GRAFANA_ADMIN_PASSWORD" "$@"; }
+          wait_for "grafana is up" grafana http://127.0.0.1:3000/api/health
+          wait_for "anonymous grafana access is refused" sh -c 'test "$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/datasources)" = 401'
+          for source in prometheus tempo loki; do
+            wait_for "$source data source is healthy" grafana "http://127.0.0.1:3000/api/datasources/uid/$source/health"
+          done
+          wait_for "the dashboard is provisioned" grafana http://127.0.0.1:3000/api/dashboards/uid/forge-app
+          wait_for "metrics reach Prometheus" sh -c "curl -fsS --get http://127.0.0.1:9090/api/v1/query --data-urlencode 'query=http_server_request_duration_seconds_count{job=\"ciapp\"}' | grep -q '\"result\":\[{'"
+          wait_for "traces reach Tempo" sh -c "curl -fsS -u 'admin:$GRAFANA_ADMIN_PASSWORD' 'http://127.0.0.1:3000/api/datasources/proxy/uid/tempo/api/search?limit=5' | grep -q traceID"
+          wait_for "logs reach Loki" sh -c "curl -fsS -u 'admin:$GRAFANA_ADMIN_PASSWORD' --get 'http://127.0.0.1:3000/api/datasources/proxy/uid/loki/loki/api/v1/query_range' --data-urlencode 'query={service_name=\"ciapp\"}' | grep -q '\"result\":\[{'"
+      - name: Observability stack logs
+        if: failure()
+        working-directory: ${{ runner.temp }}/ciapp
+        env:
+          GRAFANA_ADMIN_PASSWORD: ci-only-not-a-secret
+        run: docker compose -f compose.yaml -f compose.observability.yaml logs --no-color --tail 200
       - name: Compose logs
         if: failure()
         working-directory: ${{ runner.temp }}/ciapp
@@ -141,4 +185,6 @@ jobs:
       - name: Stop the stack
         if: always()
         working-directory: ${{ runner.temp }}/ciapp
-        run: docker compose down --volumes
+        env:
+          GRAFANA_ADMIN_PASSWORD: ci-only-not-a-secret
+        run: docker compose -f compose.yaml -f compose.observability.yaml down --volumes
