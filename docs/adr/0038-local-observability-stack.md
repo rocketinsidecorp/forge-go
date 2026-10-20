@@ -1,7 +1,17 @@
 # ADR 0038: Preconfigured local observability stack (Grafana, Prometheus, Tempo, Loki)
 
-- **Status:** Accepted
+- **Status:** Accepted; the log path and the dashboard's runtime and pool gaps
+  are superseded by [ADR 0040](0040-otlp-log-export-runtime-and-pool-metrics.md)
 - **Date:** 2026-10-20
+
+> **Update (ADR 0040).** The framework now has an opt-in OTLP log exporter and
+> exports Go runtime and connection pool metrics. The generated overlay sets
+> `FORGE_TELEMETRY_LOGS_EXPORTER=otlp`; the fluentd log driver, the collector's
+> `fluent_forward` receiver and log parsing, and port 24224 are gone, and the
+> dashboard has runtime and pool panels. Where this text describes them
+> (Context, Data flow, Logs, Dashboard, Security defaults, Consequences,
+> Forge-Rust port) it records the original decision; ADR 0040 and
+> [OBSERVABILITY.md](../OBSERVABILITY.md) describe what is generated now.
 
 This decision is language-neutral: Forge-Go and Forge-Rust generate the same
 files, with the same names and commands, and differ only in what the

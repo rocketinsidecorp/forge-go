@@ -67,10 +67,13 @@ standard protocols instead of the SDK:
   vendor can consume them.
 - Forge maintains the encoding and propagation code and must follow OTLP and
   W3C changes itself; the JSON encoding is stable in OTLP 1.x.
-- Not implemented: OTLP gRPC/protobuf, logs export, baggage, exemplars,
+- Not implemented: OTLP gRPC/protobuf, baggage, exemplars,
   exponential histograms, delta temporality, span links. Jobs start new
   traces and are linked to their enqueuing request by job ID rather than by
   stored context, to avoid a queue schema change.
 - Applications that need the full SDK can still use it in their own code;
   traces cross between services instrumented by Forge and by the SDK through
   `traceparent`, but within one process the two keep separate span contexts.
+
+Update: OTLP log export (opt-in), Go runtime metrics and connection pool metrics
+were added later; see [ADR 0040](0040-otlp-log-export-runtime-and-pool-metrics.md).

@@ -1,6 +1,7 @@
 # Observability
 
-Forge applications produce traces, metrics and trace-correlated logs without
+Forge applications produce traces, metrics, runtime and connection pool metrics
+and trace-correlated logs without
 any third-party module: the `telemetry` package implements the part of
 OpenTelemetry an application needs on the standard library and speaks the
 OpenTelemetry wire protocol (OTLP/HTTP with JSON encoding), so any
@@ -16,6 +17,7 @@ them; metrics are kept in memory. You choose an export path:
 | ---- | ------- |
 | Prometheus scrapes the process | `FORGE_TELEMETRY_METRICS_ADDR=127.0.0.1:9464` (a separate listener serving `GET /metrics`) |
 | Traces and metrics to an OpenTelemetry Collector | `FORGE_TELEMETRY_EXPORTER=otlp`, `FORGE_TELEMETRY_OTLP_ENDPOINT=http://collector:4318` |
+| Logs to an OpenTelemetry Collector, with trace IDs | `FORGE_TELEMETRY_LOGS_EXPORTER=otlp` (and `FORGE_TELEMETRY_OTLP_ENDPOINT`) |
 | See spans while developing | `FORGE_TELEMETRY_EXPORTER=log` |
 | No telemetry at all (zero cost) | `FORGE_TELEMETRY_ENABLED=false` |
 
@@ -37,6 +39,11 @@ FORGE_TELEMETRY_EXPORTER=otlp \
 FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318 \
 FORGE_TELEMETRY_SERVICE_NAME=billing \
 forge dev
+
+# 4. Logs too (OTLP/HTTP /v1/logs); stdout keeps the same lines
+FORGE_TELEMETRY_LOGS_EXPORTER=otlp \
+FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+forge dev
 ```
 
 Pin the collector image to a current release in real deployments.
@@ -52,7 +59,9 @@ echo its value.
 | `FORGE_TELEMETRY_SERVICE_NAME` | `unknown_service:<binary>` | `service.name` resource attribute; set it |
 | `FORGE_TELEMETRY_SERVICE_VERSION` | (empty) | `service.version` |
 | `FORGE_TELEMETRY_EXPORTER` | `none` | `none`, `otlp`, or `log` (refused in `production`) |
-| `FORGE_TELEMETRY_OTLP_ENDPOINT` | (empty) | Collector base URL; Forge posts to `/v1/traces` and `/v1/metrics`. Required for `otlp`. `production` requires `https` unless `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT=true`. No credentials, query or fragment. |
+| `FORGE_TELEMETRY_LOGS_EXPORTER` | `none` | `none` or `otlp`. Independent of `FORGE_TELEMETRY_EXPORTER`; `otlp` sends every log record to the collector as well as to standard output and uses the `FORGE_TELEMETRY_OTLP_*` settings below. |
+| `FORGE_TELEMETRY_LOGS_LEVEL` | `info` | Lowest level sent to the log exporter: `debug`, `info`, `warn` or `error`. Standard output keeps the logger's own level. |
+| `FORGE_TELEMETRY_OTLP_ENDPOINT` | (empty) | Collector base URL; Forge posts to `/v1/traces`, `/v1/metrics` and `/v1/logs`. Required for either `otlp` exporter. `production` requires `https` unless `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT=true`. No credentials, query or fragment. |
 | `FORGE_TELEMETRY_OTLP_HEADERS` | (empty) | `name=value,name2=value2`, values percent-encoded (the `OTEL_EXPORTER_OTLP_HEADERS` format), e.g. `authorization=Bearer%20TOKEN`. Secret: redacted everywhere. |
 | `FORGE_TELEMETRY_OTLP_TIMEOUT` | `10s` | Per export, retries included; at most `1m` |
 | `FORGE_TELEMETRY_OTLP_COMPRESSION` | `none` | `none` or `gzip` |
@@ -98,9 +107,45 @@ Errors are recorded as `error.type` only (a `fault` code such as
 | `forge.outbox.dispatch.duration` (`forge_outbox_dispatch_duration_seconds`) | histogram | `forge_event_type`, `forge_outbox_outcome` |
 | `forge.scheduler.job.duration` (`forge_scheduler_job_duration_seconds`) | histogram | `forge_scheduler_job`, `forge_scheduler_outcome` |
 | `forge.mail.send.duration` (`forge_mail_send_duration_seconds`) | histogram | `forge_mail_outcome` |
+| `db.client.connection.count` (`db_client_connection_count`) | gauge | `db_system_name`, `db_client_connection_pool_name`, `db_client_connection_state` (`idle`, `used`) |
+| `db.client.connection.max` (`db_client_connection_max`) | gauge | `db_system_name`, `db_client_connection_pool_name` |
+| `forge.db.pool.waits` (`forge_db_pool_waits_total`) | counter | `db_system_name`, `db_client_connection_pool_name` |
+| `forge.db.pool.wait.duration` (`forge_db_pool_wait_duration_seconds_total`) | counter (seconds) | `db_system_name`, `db_client_connection_pool_name` |
+| `go.goroutine.count` (`go_goroutine_count`) | gauge | |
+| `go.memory.heap.alloc` (`go_memory_heap_alloc_bytes`) | gauge | |
+| `go.memory.heap.inuse` (`go_memory_heap_inuse_bytes`) | gauge | |
+| `go.memory.total` (`go_memory_total_bytes`) | gauge | |
+| `go.memory.gc.goal` (`go_memory_gc_goal_bytes`) | gauge | |
+| `go.memory.allocated` (`go_memory_allocated_bytes_total`) | counter | |
+| `go.gc.cycles` (`go_gc_cycles_total`) | counter | |
+| `go.gc.pause.duration` (`go_gc_pause_duration_seconds`) | histogram | |
+| `go.processor.limit` (`go_processor_limit`) | gauge | |
 | `forge.telemetry.spans.dropped` (`forge_telemetry_spans_dropped_total`) | counter | |
+| `forge.telemetry.logs.dropped` (`forge_telemetry_logs_dropped_total`) | counter | |
 | `forge.telemetry.export.errors` (`forge_telemetry_export_errors_total`) | counter | `signal` |
 | `forge.telemetry.metric.overflows` (`forge_telemetry_metric_overflows_total`) | counter | |
+
+**Connection pools.** `postgres.Open`, `mysql.Open` and `sqlite.Open` with
+`WithTelemetry(app.Telemetry())` export their pool: connections in use and idle
+against the limit, how many acquisitions had to wait and for how long (a
+`rate()` of the wait duration is the average number of callers blocked). The
+pool name label is `default`; name each pool with `WithPoolName("replica")`
+when an application opens more than one database of the same kind (a name used
+twice replaces the earlier pool's series). With `database/sql` (MySQL, SQLite) a
+wait means every connection up to the limit was in use; with pgx (PostgreSQL) it
+also counts an acquisition that waited for a new connection to be established.
+The statistics are read when the metrics are collected (a scrape or an OTLP
+push), never per query.
+
+**Go runtime.** Always recorded, read with `runtime/metrics` when the metrics
+are collected (no stop-the-world). `go.memory.heap.alloc` is the bytes of
+allocated heap objects (`MemStats.HeapAlloc`), `go.memory.heap.inuse` the bytes
+in in-use heap spans (`HeapInuse`), `go.memory.total` everything the runtime has
+mapped, `go.memory.gc.goal` the heap size that triggers the next collection.
+`go.gc.pause.duration` histograms the stop-the-world pauses in buckets from
+10 microseconds to 1 second; bucket counts are exact to the bucket edges and the
+sum is estimated from bucket midpoints. A `go.goroutine.count` that only grows
+is a goroutine leak.
 
 Duration buckets (seconds) follow the OpenTelemetry advice: 0.005, 0.01,
 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10. Counters and
@@ -119,6 +164,54 @@ Request logs (`web.Logger(ctx)`) carry `trace_id` and `span_id`. Loggers built
 by `forge.Main` wrap their handler with `telemetry.NewLogHandler`, so any
 `logger.InfoContext(ctx, ...)` with a traced context is correlated too. Search
 your log store for a `trace_id` from a trace, or the reverse.
+
+With `FORGE_TELEMETRY_LOGS_EXPORTER=otlp` the application logger writes every
+record to standard output **and** queues it for export to the collector's
+`/v1/logs`, over the same OTLP/HTTP JSON path as traces and metrics (endpoint,
+headers, timeout, gzip and the production https rule are the
+`FORGE_TELEMETRY_OTLP_*` settings). Each OTLP log record has:
+
+| Field | Source |
+| ----- | ------ |
+| body | the message, cut at 4096 bytes |
+| severity number and text | the slog level: Debug 5 `DEBUG`, Info 9 `INFO`, Warn 13 `WARN`, Error 17 `ERROR`; levels in between keep their order inside the range, below Debug is `TRACE` (1-4), above Error+3 is `FATAL` (21-24) |
+| attributes | the record's attributes and those added with `With`, groups as dotted prefixes (`http.status`), at most 64 (the rest counted in `droppedAttributesCount`), string values cut at 1024 bytes |
+| `traceId`, `spanId`, `flags` | the span of the context passed to `InfoContext`, or the `trace_id`/`span_id` attributes the request logger carries; they are fields of the record, not repeated as attributes |
+| resource | `service.name`, `service.version`, `deployment.environment.name`, as for traces and metrics |
+| time, observed time | the record's time; when Forge queued it |
+
+Values are resolved through `slog.LogValuer` before export, so a
+`config.Secret` is exported as `[REDACTED]`, exactly as on standard output. The
+exporter sends what the logger writes, no more and no less: keep personal data
+and secrets out of log calls as you would for standard output (error values are
+exported as their message, like on standard output).
+
+Backpressure and lifecycle: records wait in a bounded queue (2048 records);
+one goroutine owned by the `Telemetry` exports batches of up to 512 at least
+every second. Logging never blocks: when the queue is full the record is
+dropped and counted in `forge_telemetry_logs_dropped_total`, and standard
+output still has it. A failed export (after the OTLP retries, within
+`FORGE_TELEMETRY_OTLP_TIMEOUT`) drops its batch, counts it in the same metric
+and in `forge_telemetry_export_errors_total{signal="logs"}`, and is reported
+**on standard output only**: export failures never enter the log queue, so a
+broken collector cannot feed itself. On shutdown the queue is flushed within the
+remaining `FORGE_HTTP_SHUTDOWN_TIMEOUT`; lines logged after telemetry shut down
+(the final "application stopped") reach standard output only. Output that does
+not pass through the logger (a crash's stack trace, `fmt.Println`) is not
+exported.
+
+When you build the application yourself instead of using `forge.Main`, give the
+telemetry the plain logger and tee your own:
+
+```go
+tel, err := telemetry.FromConfig(cfg, plainLogger) // plainLogger writes to stdout only
+logger := slog.New(telemetry.NewTeeHandler(plainLogger.Handler(), tel.LogHandler()))
+```
+
+`forge.New` does this for you when the log exporter comes from the
+configuration (`app.Logger()` is then the tee). With `forge.WithTelemetry(t)` the
+wiring is yours: `t.LogHandler()` is nil unless `t` was built with a log
+exporter.
 
 ## Cardinality rules
 
@@ -181,6 +274,10 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
 ```
 
 Replace `debug` with your backend's exporter (`otlphttp` to Grafana Tempo,
@@ -190,8 +287,8 @@ collector; the application only needs the collector's address. When the
 application talks to a vendor directly, put the API key in
 `FORGE_TELEMETRY_OTLP_HEADERS`.
 
-The exporter sends batches of up to 512 spans at least every 5 seconds and
-metrics every `FORGE_TELEMETRY_METRICS_INTERVAL`. It retries network errors
+The exporter sends batches of up to 512 spans at least every 5 seconds, log
+records in batches of up to 512 at least every second, and metrics every `FORGE_TELEMETRY_METRICS_INTERVAL`. It retries network errors
 and HTTP 429/502/503/504 up to 5 times with exponential backoff and jitter,
 honors `Retry-After`, never follows redirects, and gives up within
 `FORGE_TELEMETRY_OTLP_TIMEOUT`.
@@ -261,26 +358,34 @@ docker compose -f compose.yaml -f compose.observability.yaml down      # add -v 
 | ------ | ---- | ------------------------ |
 | Traces | app, OTLP to the collector, then Tempo | Explore, Tempo; the dashboard's "Recent traces" |
 | Metrics | app, OTLP to the collector, then Prometheus's OTLP receiver | The dashboard; Explore, Prometheus |
-| Logs | Docker fluentd log driver, the collector, then Loki's OTLP endpoint | The dashboard's "Application logs"; Explore, Loki |
+| Logs | app, OTLP to the collector (`FORGE_TELEMETRY_LOGS_EXPORTER=otlp`), then Loki's OTLP endpoint | The dashboard's "Application logs"; Explore, Loki |
 
 Traces and logs are linked both ways: a span's "Logs for this span" opens Loki
-filtered by its trace ID, and the `trace_id` in a log line is a link to the
-trace. Log lines carry `trace_id` when they are written with a traced context
+filtered by its trace ID, and the `trace_id` of a log record is a link to the
+trace. Log records carry `trace_id` when they are written with a traced context
 (`logger.InfoContext(ctx, ...)`, `web.Logger(ctx)`); the framework itself logs
-startup and errors, not every request. The collector reads `level`, `trace_id`
-and `span_id` from logfmt or JSON lines and keeps the line unchanged.
+startup and errors, not every request. Loki receives the records on its OTLP
+endpoint: the message is the line, `service.name` is the `service_name` label,
+and `trace_id`, `span_id`, the severity (`detected_level`) and the attributes of
+the log call are structured metadata, so filter with
+`{service_name="shop"} | trace_id="..."` or `| status >= 500`. The collector
+does no parsing. Output that bypasses the logger is only in `docker compose
+logs`.
 
 Every published port binds `127.0.0.1` (Grafana `GRAFANA_PORT`, Prometheus
-`PROMETHEUS_PORT`, the collector's OTLP 4318 and log intake 24224), Grafana has
+`PROMETHEUS_PORT`, the collector's OTLP 4318), Grafana has
 no default password and no anonymous access, nothing is sent off the machine,
 and images are pinned by version and digest. The application's own variables
 stay the ones above; the overlay only sets `FORGE_TELEMETRY_EXPORTER=otlp`,
-`FORGE_TELEMETRY_OTLP_ENDPOINT`, `FORGE_TELEMETRY_SERVICE_NAME` and a 15 s
-`FORGE_TELEMETRY_METRICS_INTERVAL` on the `app` service. An application started
+`FORGE_TELEMETRY_OTLP_ENDPOINT`, `FORGE_TELEMETRY_SERVICE_NAME`,
+`FORGE_TELEMETRY_LOGS_EXPORTER=otlp` and a 15 s `FORGE_TELEMETRY_METRICS_INTERVAL`
+on the `app` service. An application started
 with `forge dev` can export to the running collector
-(`FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318`);
-its logs stay in the terminal. The dashboard has no Go runtime or connection
-pool panels because the framework does not export those metrics yet.
+(`FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_LOGS_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318`),
+logs included. The dashboard also has panels for the database connection pool
+(connections by state, utilization, waits, time waiting) and the Go runtime
+(goroutines, heap, allocation rate, GC cycles and pause) and for dropped log
+records.
 
 ## Propagation and sampling
 
@@ -367,7 +472,7 @@ owned by the `Telemetry` and stopped by its `Shutdown`, exports them; when
 the queue is full new spans are dropped and counted
 (`forge_telemetry_spans_dropped_total`) instead of slowing requests down. A
 failed export drops its batch after the retries. On shutdown Forge flushes
-spans and a final metric snapshot within the remaining
+spans, log records and a final metric snapshot, concurrently, within the remaining
 `FORGE_HTTP_SHUTDOWN_TIMEOUT`; whatever is still queued at the deadline is
 dropped and counted.
 
@@ -386,9 +491,9 @@ Recording into an existing metric series does not allocate.
 
 ## Limitations
 
-- Traces and metrics only; logs stay on standard output (the local stack above
-  ships them with Docker's log driver; elsewhere use your log shipper and join
-  on `trace_id`). There is no OTLP log exporter.
+- Logs are exported only from the application logger; other standard output
+  (crash traces, `fmt.Println`) needs your log shipper, which can join on
+  `trace_id` only for lines that carry it.
 - OTLP/HTTP with JSON encoding only; no gRPC and no protobuf encoding.
 - Metric temporality is cumulative; exemplars and exponential histograms are
   not implemented.
