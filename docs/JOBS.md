@@ -72,6 +72,17 @@ Handler errors:
 Defaults: 10 attempts; backoff 5s doubling to 1h with equal jitter; queue
 `default`; priority 0 (lower runs first).
 
+Generate the handler, its payload type, an enqueue function and tests:
+
+```sh
+forge generate job send_welcome user_id:uuid --queue
+```
+
+It writes `app/jobs/send_welcome.go` (`SendWelcomePayload`,
+`RegisterSendWelcome(registry)`, `EnqueueSendWelcome(...)`, a placeholder
+`PerformSendWelcome` that fails permanently until you implement it) and its
+test, and prints the registration line ([Generators](GENERATORS.md#job)).
+
 ## 3. Enqueue, atomically with your data
 
 ```go

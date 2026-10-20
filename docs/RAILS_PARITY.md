@@ -33,7 +33,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`) | Planned |
 | i18n | I18n | Planned | Planned |
 | OpenAPI from typed routes | — | Planned | Planned |
-| Controller, model and mailer generators | `rails g` | Planned | Planned |
+| Controller, model, mailer and job generators, `destroy` | `rails g`, `rails d` | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, [ADR 0041](adr/0041-generators-and-destroy.md)) | Planned ([forge-rust#15](https://github.com/rocketinsidecorp/forge-rust/issues/15)) |
 | Continuous fuzzing, SBOM, signed images | — | Planned | Planned |
 | Published benchmarks | — | Planned | Planned |
 | Getting Started guide | Rails Guides | Planned | Planned |

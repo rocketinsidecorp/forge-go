@@ -310,6 +310,49 @@ call `renderer.RenderRequest(w, r, "pages/welcome", http.StatusOK, data)` from a
 HTTP handler (`data` needs `Title` and `Content`). Execution errors happen before
 response headers or body bytes are written.
 
+### Generators
+
+Every generator refuses to overwrite a file, writes nothing when it refuses,
+takes `--dry-run`, never edits `app/bootstrap/bootstrap.go` (it prints the
+lines to paste) and never makes anything public by accident. Fields are
+`name:type` with `type` one of `string`, `text`, `int`, `bool`, `time`, `uuid`
+(a trailing `?` makes one optional; quote it in shells that expand `?`). The
+full reference is [docs/GENERATORS.md](docs/GENERATORS.md).
+
+```sh
+# Model: migration, domain entity, repository port and use cases, persistence adapter, tests; no HTTP
+forge generate model post title:string 'body:text?' published:bool --tenant-scoped --dry-run
+forge generate model post title:string 'body:text?' published:bool --tenant-scoped
+forge migrate && forge test
+
+# Controller: handlers, routes, views and tests for read-only actions, no persistence
+forge generate controller pages home about_us --public     # GET /pages/home, GET /pages/about_us
+forge generate controller reports monthly                  # guarded: needs the reports:read permission
+forge generate controller status_checks index --api        # JSON handlers under /v1
+forge routes
+
+# Mailer: typed methods, text and HTML templates, browser previews, tests
+forge generate mailer user welcome:name,url password_reset:name,reset_url
+FORGE_MAIL_URL=file:tmp/mails FORGE_MAIL_FROM='App <app@example.com>' FORGE_MAIL_PREVIEW=true forge dev
+#   http://localhost:8080/_mail/user/   (after pasting the printed wiring)
+
+# Job: a typed handler for the persistent queue with its enqueue function and tests
+forge generate job send_welcome user_id:uuid --queue
+forge generate job cleanup                                 # the recurring in-process stub, unchanged
+
+# Everything above, then the same arguments with destroy to take it away again
+forge destroy controller pages home about_us --dry-run
+forge destroy controller pages home about_us
+forge destroy model post title:string 'body:text?' published:bool --tenant-scoped --migrations
+```
+
+`forge destroy GENERATOR ARGUMENTS...` (the arguments the generator was run
+with) removes exactly the files the generator creates, and only while each is
+unchanged: a file you edited is listed, nothing is removed, and `--force`
+overrides. Migrations are kept unless `--migrations` (run `forge rollback`
+first if they ran), shared files such as the views base are never removed, and
+the wiring to take out of `bootstrap.go` is printed.
+
 `forge new myapp` generates:
 
 ```text
@@ -409,9 +452,14 @@ rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 | `forge generate migration NAME [--dry-run]` | Create or preview `db/migrations/<UTC timestamp>_NAME.{up,down}.sql` |
 | `forge generate view [DIR/]NAME [--dry-run]` | Create or preview a server-rendered page, `app/views/DIR/NAME.gohtml` (DIR defaults to `pages`), in the layout `forge new` generates |
 | `forge generate job NAME [--dry-run]` | Create or preview a cancellation-aware recurring job stub and tests; registration and schedule remain explicit |
+| `forge generate model NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a model: migration, domain, application (repository port, use cases) and persistence layers with tests; the model and persistence files of `generate resource`, without the HTTP layer |
+| `forge generate controller NAME ACTION... [--api] [--public] [--dry-run]` | Create or preview HTTP handlers for read-only actions, their routes, views (HTML) and tests, without persistence; `--api` generates JSON handlers; guarded unless `--public` |
+| `forge generate mailer NAME METHOD[:field,field]... [--dry-run]` | Create or preview a mailer: typed methods, text and HTML templates, previews and tests, on the `mail` package |
+| `forge generate job NAME [field:type...] --queue [--dry-run]` | Create or preview a typed handler for the persistent job queue, its enqueue function and tests |
 | `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
 | `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--broadcast] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests; `--broadcast` adds live updates over Server-Sent Events. Never public: see below |
 | `forge generate authentication [--dry-run]` | PostgreSQL: add the sign-in, sign-out, two-factor and password-reset pages `forge new` generates to an application that lacks them, and print their wiring; other databases are refused (identity persistence is PostgreSQL-only) |
+| `forge destroy GENERATOR ARGUMENTS... [--force] [--migrations] [--dry-run]` | Remove what a generator created (`model`, `resource`, `scaffold`, `controller`, `mailer`, `job`, `view`): the same arguments as the generate command; a file changed since generation is never removed without `--force`, migrations are kept without `--migrations` |
 | `forge deploy [init\|setup\|rollback VERSION\|prune\|details\|lock\|maintenance] [--dry-run] [--json]` | Deploy the image to your servers over SSH with zero-downtime switches through forge-proxy, Kamal-style: see [Deploy](#deploy) |
 | `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream container logs from every host, prefixed `host\|` |
 | `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...`, `forge app shell [--image IMAGE]` | Run a command or a shell next to the deployed application |
@@ -859,6 +907,7 @@ CI (`.github/workflows/ci.yml`):
 - [AI agent guide and current authorization boundaries](docs/AI_AGENT_GUIDE.md)
 - [Database](docs/DATABASE.md)
 - [Server-rendered HTML](docs/VIEWS.md)
+- [Generators and `forge destroy`](docs/GENERATORS.md)
 - [Rate limiting](docs/RATE_LIMITING.md), [caching](docs/CACHING.md) and [file storage](docs/STORAGE.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Observability](docs/OBSERVABILITY.md)
@@ -888,3 +937,4 @@ CI (`.github/workflows/ci.yml`):
   - [0038 Local observability stack](docs/adr/0038-local-observability-stack.md)
   - [0039 Framework migration ownership in the application's migration table](docs/adr/0039-framework-migration-ownership.md)
   - [0040 OTLP log export, Go runtime and connection pool metrics](docs/adr/0040-otlp-log-export-runtime-and-pool-metrics.md)
+  - [0041 Model, controller, mailer and queue job generators, and `forge destroy`](docs/adr/0041-generators-and-destroy.md)

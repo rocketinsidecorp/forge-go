@@ -586,6 +586,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0038](adr/0038-local-observability-stack.md) | Local observability stack |
 | [0039](adr/0039-framework-migration-ownership.md) | Framework migration ownership in the application's migration table |
 | [0040](adr/0040-otlp-log-export-runtime-and-pool-metrics.md) | OTLP log export, Go runtime and connection pool metrics |
+| [0041](adr/0041-generators-and-destroy.md) | Model, controller, mailer and queue job generators, and `forge destroy` |
 
 ## Not yet implemented
 

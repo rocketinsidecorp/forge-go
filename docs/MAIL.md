@@ -96,6 +96,17 @@ err = tmpl.Deliver(ctx, sender, mail.Message{From: from, To: to}, Welcome{Name: 
 Rendering is buffered: if any part fails, nothing is sent. `WithFuncs`,
 `WithTextPartials` and `WithHTMLPartials` add functions and shared layouts.
 
+## Generating a mailer
+
+```sh
+forge generate mailer user welcome:name,url password_reset:name,reset_url
+```
+
+writes `app/mailers/user_mailer.go` (a typed `UserMailer` with a method and a
+data struct per email), its templates under `app/mailers/templates/user/`,
+previews and tests, and prints the wiring that builds the sender and serves the
+previews at `/_mail/user/` in development ([Generators](GENERATORS.md#mailer)).
+
 ## Testing
 
 ```go
