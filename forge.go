@@ -357,9 +357,9 @@ func (a *App) OpenAPI() (*openapi.Document, error) {
 	return openapi.Build(info, routes)
 }
 
-// servedOpenAPI returns the document served at OpenAPIPath. It is built
-// once, when Run starts or on the first request, after which routes can no
-// longer change.
+// servedOpenAPI returns the document served at OpenAPIPath. It is built on
+// the first request for it: that request passed through the router, which
+// froze it, so no route can be added afterwards.
 func (a *App) servedOpenAPI() (*openapi.Document, error) {
 	a.apiMu.Lock()
 	served := a.apiServed
@@ -435,8 +435,9 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	if a.servesOpenAPI() {
 		// An inaccurate description is a startup error, not a 500 on
-		// the first request.
-		if _, err := a.servedOpenAPI(); err != nil {
+		// the first request. The served document is built later, from
+		// the routes as they are when the router freezes.
+		if _, err := a.OpenAPI(); err != nil {
 			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.config.HTTP.ShutdownTimeout)
 			defer cancel()
 			return errors.Join(err, a.Close(closeCtx))

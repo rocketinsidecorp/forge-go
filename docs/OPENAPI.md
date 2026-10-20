@@ -68,8 +68,11 @@ app.Handle("GET /v1/status", openapi.Typed(http.StatusOK,
 ```
 
 A `Typed` request type is decoded strictly with `web.DecodeJSON` (unless it
-is `openapi.NoBody`), and its `Validate() error` method runs when it has one.
-Errors go through `web.Error`.
+is `openapi.NoBody`), and its `Validate() error` method runs when it has one
+(value or pointer receiver, or a pointer request type); the operation then
+documents 422. Return a `*fault.Error` from `Validate` (such as one with
+status 422): any other error is answered as a 500. Errors go through
+`web.Error`.
 
 Name the API once, in `Configure`:
 
@@ -138,7 +141,12 @@ with `OpenAPIName() string` (`openapi.Namer`; no import needed). Component
 names are the Go names in upper camel case (`reserved_word` parts become
 `ReservedWord`; `Page_PostResponse` for
 `pagination.Page[postResponse]`); names that collide are qualified with the
-package (`httpapi.Item`).
+package of the type and of its type arguments (`httpapi.Item`,
+`pagination.Page_v1.Item` and `pagination.Page_v2.Item`), then with full
+package paths. Types that still share a name, such as two function-local
+types of one package, or an `OpenAPIName` equal to another type's name, are
+a build error naming both types: give one a distinct name or an
+`OpenAPIName`.
 
 Build errors, never guesses: channels, functions and complex numbers;
 maps with other key types; unknown `openapi` options; a body on 204 or 304;
@@ -172,8 +180,9 @@ with its report) goes in `Responses`.
 
 The document lists every described route, admin and internal ones included,
 with the permission each requires: publishing it in production is a
-decision ([threat model](THREAT_MODEL.md)). When it is served, it is built as
-the server starts, so an inaccurate description stops startup. An
+decision ([threat model](THREAT_MODEL.md)). When it is served, it is checked as
+the server starts, so an inaccurate description stops startup, and the
+served copy is built on its first request, once the routes are frozen. An
 application that registers its own `/openapi.json` route keeps it; Forge
 then does not mount its document there.
 

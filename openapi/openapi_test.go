@@ -14,7 +14,9 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/fault"
 	"github.com/rocketinsidecorp/forge-go/openapi"
+	"github.com/rocketinsidecorp/forge-go/pagination"
 	"github.com/rocketinsidecorp/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 type node struct {
@@ -592,5 +594,130 @@ func TestSnakeCaseTypeNamesBecomeCamelCase(t *testing.T) {
 	_, tree := build(t, openapi.Route{Method: "GET", Pattern: "/a", Handler: openapi.Describe(ok, openapi.Operation{Responses: []openapi.Response{openapi.JSON[snake_case](http.StatusOK)}})})
 	if _, ok := at(t, tree, "components", "schemas").(map[string]any)["SnakeCase"]; !ok {
 		t.Fatalf("components = %v", at(t, tree, "components", "schemas"))
+	}
+}
+
+type collidingName struct {
+	X string `json:"x"`
+}
+
+func (collidingName) OpenAPIName() string { return "Chosen" }
+
+func TestComponentNameCollisions(t *testing.T) {
+	t.Parallel()
+	respond := func(response openapi.Response) http.Handler {
+		return openapi.Describe(ok, openapi.Operation{Responses: []openapi.Response{response}})
+	}
+
+	// Type arguments from different packages are qualified: v1 and v2
+	// packages both returning pages of their own Item.
+	routes := []openapi.Route{
+		{Method: "GET", Pattern: "/web", Handler: respond(openapi.JSON[pagination.Page[web.ErrorDetail]](http.StatusOK))},
+		{Method: "GET", Pattern: "/local", Handler: respond(openapi.JSON[pagination.Page[ErrorDetail]](http.StatusOK))},
+	}
+	first, tree := build(t, routes...)
+	schemas := at(t, tree, "components", "schemas").(map[string]any)
+	for name, field := range map[string]string{"pagination.Page_web.ErrorDetail": "code", "pagination.Page_openapi_test.ErrorDetail": "field"} {
+		items := at(t, schemas, name, "properties", "items", "items", "$ref").(string)
+		target := strings.TrimPrefix(items, "#/components/schemas/")
+		if _, ok := at(t, schemas, target, "properties").(map[string]any)[field]; !ok {
+			t.Errorf("%s refers to %s, which lacks %q", name, target, field)
+		}
+	}
+	for range 20 {
+		again, _ := build(t, routes...)
+		if !bytes.Equal(first.JSON(), again.JSON()) {
+			t.Fatal("colliding names produce a different document on each build")
+		}
+	}
+
+	// Function-local types of one package cannot be told apart: an error
+	// naming both, never one schema silently standing for both.
+	type response struct {
+		X string `json:"x"`
+	}
+	other := func() openapi.Response {
+		type response struct {
+			Y int `json:"y"`
+		}
+		return openapi.JSON[response](http.StatusOK)
+	}
+	_, err := openapi.Build(openapi.Info{Title: "t", Version: "1"}, []openapi.Route{
+		{Method: "GET", Pattern: "/a", Handler: respond(openapi.JSON[response](http.StatusOK))},
+		{Method: "GET", Pattern: "/b", Handler: respond(other())},
+	})
+	if !errors.Is(err, openapi.ErrNotDescribable) || !strings.Contains(err.Error(), "openapi_test.response and openapi_test.response") || !strings.Contains(err.Error(), "openapi.Namer") {
+		t.Fatalf("local types: err = %v", err)
+	}
+
+	// An OpenAPIName equal to another type's name.
+	_, err = openapi.Build(openapi.Info{Title: "t", Version: "1"}, []openapi.Route{
+		{Method: "GET", Pattern: "/a", Handler: respond(openapi.JSON[named](http.StatusOK))},
+		{Method: "GET", Pattern: "/b", Handler: respond(openapi.JSON[collidingName](http.StatusOK))},
+	})
+	if !errors.Is(err, openapi.ErrNotDescribable) || !strings.Contains(err.Error(), `"Chosen"`) {
+		t.Fatalf("Namer collision: err = %v", err)
+	}
+}
+
+type pointerValidated struct {
+	Name string `json:"name"`
+}
+
+func (p *pointerValidated) Validate() error {
+	if p.Name == "" {
+		return fault.New("invalid_name", "name is required", fault.CategoryInvalid, http.StatusUnprocessableEntity)
+	}
+	return nil
+}
+
+func TestTypedValidatesPointerRequestsAndDocuments422(t *testing.T) {
+	t.Parallel()
+	echo := func(_ *http.Request, request *pointerValidated) (created, error) {
+		if request == nil {
+			return created{}, fault.New("missing", "body is null", fault.CategoryInvalid, http.StatusBadRequest)
+		}
+		return created{ID: uuid.MustNew(), Name: request.Name}, nil
+	}
+	for name, handler := range map[string]http.Handler{
+		"pointer request": openapi.Typed(http.StatusCreated, openapi.Operation{}, echo),
+		"value request with pointer receiver": openapi.Typed(http.StatusCreated, openapi.Operation{}, func(r *http.Request, request pointerValidated) (created, error) {
+			return echo(r, &request)
+		}),
+	} {
+		if errorsDeclared := handler.(openapi.Described).OpenAPIOperation().Errors; !slices.Contains(errorsDeclared, http.StatusUnprocessableEntity) {
+			t.Errorf("%s: 422 is not documented: %v", name, errorsDeclared)
+		}
+		for body, want := range map[string]int{`{"name":""}`: http.StatusUnprocessableEntity, `{"name":"a"}`: http.StatusCreated} {
+			request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != want {
+				t.Errorf("%s %s: status %d, want %d (%s)", name, body, recorder.Code, want, recorder.Body)
+			}
+		}
+	}
+	if errorsDeclared := openapi.Typed(http.StatusOK, openapi.Operation{}, func(*http.Request, created) (created, error) { return created{}, nil }).(openapi.Described).OpenAPIOperation().Errors; len(errorsDeclared) != 0 {
+		t.Errorf("a request without Validate documents %v", errorsDeclared)
+	}
+}
+
+type pagedParams struct {
+	*pagination.Query
+	ID string `path:"id"`
+}
+
+func TestParamsWalkEmbeddedPointers(t *testing.T) {
+	t.Parallel()
+	_, tree := build(t, openapi.Route{Method: "GET", Pattern: "/a/{id}", Handler: openapi.Describe(ok, openapi.Operation{
+		Params: openapi.TypeOf[pagedParams](), Responses: []openapi.Response{openapi.Empty(http.StatusNoContent)},
+	})})
+	var names []string
+	for _, parameter := range at(t, tree, "paths", "/a/{id}", "get", "parameters").([]any) {
+		names = append(names, parameter.(map[string]any)["name"].(string))
+	}
+	if !slices.Equal(names, []string{"id", "cursor", "limit"}) {
+		t.Fatalf("parameters = %v", names)
 	}
 }

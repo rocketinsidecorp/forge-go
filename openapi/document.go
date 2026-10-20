@@ -136,7 +136,11 @@ func Build(info Info, routes []Route) (*Document, error) {
 		}
 		document.patterns[pattern] = documentedRoute{method: method, path: path}
 	}
-	components := map[string]any{"schemas": types.assignNames()}
+	named, err := types.assignNames()
+	if err != nil {
+		return nil, err
+	}
+	components := map[string]any{"schemas": named}
 	if usesBearer {
 		components["securitySchemes"] = map[string]any{
 			bearerScheme: map[string]any{"type": "http", "scheme": "bearer", "description": "A Forge session token: Authorization: Bearer <token>."},
@@ -321,11 +325,17 @@ func (s *schemas) parameters(wildcards []string, params Type) ([]any, error) {
 		walk = func(t reflect.Type) error {
 			for i := range t.NumField() {
 				sf := t.Field(i)
-				if sf.Anonymous && sf.Type.Kind() == reflect.Struct {
-					if err := walk(sf.Type); err != nil {
-						return err
+				if sf.Anonymous {
+					embedded := sf.Type
+					if embedded.Kind() == reflect.Pointer {
+						embedded = embedded.Elem()
 					}
-					continue
+					if embedded.Kind() == reflect.Struct {
+						if err := walk(embedded); err != nil {
+							return err
+						}
+						continue
+					}
 				}
 				in, name := "", ""
 				for _, location := range []string{"path", "query", "header"} {

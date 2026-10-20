@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/config"
@@ -216,5 +218,58 @@ func TestApplicationRouteAtOpenAPIPathWins(t *testing.T) {
 	}
 	if got := document.Undocumented(); !slices.Equal(got, []string{"GET " + forge.OpenAPIPath}) {
 		t.Fatalf("Undocumented = %v", got)
+	}
+}
+
+// A route registered after Run starts but before the first request (the
+// router freezes then) is in the served document.
+func TestServedDocumentIncludesRoutesAddedBeforeTheFirstRequest(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.Environment = config.Test
+	cfg.HTTP.Address = freeAddress(t)
+	app, err := forge.New(forge.WithConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- app.Run(ctx) }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	// Wait for the listener without sending a request.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		connection, err := net.Dial("tcp", cfg.HTTP.Address)
+		if err == nil {
+			_ = connection.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server did not listen: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	late := openapi.Typed(http.StatusOK, openapi.Operation{}, func(*http.Request, openapi.NoBody) (greeting, error) { return greeting{}, nil })
+	if err := app.Handle("GET /v1/late", late); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.Get("http://" + cfg.HTTP.Address + forge.OpenAPIPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	var document struct {
+		Paths map[string]any `json:"paths"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&document); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document.Paths["/v1/late"]; !ok {
+		t.Fatalf("/v1/late is missing from the served document: %v", document.Paths)
 	}
 }

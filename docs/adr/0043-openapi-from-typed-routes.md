@@ -43,7 +43,8 @@ worse than none; the document must be stable enough to commit and diff.
 2. **Accurate by construction where possible.** `openapi.Typed[Req, Res]
    (status, op, func(*http.Request, Req) (Res, error))` decodes `Req`
    strictly with `web.DecodeJSON` (unless `Req` is `openapi.NoBody`), calls
-   `Req.Validate()` when present, writes `Res` with `web.JSON` and errors
+   `Req.Validate()` when present (value or pointer receiver; it should
+   return a `*fault.Error`, and the operation documents 422), writes `Res` with `web.JSON` and errors
    with `web.Error`, and derives `op.Request` and the success response from
    its type parameters, so the description cannot drift. For handlers with
    richer behavior, `Describe` plus contract tests (6) close the gap.
@@ -72,7 +73,11 @@ worse than none; the document must be stable enough to commit and diff.
    reduced to their names (`pagination.Page[postResponse]` is
    `Page_PostResponse`); a type may choose its name with `openapi.Namer`
    (`OpenAPIName() string`; `health.Result` is `HealthReport`). Names that
-   collide are qualified by package name, then by package path. Paths are
+   collide are qualified with the package name of the type and of its type
+   arguments (`pagination.Page_v1.Item`, `pagination.Page_v2.Item`), then
+   with package paths; names that still collide (function-local types of
+   one package, an `OpenAPIName` equal to another name) are a build error
+   naming both types, never one schema standing for two. Paths are
    sorted, object keys are sorted, the JSON is indented with two spaces and
    ends in a newline, and HTML characters are not escaped: the same routes
    and types always produce the same bytes.
@@ -98,8 +103,10 @@ worse than none; the document must be stable enough to commit and diff.
 7. **Served only where safe.** `FORGE_OPENAPI_ENABLED` (true/false): unset
    serves `GET /openapi.json` in development and test only; `true` serves it
    in staging and production too (with a startup warning); `false` never.
-   When served, the document is built as `Run` starts, so an inaccurate
-   description stops startup rather than failing the first request. The
+   When served, the document is checked as `Run` starts, so an inaccurate
+   description stops startup rather than failing the first request; the
+   served copy is built on its first request, after the router has frozen,
+   so routes added between `Run` and the first request are included. The
    route is mounted when the first request arrives; an application that
    registered its own `/openapi.json` (a hand-written document) keeps it
    and Forge's is not mounted, so upgrading breaks no existing route. The

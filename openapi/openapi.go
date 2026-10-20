@@ -160,11 +160,14 @@ type NoBody struct{}
 
 // Typed returns a JSON handler whose description is derived from its
 // signature: unless Req is NoBody, the body is decoded strictly into Req with
-// web.DecodeJSON (and Req's Validate method, if it has one, is called); fn's
-// result is written as JSON with status, and its error through web.Error.
-// op.Request and the success response come from Req and Res, so the document
-// cannot drift from the handler. It panics when status is not a 2xx status
-// with a body or fn is nil.
+// web.DecodeJSON and Req's Validate method, if it has one (value or pointer
+// receiver, or Req itself a pointer), is called; fn's result is written as
+// JSON with status, and its error through web.Error. op.Request and the
+// success response come from Req and Res, so the document cannot drift from
+// the handler. Validate should return a *fault.Error such as web's 422
+// invalid_fields (web.FormErrors) or a fault with status 422: any other error
+// is answered as a 500. A Req with Validate documents 422. It panics when
+// status is not a 2xx status with a body or fn is nil.
 func Typed[Req, Res any](status int, op Operation, fn func(r *http.Request, request Req) (Res, error)) http.Handler {
 	if fn == nil {
 		panic("openapi: nil Typed function")
@@ -176,6 +179,11 @@ func Typed[Req, Res any](status int, op Operation, fn func(r *http.Request, requ
 	op = op.clone()
 	if decode {
 		op.Request = TypeOf[Req]()
+		if requestType := reflect.TypeFor[Req](); requestType.Implements(validatorType) || reflect.PointerTo(requestType).Implements(validatorType) {
+			if !slices.Contains(op.Errors, http.StatusUnprocessableEntity) {
+				op.Errors = append(op.Errors, http.StatusUnprocessableEntity)
+			}
+		}
 	}
 	op.Responses = slices.DeleteFunc(op.Responses, func(r Response) bool { return r.Status == status })
 	op.Responses = slices.Insert(op.Responses, 0, JSON[Res](status))
@@ -186,11 +194,9 @@ func Typed[Req, Res any](status int, op Operation, fn func(r *http.Request, requ
 				web.Error(w, r, err)
 				return
 			}
-			if validator, ok := any(&request).(interface{ Validate() error }); ok {
-				if err := validator.Validate(); err != nil {
-					web.Error(w, r, err)
-					return
-				}
+			if err := validate(&request); err != nil {
+				web.Error(w, r, err)
+				return
 			}
 		}
 		result, err := fn(r, request)
@@ -201,6 +207,25 @@ func Typed[Req, Res any](status int, op Operation, fn func(r *http.Request, requ
 		web.JSON(w, status, result)
 	})
 	return described{Handler: handler, operation: op}
+}
+
+type requestValidator interface{ Validate() error }
+
+var validatorType = reflect.TypeFor[requestValidator]()
+
+// validate calls the Validate method of *request or of request itself when
+// Req is a pointer (a nil pointer, the body null, is left to fn).
+func validate[Req any](request *Req) error {
+	if checked, ok := any(*request).(requestValidator); ok {
+		if value := reflect.ValueOf(*request); value.Kind() == reflect.Pointer && value.IsNil() {
+			return nil
+		}
+		return checked.Validate()
+	}
+	if checked, ok := any(request).(requestValidator); ok {
+		return checked.Validate()
+	}
+	return nil
 }
 
 // ErrNotDescribable reports a route or type the document cannot describe.

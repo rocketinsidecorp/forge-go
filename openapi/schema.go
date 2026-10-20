@@ -492,47 +492,77 @@ func validTagName(name string) bool {
 	return true
 }
 
+// Component names are tried at increasing qualification levels until the
+// types sharing a name are told apart.
+const (
+	bareNames    = iota // Page_PostResponse
+	packageNames        // pagination.Page_httpapi.PostResponse
+	pathNames           // github.com_x_pagination.Page_github.com_x_httpapi.PostResponse
+)
+
 // assignNames names every component after its Go type (or its OpenAPIName),
 // in upper camel case (snake_case parts joined), with type arguments reduced
-// to their names
-// (pagination.Page[app/httpapi.postResponse] is Page_PostResponse). Types that
-// would share a name are qualified with their package name, then with their
-// full package path.
-func (s *schemas) assignNames() map[string]map[string]any {
-	byName := map[string][]*component{}
+// to their names (pagination.Page[app/httpapi.postResponse] is
+// Page_PostResponse). Types that would share a name are qualified, with the
+// package name of the type and of its type arguments, then with their full
+// package paths. Names that still collide (two function-local types of one
+// package, or an OpenAPIName equal to another type's name) are an error,
+// never a silent overwrite: both references would point at one schema.
+func (s *schemas) assignNames() (map[string]map[string]any, error) {
+	entries := make([]*component, 0, len(s.components))
 	for _, entry := range s.components {
-		name := shortName(entry.typ)
-		byName[name] = append(byName[name], entry)
+		entries = append(entries, entry)
 	}
-	result := map[string]map[string]any{}
-	for name, entries := range byName {
-		if len(entries) == 1 {
-			entries[0].ref.name = name
-			result[name] = entries[0].schema
+	// A stable order, so the error names the same pair on every run.
+	slices.SortFunc(entries, func(a, b *component) int {
+		return cmp.Or(strings.Compare(a.typ.String(), b.typ.String()), strings.Compare(componentName(a.typ, pathNames), componentName(b.typ, pathNames)))
+	})
+	groups := map[string][]*component{}
+	for _, entry := range entries {
+		name := componentName(entry.typ, bareNames)
+		groups[name] = append(groups[name], entry)
+	}
+	for _, group := range groups {
+		if len(group) == 1 {
+			group[0].ref.name = componentName(group[0].typ, bareNames)
 			continue
 		}
-		qualified := map[string]int{}
-		for _, entry := range entries {
-			qualified[packageName(entry.typ)+"."+name]++
+		level := packageNames
+		if !distinctNames(group, packageNames) {
+			level = pathNames
 		}
-		for _, entry := range entries {
-			candidate := packageName(entry.typ) + "." + name
-			if qualified[candidate] > 1 {
-				candidate = sanitize(entry.typ.PkgPath()) + "." + name
-			}
-			entry.ref.name = candidate
-			result[candidate] = entry.schema
+		for _, entry := range group {
+			entry.ref.name = componentName(entry.typ, level)
 		}
 	}
-	return result
+	result := map[string]map[string]any{}
+	owners := map[string]reflect.Type{}
+	for _, entry := range entries {
+		if previous, taken := owners[entry.ref.name]; taken {
+			return nil, fmt.Errorf("%w: the types %s and %s would both be the component %q (function-local types of one package cannot be told apart); give one a distinct name or implement openapi.Namer (OpenAPIName() string)",
+				ErrNotDescribable, previous, entry.typ, entry.ref.name)
+		}
+		owners[entry.ref.name] = entry.typ
+		result[entry.ref.name] = entry.schema
+	}
+	return result, nil
 }
 
-func packageName(t reflect.Type) string {
-	path := t.PkgPath()
-	return sanitize(path[strings.LastIndex(path, "/")+1:])
+func distinctNames(group []*component, level int) bool {
+	seen := map[string]bool{}
+	for _, entry := range group {
+		name := componentName(entry.typ, level)
+		if seen[name] {
+			return false
+		}
+		seen[name] = true
+	}
+	return true
 }
 
-func shortName(t reflect.Type) string {
+// componentName names t at a qualification level; an OpenAPIName is used as
+// is at every level.
+func componentName(t reflect.Type, level int) string {
 	if t.Implements(namerType) {
 		if namer, ok := reflect.Zero(t).Interface().(Namer); ok {
 			if name := sanitize(namer.OpenAPIName()); name != "" {
@@ -541,29 +571,45 @@ func shortName(t reflect.Type) string {
 		}
 	}
 	var builder strings.Builder
-	token := func(text string) {
-		if slash := strings.LastIndex(text, "/"); slash >= 0 {
-			text = text[slash+1:]
+	// identifier writes one name of t.Name(): the type's own name (whose
+	// package is pkgPath) or a type argument, written "path/pkg.Name".
+	identifier := func(text, pkgPath string) {
+		name := text
+		if slash := strings.LastIndex(text, "/"); slash >= 0 || strings.Contains(text, ".") {
+			rest := text[slash+1:]
+			dot := strings.LastIndex(rest, ".")
+			pkgPath, name = text[:slash+1+dot], rest[dot+1:]
 		}
-		if dot := strings.LastIndex(text, "."); dot >= 0 {
-			text = text[dot+1:]
+		if pkgPath != "" && level != bareNames {
+			if level == packageNames {
+				builder.WriteString(sanitize(pkgPath[strings.LastIndex(pkgPath, "/")+1:]))
+			} else {
+				builder.WriteString(sanitize(pkgPath))
+			}
+			builder.WriteByte('.')
 		}
 		// snake_case Go names (reserved_wordResponse) read as
 		// ReservedWordResponse.
-		for part := range strings.SplitSeq(text, "_") {
+		for part := range strings.SplitSeq(name, "_") {
 			builder.WriteString(upperFirst(part))
 		}
 	}
 	name := t.Name()
 	start := 0
+	own := t.PkgPath()
 	for i, r := range name {
 		if strings.ContainsRune("[], *", r) {
-			token(name[start:i])
+			if i > start {
+				identifier(name[start:i], own)
+			}
+			own = ""
 			builder.WriteByte('_')
 			start = i + utf8.RuneLen(r)
 		}
 	}
-	token(name[start:])
+	if start < len(name) {
+		identifier(name[start:], own)
+	}
 	return sanitize(strings.Trim(collapse(builder.String()), "_"))
 }
 
