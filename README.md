@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="internal/scaffold/templates/assets/forge-go-logo.png" alt="Forge Go — Go Framework" width="280">
+</p>
+
 # Forge
 
 Forge is a Go framework for building HTTP services on PostgreSQL, MySQL,
