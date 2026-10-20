@@ -163,6 +163,11 @@ func TestObserversAndObservedCounters(t *testing.T) {
 	if _, err := r.Counter("src.seconds", "d", "s"); err == nil {
 		t.Fatal("an integer counter must conflict with the float counter of the same name")
 	}
+	zero, _ := r.Counter("zero.total", "d", "{x}")
+	zero.Observe(0)
+	if value("zero.total") != 0 {
+		t.Fatal("a first total of zero must create the series")
+	}
 	var nilRegistry *Registry
 	nilRegistry.Observe("x", func() {})
 }

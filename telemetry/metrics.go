@@ -276,11 +276,12 @@ func (in *instrument) newPoint(key labelValues) *point {
 
 // Observe records total, a running count kept elsewhere (a connection
 // pool's waits, the runtime's GC cycles), for the given label values. The
-// counter never decreases: a total below the current value is ignored. Use
+// counter never decreases: a total below the current value is ignored, and
+// a first total of zero creates the series so it is exported from the start. Use
 // it from a Registry.Observe callback; do not mix it with Add on the same
 // series.
 func (c *Counter) Observe(total int64, values ...string) {
-	if c == nil || total <= 0 {
+	if c == nil || total < 0 {
 		return
 	}
 	target := &c.instrument.point(values).value
@@ -293,9 +294,9 @@ func (c *Counter) Observe(total int64, values ...string) {
 }
 
 // Observe records total, a running sum kept elsewhere, like Counter.Observe.
-// Negative, zero and non-finite totals are ignored.
+// Negative and non-finite totals are ignored.
 func (c *FloatCounter) Observe(total float64, values ...string) {
-	if c == nil || !(total > 0) || math.IsInf(total, 0) {
+	if c == nil || !(total >= 0) || math.IsInf(total, 0) {
 		return
 	}
 	target := &c.instrument.point(values).value
