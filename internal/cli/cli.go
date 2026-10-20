@@ -78,6 +78,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = deploy.RunLogs(args[1:], stdout, commandStderr)
 	case "app":
 		err = deploy.RunApp(args[1:], stdout, commandStderr)
+	case "credentials":
+		err = runCredentials(args[1:], stdout, commandStderr)
 	case "help":
 		err = runHelp(args[1:], stdout)
 	case "-h", "--help":
@@ -323,6 +325,8 @@ commands:
                       --dry-run prints the remote commands, secrets redacted
   logs [-f]           stream container logs from every host (host| prefix)
   app exec|shell      run a command or a shell next to the deployed app
+  credentials <init|edit|show|rotate-key> [--environment E]
+                      encrypted per-environment credentials (config/credentials)
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
   routes              list the routes found in the source, as a table
