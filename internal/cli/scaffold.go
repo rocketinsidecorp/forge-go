@@ -50,6 +50,7 @@ func runGenerateScaffold(args []string, stdout io.Writer, root string, env []str
 // the views base the application lacks.
 func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFile, error) {
 	spec.BrowserPipeline = hasBrowserPipeline(projectRoot)
+	spec.I18nMiddleware = hasI18nMiddleware(projectRoot)
 	spec.ViewRenderer = hasViewRenderer(projectRoot)
 	view := newScaffoldView(*spec)
 	var files []generatedFile
@@ -82,6 +83,11 @@ func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFil
 		}
 		files = append(files, generatedFile{path: source.path, content: string(formatted)})
 	}
+	translations, err := view.Translations()
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, generatedFile{path: filepath.Join(localesDir, spec.Plural+".en.json"), content: translations})
 	for _, page := range scaffoldPages {
 		if page.broadcastOnly && !spec.Broadcast {
 			continue
@@ -121,11 +127,22 @@ func hasBrowserPipeline(projectRoot *os.Root) bool {
 	return strings.Contains(text, "csrf.New(") && strings.Contains(text, "web.MethodOverride") && strings.Contains(text, "web.Flash")
 }
 
+// hasI18nMiddleware reports whether bootstrap.go appears to build the
+// translator and install its middleware, as `forge new` does.
+func hasI18nMiddleware(projectRoot *os.Root) bool {
+	source, err := projectRoot.ReadFile(filepath.Join("app", "bootstrap", "bootstrap.go"))
+	if err != nil {
+		return false
+	}
+	text := string(source)
+	return strings.Contains(text, "locales.New(") && strings.Contains(text, ".Middleware(i18n.NegotiationOptions")
+}
+
 // hasViewRenderer reports whether bootstrap.go already builds the shared view
 // renderer, so the printed wiring reuses it instead of declaring it twice.
 func hasViewRenderer(projectRoot *os.Root) bool {
 	source, err := projectRoot.ReadFile(filepath.Join("app", "bootstrap", "bootstrap.go"))
-	return err == nil && strings.Contains(string(source), "renderer, err := views.New()")
+	return err == nil && strings.Contains(string(source), "renderer, err := views.New(")
 }
 
 // checkLiveUpdateBase refuses --broadcast in an application whose views

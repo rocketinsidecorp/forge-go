@@ -106,6 +106,9 @@ type resourceSpec struct {
 	// install the CSRF, method-override and flash middleware server-rendered
 	// forms rely on. Only scaffolds look.
 	BrowserPipeline bool
+	// I18nMiddleware reports that bootstrap.go appears to build the
+	// translator and install its middleware.
+	I18nMiddleware bool
 	// ViewRenderer reports that bootstrap.go already builds the view
 	// renderer (renderer, err := views.New()), as PostgreSQL applications
 	// from `forge new` do for the sign-in pages. Only scaffolds look.

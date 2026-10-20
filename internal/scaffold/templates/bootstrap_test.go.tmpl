@@ -19,6 +19,8 @@ import (
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/web"
 
+	"{{.Module}}/config/locales"
+
 {{- if not .DB}}
 	appassets "{{.Module}}/app/assets"
 {{- end}}
@@ -42,7 +44,9 @@ func TestRoutes(t *testing.T) {
 	}
 	for _, path := range []string{"/", "/v1/status"} {
 		recorder := httptest.NewRecorder()
-		app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		app.Handler().ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET %s status=%d body=%s", path, recorder.Code, recorder.Body.String())
 		}
@@ -52,6 +56,10 @@ func TestRoutes(t *testing.T) {
 		if path == "/" && recorder.Header().Get("Content-Security-Policy") != "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'" {
 			t.Fatalf("welcome page CSP = %q", recorder.Header().Get("Content-Security-Policy"))
 		}
+	}
+	// Without Accept-Language the page is in the default locale.
+	if page := welcomeResponse(app); page.Header().Get("Content-Language") != locales.DefaultLocale || strings.Contains(page.Body.String(), "translation missing") {
+		t.Fatalf("welcome page Content-Language = %q:\n%s", page.Header().Get("Content-Language"), page.Body.String())
 	}
 	notFound := httptest.NewRecorder()
 	app.Handler().ServeHTTP(notFound, httptest.NewRequest(http.MethodGet, "/not-a-route", nil))
@@ -74,6 +82,10 @@ func TestRoutes(t *testing.T) {
 	}
 	if logo.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
 		t.Fatalf("logo Cache-Control = %q", logo.Header().Get("Cache-Control"))
+	}
+	// Assets do not depend on the visitor's language: no Vary, so caches keep one copy.
+	if vary := logo.Header().Values("Vary"); len(vary) != 0 {
+		t.Fatalf("logo Vary = %v", vary)
 	}
 
 	stylesheetPath, _ := bundle.Set.Path("application.css")
@@ -98,9 +110,13 @@ func TestRoutes(t *testing.T) {
 
 func welcomeBody(t *testing.T, app *forge.App) string {
 	t.Helper()
+	return welcomeResponse(app).Body.String()
+}
+
+func welcomeResponse(app *forge.App) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
-	return recorder.Body.String()
+	return recorder
 }
 {{- end}}
 
@@ -114,7 +130,11 @@ func TestBrowserPipelineRequiresCSRFToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := useBrowserPipeline(app); err != nil {
+	translator, err := locales.New(app.Config(), app.Logger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := useBrowserPipeline(app, translator); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.HandleFunc("GET /items/new", func(w http.ResponseWriter, r *http.Request) {

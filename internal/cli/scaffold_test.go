@@ -18,7 +18,7 @@ func runScaffold(root string, args ...string) (string, error) {
 
 // pipelineSource is the part of bootstrap.go `forge new` generates that the
 // scaffold looks for.
-const pipelineSource = "package bootstrap\n\n// csrf.New( web.MethodOverride web.Flash\n"
+const pipelineSource = "package bootstrap\n\n// csrf.New( web.MethodOverride web.Flash locales.New( .Middleware(i18n.NegotiationOptions\n"
 
 func scaffoldProject(t *testing.T, databaseURL string) string {
 	t.Helper()
@@ -71,10 +71,14 @@ func TestScaffoldDryRunWritesNothingAndPrintsTheHTMLWiring(t *testing.T) {
 		"would create  " + filepath.Join("app", "views", "views.go"),
 		"would create  " + filepath.Join("app", "views", "layouts", "application.gohtml"),
 		"would create  " + filepath.Join("app", "views", "shared", "_flash.gohtml"),
+		"would create  " + filepath.Join("config", "locales", "posts.en.json"),
+		// ...and so does config/locales.
+		"would create  " + filepath.Join("config", "locales", "locales.go"),
+		"would create  " + filepath.Join("config", "locales", "en.json"),
 		"htmlui.RegisterPosts(app, postService, renderer, protectCookie)",
 		"httpapi.RegisterPosts(app, postService, protect)",
 		"middleware.AuthenticateBrowser(\"/session/new\", guarded)",
-		"renderer, err := views.New()",
+		"renderer, err := views.New(views.WithI18n(translator))",
 		"Forge did not edit app/bootstrap/bootstrap.go. Wire the scaffold there",
 	} {
 		if !strings.Contains(output, want) {

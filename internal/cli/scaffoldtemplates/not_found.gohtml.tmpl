@@ -1,6 +1,6 @@
-{{define "title"}}[[.HumanTitle]] not found{{end}}
+{{define "title"}}{{t "[[.Plural]].not_found.title"}}{{end}}
 {{define "content"}}
-<h1>[[.HumanTitle]] not found</h1>
-<p>This [[.Human]] does not exist, or it was deleted.</p>
-<p><a href="{{.Path}}">Back to [[.PluralHuman]]</a></p>
+<h1>{{t "[[.Plural]].not_found.title"}}</h1>
+<p>{{t "[[.Plural]].not_found.message"}}</p>
+<p><a href="{{.Path}}">{{t "[[.Plural]].back"}}</a></p>
 {{end}}

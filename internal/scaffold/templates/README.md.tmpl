@@ -79,10 +79,40 @@ Server-rendered pages live in `app/views`: `layouts/application.gohtml`
 wraps every page that defines a `content` block, partials are named
 `_NAME.gohtml` (`shared/_flash.gohtml` shows flash messages), and the
 stylesheet is `app/assets/application.css`. Build the renderer
-once with `views.New()` and render pages with `RenderRequest`.
-`bootstrap.Configure` installs method override (`_method` in forms), CSRF
-protection (`{{"{{"}}csrfField{{"}}"}}` in every form) and flash messages
-for all routes. See the Forge views guide (`docs/VIEWS.md`).
+once with `views.New(views.WithI18n(translator))` and render pages with
+`RenderRequest`. `bootstrap.Configure` installs the locale negotiation,
+method override (`_method` in forms), CSRF protection
+(`{{"{{"}}csrfField{{"}}"}}` in every form) and flash messages for all
+routes. See the Forge views guide (`docs/VIEWS.md`).
+
+## Translations
+
+User-visible text lives in `config/locales`: `en.json`{{if ne .Locale "en"}} and
+`{{.Locale}}.json` (the default locale){{end}}, plus scoped files such as
+`posts.en.json` that `forge generate scaffold` adds. Each file is one JSON
+object whose only key is the locale; keys are dotted paths, `%{name}`
+interpolates and `one`/`other` (CLDR plural forms) choose by `count`:
+
+```json
+{"pt-BR": {"posts": {"count": {"one": "%{count} post", "other": "%{count} posts"}}}}
+```
+
+Pages use `{{"{{"}}t "posts.index.title"{{"}}"}}`,
+`{{"{{"}}t "posts.count" "count" .Total{{"}}"}}`, `{{"{{"}}l .CreatedAt "short"{{"}}"}}` and
+`{{"{{"}}number .Price 2{{"}}"}}`; Go code uses `i18n.T(r.Context(), "posts.flash.created")`.
+Each request gets the locale of the `locale` cookie, then `Accept-Language`,
+then the default (`FORGE_I18N_DEFAULT_LOCALE`, else `{{.Locale}}`).
+
+```bash
+cp config/locales/en.json config/locales/fr.json   # then translate it and rename the top-level key to "fr"
+forge i18n check                                   # keys each locale lacks, plural forms, unused keys
+curl -H 'Accept-Language: {{.Locale}}' http://127.0.0.1:8080/
+FORGE_I18N_DEFAULT_LOCALE=en forge dev             # serve English by default
+```
+
+Missing translations show as `translation missing: LOCALE.KEY` in
+development and test and fall back to the default locale in production. See
+the Forge i18n guide (`docs/I18N.md`).
 
 ## JavaScript and styles
 

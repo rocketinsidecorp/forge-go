@@ -43,16 +43,25 @@ func ViewBase(name, module string) ([]BaseFile, error) {
 
 // AuthenticationFiles returns the sign-in, sign-out, two-factor and
 // password-reset pages `forge new` generates for a PostgreSQL application:
-// app/adapters/htmlauth (handlers and tests) and app/views/sessions and
-// app/views/passwords. `forge generate authentication` adds them to an
-// application that lacks them, so both produce the same files. name is the
-// application name and module its Go module path.
+// app/adapters/htmlauth (handlers and tests), app/views/sessions,
+// app/views/passwords and their English text,
+// config/locales/authentication.en.json. `forge generate authentication`
+// adds them to an application that lacks them, so both produce the same
+// files. name is the application name and module its Go module path.
 func AuthenticationFiles(name, module string) ([]BaseFile, error) {
 	opts, err := Normalize(Options{Name: name, Module: module, Database: "postgresql"})
 	if err != nil {
 		return nil, err
 	}
-	return renderSelected(opts, func(f file) bool { return f.scope == withIdentity })
+	files, err := renderSelected(opts, func(f file) bool { return f.scope == withIdentity })
+	if err != nil {
+		return nil, err
+	}
+	english, err := AuthenticationTranslation("en")
+	if err != nil {
+		return nil, err
+	}
+	return append(files, english), nil
 }
 
 // renderSelected renders the files keep selects, formatting Go sources.

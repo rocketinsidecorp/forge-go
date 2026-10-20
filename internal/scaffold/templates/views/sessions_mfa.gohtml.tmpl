@@ -1,16 +1,16 @@
-{{define "title"}}Two-factor authentication{{end}}
+{{define "title"}}{{t "sessions.mfa.title"}}{{end}}
 {{define "content"}}
-<h1>Two-factor authentication</h1>
+<h1>{{t "sessions.mfa.title"}}</h1>
 {{with .Error}}<p class="flash flash-alert" role="alert">{{.}}</p>{{end}}
 <form method="post" action="/session/mfa" class="auth-form">
 	{{csrfField}}
 	{{with .ReturnTo}}<input type="hidden" name="return_to" value="{{.}}">{{end}}
 	<p>
-		<label for="code">Code</label>
+		<label for="code">{{t "sessions.mfa.code"}}</label>
 		<input id="code" name="code" type="text" required maxlength="32" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" aria-describedby="code-hint">
-		<small id="code-hint">The 6-digit code from your authenticator app, or one of your backup codes.</small>
+		<small id="code-hint">{{t "sessions.mfa.code_hint"}}</small>
 	</p>
-	<p><button type="submit">Verify</button></p>
+	<p><button type="submit">{{t "sessions.mfa.submit"}}</button></p>
 </form>
-<p><a href="/session/new">Start over</a></p>
+<p><a href="/session/new">{{t "sessions.mfa.start_over"}}</a></p>
 {{end}}

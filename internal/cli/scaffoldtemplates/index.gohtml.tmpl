@@ -1,46 +1,46 @@
-{{define "title"}}[[.PluralHumanTitle]]{{end}}
+{{define "title"}}{{t "[[.Plural]].index.title"}}{{end}}
 {{define "content"}}
-<h1>[[.PluralHumanTitle]]</h1>
+<h1>{{t "[[.Plural]].index.title"}}</h1>
 [[- if .Broadcast]]
 [[- if .Tenant]]
 {{turboStreamFrom "[[.Plural]]"}}
 [[- else]]
 {{turboStreamFromGlobal "[[.Plural]]"}}
 [[- end]]
-<p><a href="{{.Path}}/new">New [[.Human]]</a></p>
+<p><a href="{{.Path}}/new">{{t "[[.Plural]].index.new"}}</a></p>
 <table>
 	<thead>
 		<tr>
 [[- range .IndexColumns]]
-			<th scope="col">[[.Label]]</th>
+			<th scope="col">{{t "[[$.Plural]].fields.[[.Name]]"}}</th>
 [[- else]]
-			<th scope="col">ID</th>
+			<th scope="col">{{t "[[.Plural]].fields.id"}}</th>
 [[- end]]
-			<th scope="col">Actions</th>
+			<th scope="col">{{t "[[.Plural]].index.actions"}}</th>
 		</tr>
 	</thead>
 	<tbody id="[[.Plural]]">
 		{{range .Items}}
 		{{template "[[.Plural]]/_item" (dict "Item" . "Path" $.Path)}}
 		{{else}}
-		<tr id="[[.Plural]]_empty"><td colspan="[[.ColumnCount]]">No [[.PluralHuman]] yet.</td></tr>
+		<tr id="[[.Plural]]_empty"><td colspan="[[.ColumnCount]]">{{t "[[.Plural]].index.empty"}}</td></tr>
 		{{end}}
 	</tbody>
 </table>
-{{if .NextCursor}}<p><a href="{{.Path}}?cursor={{.NextCursor}}">Next page</a></p>{{end}}
+{{if .NextCursor}}<p><a href="{{.Path}}?cursor={{.NextCursor}}">{{t "[[.Plural]].index.next_page"}}</a></p>{{end}}
 {{end}}
 [[- else]]
-<p><a href="{{.Path}}/new">New [[.Human]]</a></p>
+<p><a href="{{.Path}}/new">{{t "[[.Plural]].index.new"}}</a></p>
 {{if .Items}}
 <table>
 	<thead>
 		<tr>
 [[- range .IndexColumns]]
-			<th scope="col">[[.Label]]</th>
+			<th scope="col">{{t "[[$.Plural]].fields.[[.Name]]"}}</th>
 [[- else]]
-			<th scope="col">ID</th>
+			<th scope="col">{{t "[[.Plural]].fields.id"}}</th>
 [[- end]]
-			<th scope="col">Actions</th>
+			<th scope="col">{{t "[[.Plural]].index.actions"}}</th>
 		</tr>
 	</thead>
 	<tbody>
@@ -51,14 +51,14 @@
 [[- else]]
 			<td>{{.ID}}</td>
 [[- end]]
-			<td><a href="{{$.Path}}/{{.ID}}">Show</a> <a href="{{$.Path}}/{{.ID}}/edit">Edit</a></td>
+			<td><a href="{{$.Path}}/{{.ID}}">{{t "[[$.Plural]].index.show"}}</a> <a href="{{$.Path}}/{{.ID}}/edit">{{t "[[$.Plural]].index.edit"}}</a></td>
 		</tr>
 		{{end}}
 	</tbody>
 </table>
-{{if .NextCursor}}<p><a href="{{.Path}}?cursor={{.NextCursor}}">Next page</a></p>{{end}}
+{{if .NextCursor}}<p><a href="{{.Path}}?cursor={{.NextCursor}}">{{t "[[.Plural]].index.next_page"}}</a></p>{{end}}
 {{else}}
-<p>No [[.PluralHuman]] yet.</p>
+<p>{{t "[[.Plural]].index.empty"}}</p>
 {{end}}
 {{end}}
 [[- end]]

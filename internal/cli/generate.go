@@ -271,9 +271,23 @@ func planView(root, name string) ([]generatedFile, error) {
 // viewBaseFiles returns the files an application needs for server-rendered
 // views: none when it already has the views package `forge new` generates,
 // the whole base (views.go, its test, the layout and the flash partial) when
-// it has no views package at all. A views package that is not the generated
-// one is never modified.
+// it has no views package at all, plus the translations package
+// (config/locales) when it lacks one: the layout and the generated pages
+// translate their text. A views package that is not the generated one is
+// never modified.
 func viewBaseFiles(projectRoot *os.Root, module string) ([]generatedFile, error) {
+	files, err := viewsPackageFiles(projectRoot, module)
+	if err != nil {
+		return nil, err
+	}
+	translations, err := i18nBaseFiles(projectRoot, module)
+	if err != nil {
+		return nil, err
+	}
+	return append(files, translations...), nil
+}
+
+func viewsPackageFiles(projectRoot *os.Root, module string) ([]generatedFile, error) {
 	viewsPath := filepath.Join("app", "views", "views.go")
 	source, err := projectRoot.ReadFile(viewsPath)
 	switch {
@@ -298,6 +312,35 @@ func viewBaseFiles(projectRoot *os.Root, module string) ([]generatedFile, error)
 	}
 	files := make([]generatedFile, 0, len(base))
 	for _, file := range base {
+		files = append(files, generatedFile{path: file.Path, content: string(file.Content), shared: true})
+	}
+	return files, nil
+}
+
+// i18nBaseFiles returns the translations package `forge new` generates
+// (config/locales: locales.go, its test and en.json) when the application
+// has no config/locales/locales.go; en.json is added only when it is absent
+// too. The files are shared: `forge destroy` never removes them.
+func i18nBaseFiles(projectRoot *os.Root, module string) ([]generatedFile, error) {
+	if _, err := projectRoot.Lstat(filepath.Join(localesDir, "locales.go")); err == nil {
+		return nil, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	name := module[strings.LastIndex(module, "/")+1:]
+	base, err := scaffold.I18nBase(name, module)
+	if err != nil {
+		if base, err = scaffold.I18nBase("app", module); err != nil {
+			return nil, err
+		}
+	}
+	files := make([]generatedFile, 0, len(base))
+	for _, file := range base {
+		if _, err := projectRoot.Lstat(file.Path); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 		files = append(files, generatedFile{path: file.Path, content: string(file.Content), shared: true})
 	}
 	return files, nil

@@ -1,6 +1,6 @@
-{{define "title"}}New [[.Human]]{{end}}
+{{define "title"}}{{t "[[.Plural]].new.title"}}{{end}}
 {{define "content"}}
-<h1>New [[.Human]]</h1>
+<h1>{{t "[[.Plural]].new.title"}}</h1>
 {{template "[[.Plural]]/_form" .}}
-<p><a href="{{.Path}}">Back to [[.PluralHuman]]</a></p>
+<p><a href="{{.Path}}">{{t "[[.Plural]].back"}}</a></p>
 {{end}}

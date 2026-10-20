@@ -147,6 +147,7 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_STORAGE_SIGNING_KEY`         | (empty)          | HMAC key of signed file links: unpadded base64url of 32-1024 random bytes. Secret. **Required in `production` when `FORGE_STORAGE_ROOT` is set.** |
 | `FORGE_STORAGE_MAX_UPLOAD_BYTES`    | `524288`         | Largest uploaded file; cannot exceed `FORGE_HTTP_MAX_BODY_BYTES` when storage is configured |
 | `FORGE_STORAGE_LINK_TTL`            | `15m`            | Default lifetime of signed links, `1s`-`168h` |
+| `FORGE_I18N_DEFAULT_LOCALE`         | (empty)          | Default locale, canonically spelled (`en`, `pt-BR`); empty uses the application's `locales.DefaultLocale` (`forge new --locale`). It needs a `config/locales/LOCALE.json` ([I18N.md](I18N.md)) |
 | `FORGE_TELEMETRY_ENABLED`           | `true`           | Traces, metrics and log correlation; `false` costs nothing |
 | `FORGE_TELEMETRY_SERVICE_NAME`      | `unknown_service:<binary>` | `service.name` of exported telemetry |
 | `FORGE_TELEMETRY_SERVICE_VERSION`   | (empty)          | `service.version` |

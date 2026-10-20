@@ -167,15 +167,15 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 	title := exportedName(spec.Name)
 	plural := exportedName(spec.Plural)
 	parts.Imports = append(parts.Imports, spec.Module+"/app/adapters/htmlui")
-	rendererCall := "views.New()"
+	rendererCall := "views.New(views.WithI18n(translator))"
 	if spec.Broadcast {
-		rendererCall = "views.New(views.WithStreams(streamSigner))"
+		rendererCall = "views.New(views.WithI18n(translator), views.WithStreams(streamSigner))"
 	}
 	if spec.ViewRenderer {
 		if spec.Broadcast {
-			parts.Notes = append(parts.Notes, "bootstrap.go already builds the renderer with views.New(): define streamSigner (below) before that line and change it to `views.New(views.WithStreams(streamSigner))`, so the pages can sign their stream names.")
+			parts.Notes = append(parts.Notes, "bootstrap.go already builds the renderer with views.New(views.WithI18n(translator)): define streamSigner (below) before that line and change it to `"+rendererCall+"`, so the pages can sign their stream names.")
 		} else {
-			parts.Notes = append(parts.Notes, "The pages reuse the renderer that bootstrap.go already builds with views.New().")
+			parts.Notes = append(parts.Notes, "The pages reuse the renderer that bootstrap.go already builds with views.New(views.WithI18n(translator)).")
 		}
 	} else {
 		parts.Imports = append(parts.Imports, spec.Module+"/app/views")
@@ -217,6 +217,10 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 	parts.Notes = append(parts.Notes, fmt.Sprintf("The %s pages are served at /%s and the JSON API at /v1/%s. New and edit forms need %s:write like the routes that save them.", title, spec.Plural, spec.Plural, spec.Plural))
 	if !spec.BrowserPipeline {
 		parts.Notes = append(parts.Notes, "WARNING: app/bootstrap/bootstrap.go does not appear to install csrf.Protection, web.MethodOverride and web.Flash (forge new generates useBrowserPipeline for them). Without them the forms are not CSRF-protected and update and delete do not work: add them before serving these pages (docs/VIEWS.md).")
+	}
+	parts.Notes = append(parts.Notes, fmt.Sprintf("The pages' text is in config/locales/%s.en.json (English). Translate it into %s.LOCALE.json for every other locale in config/locales; `forge i18n check` lists what is missing.", spec.Plural, spec.Plural))
+	if !spec.I18nMiddleware {
+		parts.Notes = append(parts.Notes, "WARNING: app/bootstrap/bootstrap.go does not appear to build the translator and install its middleware (forge new does: `translator, err := locales.New(app.Config(), app.Logger())` in Configure, and `translator.Middleware(i18n.NegotiationOptions{})` first in useBrowserPipeline). The pages' t helper fails without them (docs/I18N.md).")
 	}
 }
 

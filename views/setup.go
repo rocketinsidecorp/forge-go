@@ -9,6 +9,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/assets"
 	"github.com/rocketinsidecorp/forge-go/broadcast"
+	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
@@ -30,10 +31,11 @@ type setup struct {
 	streams     *broadcast.Signer
 	streamsPath string
 	policy      string
+	translator  *i18n.Translator
 }
 
 func newSetup(opts Options) (*setup, error) {
-	result := &setup{assets: opts.Assets, importMap: opts.ImportMap, streams: opts.Streams, streamsPath: opts.StreamsPath}
+	result := &setup{assets: opts.Assets, importMap: opts.ImportMap, streams: opts.Streams, streamsPath: opts.StreamsPath, translator: opts.I18n}
 	if result.importMap != nil && result.assets == nil {
 		return nil, errors.New("views: Options.ImportMap needs Options.Assets")
 	}

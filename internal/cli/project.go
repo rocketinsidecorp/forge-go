@@ -29,6 +29,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	database := flags.String("database", "postgresql", "database: "+strings.Join(scaffold.Databases, ", ")+" or none")
 	flags.StringVar(database, "d", "postgresql", "shorthand for --database")
 	skipDatabase := flags.Bool("skip-database", false, "same as --database none")
+	locale := flags.String("locale", "en", "default locale: "+strings.Join(scaffold.Locales, ", ")+" (en.json is always generated)")
 	name, err := parseSinglePositional(flags, args, "NAME")
 	if err != nil {
 		return err
@@ -41,7 +42,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 		}
 		*database = "none"
 	}
-	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database})
+	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale})
 	if err != nil {
 		return err
 	}

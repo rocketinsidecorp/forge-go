@@ -61,6 +61,13 @@ postService, err := application.NewPostService(persistence.NewPostRepository(dat
 Tenant-scoped models read the tenant from the context and bind it in every
 statement (and, on PostgreSQL, run behind forced row-level security); calls
 without a tenant fail with `tenant_required`. IDs are UUIDv7 generated in Go.
+
+A scaffold's pages read their text from `config/locales/PLURAL.en.json`, which
+it generates (and `destroy` removes when unchanged); translate it into
+`PLURAL.LOCALE.json` for every other locale, and `forge i18n check` lists what
+is missing ([I18N.md](I18N.md)). Generators that add the views base also add
+`config/locales` to an application without it.
+
 Adding the HTTP layer later is `forge generate scaffold` on a new name: a
 model, resource and scaffold of one name collide instead of mixing layers.
 With Forge identity the migration also registers `posts:read` and

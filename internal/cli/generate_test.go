@@ -103,7 +103,8 @@ func TestGenerateViewAddsAPageToTheSharedViewTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The page, the views package and its layout, and what the layout loads:
-	// the asset bundle (app/assets) and the JavaScript (app/javascript).
+	// the asset bundle (app/assets), the JavaScript (app/javascript) and the
+	// translations (config/locales).
 	want := []string{
 		filepath.Join("app", "views", "pages", "welcome.gohtml"),
 		filepath.Join("app", "assets", "assets.go"),
@@ -119,6 +120,9 @@ func TestGenerateViewAddsAPageToTheSharedViewTree(t *testing.T) {
 		filepath.Join("app", "javascript", "controllers", "application.js"),
 		filepath.Join("app", "javascript", "controllers", "index.js"),
 		filepath.Join("app", "javascript", "controllers", "hello_controller.js"),
+		filepath.Join("config", "locales", "locales.go"),
+		filepath.Join("config", "locales", "locales_test.go"),
+		filepath.Join("config", "locales", "en.json"),
 	}
 	if strings.Join(paths, "|") != strings.Join(want, "|") {
 		t.Fatalf("generated paths = %v, want %v", paths, want)

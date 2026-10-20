@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{locale}}">
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,7 +9,7 @@
 	{{javascriptImportmapTags "application"}}
 </head>
 <body>
-	<a class="skip-link" href="#main">Skip to content</a>
+	<a class="skip-link" href="#main">{{t "layout.skip_to_content"}}</a>
 	<main id="main">
 		{{template "shared/_flash" .}}
 		{{block "content" .}}{{end}}

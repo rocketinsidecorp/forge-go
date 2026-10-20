@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/i18n"
 )
 
 type Environment string
@@ -106,6 +108,37 @@ type Config struct {
 	Cache       Cache
 	Storage     Storage
 	Telemetry   Telemetry
+	I18n        I18n
+}
+
+// I18n configures translations (package i18n, ADR 0042).
+type I18n struct {
+	// DefaultLocale is the locale requests fall back to
+	// (FORGE_I18N_DEFAULT_LOCALE), such as "en" or "pt-BR". Empty lets the
+	// application choose; generated applications use the locale given to
+	// `forge new --locale`, "en" by default.
+	DefaultLocale string
+}
+
+func (i I18n) validate() error {
+	if i.DefaultLocale == "" {
+		return nil
+	}
+	canonical, err := i18n.CanonicalLocale(i.DefaultLocale)
+	if err != nil {
+		return errors.New("FORGE_I18N_DEFAULT_LOCALE must be a locale such as en or pt-BR (language[-Script][-REGION])")
+	}
+	if canonical != i.DefaultLocale {
+		return fmt.Errorf("FORGE_I18N_DEFAULT_LOCALE must be spelled %s", canonical)
+	}
+	return nil
+}
+
+// ShowsMissingTranslations reports whether missing translations are shown
+// as "translation missing: LOCALE.KEY" (development and test) instead of
+// falling back to the default locale (staging and production).
+func (c Config) ShowsMissingTranslations() bool {
+	return c.Environment == Development || c.Environment == Test
 }
 
 func Default() Config {
@@ -190,6 +223,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.Storage.validate(c.Environment, c.HTTP.MaxBodyBytes); err != nil {
+		return err
+	}
+	if err := c.I18n.validate(); err != nil {
 		return err
 	}
 	return c.Telemetry.validate(c.Environment, c.HTTP.Address)

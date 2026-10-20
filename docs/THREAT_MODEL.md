@@ -328,6 +328,20 @@ See [CREDENTIALS.md](CREDENTIALS.md), [ENCRYPTION.md](ENCRYPTION.md) and
 | Oversized or hostile ciphertexts | D | Plaintext, ciphertext and file sizes are bounded (1 MiB / 2 MiB); malformed values fail before any allocation proportional to their length. |
 | Memory disclosure | I | Keys and plaintexts are cleared best effort; Go gives no guarantee, and swap and core dumps can hold them (**residual**). |
 
+## Internationalization
+
+See [I18N.md](I18N.md) and [ADR 0042](adr/0042-internationalization.md).
+
+| Threat | STRIDE | Mitigation |
+| ------ | ------ | ---------- |
+| Path traversal through a locale name (`Accept-Language`, the `locale` cookie, `?locale=`, a path prefix, `FORGE_I18N_DEFAULT_LOCALE`) | T, I | Locale names are validated against a BCP 47 subset (`language[-Script][-REGION]`, letters and digits only) and canonicalized before any use; only locales loaded at startup from the embedded files can be selected, so request input never reaches the filesystem. File names must be canonical (`pt-br.json` is refused). Tested with `../`, `%2e%2e`, `/`, `\`, NUL and `_` names. |
+| XSS through translated text or its arguments | T, E | `t` returns plain text that `html/template` escapes for its context; arguments are interpolated before that escaping. Only keys ending in `_html` are markup, and in them every argument is HTML-escaped unless it is `template.HTML`. A missing `_html` key is never markup. Tested with script payloads in element, attribute and `_html` contexts. **Residual:** `_html` translations are trusted code: a malicious or careless translator can inject markup, and an argument escaped into an `href` of an `_html` translation is not URL-checked (`javascript:` is not filtered); keep URLs from users out of `_html` keys and review translation files like templates. The page CSP still blocks inline scripts. |
+| Memory or log exhaustion through missing keys built from input | D | Missing-translation warnings are logged once per locale and key, for at most 1,024 distinct problems; keys longer than 256 bytes or with invalid segments are refused before lookup and truncated in logs. |
+| Oversized or hostile request headers | D | `Accept-Language` over 4096 bytes is ignored; only its first 32 entries are parsed; tags over 64 bytes, malformed q-values and subtags are skipped. |
+| Oversized or ambiguous translation files | D, T | 1 MiB per file, 512 files, 16 levels, 50,000 keys per locale; duplicate keys (in one object or across files) and a second top-level key are startup errors, so review sees exactly what is served. Files are embedded at build time. |
+| Locale cookie tampering | T | The cookie only selects among available locales; invalid values are ignored. It is `Secure`, `HttpOnly`, `SameSite=Lax`. Translated responses (every page the views renderer writes, and handlers that call `i18n.SetHeaders`) carry `Vary: Accept-Language, Cookie` so shared caches do not serve one visitor's language to another; assets and JSON are not marked, so they stay cacheable. **Residual:** a custom handler that writes translated text without `SetHeaders` can be cached across languages. |
+| Wrong-language or missing text hides a security message in production | I | Missing translations fall back to the default locale, then the humanized key, and are logged; development and test show `translation missing: LOCALE.KEY`, which the generated tests reject; `forge i18n check` exits 1 on any missing key or plural form. The failed sign-in message stays one key (`sessions.invalid_credentials`) for every wrong field in every locale, so translation cannot reintroduce account enumeration. |
+
 ## Future components (Planned)
 
 | Area | Planned mitigation |

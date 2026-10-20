@@ -13,10 +13,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rocketinsidecorp/forge-go/assets"
 	"github.com/rocketinsidecorp/forge-go/broadcast"
 	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/turbo"
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -67,6 +69,12 @@ type Options struct {
 	// StreamsPath is where the event stream handler is mounted. Empty means
 	// "/streams".
 	StreamsPath string
+
+	// I18n translates the t, l and number helpers when the request carries
+	// no translator (i18n.Translator.Middleware puts one in the request
+	// context), such as fragments rendered for a broadcast without a
+	// request; they then use its default locale.
+	I18n *i18n.Translator
 }
 
 // page is one renderable template set: the layouts, the partials and one
@@ -87,6 +95,8 @@ type instance struct {
 type renderState struct {
 	writer  http.ResponseWriter
 	request *http.Request
+	// probing is set while Load checks a page's escaping without a request.
+	probing bool
 }
 
 type source struct {
@@ -122,6 +132,17 @@ type source struct {
 //	flash "notice"     the text of one incoming flash message
 //	domID "post" .ID   an element id: post_<id>, or new_post for a zero UUID
 //	dict "k" v ...     a map, for passing several values to a partial
+//
+// With i18n.Translator.Middleware in front of the page's handler (or
+// Options.I18n), see docs/I18N.md:
+//
+//	t "users.welcome" "name" .Name   the translation for the request's
+//	                                 locale; keys ending in _html are trusted
+//	                                 markup with escaped arguments
+//	t "inbox" "count" .Unread        the plural form for a count
+//	l .CreatedAt "short"             a time in time.formats.short
+//	number .Total 2                  a number with the locale's separators
+//	locale                           the request's locale, for <html lang>
 //
 // With Options.Assets, ImportMap and Streams (see docs/VIEWS.md):
 //
@@ -281,6 +302,7 @@ func (p *page) probe(name string) error {
 	if err != nil {
 		return err
 	}
+	probe.state.probing = true
 	var escapeErr *template.Error
 	var setupErr *setupError
 	if err := probe.templates.ExecuteTemplate(io.Discard, p.entry, nil); errors.As(err, &escapeErr) || errors.As(err, &setupErr) {
@@ -319,6 +341,9 @@ func (r *Renderer) renderPage(w http.ResponseWriter, request *http.Request, name
 	body, err := page.execute(w, request, name, data)
 	if err != nil {
 		return err
+	}
+	if request != nil {
+		i18n.SetHeaders(w, request.Context())
 	}
 	w.Header().Set("Content-Security-Policy", r.csp)
 	return writeHTML(w, status, body.Bytes())
@@ -473,6 +498,101 @@ func helperFuncs(state *renderState, setup *setup) template.FuncMap {
 		"methodField": methodField,
 		"domID":       domID,
 		"dict":        dict,
+		"t":           translate(state, setup),
+		"l":           localize(state, setup),
+		"number":      number(state, setup),
+		"locale": func() (string, error) {
+			if state == nil || state.probing {
+				return i18n.DefaultLocale, nil
+			}
+			_, locale, err := translation(state, setup)
+			return locale, err
+		},
+	}
+}
+
+var errNoTranslator = errors.New("this helper needs i18n.Translator.Middleware in front of the handler, or views.Options.I18n")
+
+// translation returns the translator and locale of the current request, or
+// Options.I18n and its default locale.
+func translation(state *renderState, setup *setup) (*i18n.Translator, string, error) {
+	if state != nil && state.request != nil {
+		if translator, locale, ok := i18n.FromContext(state.request.Context()); ok {
+			return translator, locale, nil
+		}
+	}
+	if setup.translator != nil {
+		return setup.translator, setup.translator.DefaultLocale(), nil
+	}
+	return nil, "", errNoTranslator
+}
+
+// translate is the t helper. It returns template.HTML for _html keys (their
+// markup is trusted, their arguments escaped) and a string, which the
+// template escapes for its context, for every other key.
+func translate(state *renderState, setup *setup) func(string, ...any) (any, error) {
+	return func(key string, args ...any) (any, error) {
+		if len(args)%2 != 0 {
+			return nil, &setupError{fmt.Sprintf("t %q: arguments must be name/value pairs", key)}
+		}
+		for i := 0; i < len(args); i += 2 {
+			if _, ok := args[i].(string); !ok {
+				return nil, &setupError{fmt.Sprintf("t %q: argument name %d is %T, not a string", key, i/2+1, args[i])}
+			}
+		}
+		if state == nil || state.probing {
+			return key, nil
+		}
+		translator, locale, err := translation(state, setup)
+		if err != nil {
+			return nil, fmt.Errorf("t %q: %w", key, err)
+		}
+		if i18n.IsHTMLKey(key) {
+			return translator.HTML(locale, key, args...), nil
+		}
+		return translator.Translate(locale, key, args...), nil
+	}
+}
+
+// localize is the l helper: l .Time, l .Time "short", l .Time "date.formats.long".
+func localize(state *renderState, setup *setup) func(time.Time, ...string) (string, error) {
+	return func(value time.Time, format ...string) (string, error) {
+		if len(format) > 1 {
+			return "", errors.New("l: takes a time and at most one format name")
+		}
+		if state == nil || state.probing {
+			return "", nil
+		}
+		translator, locale, err := translation(state, setup)
+		if err != nil {
+			return "", fmt.Errorf("l: %w", err)
+		}
+		return translator.FormatTime(locale, value, strings.Join(format, "")), nil
+	}
+}
+
+// number is the number helper: number .Count, number .Total 2.
+func number(state *renderState, setup *setup) func(any, ...int) (string, error) {
+	return func(value any, precision ...int) (string, error) {
+		if len(precision) > 1 {
+			return "", errors.New("number: takes a number and at most one precision")
+		}
+		if state == nil || state.probing {
+			return "", nil
+		}
+		translator, locale, err := translation(state, setup)
+		if err != nil {
+			return "", fmt.Errorf("number: %w", err)
+		}
+		digits := -1
+		if len(precision) == 1 {
+			digits = precision[0]
+		}
+		text, ok := translator.FormatNumber(locale, value, digits)
+		if !ok {
+			return "", fmt.Errorf("number: %T is not a number", value)
+		}
+		return text, nil
 	}
 }
 
