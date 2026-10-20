@@ -1,4 +1,4 @@
-# ADR 0037: Preconfigured local observability stack (Grafana, Prometheus, Tempo, Loki)
+# ADR 0038: Preconfigured local observability stack (Grafana, Prometheus, Tempo, Loki)
 
 - **Status:** Accepted
 - **Date:** 2026-10-20

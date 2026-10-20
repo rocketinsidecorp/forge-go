@@ -244,7 +244,7 @@ rule in Kubernetes). A non-loopback address without that confirmation stops
 `forge new` generates `compose.observability.yaml` and an `observability/`
 directory that run an OpenTelemetry Collector, Prometheus, Tempo, Loki and
 Grafana next to the application, already wired
-([ADR 0037](adr/0037-local-observability-stack.md)). It is opt-in: the default
+([ADR 0038](adr/0038-local-observability-stack.md)). It is opt-in: the default
 `docker compose up` does not start it.
 
 ```bash

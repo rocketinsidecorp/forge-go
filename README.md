@@ -771,7 +771,7 @@ Every generated application includes an opt-in observability stack
 Collector, Prometheus, Tempo (traces), Loki (logs) and Grafana with the data
 sources, trace-to-log links and a starter dashboard provisioned. Everything
 stays on your machine and every port is bound to `127.0.0.1`
-([ADR 0037](docs/adr/0037-local-observability-stack.md)).
+([ADR 0038](docs/adr/0038-local-observability-stack.md)).
 
 ```bash
 forge new myapp && cd myapp
@@ -869,3 +869,4 @@ CI (`.github/workflows/ci.yml`):
   - [0033 File storage](docs/adr/0033-file-storage.md)
   - [0036 Encrypted credentials and attribute encryption](docs/adr/0036-encrypted-credentials-and-attribute-encryption.md)
   - [0037 Trusted proxies and the client address](docs/adr/0037-trusted-proxies-and-client-ip.md)
+  - [0038 Local observability stack](docs/adr/0038-local-observability-stack.md)
