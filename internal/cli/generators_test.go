@@ -2,14 +2,23 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"go/parser"
 	"go/token"
+	"io"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
+	"github.com/rocketinsidecorp/forge-go/migrate"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 )
 
 var generatorNow = time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
@@ -332,6 +341,114 @@ func TestGenerateControllerInIdentityApplicationsRegistersItsPermission(t *testi
 	if strings.Contains(public, "permissions") {
 		t.Errorf("a public controller registers no permission:\n%s", public)
 	}
+}
+
+// migrationsMatching lists the migration files in root whose names contain
+// part.
+func migrationsMatching(t *testing.T, root, part string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, "db", "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), part) {
+			names = append(names, entry.Name())
+		}
+	}
+	return names
+}
+
+// A permission has one owner migration, whose rollback removes it: a
+// controller whose NAME is the plural of a model, resource or scaffold reuses
+// that resource's NAME:read instead of registering it a second time (rolling
+// the controller's migration back would otherwise revoke the resource's
+// permission from every role).
+func TestGenerateControllerReusesAPermissionAMigrationRegisters(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		generator string
+		args      []string
+		migration string
+	}{
+		{"scaffold", []string{"widget", "title:string", "--global"}, "create_widgets"},
+		{"model", []string{"widget", "title:string", "--tenant-scoped"}, "create_widgets"},
+		{"migration", []string{"add_widget_permissions"}, "add_widget_permissions"},
+	} {
+		t.Run(c.generator, func(t *testing.T) {
+			t.Parallel()
+			root := resourceProject(t, "postgres://u:p@localhost/db")
+			mustGenerate(t, root, c.generator, c.args...)
+			owner := firstMatch(t, root, "*_"+c.migration+".up.sql")
+			if c.generator == "migration" {
+				// A hand-written migration that registers the permission owns it too.
+				writeFile(t, owner, "INSERT INTO forge_permissions (name) VALUES ('widgets:read');\n")
+			}
+			for _, args := range [][]string{{"widgets", "dashboard"}, {"widgets", "stats", "--api"}} {
+				output := mustGenerate(t, root, "controller", args...)
+				ownerPath := "db/migrations/" + filepath.Base(owner)
+				for _, want := range []string{"reuse the permission widgets:read, which " + ownerPath + " already registers", "Then: forge test"} {
+					if !strings.Contains(output, want) {
+						t.Errorf("output lacks %q:\n%s", want, output)
+					}
+				}
+				if strings.Contains(output, "controller_permissions") || strings.Contains(output, "forge migrate") {
+					t.Errorf("a controller reusing a permission generates no migration:\n%s", output)
+				}
+			}
+			if found := migrationsMatching(t, root, "controller_permissions"); len(found) != 0 {
+				t.Errorf("a controller registered a permission another migration owns: %v", found)
+			}
+			// Destroying the controller leaves the owner's migration alone.
+			for _, args := range [][]string{{"widgets", "dashboard"}, {"widgets", "stats", "--api"}} {
+				if output, err := destroy(root, append([]string{"controller"}, append(args, "--migrations")...)...); err != nil {
+					t.Fatalf("destroy controller %v: %v\n%s", args, err, output)
+				}
+			}
+			if !exists(root, "db/migrations/"+filepath.Base(owner)) || exists(root, "app/adapters/htmlui/widgets_controller.go") {
+				t.Error("destroying the controller removed the wrong files")
+			}
+		})
+	}
+}
+
+// The other direction: a model, resource or scaffold never registers a
+// permission a controller's migration (or any other) already registers.
+func TestGenerateResourceRefusesAPermissionAnotherMigrationRegisters(t *testing.T) {
+	t.Parallel()
+	root := resourceProject(t, "postgres://u:p@localhost/db")
+	mustGenerate(t, root, "controller", "widgets", "dashboard")
+	controllerMigration := "db/migrations/20261020120000_create_widgets_controller_permissions.up.sql"
+	if !exists(root, controllerMigration) {
+		t.Fatalf("the guarded controller registered no permission: %v", migrationsMatching(t, root, ""))
+	}
+	before := snapshotTree(t, root)
+	for _, generator := range []string{"model", "resource", "scaffold"} {
+		_, err := generate(root, generator, "widget", "title:string", "--global")
+		if err == nil {
+			t.Fatalf("%s widget was generated over the widgets controller's permission", generator)
+		}
+		for _, want := range []string{controllerMigration, "widgets:read", "the " + generator + "'s migration", "--plural", "forge rollback"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s refusal lacks %q: %v", generator, want, err)
+			}
+		}
+		if after := snapshotTree(t, root); !slices.Equal(before, after) {
+			t.Fatalf("a refused %s changed the project:\n%v\n%v", generator, before, after)
+		}
+	}
+	// Another plural has its own permissions.
+	mustGenerate(t, root, "resource", "widget", "title:string", "--global", "--plural", "widget_items")
+	// A hand-written migration that names either permission owns it too.
+	writeFile(t, filepath.Join(root, "db", "migrations", "20260101000000_seed_gadgets.up.sql"), "INSERT INTO forge_permissions (name) VALUES ('gadgets:write');\n")
+	if _, err := generate(root, "resource", "gadget", "name:string", "--global"); err == nil || !strings.Contains(err.Error(), "gadgets:write") {
+		t.Errorf("a resource registered a permission a hand-written migration owns: %v", err)
+	}
+	// Without Forge identity nothing registers permissions, so nothing collides.
+	plain := resourceProject(t, "sqlite:storage/development.db")
+	mustGenerate(t, plain, "controller", "widgets", "dashboard")
+	mustGenerate(t, plain, "scaffold", "widget", "title:string", "--global")
 }
 
 func TestGenerateControllerRefusesToOverwriteAndNeedsAnApplication(t *testing.T) {
@@ -818,5 +935,103 @@ func TestGeneratedHelpListsEveryGenerator(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the command catalog lacks %q", want)
 		}
+	}
+}
+
+// TestControllerPermissionMigrationRunsOnPostgreSQL applies a guarded
+// controller's permission migration after `setup` and rolls it back: the up
+// grants the permission to the owner role and runs again without failing; the
+// down removes only what the up added, and refuses (changing nothing) while
+// another role still holds the permission.
+func TestControllerPermissionMigrationRunsOnPostgreSQL(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database, databaseConfig := postgrestest.NewWithConfig(t)
+	root := resourceProject(t, "postgres://u:p@localhost/db")
+	// generatorNow is the version of a Forge identity migration; a later one
+	// keeps the two sets' versions apart.
+	var output bytes.Buffer
+	if err := runGenerateEnv([]string{"controller", "reports", "monthly"}, &output, root, nil, time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	up := readFile(t, filepath.Join(root, "db", "migrations", "20300102030405_create_reports_controller_permissions.up.sql"))
+
+	migrator := func(sets ...fs.FS) *migrate.Migrator {
+		t.Helper()
+		loaded, err := migrate.LoadMigrationSets(sets...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := postgres.NewMigrator(databaseConfig, loaded, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = m.Close() })
+		return m
+	}
+	// The identity tables and the owner role exist before the controller's
+	// migration runs, as in an application that ran `setup` earlier.
+	if _, err := migrator(authpostgres.Migrations()).Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := authpostgres.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := repository.ProvisionOwner(ctx, authpostgres.OwnerAccount{Organization: "Acme", TenantSlug: "acme", Email: "owner@example.com", Password: "correct horse battery staple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := migrator(authpostgres.Migrations(), os.DirFS(filepath.Join(root, "db", "migrations")))
+	if _, err := application.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	count := func(query string) int {
+		t.Helper()
+		var n int
+		if err := database.QueryRow(ctx, query).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	const permissions = "SELECT count(*) FROM forge_permissions WHERE name = 'reports:read'"
+	const grants = "SELECT count(*) FROM forge_role_permissions WHERE permission = 'reports:read'"
+	if count(permissions) != 1 || count(grants) != 1 {
+		t.Fatalf("after up: %d permission(s), %d grant(s); want the permission and the owner's grant", count(permissions), count(grants))
+	}
+	// The up is idempotent.
+	if _, err := database.Exec(ctx, up); err != nil {
+		t.Fatalf("running the up again: %v", err)
+	}
+	if count(permissions) != 1 || count(grants) != 1 {
+		t.Fatal("running the up again changed the grants")
+	}
+
+	// A grant an administrator made is never revoked silently: the rollback
+	// fails and changes nothing until it is revoked.
+	if _, err := database.Exec(ctx, "INSERT INTO forge_roles (tenant_id, name) VALUES ($1, 'auditor')", owner.TenantID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(ctx, "INSERT INTO forge_role_permissions (role_id, permission) SELECT id, 'reports:read' FROM forge_roles WHERE name = 'auditor'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.Down(ctx, 1); err == nil {
+		t.Fatal("the rollback removed a permission another role holds")
+	}
+	if count(permissions) != 1 || count(grants) != 2 {
+		t.Fatalf("a failed rollback changed data: %d permission(s), %d grant(s)", count(permissions), count(grants))
+	}
+	if _, err := database.Exec(ctx, "DELETE FROM forge_role_permissions WHERE permission = 'reports:read' AND role_id IN (SELECT id FROM forge_roles WHERE name = 'auditor')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.Down(ctx, 1); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	if count(permissions) != 0 || count(grants) != 0 {
+		t.Fatalf("after down: %d permission(s), %d grant(s); want none", count(permissions), count(grants))
+	}
+	// Other permissions and the owner role's other grants are untouched.
+	if count("SELECT count(*) FROM forge_role_permissions rp JOIN forge_roles r ON r.id = rp.role_id WHERE r.name = 'owner'") != count("SELECT count(*) FROM forge_permissions") {
+		t.Error("the rollback changed the owner role's other grants")
 	}
 }

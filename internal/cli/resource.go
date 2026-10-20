@@ -448,6 +448,24 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 	if existing != "" {
 		return resourceSpec{}, nil, fmt.Errorf("refusing to generate: %s already creates the table %s; pick another resource name or --plural", existing, request.Plural)
 	}
+	if spec.Identity && !request.Destroy {
+		owner, permission, err := permissionRegisteredBy(projectRoot, "create_"+request.Plural, request.Plural+":read", request.Plural+":write")
+		if err != nil {
+			return resourceSpec{}, nil, err
+		}
+		if owner != "" {
+			kind := "resource"
+			switch {
+			case request.Model:
+				kind = "model"
+			case request.Scaffold:
+				kind = "scaffold"
+			}
+			return resourceSpec{}, nil, fmt.Errorf("refusing to generate: %[1]s already registers the permission %[2]s, which the %[3]s's migration would register too. "+
+				"A permission belongs to the one migration that registers it (rolling that migration back removes it and every grant of it), so it never gets a second one. "+
+				"Choose another name or --plural; or, to let the %[3]s own %[2]s, revert %[1]s (`forge rollback`) and delete that migration pair first: a controller that asks for %[2]s keeps working with the %[3]s's permission", owner, permission, kind)
+		}
+	}
 	files := migrations
 	for _, source := range rendered.sources {
 		path := filepath.Join(filepath.FromSlash(source.dir), request.Name+source.suffix)
@@ -517,6 +535,42 @@ func planMigrationPair(projectRoot *os.Root, name string, destroy bool, now time
 		{path: base + ".up.sql", content: up, migration: true},
 		{path: base + ".down.sql", content: down, migration: true},
 	}, "", nil
+}
+
+// permissionRegisteredBy finds an up migration in db/migrations, other than
+// the pair named own, that names one of permissions as a SQL string literal
+// ('posts:read'), and returns its path and the permission it names. A
+// permission belongs to the one migration that registers it, because that
+// migration's rollback removes it: the generators reuse a registered
+// permission (controller) or refuse to register it again (model, resource,
+// scaffold) instead of giving it a second owner. Any mention counts, so a
+// hand-written migration that registers the permission is found too.
+func permissionRegisteredBy(projectRoot *os.Root, own string, permissions ...string) (path, permission string, err error) {
+	dir := filepath.Join("db", "migrations")
+	entries, err := fs.ReadDir(projectRoot.FS(), dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	for _, entry := range entries {
+		_, rest, ok := strings.Cut(entry.Name(), "_")
+		if !ok || entry.IsDir() || !strings.HasSuffix(rest, ".up.sql") || rest == own+".up.sql" {
+			continue
+		}
+		candidate := filepath.Join(dir, entry.Name())
+		source, err := projectRoot.ReadFile(candidate)
+		if err != nil {
+			return "", "", fmt.Errorf("read %s: %w", candidate, err)
+		}
+		for _, permission := range permissions {
+			if strings.Contains(string(source), "'"+permission+"'") {
+				return candidate, permission, nil
+			}
+		}
+	}
+	return "", "", nil
 }
 
 // checkPlannedFiles refuses a plan that would overwrite a file, write through

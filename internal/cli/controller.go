@@ -54,6 +54,10 @@ type controllerSpec struct {
 	ViewRenderer bool
 	// AddsViewBase reports that the controller also adds the views base.
 	AddsViewBase bool
+	// PermissionOwner is the migration that already registers NAME:read (a
+	// model, resource or scaffold whose plural is NAME): the controller then
+	// reuses that permission and generates no migration of its own.
+	PermissionOwner string
 }
 
 // parseControllerArgs reads `NAME ACTION... [--api] [--public] [--dry-run]`.
@@ -241,15 +245,26 @@ func planController(root string, request controllerRequest, env []string, now ti
 		}
 	}
 	if spec.Identity && !request.Public {
-		up, down := controllerPermissionMigration(request.Name)
-		migrations, existing, err := planMigrationPair(projectRoot, "create_"+request.Name+"_controller_permissions", request.Destroy, now, up, down)
-		if err != nil {
-			return controllerSpec{}, nil, err
+		migrationName := "create_" + request.Name + "_controller_permissions"
+		if !request.Destroy {
+			// A permission has one owner migration, whose rollback removes it:
+			// reuse NAME:read when another migration registers it.
+			spec.PermissionOwner, _, err = permissionRegisteredBy(projectRoot, migrationName, request.Name+":read")
+			if err != nil {
+				return controllerSpec{}, nil, err
+			}
 		}
-		if existing != "" {
-			return controllerSpec{}, nil, fmt.Errorf("refusing to generate: %s already registers the permission of the %s controller", existing, request.Name)
+		if spec.PermissionOwner == "" {
+			up, down := controllerPermissionMigration(request.Name)
+			migrations, existing, err := planMigrationPair(projectRoot, migrationName, request.Destroy, now, up, down)
+			if err != nil {
+				return controllerSpec{}, nil, err
+			}
+			if existing != "" {
+				return controllerSpec{}, nil, fmt.Errorf("refusing to generate: %s already registers the permission of the %s controller", existing, request.Name)
+			}
+			files = append(migrations, files...)
 		}
-		files = append(migrations, files...)
 	}
 	if err := checkPlannedFiles(projectRoot, files, request.Destroy); err != nil {
 		return controllerSpec{}, nil, err
@@ -259,10 +274,17 @@ func planController(root string, request controllerRequest, env []string, now ti
 
 // controllerPermissionMigration registers the permission a guarded controller
 // asks for in an application with Forge identity, and gives it to the owner
-// role like a resource's migration does.
+// role like a resource's migration does. The migration owns the permission:
+// the controller generates it only when no other migration registers NAME:read,
+// and no generator registers that permission again while it exists. Its up is
+// idempotent; its down takes back only what the up gave, the owner roles'
+// grant and the permission, and fails (changing nothing, because
+// forge_role_permissions restricts the delete) while another role still holds
+// the permission, instead of silently revoking grants an administrator made.
 func controllerPermissionMigration(name string) (up, down string) {
 	permission := name + ":read"
 	up = fmt.Sprintf(`-- Permission that guards the %[1]s controller's routes (the protect argument of Register%[2]sController).
+-- This migration owns it: its rollback removes it.
 INSERT INTO forge_permissions (name) VALUES ('%[3]s')
 ON CONFLICT (name) DO NOTHING;
 
@@ -272,7 +294,13 @@ SELECT r.id, p.name FROM forge_roles r CROSS JOIN (VALUES ('%[3]s')) AS p (name)
 WHERE r.name = 'owner'
 ON CONFLICT (role_id, permission) DO NOTHING;
 `, name, exportedName(name), permission)
-	down = fmt.Sprintf("DELETE FROM forge_role_permissions WHERE permission = '%[1]s';\nDELETE FROM forge_permissions WHERE name = '%[1]s';\n", permission)
+	down = fmt.Sprintf(`-- Removes the permission this migration registered and the owner role's grant
+-- of it. While another role still holds %[1]s the delete is restricted and the
+-- rollback fails without changing anything: revoke those grants first.
+DELETE FROM forge_role_permissions
+WHERE permission = '%[1]s' AND role_id IN (SELECT id FROM forge_roles WHERE name = 'owner');
+DELETE FROM forge_permissions WHERE name = '%[1]s';
+`, permission)
 	return up, down
 }
 
@@ -281,7 +309,7 @@ ON CONFLICT (role_id, permission) DO NOTHING;
 func controllerWiring(spec controllerSpec) string {
 	parts := buildControllerWiring(spec)
 	then := "forge test"
-	if spec.Identity && !spec.Public {
+	if spec.Identity && !spec.Public && spec.PermissionOwner == "" {
 		then = "forge migrate && forge test"
 	}
 	return formatWiring("controller", "controller", parts, then)
@@ -326,11 +354,14 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 		parts.Notes = append(parts.Notes, "This application has no Forge identity, so the guard is yours to write; the generator never opens the routes to the public (use --public to say that is what you want).")
 		arguments += ", protect"
 	}
-	if spec.Identity && !spec.Public {
+	switch {
+	case spec.Identity && !spec.Public && spec.PermissionOwner != "":
+		parts.Notes = append(parts.Notes, fmt.Sprintf("The routes reuse the permission %[1]s:read, which %[2]s already registers, so no migration was generated: that migration owns the permission (rolling it back removes it, and the routes then refuse everyone). Grant %[1]s:read to other roles before their callers can use the routes.", spec.Name, filepath.ToSlash(spec.PermissionOwner)))
+	case spec.Identity && !spec.Public:
 		parts.Notes = append(parts.Notes, fmt.Sprintf("The migration registers the permission %s:read and gives it to the owner role; grant it to other roles before their callers can use the routes.", spec.Name))
-		if !spec.API {
-			parts.Notes = append(parts.Notes, "The pages authenticate the session cookie: a signed-out browser is redirected to /session/new and back, while API clients get the 401 JSON error.")
-		}
+	}
+	if spec.Identity && !spec.Public && !spec.API {
+		parts.Notes = append(parts.Notes, "The pages authenticate the session cookie: a signed-out browser is redirected to /session/new and back, while API clients get the 401 JSON error.")
 	}
 	parts.Usage = fmt.Sprintf("\tif err := %s.Register%sController(%s); err != nil {\n\t\treturn err\n\t}\n", adapterPackage, title, arguments)
 	var routes []string
