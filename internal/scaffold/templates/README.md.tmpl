@@ -283,6 +283,23 @@ than loopback, such as `0.0.0.0:9464` in a container, needs
 `FORGE_TELEMETRY_METRICS_PUBLIC=true`; never publish that port. See the Forge
 observability guide (docs/OBSERVABILITY.md) for every variable.
 
+## Credentials
+
+Secrets that do not belong in `.env` files live encrypted in
+`config/credentials/<environment>.json.enc`, which is committed. The key
+stays out of git: `config/credentials/development.key` (created by `forge new`,
+mode 0600) or the `FORGE_MASTER_KEY` variable in deployed environments.
+
+```bash
+forge credentials edit                          # edit development credentials in $EDITOR
+forge credentials show                          # structure only; values are redacted
+forge credentials init --environment production # new key and encrypted file for production
+FORGE_MASTER_KEY="$(cat config/credentials/production.key)"  # what the deployed app needs
+```
+
+Back up every key; without it the encrypted file cannot be read. Read values
+with `credentials.Open` from `github.com/rocketinsidecorp/forge-go/credentials`.
+
 ## Deploy
 
 The image runs `serve` by default and reads `FORGE_*` variables. Production

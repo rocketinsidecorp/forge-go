@@ -17,6 +17,8 @@ import (
 	"regexp"
 	"strings"
 	"text/template"
+
+	"github.com/rocketinsidecorp/forge-go/credentials"
 )
 
 // FrameworkModule is the module path generated applications depend on.
@@ -201,6 +203,14 @@ func Generate(opts Options) ([]string, error) {
 		}
 		paths = append(paths, asset.target)
 	}
+	// Encrypted credentials for development: config/credentials/development.json.enc
+	// (committed) and its key (git-ignored, mode 0600).
+	if _, err := credentials.Init(filepath.Join(opts.Dir, credentials.DefaultDir), "development"); err != nil {
+		return nil, cleanup(opts.Dir, created, fmt.Errorf("create development credentials: %w", err))
+	}
+	paths = append(paths,
+		filepath.Join(credentials.DefaultDir, credentials.KeyFileName("development")),
+		filepath.Join(credentials.DefaultDir, credentials.FileName("development")))
 	return paths, nil
 }
 
