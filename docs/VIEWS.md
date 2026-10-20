@@ -17,7 +17,11 @@ app/assets/assets.go                  embeds the stylesheet and images; builds t
 app/assets/application.css            the stylesheet, served as /assets/application-<digest>.css
 app/javascript/application.js         JavaScript entry point (Turbo and the Stimulus controllers)
 app/javascript/controllers/           Stimulus controllers: index.js registers them, hello_controller.js is an example
+config/locales/locales.go             embeds the translations; locales.New(cfg, logger) builds the translator
+config/locales/en.json                the text of the layout and the welcome page (forge new --locale adds es.json or pt-BR.json)
 ```
+
+The pages' text is translated: see [Internationalization](I18N.md).
 
 Static files and JavaScript are covered in
 [Assets, JavaScript and Hotwire](#assets-javascript-and-hotwire).
@@ -33,21 +37,27 @@ app/views/sessions/mfa.gohtml          authenticator or backup code
 app/views/sessions/_sign_out.gohtml    a sign-out button to include where wanted
 app/views/passwords/new.gohtml         forgot-password form
 app/views/passwords/edit.gohtml        choose a new password
+config/locales/authentication.en.json  their text (and authentication.LOCALE.json for --locale)
 ```
 
-`bootstrap.Configure` installs three middleware before routing, for every
+`bootstrap.Configure` installs four middleware before routing, for every
 route:
 
 ```go
+translations, err := translator.Middleware(i18n.NegotiationOptions{})
+...
 protection, err := csrf.New(csrf.Options{})
 ...
-for _, middleware := range []func(http.Handler) http.Handler{web.MethodOverride, protection.Handler, web.Flash} {
+for _, middleware := range []func(http.Handler) http.Handler{translations, web.MethodOverride, protection.Handler, web.Flash} {
 	if err := app.Use(middleware); err != nil {
 		return err
 	}
 }
 ```
 
+- the translator's middleware picks the request's locale (cookie,
+  `Accept-Language`, default) for `t`, `l`, `number` and `i18n.T` (see
+  [Internationalization](I18N.md)).
 - `web.MethodOverride` turns a `POST` form with `_method=PATCH` (or `PUT`,
   `DELETE`) into that method before routing.
 - `csrf.Protection.Handler` rejects unsafe requests without the CSRF token or
@@ -91,6 +101,10 @@ safely. The generated `views.go` embeds templates one directory deep
 | `{{flash "notice"}}` | the text of one incoming message, or empty |
 | `{{domID "post" .ID}}` | `post_0190...`, or `new_post` for a zero UUID |
 | `{{dict "Form" .Form "Action" "/posts"}}` | a map, for partials |
+| `{{t "posts.index.title"}}` | the translation for the request's locale; `{{t "posts.count" "count" .Total}}` picks the plural form, `_html` keys are trusted markup with escaped arguments ([I18N.md](I18N.md)) |
+| `{{l .CreatedAt "short"}}` | a time in the locale's `time.formats.short` (`"date.formats.long"` names any key) |
+| `{{number .Total 2}}` | a number with the locale's separators; integers get no decimals unless a precision is given |
+| `{{locale}}` | the request's locale, for `<html lang="{{locale}}">` |
 
 Values are escaped for their context (HTML text, attribute, URL, CSS, JS) by
 html/template. Do not convert user input to `template.HTML`, and do not add
@@ -101,8 +115,12 @@ functions that do.
 Build the renderer once and share it; it is safe for concurrent use:
 
 ```go
-renderer, err := views.New() // the application's app/views package
+renderer, err := views.New(views.WithI18n(translator)) // the application's app/views package
 ```
+
+`translator` is the one `bootstrap.Configure` builds with `locales.New`;
+pages translate for the request's locale, and the translator serves
+fragments rendered without a request (broadcasts) in the default locale.
 
 Render with the request so the CSRF and flash helpers work:
 
@@ -324,7 +342,7 @@ Wire it in `routes` in `app/bootstrap/bootstrap.go`, importing
 `<module>/app/adapters/htmlui` and `<module>/app/views`:
 
 ```go
-renderer, err := views.New()
+renderer, err := views.New(views.WithI18n(translator))
 if err != nil {
 	return err
 }
@@ -733,9 +751,14 @@ top of that page; reload to page.
 Run handlers through the same middleware the application installs:
 
 ```go
+translator, _ := locales.New(config.Default(), nil)
+translations, _ := translator.Middleware(i18n.NegotiationOptions{})
 protection, _ := csrf.New(csrf.Options{})
-handler := web.Flash(protection.Handler(http.HandlerFunc(posts.New)))
+handler := translations(web.Flash(protection.Handler(http.HandlerFunc(posts.New))))
 ```
+
+Fail the test when a page shows `translation missing`, as the generated
+tests do.
 
 Read the token from the `__Host-forge_csrf` cookie of a `GET` response and
 send it back with the cookie in the `authenticity_token` field. The

@@ -60,7 +60,8 @@ Core packages import only the standard library and each other; a test
 | `httpserver` | HTTP server with timeouts, body limit, security headers, request IDs, panic recovery, graceful shutdown, and composable application middleware |
 | `web`        | JSON responses, the single error format, strict JSON and form decoding, safe redirects, content negotiation, flash messages, method override, request ID and request-scoped logger |
 | `csrf`       | CSRF protection for browser requests: double-submit token in forms and headers, cross-origin rejection |
-| `views`      | Concurrent-safe server-rendered HTML with layouts, partials, CSRF and flash helpers, contextual escaping and buffered rendering |
+| `views`      | Concurrent-safe server-rendered HTML with layouts, partials, CSRF, flash and translation helpers, contextual escaping and buffered rendering |
+| `i18n`       | Rails I18n: JSON translations in `config/locales`, `%{name}` interpolation, CLDR plural rules, per-request locale (path, parameter, cookie, `Accept-Language`), localized numbers and dates, `forge i18n check` |
 | `pagination` | Keyset pagination over UUIDv7 with opaque cursors |
 | `events`     | Versioned event envelope with bounded JSON payloads |
 | `jobs`       | In-process scheduler with bounded concurrency, fixed-rate, daily, and numeric 5-field cron schedules |
@@ -391,6 +392,33 @@ configured for production behind a TLS-terminating proxy. See
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
 [docs/DATABASE.md](docs/DATABASE.md).
 
+## Translations (i18n)
+
+Rails I18n with JSON files: every generated page reads its text from
+`config/locales` (`en.json`, `pt-BR.json`, `posts.en.json`...), each request
+gets a locale (the `locale` cookie, `Accept-Language`, then the default), and
+`forge i18n check` lists what each locale lacks.
+
+```sh
+forge new shop --locale pt-BR                       # en.json + pt-BR.json; pt-BR is the default
+cd shop && forge dev
+curl -H 'Accept-Language: en' http://127.0.0.1:8080/        # Welcome to shop
+curl -H 'Accept-Language: pt-BR' http://127.0.0.1:8080/     # Bem-vindo ao shop
+forge generate scaffold post title:string --global  # adds config/locales/posts.en.json
+forge i18n check                                    # pt-BR lacks the posts.* keys: exit 1
+cp config/locales/posts.en.json config/locales/posts.pt-BR.json   # translate, rename the top-level key to "pt-BR"
+FORGE_I18N_DEFAULT_LOCALE=en forge dev              # change the default without a rebuild
+```
+
+In templates: `{{t "posts.index.title"}}`, `{{t "users.inbox" "count" .Unread}}`
+(CLDR plural forms), `{{l .CreatedAt "short"}}`, `{{number .Total 2}}`,
+`<html lang="{{locale}}">`; in Go: `i18n.T(r.Context(), "posts.flash.created")`.
+Keys ending in `_html` are trusted markup with escaped arguments; everything
+else is escaped by `html/template`. Missing translations show as
+`translation missing: LOCALE.KEY` in development and test and fall back to the
+default locale in production. See [docs/I18N.md](docs/I18N.md) and
+[ADR 0042](docs/adr/0042-internationalization.md).
+
 ## Credentials and attribute encryption
 
 Rails' `credentials:edit` and Active Record Encryption, with the sharp edges
@@ -441,7 +469,7 @@ rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 
 | Command | Description |
 | ------- | ----------- |
-| `forge new NAME [--database DB] [--module PATH] [--dir DIR] [--framework-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
+| `forge new NAME [--database DB] [--locale LOCALE] [--module PATH] [--dir DIR] [--framework-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
 | `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
@@ -465,6 +493,7 @@ rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 | `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream container logs from every host, prefixed `host\|` |
 | `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...`, `forge app shell [--image IMAGE]` | Run a command or a shell next to the deployed application |
 | `forge credentials init \| edit \| show \| rotate-key [--environment E]` | Encrypted credentials: create a key and skeleton, edit in `$EDITOR` (plaintext shredded on every exit path), show redacted (`--reveal` on a terminal only), rotate the key. See [docs/CREDENTIALS.md](docs/CREDENTIALS.md) |
+| `forge i18n check [--json]` | Read-only: list the translations each locale in `config/locales` lacks (keys of the other locales and literal keys used by `t` and `i18n.T`), missing CLDR plural forms and unused keys; exit 1 when anything is missing. See [Translations](#translations-i18n) |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes` | Read-only table of the routes found in the source (including `Resources` routes) and Forge's health routes |
@@ -487,6 +516,9 @@ Flags for `forge new`:
   `none`.
 - `--skip-database` is `--database none`; combining it with `--database` is
   an error.
+- `--locale LOCALE` sets the default locale of the generated pages: `en`
+  (default), `es` or `pt-BR`. `config/locales/en.json` is always generated,
+  plus `LOCALE.json`.
 - `--framework-path DIR` is for framework contributors: it adds a `replace`
   directive pointing at a local checkout, then runs `go mod tidy` and
   `go mod vendor` so the Docker build context is self-contained. Without it,
@@ -919,6 +951,7 @@ CI (`.github/workflows/ci.yml`):
 - [Database](docs/DATABASE.md)
 - [Server-rendered HTML](docs/VIEWS.md)
 - [Generators and `forge destroy`](docs/GENERATORS.md)
+- [Internationalization (i18n)](docs/I18N.md)
 - [Rate limiting](docs/RATE_LIMITING.md), [caching](docs/CACHING.md) and [file storage](docs/STORAGE.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Observability](docs/OBSERVABILITY.md)
@@ -949,3 +982,4 @@ CI (`.github/workflows/ci.yml`):
   - [0039 Framework migration ownership in the application's migration table](docs/adr/0039-framework-migration-ownership.md)
   - [0040 OTLP log export, Go runtime and connection pool metrics](docs/adr/0040-otlp-log-export-runtime-and-pool-metrics.md)
   - [0041 Model, controller, mailer and queue job generators, and `forge destroy`](docs/adr/0041-generators-and-destroy.md)
+  - [0042 Internationalization (i18n)](docs/adr/0042-internationalization.md)

@@ -31,7 +31,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | Planned |
 | Rollback never reverts framework migrations; disabled framework sets tolerated | (engine migrations copied into the app) | Done (`rollback`, `Migrator.DownFramework`, ADR 0039) | Done (`rollback`, `rollback_framework`, ADR 0030) |
 | Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`) | Planned |
-| i18n | I18n | Planned | Planned |
+| i18n | I18n | Done (`config/locales/*.json`, `t`, CLDR plurals, `forge new --locale`, `forge i18n check`, [ADR 0042](adr/0042-internationalization.md)) | Planned (forge-rust#?) |
 | OpenAPI from typed routes | — | Planned | Planned |
 | Controller, model, mailer and job generators, `destroy` | `rails g`, `rails d` | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, [ADR 0041](adr/0041-generators-and-destroy.md)) | Planned ([forge-rust#15](https://github.com/rocketinsidecorp/forge-rust/issues/15)) |
 | Continuous fuzzing, SBOM, signed images | — | Planned | Planned |

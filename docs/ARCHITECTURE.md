@@ -38,6 +38,7 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 ├── web          JSON responses, error format, strict JSON and form decoding, redirects, flash, method override, request context values
 ├── csrf         CSRF protection for browser requests (double-submit token, cross-origin rejection)
 ├── views        Server-rendered HTML: layouts, partials, request-aware helpers
+├── i18n         Translations (config/locales JSON), CLDR plurals, locale negotiation, number and date formats
 ├── pagination   UUIDv7 keyset pagination and cursors
 ├── events       Versioned application-event envelope with bounded JSON payloads
 ├── ratelimit    Fixed-window rate limiting: bounded in-memory limiter, HTTP middleware, shared-store interface
@@ -78,13 +79,15 @@ Dependency direction (imports within the module):
 | `forge`                 | `config`, `health`, `httpserver`, `router`, `telemetry`, `web` |
 | `auth`                  | `csrf`, `encryption`, `fault`, `tenancy`, `uuid`, `web` |
 | `csrf`                  | `fault`, `web` |
-| `views`                 | `csrf`, `uuid`, `web` |
+| `views`                 | `assets`, `broadcast`, `csrf`, `i18n`, `tenancy`, `turbo`, `web` |
+| `i18n`                  | standard library only |
 | `tenancy`               | `fault`, `uuid` |
 | `httpserver`            | `config`, `fault`, `uuid`, `web` |
 | `router`                | `fault`, `web` |
 | `pagination`            | `fault`, `uuid` |
 | `events`                | `uuid` |
 | `web`                   | `config`, `fault`, `uuid` |
+| `config`                | `i18n` (locale validation) |
 | `sqldb`                 | `config`, `fault`, `telemetry` |
 | `telemetry`             | `config`, `fault`, `web` |
 | `migrate`               | `forge`, `config` |
@@ -275,9 +278,23 @@ refuses any request for which it is false.
 
 `views.New` parses a flat directory into one template set (unchanged).
 `views.Load` parses `layouts/`, `_partial.gohtml` files and pages into one
-template set per page and adds the CSRF, flash, method-override, DOM id and
-`dict` helpers; `RenderRequest` binds the request-scoped helpers through
-pooled clones. Rendering is buffered.
+template set per page and adds the CSRF, flash, method-override, DOM id,
+`dict` and translation (`t`, `l`, `number`, `locale`) helpers;
+`RenderRequest` binds the request-scoped helpers through pooled clones. The
+translation helpers read the translator and locale that
+`i18n.Translator.Middleware` puts in the request context, or
+`Options.I18n` without a request. Rendering is buffered.
+
+### i18n
+
+`i18n.Load` reads `LOCALE.json` and `SCOPE.LOCALE.json` files (one locale
+key each, merged, duplicates refused) from an `fs.FS`; the `Translator` is
+immutable. `Middleware` negotiates the locale (opt-in path prefix and query
+parameter, cookie, `Accept-Language`, default) and stores translator and
+locale in the context for `i18n.T` and the view helpers. Plural rules are
+CLDR 46 cardinal rules in code. Missing keys are visible in development and
+test and fall back to the default locale in production
+([ADR 0042](adr/0042-internationalization.md)).
 
 ### pagination
 
@@ -459,10 +476,11 @@ environment taking precedence.
 ```text
 cmd/<name>/main.go   forge.Main(bootstrap.Configure, <adapter>.Commands(db.Migrations())...)
 app/bootstrap/       composition root: database pool, readiness check "database", routes,
-                     method override + CSRF + flash middleware
+                     locale negotiation + method override + CSRF + flash middleware
                      (generated with GET /v1/status, the /assets/ route for app/assets and tests)
 app/views/           embedded HTML: layouts/application.gohtml, shared/_flash.gohtml,
                      views.New() renderer and tests
+config/locales/      embedded translations (en.json, --locale's file), locales.New translator
 db/db.go             embeds db/migrations
 db/migrations/       SQL migrations (empty, with .keep)
 ```
@@ -587,6 +605,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0039](adr/0039-framework-migration-ownership.md) | Framework migration ownership in the application's migration table |
 | [0040](adr/0040-otlp-log-export-runtime-and-pool-metrics.md) | OTLP log export, Go runtime and connection pool metrics |
 | [0041](adr/0041-generators-and-destroy.md) | Model, controller, mailer and queue job generators, and `forge destroy` |
+| [0042](adr/0042-internationalization.md) | Internationalization: JSON translations, CLDR plurals, locale negotiation |
 
 ## Not yet implemented
 
