@@ -144,6 +144,8 @@ var assets = []asset{
 	{source: "templates/javascript/controllers/application.js", target: filepath.Join("app", "javascript", "controllers", "application.js")},
 	{source: "templates/javascript/controllers/index.js", target: filepath.Join("app", "javascript", "controllers", "index.js")},
 	{source: "templates/javascript/controllers/hello_controller.js", target: filepath.Join("app", "javascript", "controllers", "hello_controller.js")},
+	// Copied unchanged: GitHub Actions expressions use {{ }} too.
+	{source: "templates/github/release.yml", target: filepath.Join(".github", "workflows", "release.yml")},
 }
 
 // observabilityDir is the embedded directory of static configuration for the

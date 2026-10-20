@@ -19,7 +19,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"Dockerfile", ".dockerignore", "compose.yaml", ".github/workflows/ci.yml", ".github/dependabot.yml", "cmd/billing-api/main.go", "go.mod", "db/db.go", "db/migrations/.keep", ".env.development", ".env.local"} {
+	for _, required := range []string{"Dockerfile", ".dockerignore", "compose.yaml", ".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/dependabot.yml", "cmd/billing-api/main.go", "go.mod", "db/db.go", "db/migrations/.keep", ".env.development", ".env.local"} {
 		if !contains(paths, filepath.FromSlash(required)) {
 			t.Fatalf("missing %s in %v", required, paths)
 		}
@@ -96,7 +96,11 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"FORGE_AUTH_MFA_KEY",
 			"Forge's identity migrations",
 		},
-		".github/workflows/ci.yml": {"go test -race ./...", "tags: billing-api:ci", "image: postgres:18-alpine", "POSTGRES_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: postgres://forge:forge@127.0.0.1:5432/postgres?sslmode=disable", `FORGE_TEST_REQUIRE_DATABASE: "true"`},
+		".github/workflows/ci.yml": {"go test -race ./...", "tags: billing-api:ci", "image: postgres:18-alpine", "POSTGRES_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: postgres://forge:forge@127.0.0.1:5432/postgres?sslmode=disable", `FORGE_TEST_REQUIRE_DATABASE: "true"`,
+			"docker save billing-api:ci", "--source-name billing-api -o cyclonedx-json=/scan/sbom.cdx.json", "name: sbom"},
+		// Copied unchanged, so its ${{ }} expressions survive; publishing is
+		// opt-in and tag-only.
+		".github/workflows/release.yml": {"${{ steps.build.outputs.digest }}", "if: vars.FORGE_RELEASE_IMAGES == 'true'", "tags: [\"v*\"]", "cosign sign --yes"},
 	})
 	key := readEnvValue(t, filepath.Join(dir, ".env.local"), "FORGE_AUTH_MFA_KEY")
 	if _, err := auth.NewAESGCMSecretCipherBase64(key); err != nil {
