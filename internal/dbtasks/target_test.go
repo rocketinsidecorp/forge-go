@@ -248,6 +248,13 @@ func TestNewTargetRefusesQueryParametersThatPickTheServerOrDatabase(t *testing.T
 		"upper-case key":      "postgres://localhost/shop?HOST=prod.db.internal",
 		"service":             "postgres://localhost/shop?service=prod",
 		"servicefile":         "postgres://localhost/shop?servicefile=/tmp/pg_service.conf",
+		// net/url keeps the spaces in the key, pgx trims them and obeys it.
+		"space before host":   "postgres://m:pw@localhost/shop?sslmode=disable& host=prod.db.internal",
+		"space after host":    "postgres://m:pw@localhost/shop?sslmode=disable&host =prod.db.internal",
+		"space before dbname": "postgres://m:pw@localhost/shop?sslmode=disable& dbname=postgres",
+		"space before port":   "postgres://m:pw@localhost/shop?sslmode=disable& port=6543",
+		"plus before host":    "postgres://m:pw@localhost/shop?sslmode=disable&+host=prod.db.internal",
+		"no-break space key":  "postgres://m:pw@localhost/shop?sslmode=disable&\u00a0host=prod.db.internal",
 	}
 	for name, raw := range urls {
 		for _, env := range []map[string]string{

@@ -166,6 +166,12 @@ func TestAmbiguousDatabaseURLsAreRejected(t *testing.T) {
 		"postgres://app:pw@db:5432/app?sslmode=verify-full#frag",
 		"mysql://app:pw@db:3306/app?tls=true#frag",
 		"sqlite:///x/d.db#_foreign_keys=0",
+		// net/url keeps the spaces in the key; pgx trims them and obeys it.
+		"postgres://app:pw@db:5432/app?sslmode=verify-full& host=10.0.0.9",
+		"postgres://app:pw@db:5432/app?sslmode=verify-full&host =10.0.0.9",
+		"postgres://app:pw@db:5432/app?sslmode=verify-full& sslmode=disable",
+		"postgres://app:pw@db:5432/app?sslmode=verify-full&\u00a0port=6543",
+		"mysql://app:pw@db:3306/app?tls=true ",
 	} {
 		_, err := config.LoadWithLookup(func(key string) (string, bool) {
 			switch key {

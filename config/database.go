@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Adapter identifies the database adapter selected by FORGE_DATABASE_URL's
@@ -72,12 +73,18 @@ func parseDatabaseURL(raw string) (Adapter, *url.URL) {
 // rejectAmbiguous refuses URLs that drivers may read differently from
 // net/url, which validated them: a repeated parameter (net/url keeps the
 // first, libpq-style parsers the last), an "@" after the host (pgx ends the
-// userinfo at the last "@" before the path, even inside the query) and a
-// fragment, which net/url drops silently. Any of these could make the
-// connection differ from the one checked here, TLS mode included.
+// userinfo at the last "@" before the path, even inside the query), a
+// fragment, which net/url drops silently, and whitespace or a control
+// character in the query (net/url keeps "& host=" as the key " host", pgx
+// trims it to "host"; pgx refuses a raw space anywhere else, so no valid
+// URL needs one). Any of these could make the connection differ from the one
+// checked here, TLS mode included.
 func rejectAmbiguous(parsed *url.URL) error {
 	if parsed.Fragment != "" || strings.Contains(parsed.RawQuery, "@") || strings.Contains(parsed.Path, "@") {
 		return errors.New("FORGE_DATABASE_URL is ambiguous: percent-encode \"@\" and \"#\" in passwords and parameters")
+	}
+	if strings.IndexFunc(parsed.RawQuery, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return errors.New("FORGE_DATABASE_URL is ambiguous: its parameters hold whitespace or a control character (percent-encode spaces as %20)")
 	}
 	query, err := url.ParseQuery(parsed.RawQuery)
 	if err != nil {

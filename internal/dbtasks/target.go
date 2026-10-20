@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rocketinsidecorp/forge-go/config"
 )
@@ -138,12 +139,21 @@ var locationParams = []string{
 }
 
 // refuseLocationParams fails when u's query names the server or database.
-// The error names the variable and the parameter, never the URL.
+// Whitespace or a control character in the raw query, or in a decoded key,
+// is refused too: pgx trims raw spaces around a key ("& host=" is host) and
+// net/url does not. The error names the variable and the parameter, never
+// the URL.
 func refuseLocationParams(u *url.URL, variable string) error {
-	query := u.Query()
-	for key := range query {
+	unclear := func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }
+	if strings.IndexFunc(u.RawQuery, unclear) >= 0 {
+		return fmt.Errorf("%s has whitespace or a control character in its parameters: percent-encode spaces as %%20", variable)
+	}
+	for key := range u.Query() {
+		if strings.IndexFunc(key, unclear) >= 0 {
+			return fmt.Errorf("%s has a parameter name with whitespace or a control character", variable)
+		}
 		for _, param := range locationParams {
-			if strings.EqualFold(key, param) {
+			if strings.EqualFold(strings.TrimSpace(key), param) {
 				return fmt.Errorf("%s sets the %q parameter: forge db commands take the server and database only from the URL's host, port and path", variable, param)
 			}
 		}
