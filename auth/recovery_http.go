@@ -4,28 +4,29 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 type recoveryRequestBody struct {
-	Email      string `json:"email"`
-	TenantSlug string `json:"tenant"`
+	Email      string `json:"email" doc:"The account's login." example:"alice@example.com"`
+	TenantSlug string `json:"tenant" doc:"The tenant the account belongs to: a lowercase slug." example:"acme"`
 }
 
 type recoveryAcceptedResponse struct {
-	Status string `json:"status"`
+	Status string `json:"status" doc:"Always accepted, whether or not an account matched."`
 }
 
 type passwordResetBody struct {
-	Token       string `json:"token"`
-	NewPassword string `json:"new_password"`
+	Token       string `json:"token" doc:"The single-use recovery token from the reset link, a secret."`
+	NewPassword string `json:"new_password" doc:"The new password."`
 }
 
 func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("recovery service is required")
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openapi.Describe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recoveryNoStore(w)
 		var request recoveryRequestBody
 		if err := web.DecodeJSON(r, &request); err != nil {
@@ -59,14 +60,14 @@ func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, 
 			}
 		}
 		web.JSON(w, http.StatusAccepted, recoveryAcceptedResponse{Status: "accepted"})
-	}), nil
+	}), passwordRecoveryRequestOperation), nil
 }
 
 func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("recovery service is required")
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openapi.Describe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recoveryNoStore(w)
 		var request passwordResetBody
 		if err := web.DecodeJSON(r, &request); err != nil {
@@ -91,7 +92,7 @@ func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
-	}), nil
+	}), passwordResetOperation), nil
 }
 
 func recoveryNoStore(w http.ResponseWriter) {
@@ -111,7 +112,7 @@ func newPasswordRecoveryRequestHandler(service *RecoveryService, auditor Securit
 	if service == nil {
 		return nil, errors.New("recovery service is required")
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openapi.Describe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recoveryNoStore(w)
 		var request recoveryRequestBody
 		if err := web.DecodeJSON(r, &request); err != nil {
@@ -167,7 +168,7 @@ func newPasswordRecoveryRequestHandler(service *RecoveryService, auditor Securit
 			}
 		}
 		web.JSON(w, http.StatusAccepted, recoveryAcceptedResponse{Status: "accepted"})
-	}), nil
+	}), passwordRecoveryRequestOperation), nil
 }
 
 // NewAuditedPasswordResetHandler is NewPasswordResetHandler with structured security audit.
@@ -182,7 +183,7 @@ func newPasswordResetHandler(service *RecoveryService, auditor SecurityAuditor) 
 	if service == nil {
 		return nil, errors.New("recovery service is required")
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openapi.Describe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recoveryNoStore(w)
 		var request passwordResetBody
 		if err := web.DecodeJSON(r, &request); err != nil {
@@ -226,5 +227,5 @@ func newPasswordResetHandler(service *RecoveryService, auditor SecurityAuditor) 
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)
-	}), nil
+	}), passwordResetOperation), nil
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
@@ -25,8 +26,8 @@ type totpConfirmationResponse struct {
 }
 
 type mfaCompletionRequest struct {
-	ChallengeToken string `json:"challenge_token"`
-	Code           string `json:"code"`
+	ChallengeToken string `json:"challenge_token" doc:"The challenge_token of the 202 sign-in answer."`
+	Code           string `json:"code" doc:"A current authenticator code, or an unused backup code."`
 }
 
 type MFAEnrollmentAuthorizer interface {
@@ -125,7 +126,7 @@ func NewMFACompletionHandler(service *MFAService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("MFA service is required")
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openapi.Describe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
 		var request mfaCompletionRequest
 		if err := web.DecodeJSON(r, &request); err != nil {
@@ -151,7 +152,7 @@ func NewMFACompletionHandler(service *MFAService) (http.Handler, error) {
 			TokenType:   "Bearer",
 			ExpiresAt:   result.ExpiresAt,
 		})
-	}), nil
+	}), mfaCompletionOperation), nil
 }
 
 type MFAChangeAuthorizer interface {
@@ -422,7 +423,7 @@ func newMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http
 	if service == nil {
 		return nil, errors.New("MFA service is required")
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openapi.Describe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
 		var request mfaCompletionRequest
 		if err := web.DecodeJSON(r, &request); err != nil {
@@ -471,7 +472,7 @@ func newMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http
 			TokenType:   "Bearer",
 			ExpiresAt:   result.ExpiresAt,
 		})
-	}), nil
+	}), mfaCompletionOperation), nil
 }
 
 // NewAuditedTOTPRotationHandler is NewTOTPRotationHandler with structured security audit.

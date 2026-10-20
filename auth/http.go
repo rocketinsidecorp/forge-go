@@ -6,25 +6,26 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 type loginRequest struct {
-	Email      string `json:"email"`
-	Password   string `json:"password"`
-	TenantSlug string `json:"tenant"`
+	Email      string `json:"email" doc:"The account's login." example:"alice@example.com"`
+	Password   string `json:"password" doc:"The account's password."`
+	TenantSlug string `json:"tenant" doc:"The tenant the account belongs to: a lowercase slug." example:"acme"`
 }
 
 type loginResponse struct {
-	AccessToken string    `json:"access_token"`
-	TokenType   string    `json:"token_type"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	AccessToken string    `json:"access_token" doc:"Opaque bearer session token, a secret: send it as Authorization: Bearer."`
+	TokenType   string    `json:"token_type" doc:"Always Bearer."`
+	ExpiresAt   time.Time `json:"expires_at" doc:"When the session expires."`
 }
 
 type mfaRequiredResponse struct {
-	MFARequired    bool      `json:"mfa_required"`
-	ChallengeToken string    `json:"challenge_token"`
-	ExpiresAt      time.Time `json:"expires_at"`
+	MFARequired    bool      `json:"mfa_required" doc:"Always true: the sign-in is not complete."`
+	ChallengeToken string    `json:"challenge_token" doc:"Single-use secret that, with a code, completes the sign-in at the MFA completion route."`
+	ExpiresAt      time.Time `json:"expires_at" doc:"When the challenge expires."`
 }
 
 // NewLoginHandler returns a thin HTTP adapter over LoginService.
@@ -32,7 +33,7 @@ func NewLoginHandler(service *LoginService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("login service is required")
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openapi.Describe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request loginRequest
 		if err := web.DecodeJSON(r, &request); err != nil {
 			web.Error(w, r, err)
@@ -80,7 +81,7 @@ func NewLoginHandler(service *LoginService) (http.Handler, error) {
 			TokenType:   "Bearer",
 			ExpiresAt:   result.ExpiresAt,
 		})
-	}), nil
+	}), loginOperation), nil
 }
 
 // NewLogoutHandler returns an idempotent logout endpoint. A syntactically
@@ -104,7 +105,7 @@ func newLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Han
 	if revoker == nil {
 		return nil, errors.New("session revoker is required")
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openapi.Describe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		secret, err := bearer(r.Header.Values("Authorization"))
 		if err != nil {
 			unauthorized(w, r, err)
@@ -133,7 +134,7 @@ func newLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Han
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)
-	}), nil
+	}), logoutOperation), nil
 }
 
 // requestSource is the network source throttles and audit events record:

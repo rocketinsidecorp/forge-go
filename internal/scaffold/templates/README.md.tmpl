@@ -304,11 +304,17 @@ route (`openapi.Typed` or `openapi.Describe` from
 `github.com/rocketinsidecorp/forge-go/openapi`), so the OpenAPI 3.1 document
 is generated from the Go types and cannot drift from them. `GET /v1/status`
 in `app/bootstrap` is the example; generated resources and `--api`
-controllers are described too.
+controllers are described too{{if and .DB .DB.Identity}}, and so are the identity routes
+(`/auth/login`, logout, MFA completion when `FORGE_AUTH_MFA_KEY` is set, password
+recovery and the cookie routes): Forge's `auth` handlers carry their descriptions, so register them as
+returned{{end}}.
 
 ```bash
 # Served in development and test (FORGE_OPENAPI_ENABLED=true elsewhere)
 curl http://127.0.0.1:8080/openapi.json
+{{- if and .DB .DB.Identity}}
+curl -s http://127.0.0.1:8080/openapi.json | grep '"/auth/'   # the identity routes
+{{- end}}
 
 # Written from the application without serving it{{if and .DB .DB.Server}} (needs the database, like forge migrate){{end}}
 forge openapi --output openapi.json

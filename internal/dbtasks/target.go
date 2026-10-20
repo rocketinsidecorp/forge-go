@@ -90,6 +90,7 @@ func NewTarget(root string, lookup func(string) (string, bool)) (*Target, error)
 		return nil, errors.New("the database name in FORGE_DATABASE_URL must be 1-63 letters, digits, underscores, hyphens or dollar signs, and start with a letter, digit or underscore")
 	}
 	t.priv = t.app
+	adminVariable := "FORGE_DATABASE_URL"
 	if raw, ok := lookup(EnvPrivilegedURL); ok && raw != "" {
 		// The same validation FORGE_DATABASE_URL gets, including production
 		// TLS rules, by loading it in its place.
@@ -106,12 +107,16 @@ func NewTarget(root string, lookup func(string) (string, bool)) (*Target, error)
 		if privileged.Database.Adapter() != t.Adapter {
 			return nil, fmt.Errorf("%s selects the %s adapter, but FORGE_DATABASE_URL selects %s", EnvPrivilegedURL, privileged.Database.Adapter(), t.Adapter)
 		}
+		adminVariable = EnvPrivilegedURL
 		if t.priv, err = parseURL(raw); err != nil {
 			return nil, fmt.Errorf("%s: %w", EnvPrivilegedURL, err)
 		}
 		if err := refuseLocationParams(t.priv, EnvPrivilegedURL); err != nil {
 			return nil, err
 		}
+	}
+	if err := refuseSessionParams(t.priv, adminVariable); err != nil {
+		return nil, err
 	}
 	return t, nil
 }
@@ -156,6 +161,20 @@ func refuseLocationParams(u *url.URL, variable string) error {
 			if strings.EqualFold(strings.TrimSpace(key), param) {
 				return fmt.Errorf("%s sets the %q parameter: forge db commands take the server and database only from the URL's host, port and path", variable, param)
 			}
+		}
+	}
+	return nil
+}
+
+// refuseSessionParams fails when the administration URL u sets "options",
+// with which libpq passes -c session settings (search_path and the like) to
+// every connection. The application's own pool may keep using it; forge db
+// has no need to, and an admin connection that runs DDL should not depend on
+// a setting from the URL. The error names the variable, never the URL.
+func refuseSessionParams(u *url.URL, variable string) error {
+	for key := range u.Query() {
+		if strings.EqualFold(strings.TrimSpace(key), "options") {
+			return fmt.Errorf("%s sets the \"options\" parameter: forge db commands do not accept session settings", variable)
 		}
 	}
 	return nil

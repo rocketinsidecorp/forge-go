@@ -795,6 +795,20 @@ database name must be 1-63 characters of letters, digits, `_`, `-` or `$`;
 `postgres`, `template0`, `template1`, `mysql`, `information_schema`,
 `performance_schema` and `sys` are never created or dropped.
 
+**Behaviour change (forge-go#23, #24).** A raw space, tab or other control
+character in a database URL's query is refused when the configuration loads;
+percent-encode it (`%20`). `forge db` also refuses session-setting query
+parameters on the URL it connects with (`FORGE_MIGRATION_DATABASE_URL`, or
+`FORGE_DATABASE_URL` when it is not set): `options` (`-c search_path=...`),
+and any other parameter pgx would send as a session setting such as
+`search_path`. The application's own `FORGE_DATABASE_URL` may still carry
+`options` when a privileged URL is set. `forge db` does not read the `PG*`
+variables of forge's own environment (`PGSSLMODE`, `PGOPTIONS`,
+`PGSERVICE`, `PGUSER` and the rest) for its PostgreSQL connection, as for
+`psql` and `pg_dump`: a URL without `sslmode` uses libpq's default `prefer`.
+Put `sslmode` and the other settings in the URL. A missing `sslrootcert`,
+`sslcert` or `sslkey` file is reported as an invalid TLS setting.
+
 **Schema file.** `schema:dump` runs `pg_dump --schema-only --no-owner
 --no-privileges`, `mysqldump --no-data --skip-add-drop-table` or `sqlite3
 .schema` (the tool must be on `PATH`; a PostgreSQL `pg_dump` must be at least
@@ -810,8 +824,8 @@ record; the schema file is for fresh databases.
 
 **Credentials are never arguments.** PostgreSQL tools receive `PGHOST`,
 `PGUSER`, `PGPASSWORD`, `PGDATABASE` and `PGSSL*` in their environment (any
-inherited `PG*` variable is dropped first); MySQL tools read a `0600` temporary
-option file passed first as `--defaults-file` (the only option file they read,
+inherited `PG*` variable is dropped first, and pgx's own connection ignores
+them too); MySQL tools read a `0600` temporary option file passed first as `--defaults-file` (the only option file they read,
 so `~/.my.cnf` cannot redirect them) and removed afterwards; SQLite takes
 an absolute path. Error messages name the host and database, never the URL.
 

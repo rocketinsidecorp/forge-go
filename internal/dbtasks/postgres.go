@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -25,11 +28,12 @@ const pgDefaultPort = "5432"
 
 // pgOptionKeys are the URL parameters the administration commands pass to
 // pgx: options that do not pick another server or database. service,
-// servicefile, hostaddr and session settings are refused by pgx; host, port
-// and database (dbname is its alias) are allowed only because the URL's
-// authority and path set them, and pgConnConfig pins their parsed values.
+// servicefile, hostaddr and session settings (options among them: -c sets
+// any) are refused by pgx; host, port and database (dbname is its alias) are
+// allowed only because the URL's authority and path set them, and
+// pgConnConfig pins their parsed values.
 var pgOptionKeys = []string{
-	"user", "password", "passfile", "connect_timeout", "application_name", "options",
+	"user", "password", "passfile", "connect_timeout", "application_name",
 	"sslmode", "sslrootcert", "sslcert", "sslkey", "sslpassword", "sslnegotiation", "sslsni",
 	"channel_binding", "require_auth", "min_protocol_version", "max_protocol_version", "krbsrvname", "krbspn",
 }
@@ -57,11 +61,15 @@ func (t *Target) pgConnConfig(name string) (*pgx.ConnConfig, error) {
 	}
 	u.Host = net.JoinHostPort(host, port)
 	u.Path, u.RawPath = "/"+name, ""
-	cfg, err := pgx.ParseConfigWithOptions(u.String(), pgx.ParseConfigOptions{
-		ParseConfigOptions: pgconn.ParseConfigOptions{ConnStringAllowedKeys: append([]string{"host", "port", "database"}, pgOptionKeys...)},
-	})
+	cfg, err := parsePgConfig(u.String())
 	if err != nil {
 		// Not wrapped: parse errors can quote the URL.
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			// A TLS file (sslrootcert, sslcert, sslkey) pgx could not read; its
+			// path is not echoed either.
+			return nil, errors.New("the PostgreSQL connection URL has an invalid TLS setting: check that the files named by sslrootcert, sslcert and sslkey exist and are readable")
+		}
 		return nil, fmt.Errorf("the PostgreSQL connection URL is not valid, or has a parameter forge db commands do not accept (they accept %s)", strings.Join(pgOptionKeys, ", "))
 	}
 	ambiguous := errors.New("the PostgreSQL connection URL is ambiguous: PostgreSQL would connect to another server or database than the one forge checked")
@@ -78,6 +86,40 @@ func (t *Target) pgConnConfig(name string) (*pgx.ConnConfig, error) {
 	}
 	cfg.ConnectTimeout = t.connectTimeout()
 	return cfg, nil
+}
+
+// pgEnvironmentLock serializes parsePgConfig, which briefly edits the
+// process environment.
+var pgEnvironmentLock sync.Mutex
+
+// parsePgConfig parses an administration URL with pgx without letting forge's
+// own environment decide anything. pgx reads PGSSLMODE, PGOPTIONS,
+// PGTARGETSESSIONATTRS, PGSERVICE, PGUSER and every other PG* variable
+// straight from the process environment as defaults for what the URL leaves
+// unset, and has no option to ignore them; a value written into the URL
+// cannot stand in for all of them (an empty service or file name is not
+// "none"). So they are unset for the duration of the parse and restored
+// after, as pgEnvironment drops them for the vendor tools: a URL without
+// sslmode gets the libpq default (prefer) from both, never a lower PGSSLMODE.
+// The lock keeps concurrent parses from seeing one another's edits.
+func parsePgConfig(connString string) (*pgx.ConnConfig, error) {
+	pgEnvironmentLock.Lock()
+	defer pgEnvironmentLock.Unlock()
+	var saved [][2]string
+	for _, entry := range os.Environ() {
+		if name, value, _ := strings.Cut(entry, "="); strings.HasPrefix(name, "PG") {
+			saved = append(saved, [2]string{name, value})
+			_ = os.Unsetenv(name)
+		}
+	}
+	defer func() {
+		for _, kv := range saved {
+			_ = os.Setenv(kv[0], kv[1])
+		}
+	}()
+	return pgx.ParseConfigWithOptions(connString, pgx.ParseConfigOptions{
+		ParseConfigOptions: pgconn.ParseConfigOptions{ConnStringAllowedKeys: append([]string{"host", "port", "database"}, pgOptionKeys...)},
+	})
 }
 
 // pgAdmin connects to a maintenance database: the one place from which the

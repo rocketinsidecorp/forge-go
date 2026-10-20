@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
@@ -24,8 +25,8 @@ const (
 var ErrCSRFInvalid = csrf.ErrInvalid
 
 type cookieLoginResponse struct {
-	CSRFToken string    `json:"csrf_token"`
-	ExpiresAt time.Time `json:"expires_at"`
+	CSRFToken string    `json:"csrf_token" doc:"The CSRF token, also set in the CSRF cookie: send it back in the X-CSRF-Token header of unsafe cookie-authenticated requests."`
+	ExpiresAt time.Time `json:"expires_at" doc:"When the session expires."`
 }
 
 // AuthenticateCookie authenticates only the secure Forge session cookie.
@@ -112,7 +113,7 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("login service is required")
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openapi.Describe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
 		if err := requireSecureSameOrigin(r); err != nil {
 			web.Error(w, r, err)
@@ -157,7 +158,7 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 			return
 		}
 		web.JSON(w, http.StatusOK, cookieLoginResponse{CSRFToken: csrfToken, ExpiresAt: result.ExpiresAt})
-	}), nil
+	}), cookieLoginOperation), nil
 }
 
 // NewCookieMFACompletionHandler exchanges a valid MFA challenge for a secure
@@ -167,7 +168,7 @@ func NewCookieMFACompletionHandler(service *MFAService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("MFA service is required")
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return openapi.Describe(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
 		if err := requireSecureSameOrigin(r); err != nil {
 			web.Error(w, r, err)
@@ -201,7 +202,7 @@ func NewCookieMFACompletionHandler(service *MFAService) (http.Handler, error) {
 			CSRFToken: csrfToken,
 			ExpiresAt: result.ExpiresAt,
 		})
-	}), nil
+	}), cookieMFACompletionOperation), nil
 }
 
 // RequireCSRF protects unsafe cookie-authenticated routes using a double-submit
@@ -248,7 +249,11 @@ func newCookieLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (ht
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	return RequireCSRF(handler)
+	guarded, err := RequireCSRF(handler)
+	if err != nil {
+		return nil, err
+	}
+	return openapi.Describe(guarded, cookieLogoutOperation), nil
 }
 
 // startCookieSession delivers a completed login (password or MFA) to the

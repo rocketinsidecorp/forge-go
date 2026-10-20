@@ -3,6 +3,7 @@ package dbtasks
 import (
 	"context"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -297,5 +298,110 @@ func TestPgConnConfigPinsTheCheckedServerAndDatabase(t *testing.T) {
 	}
 	if env := strings.Join(target.pgEnvironment(nil), "\n"); !strings.Contains(env, "PGPORT=5432") || !strings.Contains(env, "PGHOST=localhost") {
 		t.Errorf("the tools must dial the same address:\n%s", env)
+	}
+}
+
+func adminTarget(t *testing.T, raw string) *Target {
+	t.Helper()
+	priv, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal("test URL is not valid")
+	}
+	return &Target{Adapter: config.AdapterPostgres, Name: "shop", app: priv, priv: priv}
+}
+
+// pgx reads PG* variables from the process environment as defaults; none of
+// them may change the admin connection, as for the vendor tools.
+func TestPgConnConfigIgnoresPGEnvironment(t *testing.T) {
+	t.Setenv("PGSSLMODE", "disable")
+	t.Setenv("PGOPTIONS", "-c search_path=evil")
+	t.Setenv("PGTARGETSESSIONATTRS", "read-only")
+	t.Setenv("PGSERVICE", "missing-service")
+	t.Setenv("PGSERVICEFILE", "/nonexistent/pg_service.conf")
+	t.Setenv("PGUSER", "evil")
+	t.Setenv("PGPASSWORD", "evilpw")
+	t.Setenv("PGSSLROOTCERT", "/nonexistent/ca.pem")
+	t.Setenv("PGTZ", "Mars/Base")
+	target := adminTarget(t, "postgres://m:pw@localhost/shop")
+	cfg, err := target.pgConnConfig("shop")
+	if err != nil {
+		t.Fatalf("a PG* variable changed the parse: %v", err)
+	}
+	// No sslmode in the URL: libpq's default (prefer) applies, not PGSSLMODE.
+	if cfg.TLSConfig == nil || len(cfg.Fallbacks) != 1 || cfg.Fallbacks[0].TLSConfig != nil {
+		t.Errorf("sslmode must be prefer (TLS, then plaintext), got TLS %v and %d fallbacks", cfg.TLSConfig != nil, len(cfg.Fallbacks))
+	}
+	if cfg.User != "m" || cfg.Password != "pw" {
+		t.Errorf("credentials come from the URL, got user %q", cfg.User)
+	}
+	if cfg.ValidateConnect != nil {
+		t.Error("PGTARGETSESSIONATTRS reached the connection")
+	}
+	for key := range cfg.RuntimeParams {
+		if key == "options" || key == "timezone" {
+			t.Errorf("session setting %q reached the connection", key)
+		}
+	}
+	// forge's own environment is left as it was.
+	if got := os.Getenv("PGSSLMODE"); got != "disable" {
+		t.Errorf("PGSSLMODE after the parse = %q, want it restored", got)
+	}
+	if got := os.Getenv("PGPASSWORD"); got != "evilpw" {
+		t.Errorf("PGPASSWORD after the parse = %q, want it restored", got)
+	}
+}
+
+func TestPgConnConfigNamesAnUnreadableTLSFile(t *testing.T) {
+	for _, param := range []string{"sslrootcert", "sslcert", "sslkey"} {
+		missing := "/nonexistent-forge-dir/" + param + ".pem"
+		raw := "postgres://m:pw@localhost/shop?sslmode=verify-full&" + param + "=" + missing
+		if param != "sslrootcert" {
+			raw += "&sslrootcert=system"
+		}
+		if param == "sslcert" {
+			raw += "&sslkey=" + missing
+		}
+		if param == "sslkey" {
+			raw += "&sslcert=" + missing
+		}
+		_, err := adminTarget(t, raw).pgConnConfig("shop")
+		if err == nil {
+			t.Fatalf("%s: a missing file must fail", param)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "invalid TLS setting") || !strings.Contains(msg, "sslrootcert, sslcert and sslkey") {
+			t.Errorf("%s: error does not point at the TLS files: %v", param, err)
+		}
+		if strings.Contains(msg, "do not accept") || strings.Contains(msg, "nonexistent") || strings.Contains(msg, "pw") || strings.Contains(msg, "://") {
+			t.Errorf("%s: misleading or quoting error: %v", param, err)
+		}
+	}
+}
+
+func TestOptionsParameterIsRefusedForAdminConnections(t *testing.T) {
+	t.Parallel()
+	const option = "options=-c%20search_path%3Devil"
+	// pgConnConfig refuses it on its own.
+	_, err := adminTarget(t, "postgres://m:pw@localhost/shop?sslmode=disable&"+option).pgConnConfig("shop")
+	if err == nil || strings.Contains(err.Error(), "evil") || strings.Contains(err.Error(), "pw") {
+		t.Errorf("pgConnConfig with options = %v, want a refusal that does not quote the URL", err)
+	}
+	// NewTarget refuses it before any connection, naming the variable.
+	for name, env := range map[string]map[string]string{
+		"application URL": {"FORGE_DATABASE_URL": "postgres://m:pw@localhost/shop?sslmode=disable&" + option},
+		"privileged URL":  {"FORGE_DATABASE_URL": "postgres://app:apppw@localhost/shop?sslmode=disable", EnvPrivilegedURL: "postgres://m:pw@localhost/shop?sslmode=disable&" + option},
+		"upper-case key":  {"FORGE_DATABASE_URL": "postgres://m:pw@localhost/shop?sslmode=disable&OPTIONS=-c%20search_path%3Devil"},
+	} {
+		_, err := NewTarget(t.TempDir(), lookupOf(env))
+		if err == nil || !strings.Contains(err.Error(), "options") || strings.Contains(err.Error(), "evil") || strings.Contains(err.Error(), "pw") {
+			t.Errorf("%s: NewTarget = %v, want a refusal naming the parameter only", name, err)
+		}
+	}
+	// The application's own URL may keep it when another role administers.
+	if _, err := NewTarget(t.TempDir(), lookupOf(map[string]string{
+		"FORGE_DATABASE_URL": "postgres://app:apppw@localhost/shop?sslmode=disable&" + option,
+		EnvPrivilegedURL:     "postgres://m:pw@localhost/shop?sslmode=disable",
+	})); err != nil {
+		t.Errorf("options on the application URL alone must stay accepted: %v", err)
 	}
 }

@@ -473,11 +473,14 @@ JSON routes declare their request, response and error types next to the
 route, and Forge builds an OpenAPI 3.1 document from the Go types: accurate
 by construction for `openapi.Typed` handlers, checked by contract tests for
 the rest. Generated applications, resources and `--api` controllers are
-described out of the box.
+described out of the box, and so are the `auth` package's JSON routes
+(`/auth/login`, logout, MFA completion, password recovery and the cookie
+routes) in an application that registers them.
 
 ```sh
 forge new shop && cd shop && forge dev
 curl http://127.0.0.1:8080/openapi.json             # served in development and test
+curl -s http://127.0.0.1:8080/openapi.json | grep '"/auth/'   # identity apps: the sign-in, recovery and cookie routes
 forge openapi                                       # print it (runs Configure, never listens)
 forge openapi --output openapi.json                 # write it to commit and diff
 forge openapi --check openapi.json                  # exit 1 when the committed file is stale
