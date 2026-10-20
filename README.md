@@ -773,6 +773,11 @@ until every host passed its health gate, and routes all hosts back if one
 fails. Exit codes: `3` lock held, `4` unhealthy (reverted), `5` migration
 failed, `6` hook failed, `7` not fully reverted.
 
+Release note: `retain: 1` in `config/deploy.yml` is now refused (`retain`
+counts the running version, so 1 would prune the previous one and leave
+nothing to roll back to); use 2 to 100, default 5. The deploy lock also needs
+`~/.forge` on the hosts to be on a file system with hard links.
+
 Client addresses: behind forge-proxy the proxied role trusts `X-Forwarded-For`
 only from the `forge` Docker network (`forge deploy` sets
 `FORGE_HTTP_TRUSTED_PROXIES` to its subnets), so sign-in and reset throttles,

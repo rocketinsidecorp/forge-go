@@ -635,19 +635,32 @@ printed on stdout also on failure, with `ok`, `error` and `exit_code`.
    on failure, but only if its record is still the deploy's own: a lock
    somebody else took after a `--force` release is left in place with a
    warning (or a note that it was already released). The record is written
-   to a temporary file and claimed with `ln`, which fails if the lock already
-   has one, so a record is never seen half written. A lock directory without
-   a record file (the process was killed between the `mkdir` and the claim)
-   older than a minute is taken over in place by the next deploy or `lock
-   acquire` without `--force`, with a warning; nothing is removed, so two
-   deploys cannot both win it (3,000 rounds of two concurrent acquirers on
-   such a lock gave exactly one winner each). A younger one reports holder
-   `unknown`, and so does a lock with an empty record file (left by earlier
-   versions); `lock release --force` clears either at once. The release
-   compares the record and then removes the directory as separate shell
-   steps, so it is race-aware, not transactional: removing a foreign lock
-   takes a force release and a new acquire inside the same few
-   milliseconds.
+   to a temporary file (created with `set -C`, so a leftover name is never
+   truncated) and claimed with `ln`, which fails if the lock already has one,
+   so a record is never seen half written. Only a successful `ln` wins: the
+   hard link is created atomically by `link(2)`, which fails with `EEXIST`
+   when `lock/info` exists, and `info` is removed only by a release whose
+   record matches or by `--force`. A lock directory without a record file
+   (the process was killed between the `mkdir` and the claim) older than a
+   minute is taken over in place by the next deploy or `lock acquire`
+   without `--force`, with a warning printed after the claim has succeeded;
+   nothing is removed, so two deploys cannot both win it (a test forces the
+   interleaving: a second acquire completes between the first one's
+   staleness check and its claim). A younger one reports holder `unknown`,
+   and so does a lock with an empty record file (left by earlier versions);
+   `lock release --force` clears either at once. The release compares the
+   record and then removes the directory as separate shell steps, so it is
+   race-aware, not transactional: removing a foreign lock takes a force
+   release and a new acquire inside the same few milliseconds.
+
+   The lock needs `~/.forge` on every host to be on a file system that
+   supports hard links (any local Linux file system does). Without them
+   `ln` fails and every acquire reports the lock as held, which fails
+   closed: nothing deploys. The acquire prints `ln`'s own error on stderr
+   in that case, and an empty lock directory may be left behind (clear it
+   with `lock release --force`). On NFS, `link(2)` is atomic on a correctly
+   configured server, but client caching can delay what other hosts see;
+   keep `~/.forge` on local disk.
 2. Run `pre-build`, build and push the image (unless `--skip-build`), run
    `pre-deploy`.
 3. On all hosts in parallel (at most `parallelism`): registry login, `docker
