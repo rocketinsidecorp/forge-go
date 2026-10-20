@@ -89,7 +89,9 @@ HTML, so escaping must be decided once, by the framework.
    to the default locale (and its parents), then to the key's last segment
    humanized (`welcome_back` → "Welcome back"). Both log one warning per
    locale and key, for at most 1,024 distinct keys, so keys built from input
-   cannot flood logs or memory. `FORGE_I18N_DEFAULT_LOCALE` (validated)
+   cannot flood logs or memory; the first warning past the bound logs one
+   "missing-translation warnings suppressed" line and the rest are counted
+   (`SuppressedWarnings`). `FORGE_I18N_DEFAULT_LOCALE` (validated)
    overrides the application's default (`forge new --locale`, else `en`).
 7. **Formatting is data.** `number.format.{separator,delimiter,precision}`,
    `date.formats.*`, `time.formats.*`, `date.{day,abbr_day,month,abbr_month}_names`
@@ -114,8 +116,10 @@ HTML, so escaping must be decided once, by the framework.
    (`<html lang>`, skip link), the welcome page and the sign-in, two-factor,
    password-reset pages and messages (throttling messages are plural by
    minutes). `forge generate scaffold` writes `config/locales/PLURAL.en.json`
-   and uses `t` and `i18n.T`; `forge destroy scaffold` removes the file when
-   unchanged. `generate view`, `controller`, `scaffold` and `authentication`
+   (and `PLURAL.LOCALE.json` for an application whose default locale is not
+   `en`, see the follow-ups) and uses `t` and `i18n.T`; it refuses the plurals
+   `date`, `time` and `number`, which would merge into the formatting data;
+   `forge destroy scaffold` removes the files when unchanged. `generate view`, `controller`, `scaffold` and `authentication`
    add `config/locales` to an application that lacks it and warn when
    `bootstrap.go` does not install the middleware. The printed renderer is
    `views.New(views.WithI18n(translator))`.
@@ -140,6 +144,40 @@ HTML, so escaping must be decided once, by the framework.
   diffable.
 - Plural rules are code, not CLDR data: adding a language is a small
   function, with no data file to ship or update.
+
+## Review follow-ups (forge-go#21)
+
+- **Scaffold text in the default locale.** An application created with
+  `--locale pt-BR` has `en.json` and `pt-BR.json` but a scaffold only wrote
+  `PLURAL.en.json`, so production (which falls back to the default locale,
+  then humanizes the key) showed "Back to posts"-style text only for English
+  visitors and humanized keys for everyone else. Chosen: the scaffold also
+  writes `PLURAL.LOCALE.json` with the English text when the default locale
+  is not `en`, the default being the `DefaultLocale` constant of the
+  application's `config/locales/locales.go` (what `forge new --locale`
+  writes; `en` when absent or unreadable; the `FORGE_I18N_DEFAULT_LOCALE`
+  deployment override is not known at generation time). Rejected: making the
+  translator fall back to `en` after the default locale. It would change the
+  language-neutral lookup rule Forge-Rust must copy, add an implicit second
+  default behind the one the application chose, and keep `forge i18n check`
+  reporting a gap that is visible only in the file listing; a file the
+  developer sees, edits and translates leaves the fallback chain unchanged
+  and `forge i18n check` clean. `forge destroy` removes the
+  file only when it is unchanged, like `en`; it is planned from the same
+  default locale, so an application whose default changed since generation
+  keeps the old file (delete it by hand).
+- **Reserved plurals.** `date`, `time` and `number` are formatting scopes
+  (`date.formats`, `time.am`, `number.format`): a scaffold with such a plural
+  would merge its text into the data `l` and `number` read, and `forge i18n
+  check` never reports that scope. The generator refuses them with an error
+  naming the scopes.
+- **Path prefix.** Middleware passed to `WithHTTPMiddleware` sees the
+  prefixed path; the stripped path is what routing, the auth return-to path
+  and `ServeMux` redirects see ([I18N.md](../I18N.md#choosing-the-locale)). A
+  prefix whose escaped form differs from its decoded form (`/pt-BR%2F..`)
+  clears `RawPath` so it stays consistent with `Path`.
+- **`_html` and URLs.** `href="%{url}"` escapes but does not filter schemes
+  (same as Rails); documented in the guide and the threat model.
 
 ## Follow-ups
 
