@@ -321,8 +321,16 @@ func (s *schemas) parameters(wildcards []string, params Type) ([]any, error) {
 		if t.Kind() != reflect.Struct {
 			return nil, fmt.Errorf("%w: Params must be a struct, not %s", ErrNotDescribable, t)
 		}
+		// walking holds the embedding chain, so a type that embeds itself
+		// is an error rather than endless recursion.
+		walking := map[reflect.Type]bool{}
 		var walk func(reflect.Type) error
 		walk = func(t reflect.Type) error {
+			if walking[t] {
+				return fmt.Errorf("%w: Params type %s embeds itself", ErrNotDescribable, t)
+			}
+			walking[t] = true
+			defer delete(walking, t)
 			for i := range t.NumField() {
 				sf := t.Field(i)
 				if sf.Anonymous {

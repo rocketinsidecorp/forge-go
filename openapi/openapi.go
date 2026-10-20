@@ -180,7 +180,8 @@ func Typed[Req, Res any](status int, op Operation, fn func(r *http.Request, requ
 	if decode {
 		op.Request = TypeOf[Req]()
 		if requestType := reflect.TypeFor[Req](); requestType.Implements(validatorType) || reflect.PointerTo(requestType).Implements(validatorType) {
-			if !slices.Contains(op.Errors, http.StatusUnprocessableEntity) {
+			declared := slices.ContainsFunc(op.Responses, func(r Response) bool { return r.Status == http.StatusUnprocessableEntity })
+			if !declared && !slices.Contains(op.Errors, http.StatusUnprocessableEntity) {
 				op.Errors = append(op.Errors, http.StatusUnprocessableEntity)
 			}
 		}

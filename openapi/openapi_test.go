@@ -721,3 +721,36 @@ func TestParamsWalkEmbeddedPointers(t *testing.T) {
 		t.Fatalf("parameters = %v", names)
 	}
 }
+
+type selfEmbeddingParams struct {
+	*selfEmbeddingParams
+	ID string `path:"id"`
+}
+
+func TestParamsThatEmbedThemselvesAreAnError(t *testing.T) {
+	t.Parallel()
+	_ = selfEmbeddingParams{}.selfEmbeddingParams // only its type is read
+	_, err := openapi.Build(openapi.Info{Title: "t", Version: "1"}, []openapi.Route{
+		{Method: "GET", Pattern: "/a/{id}", Handler: openapi.Describe(ok, openapi.Operation{
+			Params: openapi.TypeOf[selfEmbeddingParams](), Responses: []openapi.Response{openapi.Empty(http.StatusNoContent)},
+		})},
+	})
+	if !errors.Is(err, openapi.ErrNotDescribable) || !strings.Contains(err.Error(), "embeds itself") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A Typed operation that declares its own 422 response keeps it instead of
+// the implied validation error.
+func TestTypedKeepsADeclared422Response(t *testing.T) {
+	t.Parallel()
+	handler := openapi.Typed(http.StatusCreated, openapi.Operation{
+		Responses: []openapi.Response{openapi.JSON[created](http.StatusUnprocessableEntity)},
+	}, func(_ *http.Request, request pointerValidated) (created, error) {
+		return created{ID: uuid.MustNew(), Name: request.Name}, nil
+	})
+	if errorsDeclared := handler.(openapi.Described).OpenAPIOperation().Errors; slices.Contains(errorsDeclared, http.StatusUnprocessableEntity) {
+		t.Fatalf("422 is implied although declared: %v", errorsDeclared)
+	}
+	build(t, openapi.Route{Method: "POST", Pattern: "/a", Handler: handler})
+}
