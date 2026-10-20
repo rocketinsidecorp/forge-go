@@ -102,8 +102,16 @@ type Options struct {
 	// numbers, booleans, durations or times. Set it to the format of the
 	// handler that writes standard output: LogFormatJSON (default) for
 	// slog.JSONHandler, LogFormatText for slog.TextHandler. FromConfig sets
-	// it from the logger it is given.
+	// it from the logger it is given (see LogOutputHandler).
 	LogFormat LogFormat
+	// LogReplaceAttr is the ReplaceAttr of the slog.HandlerOptions of the
+	// handler that writes standard output, or nil. LogHandler applies it
+	// exactly as that handler does, so an attribute redacted or removed on
+	// standard output is redacted or removed in the export too. Set it
+	// whenever the standard-output handler has a ReplaceAttr: slog handlers
+	// do not reveal their options. FromConfig sets it from a logger whose
+	// handler is a LogOutputHandler, such as NewOutputHandler's.
+	LogReplaceAttr func(groups []string, a slog.Attr) slog.Attr
 	// LogMaxQueueSize bounds the log records waiting for export; when the
 	// queue is full new records are dropped and counted. Default 2048.
 	LogMaxQueueSize int
@@ -132,6 +140,7 @@ type Telemetry struct {
 	logs          *batcher[LogRecord]
 	logLevel      slog.Leveler
 	logFormat     LogFormat
+	logReplace    func(groups []string, a slog.Attr) slog.Attr
 	metrics       *Registry
 
 	metricExporter MetricExporter
@@ -235,6 +244,7 @@ func New(opts Options) (*Telemetry, error) {
 		tracers:        make(map[string]*Tracer),
 		logLevel:       opts.LogLevel,
 		logFormat:      opts.LogFormat,
+		logReplace:     opts.LogReplaceAttr,
 	}
 	var err error
 	if t.droppedSpans, err = t.metrics.Counter("forge.telemetry.spans.dropped", "Spans dropped because the export queue was full or export failed.", "{span}"); err != nil {

@@ -58,6 +58,10 @@ func (h *logHandler) WithGroup(name string) slog.Handler {
 	return &logHandler{next: h.next.WithGroup(name), correlated: h.correlated}
 }
 
+// LogOutput reports how the wrapped handler renders standard output (see
+// LogOutputHandler).
+func (h *logHandler) LogOutput() LogOutput { return logOutputOf(h.next) }
+
 // LogAttrs returns the trace_id and span_id of ctx's span as logger
 // arguments, or nil: logger.With(telemetry.LogAttrs(ctx)...).
 func LogAttrs(ctx context.Context) []any {
