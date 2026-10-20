@@ -539,7 +539,7 @@ func TestDBConsoleRemovesTheOptionFileOnHangUp(t *testing.T) {
 	dir := t.TempDir()
 	recorded, ready := filepath.Join(dir, "option-file"), filepath.Join(dir, "ready")
 	fakeClient(t, h, `if [ "$1" = "--version" ]; then echo "mariadb from 11"; exit 0; fi
-printf '%s' "${1#--defaults-extra-file=}" > '`+recorded+`'
+printf '%s' "${1#--defaults-file=}" > '`+recorded+`'
 trap 'exit 0' HUP
 : > '`+ready+`'
 while :; do sleep 0.05; done

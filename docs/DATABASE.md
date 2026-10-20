@@ -811,7 +811,8 @@ record; the schema file is for fresh databases.
 **Credentials are never arguments.** PostgreSQL tools receive `PGHOST`,
 `PGUSER`, `PGPASSWORD`, `PGDATABASE` and `PGSSL*` in their environment (any
 inherited `PG*` variable is dropped first); MySQL tools read a `0600` temporary
-option file passed as the first argument and removed afterwards; SQLite takes
+option file passed first as `--defaults-file` (the only option file they read,
+so `~/.my.cnf` cannot redirect them) and removed afterwards; SQLite takes
 an absolute path. Error messages name the host and database, never the URL.
 
 **Protected databases.** `drop`, `reset`, `schema:load` and `rollback` refuse to

@@ -135,7 +135,8 @@ still run the application binary's own commands, built once per invocation.
 - **Credentials never travel in arguments.** PostgreSQL tools get `PGHOST`,
   `PGUSER`, `PGPASSWORD`, `PGSSL*`... in the child's environment, and every
   inherited `PG*` variable (service file, options) is dropped; MySQL tools read a
-  `0600` option file (`--defaults-extra-file`, first argument, removed on exit)
+  `0600` option file in a private directory (`--defaults-file`, first argument,
+  so `~/.my.cnf` and `/etc/my.cnf` are not read; removed on exit)
   with `protocol=tcp` and the TLS option spelled for MySQL or MariaDB;
   SQLite gets an absolute path.
 

@@ -1,8 +1,10 @@
 package dbtasks
 
 import (
+	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -64,14 +66,18 @@ func TestPostgresConsoleKeepsThePasswordOutOfArguments(t *testing.T) {
 }
 
 func TestMySQLConsoleUsesAPrivateOptionFile(t *testing.T) {
+	t.Setenv("MYSQL_TEST_LOGIN_FILE", "/home/someone/.mylogin.cnf")
 	target := consoleTarget(t, "mysql://alice:p%40ss%22w%27rd%5C@db.internal:3307/shop?tls=true", nil)
 	console, err := target.PrepareConsole([]string{"-e", "select 1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(console.Args[0], "--defaults-extra-file=") {
+	// --defaults-file, first: the only option file read, so ~/.my.cnf and
+	// /etc/my.cnf cannot change the host, port or user.
+	if !strings.HasPrefix(console.Args[0], "--defaults-file=") || strings.Join(console.Args[1:], " ") != "-e select 1" {
 		t.Fatalf("the option file must be the first argument: %v", console.Args)
 	}
+	assertNoLoginPathFile(t, console.Env, strings.TrimPrefix(console.Args[0], "--defaults-file="))
 	for _, arg := range console.Args {
 		if strings.Contains(arg, "p@ss") || strings.Contains(arg, "alice") {
 			t.Errorf("an argument carries credentials: %q", arg)
@@ -82,7 +88,7 @@ func TestMySQLConsoleUsesAPrivateOptionFile(t *testing.T) {
 			t.Errorf("the environment carries the password: %q", entry)
 		}
 	}
-	name := strings.TrimPrefix(console.Args[0], "--defaults-extra-file=")
+	name := strings.TrimPrefix(console.Args[0], "--defaults-file=")
 	info, err := os.Stat(name)
 	if err != nil {
 		t.Fatal(err)
@@ -96,9 +102,93 @@ func TestMySQLConsoleUsesAPrivateOptionFile(t *testing.T) {
 			t.Errorf("option file lacks %s:\n%s", want, content)
 		}
 	}
+	dir, err := os.Stat(filepath.Dir(name))
+	if err != nil || dir.Mode().Perm() != 0o700 {
+		t.Errorf("option file directory = %v, %v; want a private 0700 directory", dir, err)
+	}
 	console.Cleanup()
 	if _, err := os.Stat(name); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Cleanup must remove the option file, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(name)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Cleanup must remove the option file's directory, stat err = %v", err)
+	}
+}
+
+// assertNoLoginPathFile checks that MySQL's login-path file, which its
+// clients read even with --defaults-file, is a name that does not exist in
+// the option file's private directory, replacing any inherited one.
+func assertNoLoginPathFile(t *testing.T, env []string, optionFile string) {
+	t.Helper()
+	var values []string
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "MYSQL_TEST_LOGIN_FILE="); ok {
+			values = append(values, value)
+		}
+	}
+	if len(values) != 1 || filepath.Dir(values[0]) != filepath.Dir(optionFile) {
+		t.Fatalf("MYSQL_TEST_LOGIN_FILE = %v, want one name beside %s", values, optionFile)
+	}
+	if _, err := os.Stat(values[0]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the login-path file must not exist, stat err = %v", err)
+	}
+}
+
+func TestMySQLDumpReadsOnlyForgesOptionFile(t *testing.T) {
+	t.Setenv("MYSQL_TEST_LOGIN_FILE", "/home/someone/.mylogin.cnf")
+	dir := t.TempDir()
+	recorded := filepath.Join(dir, "recorded")
+	script := filepath.Join(dir, "mysqldump")
+	// The fake tool records its arguments, the option file and the
+	// login-path variable, then prints an empty dump.
+	body := "#!/bin/sh\n" +
+		"if [ \"$1\" = --version ]; then echo 'mysqldump  Ver 8.4'; exit 0; fi\n" +
+		"{ for arg in \"$@\"; do printf '%s\\n' \"$arg\"; done; echo ---; cat \"${1#--defaults-file=}\"; echo ---; " +
+		"echo \"$MYSQL_TEST_LOGIN_FILE\"; [ -e \"$MYSQL_TEST_LOGIN_FILE\" ] && echo exists; } > '" + recorded + "'\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil { // #nosec G306 -- an executable test fixture
+		t.Fatal(err)
+	}
+	target, err := NewTarget(t.TempDir(), lookupOf(map[string]string{
+		"FORGE_DATABASE_URL": "mysql://alice:s3cret@127.0.0.1:1/shop?tls=skip-verify", "FORGE_DATABASE_CONNECT_TIMEOUT": "1s",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.SetLookPath(func(name string) (string, error) {
+		if name == "mysqldump" {
+			return script, nil
+		}
+		return "", errors.New("not found")
+	})
+	// Reading the applied migrations then fails: nothing listens on port 1.
+	_, _ = target.DumpSchema(context.Background())
+
+	out, err := os.ReadFile(recorded)
+	if err != nil {
+		t.Fatalf("mysqldump did not run: %v", err)
+	}
+	args, rest, _ := strings.Cut(string(out), "---\n")
+	options, login, _ := strings.Cut(rest, "---\n")
+	lines := strings.Split(strings.TrimSpace(args), "\n")
+	if !strings.HasPrefix(lines[0], "--defaults-file=") || lines[len(lines)-1] != "shop" {
+		t.Fatalf("the option file must be the first argument: %q", lines)
+	}
+	for _, line := range lines {
+		if strings.Contains(line, "s3cret") || strings.Contains(line, "alice") {
+			t.Errorf("an argument carries credentials: %q", line)
+		}
+	}
+	for _, want := range []string{`user="alice"`, `password="s3cret"`, `host="127.0.0.1"`, `port="1"`, `database="shop"`, "protocol=tcp", "ssl-mode=REQUIRED"} {
+		if !strings.Contains(options, want) {
+			t.Errorf("option file lacks %s:\n%s", want, options)
+		}
+	}
+	login = strings.TrimSpace(login)
+	if filepath.Dir(login) != filepath.Dir(strings.TrimPrefix(lines[0], "--defaults-file=")) || strings.Contains(login, "exists") || strings.Contains(login, "someone") {
+		t.Errorf("MYSQL_TEST_LOGIN_FILE = %q, want a missing name beside the option file", login)
+	}
+	if _, err := os.Stat(strings.TrimPrefix(lines[0], "--defaults-file=")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the option file survived the dump, stat err = %v", err)
 	}
 }
 

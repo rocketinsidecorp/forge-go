@@ -156,8 +156,8 @@ func (t *Target) mysqlDump(ctx context.Context) ([]byte, error) {
 		name: "mysqldump",
 		// The option file must come first. --skip-add-drop-table keeps the
 		// schema file from dropping tables when it is loaded.
-		args: []string{"--defaults-extra-file=" + file, "--no-data", "--skip-comments", "--skip-dump-date", "--skip-add-drop-table", "--no-tablespaces", "--routines", "--triggers", t.Name},
-		env:  environ(),
+		args: []string{mysqlDefaults(file), "--no-data", "--skip-comments", "--skip-dump-date", "--skip-add-drop-table", "--no-tablespaces", "--routines", "--triggers", t.Name},
+		env:  mysqlEnvironment(environ(), file),
 		dir:  t.root,
 	})
 }
@@ -229,7 +229,7 @@ func (t *Target) LoadSchema(ctx context.Context, schemaPath string) error {
 			return err
 		}
 		defer cleanup()
-		_, err = t.run(ctx, tool{name: "mysql", args: []string{"--defaults-extra-file=" + options}, env: environ(), dir: t.root, stdin: file})
+		_, err = t.run(ctx, tool{name: "mysql", args: []string{mysqlDefaults(options)}, env: mysqlEnvironment(environ(), options), dir: t.root, stdin: file})
 	default:
 		// SQLite DDL is transactional: one failure leaves nothing behind.
 		stdin := io.MultiReader(strings.NewReader("BEGIN;\n"), file, strings.NewReader("\nCOMMIT;\n"))
