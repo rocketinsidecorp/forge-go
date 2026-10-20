@@ -129,7 +129,15 @@ worse than none; the document must be stable enough to commit and diff.
    routes with operation IDs, permissions, parameters and types (create and
    PATCH requests mark required, optional and non-null members; the PATCH
    wrapper implements `Typer`), and `--api` controllers describe their
-   actions. The framework's health routes are described.
+   actions. The framework's health routes are described. The `auth`
+   package's JSON handlers describe themselves (`openapi.Describe` inside
+   their constructors, which the application registers as returned):
+   password and cookie sign-in, sign-out, MFA completion and password
+   recovery, with the statuses each answers, `Retry-After` and
+   `Set-Cookie`, the `Origin` and `X-CSRF-Token` headers cookie routes need,
+   and no examples on secret-bearing members. The generated bootstrap test
+   checks that the identity paths are in the document and that an identity
+   response matches it.
 
 ## Consequences
 
@@ -149,9 +157,17 @@ worse than none; the document must be stable enough to commit and diff.
 
 ## Follow-ups
 
-- Describe the framework's own JSON routes (`POST /auth/login`, logout,
-  MFA completion, password recovery, cookie routes) from the `auth`
-  package, so identity applications document them too.
+- Describe the TOTP enrollment, confirmation, rotation and disable
+  handlers of the `auth` package (their sign-in, sign-out, MFA completion,
+  recovery and cookie siblings are described). An application mounts them
+  behind its own guard, so the registered handler is the guard and a
+  description inside the constructor would be hidden; their step-up
+  authorizers choose their error statuses. `Middleware.Authenticate` would
+  have to pass a handler's description through (adding `Authenticated`),
+  and the authorizers' statuses would need declaring.
+- A security scheme for the session cookie and `in: cookie` parameters:
+  cookie routes document their `Origin` and `X-CSRF-Token` headers and
+  `Set-Cookie`, and say in prose that the session and CSRF cookies are sent.
 - Request validation from the document (rejecting what the schema
   forbids before the handler) and request contract checks in tests.
 - `enum`, `minLength`/`maxLength` and other constraints from explicit tags,
@@ -195,7 +211,9 @@ Planned ([forge-rust#25](https://github.com/rocketinsidecorp/forge-rust/issues/2
   FILE]` and `forge openapi [--output FILE | --check FILE]` with the same
   output, stderr notes and exit statuses.
 - **Generated code and tests:** the same described endpoints (`/v1/status`,
-  `/v1/auth/session`, health routes, resources, `--api` controllers), the
+  `/v1/auth/session`, the auth package's sign-in, sign-out, MFA completion,
+  recovery and cookie routes with the same statuses and headers, health routes,
+  resources, `--api` controllers), the
   same operation IDs (`createPost`, `listPosts`, `getPost`, `updatePost`,
   `deletePost`), and contract tests that validate every handler response
   (the counterparts of `ValidateResponse` and `CheckResponses`).

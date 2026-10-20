@@ -273,7 +273,11 @@ stored enqueue context for jobs (linked by job ID instead).
   `FORGE_OPENAPI_ENABLED=true`), `forge openapi [--output FILE | --check
   FILE]`, described generated endpoints and contract tests.
 
-Not included yet: descriptions of the `auth` package's JSON routes, request
+The `auth` package's sign-in, sign-out, MFA completion, recovery and cookie
+routes describe themselves; the TOTP management handlers do not yet (see ADR
+0043).
+
+Not included yet: descriptions of the TOTP management handlers, request
 validation from the document, constraint tags (`enum`, lengths) and a
 `--check` step in the generated CI.
 

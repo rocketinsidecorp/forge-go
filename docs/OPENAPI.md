@@ -232,6 +232,22 @@ way, and the generated bootstrap test fetches `/openapi.json` and validates
   optional field.
 - `forge generate controller ... --api`: each action.
 
-Not described yet: the `auth` package's JSON routes (`/auth/login`,
-logout, MFA, recovery and cookie routes), HTML pages, forms and event
-streams. See the follow-ups in ADR 0043.
+- Identity applications (`forge new` with PostgreSQL): the `auth` package's
+  JSON handlers describe themselves, so `POST /auth/login`, `/auth/logout`,
+  `/auth/mfa/complete`, `/auth/recovery/request`, `/auth/recovery/reset`,
+  `/auth/cookie/login`, `/auth/cookie/mfa/complete` and `/auth/cookie/logout`
+  are in the document wherever they are registered
+  (`auth.NewLoginHandler`, `NewAuditedLogoutHandler`,
+  `NewAuditedMFACompletionHandler`, `NewAuditedPasswordRecoveryRequestHandler`,
+  `NewAuditedPasswordResetHandler`, `NewCookieLoginHandler`,
+  `NewCookieMFACompletionHandler`, `NewAuditedCookieLogoutHandler` and their
+  unaudited forms). Request and response types are the handlers' own, with the
+  statuses each answers (401, 403 for a bad Origin or CSRF token, 429 with
+  `Retry-After`, `Set-Cookie` on cookie routes). Passwords, tokens and codes
+  have no examples. Register the handler as returned: a guard of your own
+  around it hides its description (wrap the guard with `openapi.Describe`).
+
+Not described yet: the TOTP enrollment, confirmation, rotation and disable
+handlers (`auth.NewTOTPEnrollmentHandler` and the like, which an application
+mounts behind its own guard), HTML pages, forms and event streams. See the
+follow-ups in ADR 0043.

@@ -265,7 +265,12 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 		t.Fatalf("readiness status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 {{- if .DB.Identity}}
-	assertOpenAPI(t, app, "/v1/status", "/health", "/v1/auth/session")
+	// The identity routes describe themselves: Forge's auth handlers carry
+	// their operations, so the routes registered above are documented.
+	assertOpenAPI(t, app, "/v1/status", "/health", "/v1/auth/session",
+		"/auth/login", "/auth/logout", "/auth/mfa/complete",
+		"/auth/recovery/request", "/auth/recovery/reset",
+		"/auth/cookie/login", "/auth/cookie/mfa/complete", "/auth/cookie/logout")
 {{- else}}
 	assertOpenAPI(t, app, "/v1/status", "/health")
 {{- end}}
@@ -299,6 +304,14 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 	app.Handler().ServeHTTP(mfaRecorder, mfaRequest)
 	if mfaRecorder.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid MFA completion status=%d body=%s", mfaRecorder.Code, mfaRecorder.Body.String())
+	}
+	// What an identity route answers is what the document says it answers.
+	spec, err := app.OpenAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.ValidateResponse(http.MethodPost, "/auth/mfa/complete", mfaRecorder.Code, mfaRecorder.Header(), mfaRecorder.Body.Bytes()); err != nil {
+		t.Fatal(err)
 	}
 {{- end}}
 }
