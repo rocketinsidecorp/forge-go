@@ -171,6 +171,17 @@ func currentCommandCatalog() commandCatalog {
 		{Name: "inspect", Usage: "forge inspect --json", Summary: "Read-only inventory of commands, migrations, static routes, modules and database adapter; never executes application code.", SideEffects: []string{"filesystem_read", "environment_read"}, Examples: []string{"forge inspect --json"}, Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Process environment takes precedence over env files; the database URL value is never emitted."}, Flags: []flagDetail{{Name: "--json", Description: "Print the schema-versioned project inventory."}}},
 		{Name: "routes", Usage: "forge routes", Summary: "Read-only table of the routes found in app/ and cmd/ (Handle, HandleFunc and Resources calls with literal paths) plus Forge's health routes; never executes application code.", SideEffects: []string{"filesystem_read"}, Examples: []string{"forge routes"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}},
 		{
+			Name: "openapi", Usage: "forge openapi [--output FILE | --check FILE]",
+			Summary:     "Print or write the OpenAPI 3.1 document of the application's described routes (openapi.Describe, openapi.Typed); --check fails when a committed file is out of date. Runs the application's Configure without serving HTTP.",
+			SideEffects: []string{"subprocess", "application_defined", "filesystem_write_optional"},
+			Examples:    []string{"forge openapi", "forge openapi --output openapi.json", "forge openapi --check openapi.json"},
+			Environment: environmentInfo{Files: runtimeEnvironment().Files, Variables: runtimeEnvironment().Variables, Notes: "Builds cmd/NAME and runs its openapi command with the development environment; Configure may need the database. Undescribed routes are listed on stderr. Serving the document at GET /openapi.json is separate and controlled by FORGE_OPENAPI_ENABLED."},
+			Flags: []flagDetail{
+				{Name: "--output", Value: "FILE", Description: "Write the document to FILE instead of standard output."},
+				{Name: "--check", Value: "FILE", Description: "Compare FILE with the document; the exit status is 1 when it differs."},
+			},
+		},
+		{
 			Name: "uuid", Usage: "forge uuid [--count N]",
 			Summary:     "Generate UUIDv7 identifiers.",
 			SideEffects: []string{"random_output"},
@@ -220,7 +231,7 @@ func runtimeEnvironment() environmentInfo {
 			"FORGE_HTTP_READ_HEADER_TIMEOUT", "FORGE_HTTP_READ_TIMEOUT", "FORGE_HTTP_WRITE_TIMEOUT", "FORGE_HTTP_IDLE_TIMEOUT", "FORGE_HTTP_SHUTDOWN_TIMEOUT",
 			"FORGE_HTTP_MAX_HEADER_BYTES", "FORGE_HTTP_MAX_BODY_BYTES", "FORGE_HTTP_TRUSTED_PROXIES", "FORGE_DATABASE_URL", "FORGE_DATABASE_MAX_CONNS", "FORGE_DATABASE_MIN_CONNS",
 			"FORGE_DATABASE_MAX_CONN_LIFETIME", "FORGE_DATABASE_MAX_CONN_IDLE_TIME", "FORGE_DATABASE_CONNECT_TIMEOUT", "FORGE_DATABASE_STATEMENT_TIMEOUT",
-			"FORGE_DATABASE_ALLOW_PLAINTEXT", "FORGE_AUTH_MFA_KEY", "FORGE_AUTH_PASSWORD_RESET_URL", "FORGE_MASTER_KEY",
+			"FORGE_DATABASE_ALLOW_PLAINTEXT", "FORGE_AUTH_MFA_KEY", "FORGE_AUTH_PASSWORD_RESET_URL", "FORGE_MASTER_KEY", "FORGE_OPENAPI_ENABLED",
 		},
 		Notes: "The process environment overrides .env.local, which overrides .env.development. Values are passed to the generated application.",
 	}

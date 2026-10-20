@@ -32,7 +32,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Rollback never reverts framework migrations; disabled framework sets tolerated | (engine migrations copied into the app) | Done (`rollback`, `Migrator.DownFramework`, ADR 0039) | Done (`rollback`, `rollback_framework`, ADR 0030) |
 | Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`) | Planned |
 | i18n | I18n | Done (`config/locales/*.json`, `t`, CLDR plurals, `forge new --locale`, `forge i18n check`, [ADR 0042](adr/0042-internationalization.md)) | Planned ([forge-rust#22](https://github.com/rocketinsidecorp/forge-rust/issues/22)) |
-| OpenAPI from typed routes | — | Planned | Planned |
+| OpenAPI from typed routes | — | Done (`openapi.Describe`, `openapi.Typed`, `GET /openapi.json`, `forge openapi [--output\|--check]`, `FORGE_OPENAPI_ENABLED`, [ADR 0043](adr/0043-openapi-from-typed-routes.md)) | Planned ([forge-rust#25](https://github.com/rocketinsidecorp/forge-rust/issues/25)) |
 | Controller, model, mailer and job generators, `destroy` | `rails g`, `rails d` | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, [ADR 0041](adr/0041-generators-and-destroy.md)) | Planned ([forge-rust#15](https://github.com/rocketinsidecorp/forge-rust/issues/15)) |
 | Continuous fuzzing, SBOM, signed images | — | Planned | Planned |
 | Published benchmarks | — | Planned | Planned |

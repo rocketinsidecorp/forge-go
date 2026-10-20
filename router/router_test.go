@@ -104,3 +104,21 @@ func TestUnmatchedRequestsUseStandardErrorFormat(t *testing.T) {
 		t.Fatalf("path values lost: %q", recorder.Body.String())
 	}
 }
+
+type marked struct{ http.HandlerFunc }
+
+func TestRouterLookupReturnsTheRegisteredHandler(t *testing.T) {
+	t.Parallel()
+	routes := router.New()
+	handler := marked{func(http.ResponseWriter, *http.Request) {}}
+	if err := routes.Handle("POST /items/{id}", handler); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := routes.Lookup(router.Route{Method: http.MethodPost, Pattern: "/items/{id}"})
+	if _, isMarked := got.(marked); !ok || !isMarked {
+		t.Fatalf("Lookup = %T, %v", got, ok)
+	}
+	if _, ok := routes.Lookup(router.Route{Method: http.MethodGet, Pattern: "/items/{id}"}); ok {
+		t.Fatal("Lookup found an unregistered route")
+	}
+}

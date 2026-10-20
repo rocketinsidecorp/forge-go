@@ -22,6 +22,12 @@ type Result struct {
 	Checks  []Status `json:"checks"`
 }
 
+// OpenAPIName names the types in OpenAPI documents (openapi.Namer).
+func (Status) OpenAPIName() string { return "HealthCheck" }
+
+// OpenAPIName names the types in OpenAPI documents (openapi.Namer).
+func (Result) OpenAPIName() string { return "HealthReport" }
+
 // DefaultCheckTimeout bounds each readiness check so a hung dependency (or a
 // saturated connection pool) reports unready quickly instead of blocking the
 // probe until the orchestrator gives up.

@@ -1,9 +1,11 @@
 package forge
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,7 +59,7 @@ type CommandEnv struct {
 
 const healthcheckTimeout = 2 * time.Second
 
-var reservedCommands = map[string]bool{"serve": true, "healthcheck": true, "help": true}
+var reservedCommands = map[string]bool{"serve": true, "healthcheck": true, "openapi": true, "help": true}
 
 // Main is the conventional entrypoint for Forge applications:
 //
@@ -64,8 +67,9 @@ var reservedCommands = map[string]bool{"serve": true, "healthcheck": true, "help
 //
 // The binary serves HTTP by default ("serve") and also answers "healthcheck",
 // which lets minimal container images (no shell, no curl) run a Docker
-// HEALTHCHECK against the process itself, plus any extra commands. Main exits
-// the process.
+// HEALTHCHECK against the process itself, "openapi", which prints the OpenAPI
+// document of the configured routes without serving them, plus any extra
+// commands. Main exits the process.
 func Main(configure Configure, commands ...Command) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	code := execute(ctx, os.Args[1:], os.LookupEnv, os.Stdin, os.Stdout, os.Stderr, configure, commands...)
@@ -111,7 +115,13 @@ func execute(ctx context.Context, args []string, lookup func(string) (string, bo
 		printCommands(stderr, commands)
 		return 2
 	}
-	if !isExtra && len(args) != 0 {
+	var describe openapiOptions
+	if !isExtra && name == "openapi" {
+		if describe, err = parseOpenAPIArgs(args, stderr); err != nil {
+			fmt.Fprintf(stderr, "openapi: %v\n", err)
+			return 2
+		}
+	} else if !isExtra && len(args) != 0 {
 		fmt.Fprintf(stderr, "%s accepts no arguments\n", name)
 		return 2
 	}
@@ -123,6 +133,9 @@ func execute(ctx context.Context, args []string, lookup func(string) (string, bo
 	}
 	logger := newLogger(cfg.Environment, stdout)
 	switch {
+	case name == "openapi":
+		// The document may go to stdout: logs go to stderr.
+		return describeAPI(ctx, cfg, newLogger(cfg.Environment, stderr), configure, describe, stdout, stderr)
 	case isExtra:
 		env := CommandEnv{Config: cfg, Logger: logger, Stdout: stdout, Stderr: stderr, Stdin: stdin, LookupEnv: lookup}
 		if err := command.Run(ctx, env, args); err != nil {
@@ -164,6 +177,7 @@ func printCommands(output io.Writer, commands []Command) {
 	fmt.Fprintln(output, "commands:")
 	fmt.Fprintf(output, "  %-12s %s\n", "serve", "serve HTTP until SIGINT/SIGTERM (default)")
 	fmt.Fprintf(output, "  %-12s %s\n", "healthcheck", "probe the running server's liveness endpoint")
+	fmt.Fprintf(output, "  %-12s %s\n", "openapi", "print the OpenAPI document ([--output FILE | --check FILE])")
 	for _, command := range commands {
 		fmt.Fprintf(output, "  %-12s %s\n", command.Name, command.Summary)
 	}
@@ -194,6 +208,82 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger, configur
 		return 1
 	}
 	logger.Info("application stopped")
+	return 0
+}
+
+type openapiOptions struct {
+	output, check string
+}
+
+func parseOpenAPIArgs(args []string, stderr io.Writer) (openapiOptions, error) {
+	var options openapiOptions
+	flags := flag.NewFlagSet("openapi", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.StringVar(&options.output, "output", "", "write the document to FILE instead of standard output")
+	flags.StringVar(&options.check, "check", "", "fail when FILE differs from the document (for CI)")
+	if err := flags.Parse(args); err != nil {
+		return options, err
+	}
+	if flags.NArg() != 0 || (options.output != "" && options.check != "") {
+		return options, errors.New("usage: openapi [--output FILE | --check FILE]")
+	}
+	return options, nil
+}
+
+// describeAPI configures the application without serving it and writes its
+// OpenAPI document. Configure runs as for serve, so it may need the
+// database; nothing listens on the network.
+func describeAPI(ctx context.Context, cfg config.Config, logger *slog.Logger, configure Configure, options openapiOptions, stdout, stderr io.Writer) int {
+	app, err := New(WithConfig(cfg), WithLogger(logger))
+	if err != nil {
+		fmt.Fprintf(stderr, "openapi: build application: %v\n", err)
+		return 1
+	}
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.HTTP.ShutdownTimeout)
+	defer cancel()
+	defer func() {
+		if err := app.Close(closeCtx); err != nil {
+			fmt.Fprintf(stderr, "openapi: release resources: %v\n", err)
+		}
+	}()
+	if err := configure(ctx, app); err != nil {
+		fmt.Fprintf(stderr, "openapi: configure application: %v\n", err)
+		return 1
+	}
+	document, err := app.OpenAPI()
+	if err != nil {
+		fmt.Fprintf(stderr, "openapi: %v\n", err)
+		return 1
+	}
+	if undocumented := document.Undocumented(); len(undocumented) > 0 {
+		fmt.Fprintf(stderr, "openapi: %d routes are not described (openapi.Describe or openapi.Typed): %s\n", len(undocumented), strings.Join(undocumented, ", "))
+	}
+	body := document.JSON()
+	switch {
+	case options.check != "":
+		current, err := os.ReadFile(options.check)
+		if err != nil {
+			fmt.Fprintf(stderr, "openapi: read %s: %v\n", options.check, err)
+			return 1
+		}
+		if !bytes.Equal(current, body) {
+			fmt.Fprintf(stderr, "openapi: %s is out of date; run forge openapi --output %s\n", options.check, options.check)
+			return 1
+		}
+		fmt.Fprintf(stderr, "openapi: %s is up to date\n", options.check)
+	case options.output != "":
+		// #nosec G306 -- a public API description, meant to be committed
+		if err := os.WriteFile(options.output, body, 0o644); err != nil {
+			fmt.Fprintf(stderr, "openapi: write %s: %v\n", options.output, err)
+			return 1
+		}
+		fmt.Fprintf(stderr, "openapi: wrote %s (%d paths)\n", options.output, len(document.Paths()))
+	default:
+		if _, err := stdout.Write(body); err != nil {
+			fmt.Fprintf(stderr, "openapi: %v\n", err)
+			return 1
+		}
+	}
 	return 0
 }
 

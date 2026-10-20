@@ -1,7 +1,10 @@
 package pagination_test
 
 import (
+	"fmt"
 	"net/url"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rocketinsidecorp/forge-go/pagination"
@@ -67,4 +70,14 @@ func FuzzDecodeCursor(f *testing.F) {
 			t.Fatalf("accepted non-canonical cursor %q", cursor)
 		}
 	})
+}
+
+// The documented range must follow the constants FromQuery enforces.
+func TestQueryDocumentsTheLimits(t *testing.T) {
+	t.Parallel()
+	field, _ := reflect.TypeFor[pagination.Query]().FieldByName("Limit")
+	want := fmt.Sprintf("from 1 to %d (default %d)", pagination.MaxLimit, pagination.DefaultLimit)
+	if !strings.Contains(field.Tag.Get("doc"), want) || field.Tag.Get("query") != "limit" {
+		t.Fatalf("Limit tags = %q, want a doc mentioning %q", field.Tag, want)
+	}
 }

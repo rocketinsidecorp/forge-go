@@ -82,7 +82,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			`app.Handle("POST /auth/mfa/complete", mfaCompletion)`,
 			`app.Handle("POST /auth/login", loginHandler)`,
 			`app.Handle("POST /auth/logout", logoutHandler)`,
-			`app.Handle("GET /v1/auth/session", middleware.Authenticate(http.HandlerFunc(currentSession)))`,
+			`app.Handle("GET /v1/auth/session", openapi.Describe(middleware.Authenticate(http.HandlerFunc(currentSession)), openapi.Operation{`,
 		},
 		"db/db.go": {"//go:embed all:migrations"},
 		"README.md": {

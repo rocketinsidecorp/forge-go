@@ -34,6 +34,7 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 ├── tenancy      Fail-closed tenant context
 ├── config       Config struct, defaults, environment loading, validation, Secret
 ├── router       Route registry on http.ServeMux
+├── openapi      OpenAPI 3.1 from described routes: schemas reflected from Go types, contract validation
 ├── httpserver   http.Server, middleware chain, run/shutdown lifecycle
 ├── web          JSON responses, error format, strict JSON and form decoding, redirects, flash, method override, request context values
 ├── csrf         CSRF protection for browser requests (double-submit token, cross-origin rejection)
@@ -76,7 +77,7 @@ Dependency direction (imports within the module):
 
 | Package                 | Imports |
 | ----------------------- | ------- |
-| `forge`                 | `config`, `health`, `httpserver`, `router`, `telemetry`, `web` |
+| `forge`                 | `config`, `health`, `httpserver`, `openapi`, `router`, `telemetry`, `web` |
 | `auth`                  | `csrf`, `encryption`, `fault`, `tenancy`, `uuid`, `web` |
 | `csrf`                  | `fault`, `web` |
 | `views`                 | `assets`, `broadcast`, `csrf`, `i18n`, `tenancy`, `turbo`, `web` |
@@ -84,6 +85,7 @@ Dependency direction (imports within the module):
 | `tenancy`               | `fault`, `uuid` |
 | `httpserver`            | `config`, `fault`, `uuid`, `web` |
 | `router`                | `fault`, `web` |
+| `openapi`               | `uuid`, `web` |
 | `pagination`            | `fault`, `uuid` |
 | `events`                | `uuid` |
 | `web`                   | `config`, `fault`, `uuid` |
@@ -153,7 +155,9 @@ list is in [DEPLOYMENT.md](DEPLOYMENT.md#environment-variables).
   the two; its own redirects to a canonical path (for example `/tree` to
   `/tree/` for a `/tree/` pattern) are passed through unchanged. As a result,
   matched requests are looked up in the mux twice.
-- `Routes()` returns the registered routes sorted by path and method.
+- `Routes()` returns the registered routes sorted by path and method;
+  `Lookup(route)` returns the handler registered for one, which is how
+  `forge.App.OpenAPI` reads `openapi.Describe` descriptions.
 - `Resources(path, handler, middleware...)` registers the conventional
   index, new, create, show, edit, update (`PATCH` and `PUT`) and destroy
   routes for the methods the handler implements; `ResourceRoutes(path)`
@@ -295,6 +299,21 @@ locale in the context for `i18n.T` and the view helpers. Plural rules are
 CLDR 46 cardinal rules in code. Missing keys are visible in development and
 test and fall back to the default locale in production
 ([ADR 0042](adr/0042-internationalization.md)).
+
+### openapi
+
+`openapi.Describe(handler, Operation)` attaches an operation's summary,
+tags, permission, parameters, request, responses and error statuses to an
+ordinary handler; `openapi.Typed[Req, Res]` builds a JSON handler whose
+description comes from its type parameters. `openapi.Build` (through
+`App.OpenAPI`) reflects the Go types once, with encoding/json's rules, into
+an OpenAPI 3.1 document with `$ref` components and sorted, indented output;
+errors use `web.ErrorBody`. `App` serves it at `GET /openapi.json` when
+`config.Config.ServesOpenAPI` (development and test unless
+`FORGE_OPENAPI_ENABLED`), checks it when `Run` starts, and the binary's
+reserved `openapi` command writes it. `Document.ValidateResponse` and
+`CheckResponses` are the contract-test tools
+([ADR 0043](adr/0043-openapi-from-typed-routes.md), [OPENAPI.md](OPENAPI.md)).
 
 ### pagination
 
@@ -590,7 +609,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0019](adr/0019-outbox-dispatch.md) | PostgreSQL outbox dispatch |
 | [0020](adr/0020-background-jobs-scheduling.md) | Background jobs and scheduling |
 | [0021](adr/0021-resource-generator.md) | Resource generator |
-| [0022](adr/0022-openapi-from-typed-routes.md) | OpenAPI from typed routes (proposed) |
+| [0022](adr/0022-openapi-from-typed-routes.md) | OpenAPI from typed routes (proposed; superseded by 0043) |
 | [0023](adr/0023-persistent-job-queue.md) | Persistent database-backed job queue |
 | [0024](adr/0024-mail.md) | Mail |
 | [0025](adr/0025-server-rendered-html.md) | Server-rendered HTML |
@@ -606,10 +625,12 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0040](adr/0040-otlp-log-export-runtime-and-pool-metrics.md) | OTLP log export, Go runtime and connection pool metrics |
 | [0041](adr/0041-generators-and-destroy.md) | Model, controller, mailer and queue job generators, and `forge destroy` |
 | [0042](adr/0042-internationalization.md) | Internationalization: JSON translations, CLDR plurals, locale negotiation |
+| [0043](adr/0043-openapi-from-typed-routes.md) | OpenAPI 3.1 from described routes, `GET /openapi.json`, `forge openapi` |
 
 ## Not yet implemented
 
-OTLP gRPC and log export, OpenAPI generation, the AI execution subsystem, and
+OTLP gRPC and log export, OpenAPI descriptions of the `auth` package's JSON
+routes and request validation from the document, the AI execution subsystem, and
 relationships, decimal types, soft delete and audit columns in generated
 resources (`forge generate` supports SQL migrations, embedded HTML views, job
 stubs and resources). See

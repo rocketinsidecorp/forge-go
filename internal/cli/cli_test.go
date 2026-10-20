@@ -114,7 +114,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
 		t.Fatalf("decode command catalog: %v\n%s", err, stdout.String())
 	}
-	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 22 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
+	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 23 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
 		t.Fatalf("unexpected catalog header: %+v", catalog)
 	}
 	rollbackDeclaredDestructive := false
@@ -125,7 +125,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	expectedCommands := map[string]bool{
 		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true, "setup": true, "seed": true, "db": true,
 		"generate": true, "doctor": true, "inspect": true, "routes": true, "uuid": true, "version": true, "help": true,
-		"credentials": true, "deploy": true, "logs": true, "app": true, "destroy": true, "i18n": true,
+		"credentials": true, "deploy": true, "logs": true, "app": true, "destroy": true, "i18n": true, "openapi": true,
 	}
 	for _, command := range catalog.Commands {
 		if !expectedCommands[command.Name] || commandsSeen[command.Name] || len(command.Examples) == 0 || command.Environment.Files == nil || command.Environment.Variables == nil || len(command.ExitCodes) < 2 {
@@ -440,6 +440,22 @@ func TestGeneratedApplication(t *testing.T) {
 			if output := run("migrate", "status"); !strings.Contains(output, "applied") {
 				t.Fatalf("status output: %s", output)
 			}
+			// The binary describes the wired resources without serving.
+			var spec, notes bytes.Buffer
+			if err := runApp(context.Background(), dir, "ledger", []string{"openapi"}, env, &spec, &notes); err != nil {
+				t.Fatalf("ledger openapi: %v\n%s", err, notes.String())
+			}
+			var document struct {
+				Paths map[string]any `json:"paths"`
+			}
+			if err := json.Unmarshal(spec.Bytes(), &document); err != nil {
+				t.Fatalf("ledger openapi printed no JSON document: %v\n%s", err, spec.String())
+			}
+			for _, path := range []string{"/v1/status", "/health", "/v1/products", "/v1/products/{id}", "/v1/categories/{id}"} {
+				if _, ok := document.Paths[path]; !ok {
+					t.Errorf("ledger openapi does not describe %s", path)
+				}
+			}
 			// Every migration reverts cleanly (on PostgreSQL the resource's
 			// permissions and their grants go with it) and applies again.
 			if output := run("rollback", "-steps", "3"); !strings.Contains(output, "reverted") {
@@ -702,4 +718,14 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buffer.String()
+}
+
+func TestRunOpenAPIValidatesArgumentsBeforeBuilding(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{{"--bogus"}, {"--output"}, {"--output", "a", "--check", "b"}, {"--output=a", "--check=b"}, {"extra"}} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(append([]string{"openapi"}, args...), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), openAPIUsage) {
+			t.Errorf("forge openapi %v: code=%d stderr=%s", args, code, stderr.String())
+		}
+	}
 }

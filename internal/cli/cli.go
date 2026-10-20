@@ -52,6 +52,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runInspect(args[1:], stdout)
 	case "routes":
 		err = runRoutes(args[1:], stdout)
+	case "openapi":
+		err = runOpenAPI(args[1:], stdout, commandStderr)
 	case "new":
 		err = runNew(args[1:], stdout, commandStderr)
 	case "dev":
@@ -351,6 +353,9 @@ commands:
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
   routes              list the routes found in the source, as a table
+  openapi [--output FILE | --check FILE]
+                      print or write the OpenAPI 3.1 document of the described
+                      routes; --check fails when FILE is out of date
   help --json         print the versioned machine-readable command catalog
   uuid [--count N]    generate UUIDv7 identifiers
   version             print the Forge version

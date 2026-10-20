@@ -36,6 +36,13 @@ type Page[T any] struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
+// Query documents the query parameters FromQuery reads, for an OpenAPI
+// description (openapi.Operation.Params); requests are parsed by FromQuery.
+type Query struct {
+	Cursor string `query:"cursor" doc:"The next_cursor of the previous page; omit it for the first page."`
+	Limit  int    `query:"limit" doc:"Items per page, from 1 to 200 (default 50)."`
+}
+
 // FromQuery reads the "cursor" and "limit" query parameters.
 func FromQuery(query url.Values) (Request, error) {
 	request := Request{Limit: DefaultLimit}

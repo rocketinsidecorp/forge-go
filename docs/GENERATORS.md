@@ -105,7 +105,11 @@ The handlers render `app/views/NAME/ACTION.gohtml` with `Title` and `Content`
 (auto-escaped; the views join the application layout, CSRF meta tag and flash
 partial) or, with `--api`, answer a small JSON document. Replace the page
 struct and the handler bodies with your own. The routes use literal patterns,
-so `forge routes` lists them.
+so `forge routes` lists them. `--api` routes are described for the OpenAPI
+document (`<name>ControllerOperation`; change its response type with the
+handler) and their tests check every response against it
+([OPENAPI.md](OPENAPI.md)). Resources and scaffolds describe their JSON API
+the same way.
 
 `Register<Name>Controller` mounts every route behind a guard you pass:
 

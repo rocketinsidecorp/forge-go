@@ -109,6 +109,25 @@ type Config struct {
 	Storage     Storage
 	Telemetry   Telemetry
 	I18n        I18n
+	OpenAPI     OpenAPI
+}
+
+// OpenAPI configures the GET /openapi.json route (package openapi, ADR 0043).
+type OpenAPI struct {
+	// Enabled is FORGE_OPENAPI_ENABLED. Nil (unset) serves the document in
+	// development and test only: it lists every documented route,
+	// including internal ones, so staging and production publish it only
+	// when it is set to true.
+	Enabled *bool
+}
+
+// ServesOpenAPI reports whether the application serves its OpenAPI document
+// at GET /openapi.json.
+func (c Config) ServesOpenAPI() bool {
+	if c.OpenAPI.Enabled != nil {
+		return *c.OpenAPI.Enabled
+	}
+	return c.Environment == Development || c.Environment == Test
 }
 
 // I18n configures translations (package i18n, ADR 0042).

@@ -22,13 +22,14 @@ type Route struct {
 }
 
 type Router struct {
-	mu     sync.RWMutex
-	mux    *http.ServeMux
-	routes []Route
-	frozen atomic.Bool
+	mu       sync.RWMutex
+	mux      *http.ServeMux
+	routes   []Route
+	handlers map[Route]http.Handler
+	frozen   atomic.Bool
 }
 
-func New() *Router { return &Router{mux: http.NewServeMux()} }
+func New() *Router { return &Router{mux: http.NewServeMux(), handlers: map[Route]http.Handler{}} }
 
 func (r *Router) Handle(pattern string, handler http.Handler) (err error) {
 	if handler == nil {
@@ -50,8 +51,20 @@ func (r *Router) Handle(pattern string, handler http.Handler) (err error) {
 		}
 	}()
 	r.mux.Handle(pattern, handler)
-	r.routes = append(r.routes, Route{Method: method, Pattern: path})
+	route := Route{Method: method, Pattern: path}
+	r.routes = append(r.routes, route)
+	r.handlers[route] = handler
 	return nil
+}
+
+// Lookup returns the handler registered for route exactly as it was given to
+// Handle, so callers can read what it carries, such as an OpenAPI
+// description (package openapi).
+func (r *Router) Lookup(route Route) (http.Handler, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	handler, ok := r.handlers[route]
+	return handler, ok
 }
 
 func (r *Router) HandleFunc(pattern string, handler http.HandlerFunc) error {
