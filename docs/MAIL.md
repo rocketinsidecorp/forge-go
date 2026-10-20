@@ -146,11 +146,14 @@ service, err := auth.NewRecoveryService(store, recovery)
 Generated PostgreSQL applications do exactly this in
 `bootstrap.passwordRecoveryDelivery` when `FORGE_MAIL_URL`, `FORGE_MAIL_FROM`
 and `FORGE_AUTH_PASSWORD_RESET_URL` are set, with the sender `FromConfig`
-builds (inline SMTP).
+builds (SMTP, run off the request path by the recovery queue).
 
-`recoverymail.Sender` implements `auth.RecoverySender`. Give it a queue-backed
-`mail.Sender` in production: SMTP inline makes the response time reveal whether
-an account exists (ADR 0013).
+`recoverymail.Sender` implements `auth.RecoverySender`. The recovery service
+calls it after the request was answered, from a bounded queue
+(`auth.RecoveryQueue`, generated applications) or the persistent job queue
+(`auth/recoveryqueue`), so SMTP latency does not reveal whether an account
+exists and a slow mail server does not slow the page; a queue-backed
+`mail.Sender` is still useful for retrying delivery (ADR 0013).
 
 ## Deliver later
 

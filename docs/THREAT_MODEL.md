@@ -248,7 +248,10 @@ See [ADR 0030](adr/0030-forge-deploy.md) and
 | Reset token leaked from the emailed link | I | `GET /passwords/edit` moves the token into a `no-store` form; Forge sends `Referrer-Policy: no-referrer` and pages load no third-party resources. Tokens are one-time, digest-only and expire (ADR 0013). |
 | First-owner provisioning abused to add or take over an account | S, E | `setup` refuses once any tenant exists (checked under an advisory lock in the provisioning transaction), creates the tenant, owner and role atomically with an `auth.identity.provisioned` audit event, and is an operator command, not an HTTP route. |
 | Owner password exposed during setup | I | The password is read from a terminal with echo off, one line of standard input, or `FORGE_SETUP_PASSWORD`; it is never an argument (visible in process lists and shell history), never printed or logged, and must be at least 12 characters. Prefer the prompt or `--password-stdin` over the variable, which other processes of the same user can read. |
-| Password guessing and spraying | S, D | Login is throttled independently by hashed tenant+account and source keys. The default process-local limiter is bounded; PostgreSQL deployments can share counters across replicas. Unknown accounts take the same throttle path and perform a dummy PBKDF2 verification. |
+| Password guessing and spraying | S, D | Attempts are counted before any credential check against hashed keys of the canonical login, the source (socket peer; IPv6 per `/64`) and the pair: 5 per login and source, 50 per login, 300 per source in 15 minutes. Unknown, malformed and look-alike logins take the same throttle path, the same credential lookup (random identifiers when malformed) and a dummy PBKDF2 verification. The default process-local limiter is bounded; PostgreSQL deployments can share counters across replicas. Tests: `TestLoginLetterCaseVariantsShareOneThrottleBudget`, `TestLoginCountsMalformedAttemptsAgainstTheSource`, `TestLetterCaseAndUnicodeVariantsDoNotGetFreshGuesses` (generated). |
+| Throttle as a denial of service | D | One source cannot lock a login out for others: the tight limit is per login and source, and refused attempts are not counted, so hammering cannot burn the shared login or source budgets. A full memory table evicts the oldest idle counters instead of refusing everybody, and keeps blocking ones. The PostgreSQL throttler locks counters in a fixed order, rolls refused attempts back and deletes a few expired counters on every attempt, so the table follows the live windows. Tests: `TestOneSourceCannotLockALoginOutForOtherSources`, `TestFullTableEvictsIdleCountersAndKeepsBlockingOnes`, `TestLoginThrottlerKeepsOneSourceFromLockingALoginOut`, `TestLoginThrottlerNeverExceedsALimitUnderConcurrency`, `TestLoginThrottlerPrunesExpiredCountersWhileCounting`. |
+| Look-alike (Unicode) logins | S, I | `auth.CanonicalLogin` refuses non-ASCII logins at storage, lookup and throttle keys (strings.ToLower folds the Kelvin sign to `k`; PostgreSQL can fold `İ` to `i`); tenant slugs are ASCII-lowercased. Reset links go to the address the store holds, never to the typed one. Tests: `TestRecoveryNeverLooksUpOrDeliversToALookAlike`, `TestLoginTreatsLookAlikeLoginsAsUnknownAccounts`, `TestResetLinksGoToTheStoredAddressAndLookAlikesGetNothing` (generated). |
+| Timing oracle on reset requests and sign-in | I | Reset requests are dispatched to a bounded lifecycle-owned queue (or the persistent job queue) and answered after at least 100 ms; sign-in does the same lookup and hash for malformed or unknown organizations; unknown reset tokens are refused before PBKDF2. Tests: `TestRecoveryRequestNeverAnswersFasterThanTheResponseTime`, `TestRecoveryRequestAnswersWhileTheSenderIsStillBlocked`, `TestLoginRunsTheSameLookupForMalformedAndUnknownIdentities`, `TestRecoveryResetChecksTheTokenBeforeHashingThePassword`. |
 | Stale or forged role claims | S, E | Tokens carry no claims. The resolver contract requires current user, membership, expiration and permissions on every request. Bearer and cookie transports are explicit and do not fall back to one another; query and tenant headers are not authentication fallbacks. |
 | Missing authorization check | E | `auth.Require` denies without a principal and denies a principal without the exact permission. Permissions have no wildcard semantics. Application route coverage remains the application's responsibility. |
 | Tenant omitted or forged | E, I | `tenancy.Require` has no default. Authentication installs the tenant returned by the server-side resolver; client tenant headers are ignored. |
@@ -336,9 +339,29 @@ See [CREDENTIALS.md](CREDENTIALS.md), [ENCRYPTION.md](ENCRYPTION.md) and
   migrations register; members who should not hold all of them need other
   roles. A tenant administrator who can create roles can already grant any
   permission within the tenant.
-- Generated applications send reset emails over SMTP inline, so response
-  time can reveal whether an account exists; production deployments should
-  put a queue-backed `mail.Sender` in front of `recoverymail` (ADR 0013).
+- Throttle residual risks: counters of the default limiter live in one
+  process (a restart or several replicas multiply the budget; use the
+  PostgreSQL throttler); the source is the socket peer, so clients behind one
+  proxy share a budget and Forge does not trust `X-Forwarded-For`; an
+  attacker who controls 50 sources (or `/64`s) can still keep one known login
+  throttled for 15 minutes at a time (10 sources for recovery requests for an
+  hour); one with very many sources can fill the in-memory table with
+  blocking counters, after which new attempts are refused until counters
+  expire; the PostgreSQL throttler has no row cap, only pruning that follows
+  the attempt rate; `/64` counting also groups unrelated subscribers who share
+  a prefix, and a subscriber with a larger allocation gets many budgets.
+- Reset-request residual risks: the in-process `auth.RecoveryQueue` is not
+  durable, so requests queued or running when the process stops are lost, and
+  a full queue drops requests (logged), so a flood can delay legitimate
+  resets; the account-dependent work still happens, just after the answer, so
+  it is visible only through server load and the mail that arrives; with
+  `auth/recoveryqueue` the stored payload holds the typed canonical login
+  until the job is pruned; a service built without a dispatcher still does the
+  work inline (the 100 ms floor hides it only while delivery is faster);
+  sign-in does slightly more work (session issuance) when it succeeds.
+- Accounts stored with a non-ASCII login before the canonical-login rule
+  cannot sign in or recover until an operator gives them an ASCII address
+  (AUTHENTICATION.md).
 - A reset link that reaches the wrong person (forwarded email, shared
   mailbox) lets them choose the password until it expires or is used; the
   reset form cannot show which account the token belongs to.

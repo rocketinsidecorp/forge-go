@@ -223,6 +223,18 @@ FORGE_AUTH_PASSWORD_RESET_URL=http://localhost:8080/passwords/edit
 ENV
 ```
 
+Logins are ASCII email addresses (`setup` refuses others) and the reset page
+answers at once, no sooner than 100 ms: the email is issued and sent a moment
+later by a bounded queue the application owns. After upgrading an existing
+application, run `forge migrate` (the login throttle gains a counter) and list
+accounts whose stored login is not ASCII, which can no longer sign in
+([docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#canonical-logins)):
+
+```sh
+forge migrate
+psql "$FORGE_DATABASE_URL" -c "SELECT id, email FROM forge_users WHERE email_normalized !~ '^[!-~]+\$' OR email_normalized <> lower(email_normalized)"
+```
+
 In production set `FORGE_MAIL_URL=smtps://user:password@smtp.example.com:465`
 (or `smtp://...:587` for STARTTLS), `FORGE_MAIL_FROM` and
 `FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit`; see

@@ -104,12 +104,44 @@ A login always names its tenant explicitly:
 }
 ```
 
-Forge trims surrounding identifier whitespace, case-folds email and tenant
-identifiers, and validates the tenant slug. Password bytes are never trimmed or
-normalized. An unknown email, wrong password, unknown tenant, disabled user,
+### Canonical logins
+
+Storage (`ProvisionOwner`, `setup`), lookup, throttle keys and password
+recovery all use one canonical form of the login (`auth.CanonicalLogin`,
+`auth.NormalizeIdentity`): surrounding whitespace trimmed, ASCII letters
+lowercased, exactly one `@` with text on both sides, at most 320 bytes, and
+only printable ASCII: **no non-ASCII, whitespace or control character**.
+Tenant slugs are trimmed and ASCII-lowercased and must match
+`^[a-z][a-z0-9-]{1,62}$`. Unicode case mapping differs between Go, PostgreSQL
+collations and mail systems (`strings.ToLower` folds the Kelvin sign to `k`,
+and PostgreSQL can fold `user@İcloud.com` to `user@icloud.com`), so a
+look-alike spelling could otherwise match another account, get its own
+throttle counters or receive another account's reset link. A non-ASCII login
+is an **unknown account**: it gets the same response, the same throttling and
+the same work as any other miss.
+
+Password bytes are never trimmed or normalized. An unknown email, wrong
+password, unknown or malformed tenant, non-canonical login, disabled user,
 disabled organization/tenant, or inactive membership all produce the same
-public `credentials_invalid` result. Missing identities still execute PBKDF2
-against a dummy hash to avoid a dramatically cheaper account-miss path.
+public `credentials_invalid` result and the same work: the attempt is
+throttled, the credential store is queried (with random identifiers when the
+login or tenant is malformed, so malformed input is not cheaper than a miss)
+and PBKDF2 runs against a dummy hash.
+
+**Upgrading existing data.** An account stored before this rule with a
+non-ASCII `email_normalized` can no longer sign in or receive a reset (a
+non-ASCII address could not receive mail from Forge anyway,
+[ADR 0024](adr/0024-mail.md)). Find them, then give each owner an ASCII
+address by hand (Forge does not guess one):
+
+```sql
+SELECT id, email, email_normalized FROM forge_users
+WHERE email_normalized !~ '^[!-~]+$' OR email_normalized <> lower(email_normalized);
+-- UPDATE forge_users SET email = 'new@example.com', email_normalized = 'new@example.com' WHERE id = '...';
+```
+
+Run `migrate` before deploying code that uses the PostgreSQL throttle: it adds
+the pair counter scope (see below).
 
 The default session lifetime is 24 hours and may be configured between five
 minutes and 30 days. A successful login can upgrade an old password work factor
@@ -126,22 +158,44 @@ Applications should register these handlers only on POST routes.
 
 ## Login throttling
 
-`LoginService` rate-limits every syntactically valid password attempt before
-credential lookup. It derives SHA-256 keys for the tenant+email account and,
-when available, the network source. The limiter therefore does not need to
-store plaintext email addresses or IP addresses.
+`LoginService` rate-limits every password attempt before credential lookup,
+including attempts with a malformed login or tenant. It derives SHA-256 keys
+for three counters, so the limiter never stores plaintext email addresses or
+IP addresses:
 
-The default `MemoryLoginThrottler` is bounded to 20,000 buckets and uses a
-15-minute window with five attempts per account and 300 attempts per source.
-A successful login clears the account bucket but not the source bucket, so one
-successful account does not reset password-spraying pressure from that source.
+| Counter | Default (15 minutes) | Stops |
+| ------- | -------------------- | ----- |
+| login and source (`PairLimit`) | 5 | a guesser, quickly, without locking the owner out |
+| login, all sources (`AccountLimit`) | 50 | guessing one login from many sources |
+| source (`SourceLimit`) | 300 | password spraying from one source |
+
+The account is the canonical login alone, so changing the tenant field or the
+letter case does not reset a count. IPv6 sources are counted by their `/64`
+prefix (one subscriber's usual allocation) and IPv4-mapped IPv6 addresses as
+IPv4. A refused attempt is not counted: a blocked attacker hammering one login
+cannot burn the login's shared budget and lock the owner out. Configure the
+limits with `LoginThrottleConfig`; a zero `PairLimit` disables the pair counter
+(the account limit then applies to all sources together).
+
+The default `MemoryLoginThrottler` is bounded to 20,000 counters. When the table
+is full it evicts the oldest counters that block nothing and refuses new
+attempts only when every counter is blocking, so filling it from many sources
+neither flushes a blocked attacker's counter nor refuses everybody. A
+successful login clears the login and pair counters but not the source counter,
+so one successful account does not reset password-spraying pressure from that
+source.
 
 For horizontally scaled PostgreSQL deployments, use
 `auth/postgres.NewLoginThrottler` through `WithLoginThrottler`. It stores
-shared hashed counters in `forge_login_throttle` and updates account/source
-counters atomically in one transaction. `PruneExpired` deletes expired buckets
-in bounded batches using `SKIP LOCKED`, so multiple cleanup workers can run
-without blocking each other.
+shared hashed counters in `forge_login_throttle` (the migration
+`20261020120000_login_throttle_pair_scope` adds scope 3, the pair) and counts
+an attempt in one transaction that locks the counters in a fixed order, so
+concurrent attempts neither deadlock nor exceed a limit. It also prunes a few
+expired counters on every attempt (more than one attempt creates), so the table
+follows the live windows however many logins and sources an attacker cycles
+through, with no scheduled job; `PruneExpired` still deletes expired counters in
+bounded batches using `SKIP LOCKED` to empty a table that stopped receiving
+attempts. `MaxEntries` bounds only the in-memory throttler.
 
 A blocked login returns `login_throttled` with HTTP `429`; the HTTP adapter
 also sends `Retry-After`. Source detection uses the socket peer from
@@ -237,8 +291,9 @@ How the flow stays safe:
   inactive account, membership, tenant or organization are all
   `ErrCredentialsInvalid`; the generated page shows "That organization, email
   and password do not match an account." and never echoes the password.
-  Reset requests answer the same for known, unknown and malformed accounts
-  and for delivery failures.
+  Reset requests answer the same, after at least 100 ms, for known, unknown
+  and malformed accounts and for delivery failures, because the account is
+  only looked up after the answer ([ACCOUNT_RECOVERY.md](ACCOUNT_RECOVERY.md)).
 - **Throttling.** The login, MFA and recovery throttles apply unchanged;
   throttled calls return `*LoginThrottledError` or `*RecoveryThrottledError`
   and set `Retry-After`, and the pages answer `429`.

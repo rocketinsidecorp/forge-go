@@ -181,3 +181,43 @@ guard now uses `AuthenticateBrowser("/session/new", ...)`.
   pages, "remember me", host-based tenant selection, a signed-in indicator in
   the layout (the `sessions/_sign_out` partial is included where wanted), and
   identity persistence for MySQL, MariaDB or SQLite.
+
+## Addendum (2026-10-20): independent security review
+
+An independent review of the sibling Rust framework found gaps that applied
+equally here; Forge-Go carries the same fixes (feature and security parity is
+an owner rule).
+
+- **Canonical logins.** `auth.CanonicalLogin` is the one form used for
+  storage (`ProvisionOwner`, `setup`), lookup, throttle keys and recovery:
+  trimmed, ASCII-lowercased, exactly one `@`, printable ASCII only. The
+  previous `strings.ToLower` normalization accepted non-ASCII and folded the
+  Kelvin sign to `k`, and PostgreSQL collations can fold `İ` to `i`, so a
+  look-alike spelling could match another account, get its own throttle
+  counters or receive another account's reset link. A non-ASCII login is an
+  unknown account. Tenant slugs are ASCII-lowercased too. Accounts stored with
+  a non-ASCII `email_normalized` can no longer sign in; the migration note is
+  in [AUTHENTICATION.md](../AUTHENTICATION.md). Reset links keep going only to
+  the address the store holds (`RecoveryIdentity.Email`).
+- **Reset requests are not timed by the account.** `RecoveryService.Request`
+  validates, throttles and hands the request to a `RecoveryDispatcher`, and
+  answers no sooner than 100 ms; `RecoveryService.Process` looks the account
+  up, issues the token and delivers it afterwards. The dispatcher is a bounded
+  `auth.RecoveryQueue` owned by the application's lifecycle (generated
+  applications: started in `Configure`, stopped by `App.OnShutdown`; a full
+  queue drops and logs; no detached goroutines) or, where the application has
+  a persistent queue, `auth/recoveryqueue` (retried, one pending job per
+  login, payload without a token). Without a dispatcher `Request` still works
+  inline. Sign-in no longer returns early for a malformed login or tenant:
+  it is throttled, the credential store is queried with random identifiers
+  and a dummy hash is computed, so malformed input costs what a miss costs.
+  A reset submission checks that the token exists, is unused and unexpired
+  (`RecoveryTokenChecker`) before hashing the new password.
+- **Throttle denial of service.** Counters are per login and source (5), per
+  login (50) and per source (300) in 15 minutes (recovery: 3, 10 and 30 in an
+  hour), IPv6 sources per `/64`. A refused attempt is not counted, so one
+  source cannot burn the login's shared budget. The memory throttler evicts
+  the oldest idle counters when full and refuses only when all block;
+  the PostgreSQL throttler locks counters in a fixed order, rolls refused
+  attempts back, and prunes expired counters on every attempt. The residual
+  risks are in [THREAT_MODEL.md](../THREAT_MODEL.md).
