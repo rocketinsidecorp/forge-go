@@ -1,0 +1,15 @@
+{{define "title"}}{{t "mfa.backup_codes.title"}}{{end}}
+{{define "content"}}
+<h1>{{t "mfa.backup_codes.title"}}</h1>
+<p>{{t "mfa.backup_codes.instructions"}}</p>
+<ol class="backup-codes">
+	{{range .Codes}}<li><code>{{.}}</code></li>
+	{{end}}
+</ol>
+{{if .SignedOut}}
+<p>{{t "mfa.backup_codes.signed_out"}}</p>
+<p><a href="/session/new?return_to=%2Fmfa">{{t "mfa.backup_codes.sign_in"}}</a></p>
+{{else}}
+<p><a href="/mfa">{{t "mfa.show.back"}}</a></p>
+{{end}}
+{{end}}

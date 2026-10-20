@@ -44,7 +44,7 @@ func ViewBase(name, module string) ([]BaseFile, error) {
 // AuthenticationFiles returns the sign-in, sign-out, two-factor and
 // password-reset pages `forge new` generates for a PostgreSQL application:
 // app/adapters/htmlauth (handlers and tests), app/views/sessions,
-// app/views/passwords and their English text,
+// app/views/passwords, app/views/mfa and their English text,
 // config/locales/authentication.en.json. `forge generate authentication`
 // adds them to an application that lacks them, so both produce the same
 // files. name is the application name and module its Go module path.

@@ -16,7 +16,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Authentication pages, password reset | `rails g authentication` | Done | In review |
 | First tenant and owner, seeds | `db:seed` | Done (`forge setup`, `forge seed`) | In review (`setup`, `seed`) |
 | Multi-tenancy with database enforcement | (gems) | Done (PostgreSQL RLS) | Done (PostgreSQL RLS) |
-| TOTP MFA | (gems) | Done | Planned |
+| TOTP MFA | (gems) | Done (sign-in code step and generated `/mfa` settings pages: enrollment, rotation, backup codes, disable; [ADR 0045](adr/0045-generated-mfa-settings-pages.md)) | Done (sign-in code step and generated `/mfa` settings pages; Forge-Rust ADR 0040) |
 | Persistent jobs, cron, outbox | Solid Queue | Done | In review |
 | Mailer with previews | Action Mailer | Done | Done (`forge-mail`, Forge-Rust ADR 0035) |
 | Rate limiting | `rate_limit` | Done | In review |

@@ -210,9 +210,10 @@ Implemented foundation:
 
 Remaining boundaries: inviting further users and creating more tenants are
 application features; password-recovery delivery needs a configured sender;
-MFA enrollment/rotation still requires an application-specific step-up policy
-and has no generated pages; and tenants are chosen with an explicit field,
-not by host name.
+and tenants are chosen with an explicit field, not by host name. Generated
+applications include the two-factor settings pages (`/mfa`: enrollment,
+rotation, backup codes, disable) with password-and-code step-up
+([ADR 0045](adr/0045-generated-mfa-settings-pages.md)).
 Those framework primitives require application-specific decisions and are documented in
 [AUTHENTICATION.md](AUTHENTICATION.md) and [MFA.md](MFA.md). PostgreSQL is the
 only built-in identity persistence adapter and the only adapter with a

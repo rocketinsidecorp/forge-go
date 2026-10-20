@@ -289,7 +289,7 @@ func TestGeneratedScaffoldBuildsWiresAndPasses(t *testing.T) {
 					t.Fatalf("the wired application test did not run, or an unexpected test was skipped\n%s", output)
 				}
 				if database.adapter == "postgres" {
-					for _, want := range []string{"--- PASS: TestOwnerSignsInAndReachesTheScaffoldPages", "--- PASS: TestPagesAgainstPostgres", "--- PASS: TestFailedSignInIsUniform"} {
+					for _, want := range []string{"--- PASS: TestOwnerSignsInAndReachesTheScaffoldPages", "--- PASS: TestPagesAgainstPostgres", "--- PASS: TestFailedSignInIsUniform", "--- PASS: TestMFAPagesAgainstPostgres", "--- PASS: TestMFASettingsNeedASignedInAccount"} {
 						if !strings.Contains(string(output), want) {
 							t.Fatalf("the sign-in flow did not run: missing %q\n%s", want, output)
 						}

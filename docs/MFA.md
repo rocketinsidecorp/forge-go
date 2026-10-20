@@ -128,6 +128,8 @@ shared throttler.
 
 - `forge_totp_enrollments` for short-lived pending seeds;
 - `forge_totp_factors` for the active encrypted seed and replay counter;
+- `forge_mfa_backup_codes` for `SHA-256("mfa-backup\0" || code)` digests of
+  one-time backup codes;
 - `forge_mfa_challenges` for digest-only one-time password-login challenges.
 
 `Repository.PruneMFA(ctx, limit)` removes expired enrollments and
@@ -153,15 +155,75 @@ is deliberately insufficient.
 
 See [ADR 0015](adr/0015-mfa-factor-lifecycle.md).
 
+## Generated settings pages
+
+PostgreSQL applications from `forge new` (and `forge generate
+authentication`) include the two-factor settings of the signed-in account
+([ADR 0045](adr/0045-generated-mfa-settings-pages.md); the same routes as
+Forge-Rust):
+
+```sh
+forge new myapp && cd myapp          # .env.local already holds a development FORGE_AUTH_MFA_KEY
+docker compose up -d postgres
+forge migrate
+forge setup --tenant acme --email you@example.com
+forge dev
+# sign in at http://localhost:8080/session/new, then open http://localhost:8080/mfa
+```
+
+For production, generate the key once and keep it in a secret manager:
+
+```sh
+export FORGE_AUTH_MFA_KEY=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
+```
+
+| Method | Path | Page |
+| --- | --- | --- |
+| `GET` | `/mfa` | on or off, backup codes left (or "not available" without `FORGE_AUTH_MFA_KEY`) |
+| `POST` | `/mfa` | turn on: the password, then the key (`otpauth://` link and Base32 text) |
+| `POST` | `/mfa/confirm` | the password and a code of the new key: 10 backup codes, shown once; signs out everywhere |
+| `POST` | `/mfa/rotation` | replace the authenticator: the password and a current code, then the new key |
+| `POST` | `/mfa/rotation/confirm` | the password, a current code (`current_code`) and a code of the new key: new backup codes; signs out everywhere |
+| `POST` | `/mfa/backup_codes` | new backup codes (the password and a current code); the old ones stop working |
+| `DELETE` | `/mfa` | turn off (the password and a current code); signs out everywhere |
+
+A "current code" is a code of the active authenticator or an unused backup
+code; either is used up, so it works once. Every one of these requests:
+
+- needs the CSRF token (`403` without it) and a session (signed-out browsers
+  go to `/session/new`);
+- asks for the password again, also when confirming a new key, so a stolen
+  session can neither see a pending key again nor guess its code;
+- counts one attempt on the MFA throttler (five per account and 60 per source
+  in five minutes) before anything is checked: `422` with one message for a
+  wrong password or code, `429` with `Retry-After` when throttled. A wrong
+  code of a new key counts too. The counters are cleared only after a change
+  succeeds, and a password alone never clears them for an account that has a
+  factor;
+- is audited, refusals as the target action with outcome `denied`
+  ([AUDIT.md](AUDIT.md)).
+
+Keys and backup codes appear only on `no-store` pages and are never logged.
+The pages live in `app/adapters/htmlauth` and `app/views/mfa`; their text is
+under `mfa.*` in `config/locales/authentication.*.json`. Change them freely;
+the security steps are in `auth.Browser` (`BeginMFAEnrollment`,
+`ConfirmMFAEnrollment`, `BeginMFARotation`, `ConfirmMFARotation`,
+`RegenerateMFABackupCodes`, `DisableMFA`, `MFAStatus`), which needs
+`BrowserOptions.Passwords` (an `auth.SubjectPasswordStore`, implemented by
+`auth/postgres.Repository`) besides the MFA service.
+
+In code, `MFAService.VerifyMFACode` checks and uses up a current code outside
+sign-in, `RegenerateMFABackupCodes` replaces the backup codes (event
+`auth.mfa.backup_codes_regenerated`) and `MFAStatus` reports the state; they
+need a store implementing `auth.MFASettingsStore`. `auth.TOTPCodeAt(key,
+time)` computes the code an authenticator app shows, for end-to-end tests.
+
 ## Remaining MFA work
 
-Generated PostgreSQL applications wire the challenge-completion flow when
-`FORGE_AUTH_MFA_KEY` is configured and pass the repository as the MFA auditor.
-Enrollment and rotation handlers are intentionally not registered by the
-scaffold: applications must supply their own step-up authorization policy.
-
-Recovery delivery is also application-specific and uses the separate recovery
+Recovery delivery is application-specific and uses the separate recovery
 service and sender interface. When composing these services manually, configure
-the security auditor explicitly.
+the security auditor explicitly. A QR code image is not rendered (as in
+Forge-Rust): the page shows the `otpauth://` link, which phones open in their
+authenticator app, and the Base32 key.
 
 See also [ADR 0014](adr/0014-totp-mfa.md).

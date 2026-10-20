@@ -154,11 +154,12 @@ func authenticationWiring(plan authenticationPlan) string {
      POST /auth/cookie/login; reuse an existing renderer if you have one:
 
 	browser, err := auth.NewBrowser(auth.BrowserOptions{
-		Login:    login,
-		Sessions: repository,
-		MFA:      mfaService,
-		Recovery: recoveryService,
-		Auditor:  repository,
+		Login:     login,
+		Sessions:  repository,
+		MFA:       mfaService,
+		Passwords: repository,
+		Recovery:  recoveryService,
+		Auditor:   repository,
 	})
 	if err != nil {
 		return err
@@ -167,7 +168,11 @@ func authenticationWiring(plan authenticationPlan) string {
 	if err != nil {
 		return err
 	}
-	if err := htmlauth.Register(app, browser, renderer); err != nil {
+	middleware, err := auth.NewMiddleware(repository) // reuse yours if built
+	if err != nil {
+		return err
+	}
+	if err := htmlauth.Register(app, browser, renderer, middleware); err != nil {
 		return err
 	}
 

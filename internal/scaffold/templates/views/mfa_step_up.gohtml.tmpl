@@ -1,0 +1,10 @@
+{{/* The step-up fields of a two-factor change: the password and a current authenticator or backup code. Include it with template "mfa/_step_up" (dict "ID" "a-unique-prefix"). */}}
+<p>
+	<label for="{{.ID}}-password">{{t "mfa.show.password"}}</label>
+	<input id="{{.ID}}-password" name="password" type="password" required maxlength="4096" autocomplete="current-password">
+</p>
+<p>
+	<label for="{{.ID}}-code">{{t "mfa.show.code"}}</label>
+	<input id="{{.ID}}-code" name="code" type="text" required maxlength="32" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" aria-describedby="{{.ID}}-code-hint">
+	<small id="{{.ID}}-code-hint">{{t "mfa.show.code_hint"}}</small>
+</p>

@@ -1,0 +1,303 @@
+package htmlauth_test
+
+import (
+	"context"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"{{.Module}}/app/adapters/htmlauth"
+	"github.com/rocketinsidecorp/forge-go/auth"
+	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+)
+
+var (
+	shownKey         = regexp.MustCompile(`<code id="mfa-key">([A-Z2-7]+)</code>`)
+	shownBackupCodes = regexp.MustCompile(`<li><code>([A-Z2-7-]+)</code></li>`)
+)
+
+// TestMFASettingsNeedASignedInAccount checks the two-factor settings are
+// behind the session cookie, and say so when FORGE_AUTH_MFA_KEY is not set.
+func TestMFASettingsNeedASignedInAccount(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := memoryPages(t)
+	visitor := newClient(t, handler)
+	if page := visitor.do(http.MethodGet, htmlauth.MFASettingsPath, nil); page.Code != http.StatusSeeOther ||
+		page.Header().Get("Location") != htmlauth.SignInPath+"?return_to=%2Fmfa" {
+		t.Fatalf("signed out: status=%d Location=%q", page.Code, page.Header().Get("Location"))
+	}
+	if visitor.signIn(testPassword, ""); visitor.cookies[auth.SessionCookieName] == nil {
+		t.Fatal("sign in failed")
+	}
+	page := visitor.do(http.MethodGet, htmlauth.MFASettingsPath, nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "FORGE_AUTH_MFA_KEY is not configured") || page.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d headers=%v:\n%s", page.Code, page.Header(), page.Body)
+	}
+	if refused := visitor.submit("/mfa", url.Values{"password": {testPassword}}); refused.Code != http.StatusSeeOther || refused.Header().Get("Location") != htmlauth.MFASettingsPath {
+		t.Fatalf("POST /mfa without MFA: status=%d Location=%q", refused.Code, refused.Header().Get("Location"))
+	}
+}
+
+// mfaClock is the MFA service's clock: the tests move it a period at a time
+// so every code is fresh, or deliberately replayed.
+type mfaClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *mfaClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *mfaClock) nextPeriod() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(30 * time.Second)
+}
+
+func (c *mfaClock) code(t *testing.T, key string) string {
+	t.Helper()
+	code, err := auth.TOTPCodeAt(key, c.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code
+}
+
+// TestMFAPagesAgainstPostgres turns two-factor authentication on, replaces
+// the authenticator, creates new backup codes and turns it off through the
+// pages and the real identity repository, with the refusals each step must
+// make: no CSRF token, no or a wrong password, a wrong, used or another
+// account's code. It needs FORGE_TEST_DATABASE_URL and is skipped otherwise.
+func TestMFAPagesAgainstPostgres(t *testing.T) {
+	database := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	repository, err := authpostgres.New(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	owner, err := repository.ProvisionOwner(ctx, authpostgres.OwnerAccount{
+		Organization: "Acme", TenantSlug: testTenant, Email: testEmail, Password: testPassword,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second account in another organization (setup provisions only the
+	// first one).
+	otherUser, otherOrganization, otherTenant := uuid.MustNew(), uuid.MustNew(), uuid.MustNew()
+	otherHash, err := auth.HashPassword(testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{"INSERT INTO forge_users (id, email, email_normalized, password_hash) VALUES ($1, 'other@example.com', 'other@example.com', $2)", []any{otherUser, otherHash}},
+		{"INSERT INTO forge_organizations (id, name) VALUES ($1, 'Other')", []any{otherOrganization}},
+		{"INSERT INTO forge_tenants (id, organization_id, slug) VALUES ($1, $2, 'other')", []any{otherTenant, otherOrganization}},
+		{"INSERT INTO forge_memberships (id, user_id, tenant_id) VALUES ($1, $2, $3)", []any{uuid.MustNew(), otherUser, otherTenant}},
+	} {
+		if _, err := database.Exec(ctx, statement.sql, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock := &mfaClock{now: time.Now().UTC()}
+	cipher, err := auth.NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mfa, err := auth.NewMFAService(repository, repository, cipher, auth.WithMFAClock(clock.Now), auth.WithMFAAuditor(repository))
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := auth.NewLoginService(repository, repository, auth.WithSecurityAuditor(repository), auth.WithMFAChallengeIssuer(mfa))
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: repository, MFA: mfa, Passwords: repository, Auditor: repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := serve(t, browser, repository)
+	enabled := func(subject uuid.UUID) bool {
+		t.Helper()
+		status, err := repository.LoadMFAStatus(ctx, subject)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return status.Enabled
+	}
+	sessionResolves := func(c *client) bool {
+		t.Helper()
+		cookie := c.cookies[auth.SessionCookieName]
+		if cookie == nil {
+			return false
+		}
+		token, err := auth.ParseToken(cookie.Value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, found, err := repository.ResolveSession(ctx, token.Digest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+
+	ada := newClient(t, handler)
+	if signedIn := ada.signIn(testPassword, ""); signedIn.Code != http.StatusSeeOther {
+		t.Fatalf("sign in status=%d", signedIn.Code)
+	}
+	if page := ada.do(http.MethodGet, "/mfa", nil); page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Two-factor authentication is off") {
+		t.Fatalf("settings status=%d:\n%s", page.Code, page.Body)
+	}
+
+	// Turning it on needs the CSRF token and the password.
+	if forged := ada.do(http.MethodPost, "/mfa", url.Values{"password": {testPassword}}); forged.Code != http.StatusForbidden || shownKey.MatchString(forged.Body.String()) {
+		t.Fatalf("no CSRF token: status=%d", forged.Code)
+	}
+	if wrong := ada.submit("/mfa", url.Values{"password": {"wrong password"}}); wrong.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(wrong.Body.String(), "That password or code did not work.") || strings.Contains(wrong.Body.String(), "otpauth://") {
+		t.Fatalf("wrong password: status=%d:\n%s", wrong.Code, wrong.Body)
+	}
+	begun := ada.submit("/mfa", url.Values{"password": {testPassword}})
+	match := shownKey.FindStringSubmatch(begun.Body.String())
+	if begun.Code != http.StatusOK || match == nil || !strings.Contains(begun.Body.String(), `href="otpauth://totp/`) || begun.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("enable status=%d headers=%v:\n%s", begun.Code, begun.Header(), begun.Body)
+	}
+	key := match[1]
+
+	// A session without the password can neither see the key again nor try
+	// codes of it.
+	for name, form := range map[string]url.Values{
+		"no password":    {"code": {clock.code(t, key)}},
+		"wrong password": {"password": {"wrong password"}, "code": {clock.code(t, key)}},
+	} {
+		refused := ada.submit("/mfa/confirm", form)
+		if refused.Code != http.StatusUnprocessableEntity || strings.Contains(refused.Body.String(), key) || strings.Contains(refused.Body.String(), "otpauth://") {
+			t.Fatalf("confirm with %s: status=%d:\n%s", name, refused.Code, refused.Body)
+		}
+	}
+	if enabled(owner.UserID) {
+		t.Fatal("two-factor turned on without the password")
+	}
+	if wrongCode := ada.submit("/mfa/confirm", url.Values{"password": {testPassword}, "code": {"000000"}}); wrongCode.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(wrongCode.Body.String(), key) {
+		t.Fatalf("wrong code: status=%d, want the key shown again:\n%s", wrongCode.Code, wrongCode.Body)
+	}
+	confirmed := ada.submit("/mfa/confirm", url.Values{"password": {testPassword}, "code": {clock.code(t, key)}})
+	backup := shownBackupCodes.FindAllStringSubmatch(confirmed.Body.String(), -1)
+	if confirmed.Code != http.StatusOK || len(backup) != auth.DefaultMFABackupCodeCount || confirmed.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("confirm status=%d codes=%d:\n%s", confirmed.Code, len(backup), confirmed.Body)
+	}
+	if !enabled(owner.UserID) || ada.cookies[auth.SessionCookieName] != nil {
+		t.Fatal("confirming must turn two-factor on and sign the browser out")
+	}
+
+	// Signing in now needs a code; a backup code works once.
+	if step := ada.signIn(testPassword, ""); step.Code != http.StatusSeeOther || step.Header().Get("Location") != "/session/mfa" {
+		t.Fatalf("password step status=%d Location=%q", step.Code, step.Header().Get("Location"))
+	}
+	if done := ada.submit("/session/mfa", url.Values{"code": {backup[0][1]}}); done.Code != http.StatusSeeOther || !sessionResolves(ada) {
+		t.Fatalf("code step status=%d", done.Code)
+	}
+
+	// Changes need the password and a current code, used up.
+	bob := newClient(t, handler)
+	if signedIn := bob.do(http.MethodGet, htmlauth.SignInPath, nil); signedIn.Code != http.StatusOK {
+		t.Fatal(signedIn.Code)
+	}
+	if signedIn := bob.submit("/session", url.Values{"tenant": {"other"}, "email": {"other@example.com"}, "password": {testPassword}}); signedIn.Code != http.StatusSeeOther {
+		t.Fatalf("other account sign in status=%d", signedIn.Code)
+	}
+	clock.nextPeriod()
+	for name, form := range map[string]url.Values{
+		"no code":          {"password": {testPassword}},
+		"used backup code": {"password": {testPassword}, "code": {backup[0][1]}},
+		"wrong password":   {"password": {"wrong password"}, "code": {clock.code(t, key)}},
+	} {
+		if refused := ada.submit("/mfa/backup_codes", form); refused.Code != http.StatusUnprocessableEntity || shownBackupCodes.MatchString(refused.Body.String()) {
+			t.Fatalf("%s: status=%d", name, refused.Code)
+		}
+	}
+	// Another account's session cannot use Ada's code.
+	if crossed := bob.submit("/mfa/backup_codes", url.Values{"password": {testPassword}, "code": {clock.code(t, key)}}); crossed.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("another account: status=%d", crossed.Code)
+	}
+	if enabled(otherUser) {
+		t.Fatal("the other account changed")
+	}
+	code := clock.code(t, key)
+	regenerated := ada.submit("/mfa/backup_codes", url.Values{"password": {testPassword}, "code": {code}})
+	fresh := shownBackupCodes.FindAllStringSubmatch(regenerated.Body.String(), -1)
+	if regenerated.Code != http.StatusOK || len(fresh) != auth.DefaultMFABackupCodeCount || !sessionResolves(ada) {
+		t.Fatalf("new backup codes status=%d codes=%d", regenerated.Code, len(fresh))
+	}
+	if replayed := ada.submit("/mfa/backup_codes", url.Values{"password": {testPassword}, "code": {code}}); replayed.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("replayed code: status=%d", replayed.Code)
+	}
+	if old := ada.submit("/mfa/backup_codes", url.Values{"password": {testPassword}, "code": {backup[1][1]}}); old.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("old backup code: status=%d", old.Code)
+	}
+
+	// Replacing the authenticator: the confirmation needs the password and
+	// a current code of the old one as well as a code of the new key.
+	rotation := ada.submit("/mfa/rotation", url.Values{"password": {testPassword}, "code": {fresh[0][1]}})
+	match = shownKey.FindStringSubmatch(rotation.Body.String())
+	if rotation.Code != http.StatusOK || match == nil || match[1] == key {
+		t.Fatalf("rotation status=%d:\n%s", rotation.Code, rotation.Body)
+	}
+	newKey := match[1]
+	clock.nextPeriod()
+	if refused := ada.submit("/mfa/rotation/confirm", url.Values{"password": {testPassword}, "code": {clock.code(t, newKey)}}); refused.Code != http.StatusUnprocessableEntity ||
+		strings.Contains(refused.Body.String(), newKey) {
+		t.Fatalf("rotation confirm without a current code: status=%d", refused.Code)
+	}
+	rotated := ada.submit("/mfa/rotation/confirm", url.Values{"password": {testPassword}, "current_code": {fresh[1][1]}, "code": {clock.code(t, newKey)}})
+	if rotated.Code != http.StatusOK || len(shownBackupCodes.FindAllString(rotated.Body.String(), -1)) != auth.DefaultMFABackupCodeCount || ada.cookies[auth.SessionCookieName] != nil {
+		t.Fatalf("rotation confirm status=%d:\n%s", rotated.Code, rotated.Body)
+	}
+
+	// Sign in with the new key and turn two-factor off.
+	clock.nextPeriod()
+	if step := ada.signIn(testPassword, ""); step.Code != http.StatusSeeOther {
+		t.Fatalf("password step status=%d", step.Code)
+	}
+	if done := ada.submit("/session/mfa", url.Values{"code": {clock.code(t, newKey)}}); done.Code != http.StatusSeeOther || !sessionResolves(ada) {
+		t.Fatalf("code step with the new key: status=%d", done.Code)
+	}
+	clock.nextPeriod()
+	if stale := ada.submit("/mfa", url.Values{"_method": {"DELETE"}, "password": {testPassword}, "code": {clock.code(t, key)}}); stale.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("the replaced key still works: status=%d", stale.Code)
+	}
+	signedInBefore := ada.cookies[auth.SessionCookieName]
+	disabled := ada.submit("/mfa", url.Values{"_method": {"DELETE"}, "password": {testPassword}, "code": {clock.code(t, newKey)}})
+	if disabled.Code != http.StatusSeeOther || disabled.Header().Get("Location") != htmlauth.SignInPath || enabled(owner.UserID) {
+		t.Fatalf("disable status=%d Location=%q", disabled.Code, disabled.Header().Get("Location"))
+	}
+	ada.cookies[auth.SessionCookieName] = signedInBefore
+	if sessionResolves(ada) {
+		t.Fatal("turning two-factor off must end every session")
+	}
+
+	var denied, succeeded int
+	if err := database.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE outcome = 'denied'), count(*) FILTER (WHERE outcome = 'succeeded')
+		FROM forge_security_audit_events
+		WHERE kind LIKE 'auth.mfa.%' AND subject_id = $1
+	`, owner.UserID).Scan(&denied, &succeeded); err != nil {
+		t.Fatal(err)
+	}
+	if denied == 0 || succeeded == 0 {
+		t.Fatalf("audit events: denied=%d succeeded=%d", denied, succeeded)
+	}
+}
