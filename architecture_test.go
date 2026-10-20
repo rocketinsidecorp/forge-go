@@ -31,6 +31,7 @@ var corePackages = []string{
 	modulePath + "/fault",
 	modulePath + "/health",
 	modulePath + "/hotwire",
+	modulePath + "/i18n",
 	modulePath + "/mail",
 	modulePath + "/mail/mailtest",
 	modulePath + "/jobs",

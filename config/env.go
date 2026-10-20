@@ -43,6 +43,7 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 	setString(lookup, "FORGE_MAIL_FROM", &cfg.Mail.From)
 	setString(lookup, "FORGE_MAIL_TLS_CA_FILE", &cfg.Mail.CAFile)
 	setString(lookup, "FORGE_STORAGE_ROOT", &cfg.Storage.Root)
+	setString(lookup, "FORGE_I18N_DEFAULT_LOCALE", &cfg.I18n.DefaultLocale)
 	if value, ok := lookup("FORGE_STORAGE_SIGNING_KEY"); ok {
 		cfg.Storage.SigningKey = NewSecret(value)
 	}
