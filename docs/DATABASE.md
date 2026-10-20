@@ -790,7 +790,7 @@ deletes the file (`0600`) and its `-wal`, `-shm`, `-journal` and
 role instead: it is validated like `FORGE_DATABASE_URL`, must use the same
 adapter, and its database is ignored (the target is always the one in
 `FORGE_DATABASE_URL`). It is used by `create`, `drop`, `schema:*` and
-`console`; the application's own `migrate` still uses `FORGE_DATABASE_URL`. A
+`console`; the application's own `migrate` still uses `FORGE_DATABASE_URL`. These commands refuse either URL when its query picks the server or database (`host`, `hostaddr`, `port`, `dbname`, `service` and the like): put them in the URL's host, port and path, which is what the local-database check reads. A
 database name must be 1-63 characters of letters, digits, `_`, `-` or `$`;
 `postgres`, `template0`, `template1`, `mysql`, `information_schema`,
 `performance_schema` and `sys` are never created or dropped.

@@ -231,3 +231,78 @@ func TestIsLocalHost(t *testing.T) {
 		}
 	}
 }
+
+// pgx, like libpq, lets URL query parameters override the host, port and
+// database, so a URL whose authority is local could dial another server.
+// Such URLs are refused, for both the application and the privileged URL.
+func TestNewTargetRefusesQueryParametersThatPickTheServerOrDatabase(t *testing.T) {
+	t.Parallel()
+	urls := map[string]string{
+		"host":                "postgres://m:pw@localhost/shop?host=prod.db.internal&sslmode=disable",
+		"socket host":         "postgres://m:pw@localhost/shop?host=/var/run/postgresql",
+		"hostaddr":            "postgres://m:pw@127.0.0.1/shop?hostaddr=10.0.0.5",
+		"port":                "postgres://m:pw@localhost/shop?port=6543",
+		"dbname":              "postgres://localhost/shop?dbname=postgres",
+		"database":            "postgres://localhost/shop?database=postgres",
+		"percent-encoded key": "postgres://localhost/shop?d%62name=postgres",
+		"upper-case key":      "postgres://localhost/shop?HOST=prod.db.internal",
+		"service":             "postgres://localhost/shop?service=prod",
+		"servicefile":         "postgres://localhost/shop?servicefile=/tmp/pg_service.conf",
+	}
+	for name, raw := range urls {
+		for _, env := range []map[string]string{
+			{"FORGE_DATABASE_URL": raw},
+			{"FORGE_DATABASE_URL": "postgres://app:apppw@localhost/shop?sslmode=disable", EnvPrivilegedURL: raw},
+		} {
+			target, err := NewTarget(t.TempDir(), lookupOf(env))
+			if err == nil {
+				t.Errorf("%s: NewTarget = local %v, name %q; want a refusal", name, target.Local(), target.Name)
+				continue
+			}
+			if strings.Contains(err.Error(), "pw") || strings.Contains(err.Error(), "prod") || strings.Contains(err.Error(), "://") {
+				t.Errorf("%s: error quotes the URL: %v", name, err)
+			}
+		}
+	}
+	// Connection options that do not pick the server stay accepted.
+	target, err := NewTarget(t.TempDir(), lookupOf(map[string]string{"FORGE_DATABASE_URL": "postgres://m:pw@localhost/shop?sslmode=disable&connect_timeout=5"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !target.Local() {
+		t.Fatal("localhost must be local")
+	}
+}
+
+// A password with an unencoded "/", "?", "#" or "@" can push part of the
+// userinfo into the host, path or query. Configuration refuses those URLs
+// or parses them so that Describe and errors carry no credential.
+func TestUnencodedPasswordsNeverReachDescribeOrErrors(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		"postgres://usr7:pa55/w0rd@localhost/shop?sslmode=disable",
+		"postgres://usr7:98765/w0rd@localhost/shop?sslmode=disable",
+		"postgres://usr7:pa55?w0rd@localhost/shop?sslmode=disable",
+		"postgres://usr7:pa55#w0rd@localhost/shop?sslmode=disable",
+		"postgres://usr7:pa55@w0rd@localhost/shop?sslmode=disable",
+		"postgres://usr7:98765@localhost/shop?sslmode=disable",
+		"mysql://usr7:pa55/w0rd@localhost/shop",
+		"mysql://usr7:98765/w0rd@localhost/shop",
+		"mysql://usr7:pa55?w0rd@localhost/shop",
+		"mysql://usr7:pa55#w0rd@localhost/shop",
+		"mysql://usr7:pa55@w0rd@localhost/shop",
+	} {
+		target, err := NewTarget(t.TempDir(), lookupOf(map[string]string{"FORGE_DATABASE_URL": raw}))
+		var shown string
+		if err != nil {
+			shown = err.Error()
+		} else {
+			shown = target.Describe()
+		}
+		for _, secret := range []string{"usr7", "pa55", "w0rd", "98765"} {
+			if strings.Contains(shown, secret) {
+				t.Errorf("%s: %q reveals %q", raw, shown, secret)
+			}
+		}
+	}
+}
