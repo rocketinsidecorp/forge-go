@@ -10,7 +10,9 @@ This document covers running them. Database details are in
 
 - Multi-stage build on `golang:${GO_VERSION}-alpine` (`GO_VERSION` build
   argument, default `1.27`) with BuildKit cache mounts for the module and
-  build caches.
+  build caches. The build stage runs on the builder's platform and
+  cross-compiles (`TARGETOS`/`TARGETARCH`), so `--platform linux/arm64` (or
+  `builder.platform` in `config/deploy.yml`) needs no emulator.
 - `CGO_ENABLED=0`, `-trimpath`: a static binary with no local paths embedded.
   This holds for SQLite too: its driver is pure Go.
 - Runtime image `gcr.io/distroless/static-debian12:nonroot`: no shell, no
@@ -424,7 +426,10 @@ first. If your load balancer needs time to deregister the pod, add a
 
 Generated applications include `.github/dependabot.yml`, which checks Go
 modules, GitHub Actions, and Docker base images weekly. The generated CI runs
-`govulncheck` on every push and pull request.
+`govulncheck` on every push and pull request, pins its actions by commit SHA,
+and keeps a CycloneDX SBOM of the image as the `sbom` artifact. The opt-in
+`.github/workflows/release.yml` publishes signed images with provenance for
+version tags ([SUPPLY_CHAIN.md](SUPPLY_CHAIN.md)).
 
 ## forge deploy
 
@@ -471,8 +476,18 @@ Docker; your machine needs `ssh` and, to build, the `docker` CLI.
    `known_hosts`: Forge never disables host key checking. Use an SSH agent
    for passphrase-protected keys (commands run with `BatchMode=yes`).
 
-2. **Build and push forge-proxy** once from a Forge checkout, then note the
-   digest:
+2. **Get forge-proxy.** Use a released image, signed by this repository's
+   release workflow: verify it, then note the digest
+   ([SUPPLY_CHAIN.md](SUPPLY_CHAIN.md)):
+
+   ```sh
+   cosign verify ghcr.io/rocketinsidecorp/forge-proxy:v0.1.0 \
+     --certificate-identity-regexp '^https://github\.com/rocketinsidecorp/forge-go/\.github/workflows/release\.yml@refs/tags/v' \
+     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+   docker buildx imagetools inspect ghcr.io/rocketinsidecorp/forge-proxy:v0.1.0 --format '{{ .Manifest.Digest }}'
+   ```
+
+   Or build and push it once from a Forge checkout:
 
    ```sh
    docker build -f cmd/forge-proxy/Dockerfile -t registry.example.com/acme/forge-proxy:0.1.0 .

@@ -528,8 +528,13 @@ UUID generation).
 
 ## Phase 10 - Security hardening
 
-Review against the [threat model](THREAT_MODEL.md), broader fuzzing, and
-supply-chain hardening (pinned base images and actions, SBOM, signed images).
+Review against the [threat model](THREAT_MODEL.md).
+
+- [x] Continuous fuzzing of every target (pull requests and nightly), SBOMs,
+  keyless-signed release images, actions and images pinned by SHA and digest
+  ([SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), [ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)).
+- [ ] Signed `forge` CLI binaries with provenance; binary SBOMs attached to
+  GitHub releases.
 
 ## Also planned (unscheduled)
 

@@ -43,8 +43,10 @@ traces with W3C propagation, bounded-cardinality metrics for Prometheus and
 OTLP, trace-correlated logs, and database and job instrumentation
 ([docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)). Phase 6 starts with an
 OpenAPI 3.1 document generated from the routes' Go types
-([docs/OPENAPI.md](docs/OPENAPI.md)). Performance work and further security
-hardening remain planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
+([docs/OPENAPI.md](docs/OPENAPI.md)). Phase 10 starts with continuous
+fuzzing, SBOMs and signed release images
+([docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md)). Performance work and further
+security hardening remain planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
 
 ## Packages
 
@@ -939,6 +941,40 @@ The default `docker compose up` does not start it. See
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md#local-stack-grafana-prometheus-tempo-and-loki)
 for how logs reach Loki and what the dashboard shows.
 
+## Supply chain: fuzzing, SBOM, signed images
+
+Every fuzz target runs on each pull request and nightly for longer; SBOMs
+describe the binaries and images; release images are signed keyless with
+Sigstore cosign from `v*` tags only; actions and images are pinned by SHA and
+digest ([docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md),
+[ADR 0044](docs/adr/0044-continuous-fuzzing-sbom-signed-images.md)).
+
+```sh
+# fuzz locally: every target 10s (what CI runs), one package longer, one target
+scripts/fuzz.sh
+scripts/fuzz.sh -t 2m ./i18n
+go test -run '^$' -fuzz '^FuzzDatabaseURL$' -fuzztime 1m ./config
+scripts/fuzz.sh -l                       # list the targets
+# a failing input lands in <package>/testdata/fuzz/<target>/: fix the bug, commit the input
+
+# verify a released image (cosign v3+), then deploy it by digest
+cosign verify ghcr.io/rocketinsidecorp/forge-proxy:v0.1.0 \
+  --certificate-identity-regexp '^https://github\.com/rocketinsidecorp/forge-go/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+docker buildx imagetools inspect ghcr.io/rocketinsidecorp/forge-proxy:v0.1.0 --format '{{ .Manifest.Digest }}'
+
+# read the SBOMs: an image's (SPDX attestation), the binaries' (CycloneDX)
+docker buildx imagetools inspect ghcr.io/rocketinsidecorp/forge-proxy:v0.1.0 \
+  --format '{{ json (index .SBOM "linux/amd64").SPDX }}' | jq -r '.packages[] | "\(.name) \(.versionInfo)"'
+scripts/sbom.sh dist/sbom                # builds forge and forge-proxy; Syft runs in Docker
+jq -r '.components[] | "\(.name) \(.version)"' dist/sbom/forge.cdx.json
+```
+
+Applications from `forge new` keep an SBOM of their image as the `sbom`
+artifact of every CI run, and get an opt-in `.github/workflows/release.yml`
+(enable it with `gh variable set FORGE_RELEASE_IMAGES --body true`, then push
+a `v*` tag); their README shows how to verify the result.
+
 ## Example
 
 [`examples/basic-api`](examples/basic-api) is the reference service: a task
@@ -980,13 +1016,18 @@ Set `FORGE_TEST_REQUIRE_DATABASE=true` to make a missing server a failure.
 CI (`.github/workflows/ci.yml`):
 
 - `quality`: gofmt, vet, golangci-lint, race tests against PostgreSQL 18
-  and MySQL 8.4 services, fuzzing of the scaffold name validation and the
-  pagination cursor, benchmarks, and govulncheck;
+  and MySQL 8.4 services, benchmarks, and govulncheck;
+- `fuzz`: every fuzz target for 10 seconds (`scripts/fuzz.sh`);
+- `sbom`: CycloneDX SBOMs of the `forge` and `forge-proxy` binaries;
 - `mariadb`: the `mysql` adapter's tests against MariaDB 11.8;
 - `docker`: for each of PostgreSQL, MySQL, MariaDB, and SQLite, generates an
   application, builds its image, and smoke-tests its Compose stack with
   `docker compose up --wait` (the PostgreSQL run also builds the example
-  image).
+  image and an SBOM of the generated one).
+
+Other workflows: `fuzz.yml` fuzzes each target for 10 minutes every night,
+`scorecard.yml` runs OpenSSF Scorecard weekly, and `release.yml` publishes
+signed images for `v*` tags only.
 
 ## Documentation
 
@@ -1006,6 +1047,7 @@ CI (`.github/workflows/ci.yml`):
 - [Roadmap](docs/ROADMAP.md)
 - [Rails parity (Forge-Go and Forge-Rust)](docs/RAILS_PARITY.md)
 - [Threat model](docs/THREAT_MODEL.md)
+- [Supply chain: fuzzing, SBOM, signed images](docs/SUPPLY_CHAIN.md)
 - [Multi-tenancy](docs/MULTI_TENANCY.md)
 - [Security policy](SECURITY.md)
 - Architecture decision records: [docs/adr](docs/adr)
@@ -1031,3 +1073,4 @@ CI (`.github/workflows/ci.yml`):
   - [0041 Model, controller, mailer and queue job generators, and `forge destroy`](docs/adr/0041-generators-and-destroy.md)
   - [0042 Internationalization (i18n)](docs/adr/0042-internationalization.md)
   - [0043 OpenAPI from typed routes](docs/adr/0043-openapi-from-typed-routes.md)
+  - [0044 Continuous fuzzing, SBOMs and signed images](docs/adr/0044-continuous-fuzzing-sbom-signed-images.md)
