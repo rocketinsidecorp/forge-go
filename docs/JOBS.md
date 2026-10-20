@@ -165,7 +165,8 @@ is defense in depth; do not echo input in handler errors.
 Programmatic access: the `queue.Admin` methods on the store (`Stats`, `Get`,
 `ListDead`, `Retry`, `Discard`, `Prune`). `queue.Hooks` (`Started`,
 `Finished` with outcome, duration and sanitized error) bridge to your own
-metrics and tracing.
+metrics and tracing. `WorkerOptions.Telemetry` traces attempts and records
+`forge.queue.job.duration` directly ([OBSERVABILITY.md](OBSERVABILITY.md)).
 
 ## Limits
 

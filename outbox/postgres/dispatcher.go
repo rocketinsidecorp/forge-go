@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rocketinsidecorp/forge-go/events"
+	"github.com/rocketinsidecorp/forge-go/telemetry"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
@@ -36,6 +37,11 @@ type DispatcherOptions struct {
 	MaxAttempts  int           // Total handler attempts before dead-lettering; defaults to 10.
 	RetryBase    time.Duration // Initial exponential retry bound; defaults to 1 second.
 	RetryMax     time.Duration // Maximum retry bound; defaults to 1 minute or RetryBase, whichever is greater.
+	// Telemetry traces each delivery attempt with a consumer span (the root
+	// of a new trace) and records forge.outbox.dispatch.duration by event
+	// type and outcome. Payloads and error messages are never recorded. Nil
+	// disables it.
+	Telemetry *telemetry.Telemetry
 }
 
 // Dispatcher delivers persisted events with at-least-once semantics.
@@ -44,6 +50,7 @@ type Dispatcher struct {
 	pool    *pgxpool.Pool
 	handler Handler
 	opts    DispatcherOptions
+	tel     *dispatchTelemetry
 }
 
 // NewDispatcher creates a PostgreSQL-backed event dispatcher. Zero or negative
@@ -89,7 +96,11 @@ func NewDispatcher(pool *pgxpool.Pool, handler Handler, opts DispatcherOptions) 
 	if opts.RetryMax < opts.RetryBase {
 		return nil, errors.New("outbox retry maximum must be greater than or equal to its base")
 	}
-	return &Dispatcher{pool: pool, handler: handler, opts: opts}, nil
+	tel, err := newDispatchTelemetry(opts.Telemetry)
+	if err != nil {
+		return nil, err
+	}
+	return &Dispatcher{pool: pool, handler: handler, opts: opts, tel: tel}, nil
 }
 
 // Run starts a bounded worker pool and returns when ctx is canceled or a
@@ -148,6 +159,31 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (bool, error) {
 	if err != nil || !found {
 		return found, err
 	}
+	started := time.Now()
+	span := d.tel.start(event, attempts)
+	handlerErr, err := d.deliver(telemetry.ContextWithSpan(ctx, span), event, token, attempts)
+	d.tel.finish(span, event, time.Since(started), d.outcome(attempts, handlerErr, err), handlerErr, err)
+	return true, err
+}
+
+// outcome names how a delivery attempt ended, for telemetry.
+func (d *Dispatcher) outcome(attempts int, handlerErr, err error) string {
+	switch {
+	case errors.Is(err, ErrLeaseLost):
+		return "lease_lost"
+	case err != nil:
+		return "error"
+	case handlerErr == nil:
+		return "delivered"
+	case attempts >= d.opts.MaxAttempts:
+		return "dead_lettered"
+	}
+	return "retry"
+}
+
+// deliver runs the handler for a claimed event and records the result. It
+// returns the handler's error and the persistence or lease error.
+func (d *Dispatcher) deliver(ctx context.Context, event events.Event, token uuid.UUID, attempts int) (error, error) {
 	workCtx, cancelWork := context.WithCancel(ctx)
 	stopRenewal := make(chan struct{})
 	renewalResult := make(chan error, 1)
@@ -157,20 +193,17 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (bool, error) {
 	renewalErr := <-renewalResult
 	cancelWork()
 	if renewalErr != nil {
-		return true, renewalErr
+		return handlerErr, renewalErr
 	}
 	if handlerErr != nil {
 		if ctx.Err() != nil {
 			retryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
-			return true, d.retry(retryCtx, event.ID, token, attempts)
+			return handlerErr, d.retry(retryCtx, event.ID, token, attempts)
 		}
-		return true, d.retry(ctx, event.ID, token, attempts)
+		return handlerErr, d.retry(ctx, event.ID, token, attempts)
 	}
-	if err := d.ack(ctx, event.ID, token); err != nil {
-		return true, err
-	}
-	return true, nil
+	return nil, d.ack(ctx, event.ID, token)
 }
 
 func (d *Dispatcher) renewLease(ctx context.Context, id, token uuid.UUID, stop <-chan struct{}, cancelHandler context.CancelFunc, result chan<- error) {

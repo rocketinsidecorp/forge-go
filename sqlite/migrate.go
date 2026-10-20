@@ -39,7 +39,7 @@ func NewMigrator(cfg config.Database, migrations []migrate.Migration, logger *sl
 	if err != nil {
 		return nil, err
 	}
-	db, err := openDB(path, cfg.ConnectTimeout)
+	db, err := openDB(path, cfg.ConnectTimeout, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -233,6 +233,28 @@ enabled by the `FORGE_MAIL_*` and `FORGE_AUTH_PASSWORD_RESET_URL` settings
 above; any SMTP server works, self-hosted included.
 {{- end}}
 
+## Observability
+
+Every request gets a trace ID that appears as `trace_id` in its logs, and
+HTTP{{if .DB}}, database{{end}} and job metrics are recorded. Nothing leaves the process
+until you choose an export path:
+
+```bash
+# Prometheus scrape endpoint on a private port (GET /metrics)
+FORGE_TELEMETRY_METRICS_ADDR=127.0.0.1:9464 forge dev
+# Traces and metrics to an OpenTelemetry Collector (OTLP/HTTP)
+FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://localhost:4318 forge dev
+# Spans in the development log
+FORGE_TELEMETRY_EXPORTER=log forge dev
+```
+
+Set `FORGE_TELEMETRY_SERVICE_NAME={{.Name}}` in deployments. Incoming
+`traceparent` headers are ignored unless `FORGE_TELEMETRY_TRUST_TRACEPARENT=true`
+(only behind a proxy that sets or sanitizes them). A metrics address other
+than loopback, such as `0.0.0.0:9464` in a container, needs
+`FORGE_TELEMETRY_METRICS_PUBLIC=true`; never publish that port. See the Forge
+observability guide (docs/OBSERVABILITY.md) for every variable.
+
 ## Deploy
 
 The image runs `serve` by default and reads `FORGE_*` variables. Production

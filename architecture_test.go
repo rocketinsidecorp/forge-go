@@ -41,6 +41,8 @@ var corePackages = []string{
 	modulePath + "/storage",
 	modulePath + "/storage/disk",
 	modulePath + "/storage/storagetest",
+	modulePath + "/telemetry",
+	modulePath + "/telemetry/telemetrytest",
 	modulePath + "/tenancy",
 	modulePath + "/uuid",
 	modulePath + "/views",

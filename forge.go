@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"slices"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/health"
 	"github.com/rocketinsidecorp/forge-go/httpserver"
 	"github.com/rocketinsidecorp/forge-go/router"
+	"github.com/rocketinsidecorp/forge-go/telemetry"
 	htmlviews "github.com/rocketinsidecorp/forge-go/views"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -40,6 +42,8 @@ type options struct {
 	config          config.Config
 	logger          *slog.Logger
 	httpMiddlewares []httpserver.Middleware
+	telemetry       *telemetry.Telemetry
+	telemetrySet    bool
 }
 
 type App struct {
@@ -48,6 +52,8 @@ type App struct {
 	router *router.Router
 	health *health.Registry
 	server *httpserver.Server
+	// telemetry is nil when disabled.
+	telemetry *telemetry.Telemetry
 
 	hooksMu       sync.Mutex
 	shutdownHooks []ShutdownHook
@@ -83,22 +89,52 @@ func New(opts ...Option) (*App, error) {
 	}
 
 	app := &App{
-		config: settings.config,
-		logger: settings.logger,
-		router: router.New(),
-		health: health.New(),
+		config:    settings.config,
+		logger:    settings.logger,
+		router:    router.New(),
+		health:    health.New(),
+		telemetry: settings.telemetry,
 	}
-	if err := app.registerHealthRoutes(); err != nil {
+	if !settings.telemetrySet {
+		built, err := telemetry.FromConfig(settings.config, settings.logger)
+		if err != nil {
+			return nil, err
+		}
+		if built != nil {
+			// The first hook runs last, so spans of the other hooks'
+			// work are still exported.
+			app.telemetry = built
+			app.shutdownHooks = append(app.shutdownHooks, built.Shutdown)
+		}
+	}
+	if err := app.build(settings); err != nil {
+		if closeErr := app.Close(context.Background()); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
 		return nil, err
 	}
-	var routes http.Handler = app.router
-	app.chain.Store(&routes)
-	server, err := httpserver.NewWithMiddleware(app.config, http.HandlerFunc(app.dispatch), app.logger, settings.httpMiddlewares...)
-	if err != nil {
-		return nil, err
-	}
-	app.server = server
 	return app, nil
+}
+
+func (a *App) build(settings options) error {
+	if err := a.registerHealthRoutes(); err != nil {
+		return err
+	}
+	var routes http.Handler = a.router
+	a.chain.Store(&routes)
+	instrument, err := a.telemetry.ServerMiddleware()
+	if err != nil {
+		return err
+	}
+	server, err := httpserver.NewWithOptions(a.config, http.HandlerFunc(a.dispatch), a.logger, httpserver.Options{
+		Instrument:  instrument,
+		Middlewares: settings.httpMiddlewares,
+	})
+	if err != nil {
+		return err
+	}
+	a.server = server
+	return nil
 }
 
 func WithConfig(cfg config.Config) Option {
@@ -114,6 +150,18 @@ func WithLogger(logger *slog.Logger) Option {
 			return errors.New("logger is required")
 		}
 		settings.logger = logger
+		return nil
+	}
+}
+
+// WithTelemetry makes the application use t instead of building one from
+// the FORGE_TELEMETRY_* configuration; nil disables telemetry. The caller
+// owns t and must shut it down. Without this option, New builds the
+// Telemetry from configuration and shuts it down with the application.
+func WithTelemetry(t *telemetry.Telemetry) Option {
+	return func(settings *options) error {
+		settings.telemetry = t
+		settings.telemetrySet = true
 		return nil
 	}
 }
@@ -137,6 +185,12 @@ func (a *App) Config() config.Config { return a.config }
 
 // Logger returns the application logger.
 func (a *App) Logger() *slog.Logger { return a.logger }
+
+// Telemetry returns the application's telemetry, or nil when it is
+// disabled. Pass it to the database adapters, queue workers, outbox
+// dispatchers, schedulers and mail senders so they are instrumented; every
+// Forge component accepts nil.
+func (a *App) Telemetry() *telemetry.Telemetry { return a.telemetry }
 
 // OnShutdown registers a hook that runs after the HTTP server stops, in
 // reverse registration order, like deferred calls.
@@ -248,7 +302,13 @@ func (a *App) Run(ctx context.Context) error {
 	})
 	defer stopWatching()
 
-	runErr := a.server.Run(ctx)
+	var runErr error
+	stopMetrics, err := a.serveMetrics()
+	if err == nil {
+		runErr = errors.Join(a.server.Run(ctx), stopMetrics())
+	} else {
+		runErr = err
+	}
 	deadline := time.Now().Add(a.config.HTTP.ShutdownTimeout)
 	if stopped := stoppedAt.Load(); stopped != nil {
 		deadline = stopped.Add(a.config.HTTP.ShutdownTimeout)
@@ -276,4 +336,59 @@ func (a *App) registerHealthRoutes() error {
 		return err
 	}
 	return a.router.HandleFunc("GET /health", ready)
+}
+
+const (
+	metricsPath            = "/metrics"
+	metricsShutdownTimeout = 5 * time.Second
+)
+
+// serveMetrics starts the Prometheus listener on FORGE_TELEMETRY_METRICS_ADDR,
+// if one is configured, and returns the function that stops it. The listener
+// is separate from the application's so metrics are never reachable through
+// the public router; it serves GET /metrics only, over plain HTTP, without
+// authentication, and must be bound to a private interface.
+func (a *App) serveMetrics() (func() error, error) {
+	address := a.config.Telemetry.MetricsAddress
+	if a.telemetry == nil || address == "" {
+		return func() error { return nil }, nil
+	}
+	if !a.config.Telemetry.MetricsLoopback() && !a.config.Telemetry.MetricsPublic {
+		a.logger.Warn("the metrics listener has no authentication and is not bound to loopback; keep its port off public networks and set FORGE_TELEMETRY_METRICS_PUBLIC=true to confirm (production refuses to start otherwise)", "address", address)
+	}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("listen for metrics: %w", err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle(metricsPath, a.telemetry.Metrics().PrometheusHandler())
+	server := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
+	done := make(chan error, 1)
+	go func() {
+		err := server.Serve(listener)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			a.logger.Error("metrics listener stopped", "error", err)
+		}
+		done <- err
+	}()
+	a.logger.Info("serving metrics", "address", listener.Addr().String(), "path", metricsPath)
+	return func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), metricsShutdownTimeout)
+		defer cancel()
+		shutdownErr := server.Shutdown(ctx)
+		if shutdownErr != nil {
+			shutdownErr = errors.Join(fmt.Errorf("shutdown metrics listener: %w", shutdownErr), server.Close())
+		}
+		if serveErr := <-done; serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			return errors.Join(fmt.Errorf("serve metrics: %w", serveErr), shutdownErr)
+		}
+		return shutdownErr
+	}, nil
 }

@@ -148,3 +148,40 @@ func TestNewWithMiddlewarePanicUsesFrameworkRecovery(t *testing.T) {
 		t.Fatal("middleware panic leaked to client")
 	}
 }
+
+func TestInstrumentWrapsRecoveryAndBodyLimitInsideTheRequestID(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.HTTP.MaxBodyBytes = 4
+	var statuses []int
+	var requestIDs []string
+	instrument := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestIDs = append(requestIDs, web.RequestID(r.Context()))
+			recorder := httptest.NewRecorder()
+			next.ServeHTTP(recorder, r)
+			statuses = append(statuses, recorder.Code)
+			w.WriteHeader(recorder.Code)
+		})
+	}
+	panicking := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") })
+	server, err := httpserver.NewWithOptions(cfg, panicking, slog.New(slog.NewTextHandler(io.Discard, nil)), httpserver.Options{Instrument: instrument})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	server.Handler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader("too long")))
+	if !slices.Equal(statuses, []int{http.StatusInternalServerError, http.StatusRequestEntityTooLarge}) {
+		t.Fatalf("instrumentation saw %v", statuses)
+	}
+	for _, id := range requestIDs {
+		if id == "" {
+			t.Fatal("instrumentation must run inside the request-ID layer")
+		}
+	}
+	if _, err := httpserver.NewWithOptions(cfg, panicking, slog.New(slog.NewTextHandler(io.Discard, nil)), httpserver.Options{
+		Instrument: func(http.Handler) http.Handler { return nil },
+	}); err == nil {
+		t.Fatal("a nil instrumented handler must be rejected")
+	}
+}

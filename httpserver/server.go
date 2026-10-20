@@ -43,6 +43,24 @@ func NewWithMiddleware(
 	logger *slog.Logger,
 	middlewares ...Middleware,
 ) (*Server, error) {
+	return NewWithOptions(cfg, handler, logger, Options{Middlewares: middlewares})
+}
+
+// Options configure NewWithOptions.
+type Options struct {
+	// Instrument wraps the chain directly inside the request-ID layer and
+	// outside panic recovery, so it observes every response, including
+	// recovered panics and 413s, and can extend the request logger. Forge
+	// installs its telemetry middleware here. Nil means none.
+	Instrument Middleware
+	// Middlewares are application middleware, as for NewWithMiddleware.
+	Middlewares []Middleware
+}
+
+// NewWithOptions constructs the standard Forge server with an optional
+// instrumentation layer and application middleware.
+func NewWithOptions(cfg config.Config, handler http.Handler, logger *slog.Logger, opts Options) (*Server, error) {
+	middlewares := opts.Middlewares
 	if handler == nil || logger == nil {
 		return nil, errors.New("HTTP handler and logger are required")
 	}
@@ -63,7 +81,13 @@ func NewWithMiddleware(
 	}
 	// Outermost first: every response, including 413 and recovered panics,
 	// carries the security headers and the request ID.
-	wrapped := securityHeaders(cfg, requestID(logger, recoverer(limitBody(cfg.HTTP.MaxBodyBytes, wrappedHandler))))
+	inner := recoverer(limitBody(cfg.HTTP.MaxBodyBytes, wrappedHandler))
+	if opts.Instrument != nil {
+		if inner = opts.Instrument(inner); inner == nil {
+			return nil, errors.New("HTTP instrumentation returned a nil handler")
+		}
+	}
+	wrapped := securityHeaders(cfg, requestID(logger, inner))
 	return &Server{
 		server: &http.Server{
 			Addr:              cfg.HTTP.Address,

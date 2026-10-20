@@ -69,8 +69,12 @@ var tlsModes = map[string]bool{"true": true, "skip-verify": true, "preferred": t
 // Open creates a connection pool from validated configuration and verifies
 // connectivity within cfg.ConnectTimeout, so misconfiguration fails at
 // startup rather than on the first request. It serves MySQL and MariaDB.
-func Open(ctx context.Context, cfg config.Database) (*sqldb.DB, error) {
-	pool, err := openPool(cfg, false)
+func Open(ctx context.Context, cfg config.Database, opts ...Option) (*sqldb.DB, error) {
+	obs, err := observer(opts)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := openPool(cfg, false, obs)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +96,7 @@ func Open(ctx context.Context, cfg config.Database) (*sqldb.DB, error) {
 // multiStatements lets one Exec carry several statements. Only the
 // migrator's dedicated pool enables it: on an application pool it would turn
 // any SQL injection into stacked-query injection.
-func openPool(cfg config.Database, multiStatements bool) (*sql.DB, error) {
+func openPool(cfg config.Database, multiStatements bool, obs *sqldb.Observer) (*sql.DB, error) {
 	driverConfig, err := newDriverConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -103,7 +107,7 @@ func openPool(cfg config.Database, multiStatements bool) (*sql.DB, error) {
 		// Not wrapped: driver configuration errors can quote the settings.
 		return nil, errors.New(errInvalidURL)
 	}
-	return sql.OpenDB(&connector{base: base, statementTimeout: cfg.StatementTimeout}), nil
+	return sql.OpenDB(sqldb.InstrumentConnector(&connector{base: base, statementTimeout: cfg.StatementTimeout}, obs)), nil
 }
 
 // newDriverConfig builds the driver configuration field by field from the

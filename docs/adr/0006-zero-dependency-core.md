@@ -1,6 +1,8 @@
 # ADR 0006: Zero-dependency core
 
-- **Status:** Accepted; amended by [ADR 0007](0007-postgresql-adapter-with-pgx.md)
+- **Status:** Accepted; amended by [ADR 0007](0007-postgresql-adapter-with-pgx.md);
+  [ADR 0034](0034-dependency-free-telemetry.md) implements OpenTelemetry
+  protocols in the core without a dependency
 - **Date:** 2026-09-26
 
 ## Context

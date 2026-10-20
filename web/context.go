@@ -7,6 +7,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sync"
 )
 
 type contextKey int
@@ -14,6 +15,7 @@ type contextKey int
 const (
 	requestIDKey contextKey = iota
 	loggerKey
+	routeKey
 )
 
 var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -39,4 +41,44 @@ func Logger(ctx context.Context) *slog.Logger {
 		return logger
 	}
 	return discardLogger
+}
+
+// RouteInfo receives the ServeMux pattern of the route that serves a
+// request, such as "GET /users/{id}". Middleware that runs before routing
+// (telemetry, access logs) installs one with WithRouteInfo and reads it after
+// the handler returns; the router fills it through RecordRoute. Labeling
+// requests by pattern instead of raw path keeps metric cardinality bounded.
+//
+// It is safe for concurrent use: with http.TimeoutHandler the router may
+// record the route on another goroutine after the middleware has read it.
+// The zero value is ready to use.
+type RouteInfo struct {
+	mu      sync.Mutex
+	pattern string
+}
+
+// Pattern returns the recorded pattern, or "" when no route matched yet.
+func (r *RouteInfo) Pattern() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pattern
+}
+
+func (r *RouteInfo) set(pattern string) {
+	r.mu.Lock()
+	r.pattern = pattern
+	r.mu.Unlock()
+}
+
+// WithRouteInfo returns ctx carrying info for the router to fill.
+func WithRouteInfo(ctx context.Context, info *RouteInfo) context.Context {
+	return context.WithValue(ctx, routeKey, info)
+}
+
+// RecordRoute stores the matched pattern in the RouteInfo carried by ctx, if
+// any. It does not allocate.
+func RecordRoute(ctx context.Context, pattern string) {
+	if info, ok := ctx.Value(routeKey).(*RouteInfo); ok && info != nil {
+		info.set(pattern)
+	}
 }

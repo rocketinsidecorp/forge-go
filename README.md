@@ -30,9 +30,11 @@ not an agent authorization boundary. See the [AI agent guide](docs/AI_AGENT_GUID
 The PostgreSQL transactional outbox supports bounded concurrent delivery,
 leases, acknowledgements, bounded retries, dead-letter replay, and queue
 metrics. An in-process job scheduler (`jobs.Scheduler`) runs recurring work
-with configurable concurrency. OpenTelemetry, OpenAPI, resource code
-generation, performance work, and further security hardening remain
-planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
+with configurable concurrency. Phase 5 adds dependency-free observability:
+traces with W3C propagation, bounded-cardinality metrics for Prometheus and
+OTLP, trace-correlated logs, and database and job instrumentation
+([docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)). OpenAPI, performance work,
+and further security hardening remain planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full status.
 
 ## Packages
 
@@ -59,6 +61,7 @@ Core packages import only the standard library and each other; a test
 | `ratelimit`  | Rails-style `rate_limit`: fixed-window limiter, per-route 429/`Retry-After` middleware, bounded in-memory store; shared stores in `ratelimit/postgres`, `/mysql`, `/sqlite` |
 | `cache`      | Solid Cache equivalent: `Cache` with `Fetch` stampede protection, bounded LRU+TTL memory cache, typed JSON helpers; shared stores in `cache/postgres`, `/mysql`, `/sqlite` |
 | `storage`    | Active Storage equivalent for local disk: `Storage` port, HMAC-signed expiring links, safe serving handler, strict multipart upload; `storage/disk` adapter |
+| `telemetry`  | Tracing with W3C trace context, metrics with a cardinality cap, Prometheus text and OTLP/HTTP JSON export, trace-correlated logs |
 | `health`     | Readiness check registry; `/health`, `/health/live`, `/health/ready` |
 | `uuid`       | RFC 9562 UUIDv7 (default identifier), monotonic generator, JSON/text/SQL support |
 | `fault`      | Typed application errors (code, message, category, cause, metadata, retryable, HTTP status) |
@@ -506,6 +509,36 @@ url, _ := signer.URL("/files", got.Files[0].Key, storage.SignOptions{Inline: tru
 
 There is no S3 adapter yet (see the [roadmap](docs/ROADMAP.md)). The upload limit
 cannot exceed `FORGE_HTTP_MAX_BODY_BYTES`.
+## Observability
+
+Telemetry is on by default and exports nothing: logs carry `trace_id`, and
+incoming `traceparent` headers are ignored unless you opt in with
+`FORGE_TELEMETRY_TRUST_TRACEPARENT=true` behind a proxy that sanitizes them. Pick an export path with
+environment variables:
+
+```bash
+# Prometheus metrics on a separate, private listener
+FORGE_TELEMETRY_METRICS_ADDR=127.0.0.1:9464 forge dev
+curl -s http://127.0.0.1:9464/metrics | grep http_server_request_duration_seconds
+
+# Traces and metrics to an OpenTelemetry Collector over OTLP/HTTP
+docker run --rm -p 4318:4318 -v "$PWD/otel-collector.yaml:/etc/otelcol/config.yaml:ro" otel/opentelemetry-collector:0.111.0
+FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+  FORGE_TELEMETRY_SERVICE_NAME=myapp forge dev
+
+# In a container: bind to all interfaces and confirm it (never publish the port)
+FORGE_TELEMETRY_METRICS_ADDR=0.0.0.0:9464 FORGE_TELEMETRY_METRICS_PUBLIC=true forge dev
+
+# Spans in the development log, or no telemetry at all
+FORGE_TELEMETRY_EXPORTER=log forge dev
+FORGE_TELEMETRY_ENABLED=false forge dev
+```
+
+Pass `app.Telemetry()` to adapters to trace database statements and jobs:
+`postgres.Open(ctx, cfg, postgres.WithTelemetry(app.Telemetry()))` (generated
+applications already do). Collector and Prometheus configuration, the
+metric catalogue, cardinality rules and what is never recorded:
+[docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
 
 ## Example
 
@@ -565,6 +598,7 @@ CI (`.github/workflows/ci.yml`):
 - [Server-rendered HTML](docs/VIEWS.md)
 - [Rate limiting](docs/RATE_LIMITING.md), [caching](docs/CACHING.md) and [file storage](docs/STORAGE.md)
 - [Deployment](docs/DEPLOYMENT.md)
+- [Observability](docs/OBSERVABILITY.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Multi-tenancy](docs/MULTI_TENANCY.md)

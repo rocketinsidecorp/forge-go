@@ -82,10 +82,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		web.Error(w, request, fault.New("invalid_path", "invalid request path", fault.CategoryInvalid, http.StatusBadRequest))
 		return
 	}
-	if handler, pattern := r.mux.Handler(request); pattern == "" {
+	handler, pattern := r.mux.Handler(request)
+	if pattern == "" {
 		r.unmatched(w, request, handler)
 		return
 	}
+	web.RecordRoute(request.Context(), pattern)
 	// ServeHTTP (not the handler above) so the request gets its path values.
 	r.mux.ServeHTTP(w, request)
 }

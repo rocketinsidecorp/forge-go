@@ -43,6 +43,7 @@ forge (root)     App composition, forge.Main / forge.Execute, commands, shutdown
 ├── ratelimit    Fixed-window rate limiting: bounded in-memory limiter, HTTP middleware, shared-store interface
 ├── cache        Application cache: bounded LRU+TTL memory store, Fetch stampede protection, typed JSON helpers
 ├── storage      File storage port, HMAC-signed links, safe serving handler, multipart upload; storage/disk adapter
+├── telemetry    Tracing, W3C propagation, metrics, Prometheus and OTLP/HTTP JSON export, log correlation
 ├── health       Readiness check registry
 ├── uuid         UUIDv7 type and generator
 ├── fault        Typed application errors
@@ -72,7 +73,7 @@ Dependency direction (imports within the module):
 
 | Package                 | Imports |
 | ----------------------- | ------- |
-| `forge`                 | `config`, `health`, `httpserver`, `router`, `web` |
+| `forge`                 | `config`, `health`, `httpserver`, `router`, `telemetry`, `web` |
 | `auth`                  | `csrf`, `fault`, `tenancy`, `uuid`, `web` |
 | `csrf`                  | `fault`, `web` |
 | `views`                 | `csrf`, `uuid`, `web` |
@@ -82,7 +83,8 @@ Dependency direction (imports within the module):
 | `pagination`            | `fault`, `uuid` |
 | `events`                | `uuid` |
 | `web`                   | `fault`, `uuid` |
-| `sqldb`                 | `config`, `fault` |
+| `sqldb`                 | `config`, `fault`, `telemetry` |
+| `telemetry`             | `config`, `fault`, `web` |
 | `migrate`               | `forge`, `config` |
 | `dbtest`                | `config`, `migrate`, `uuid` |
 | `ratelimit`             | `config`, `fault`, `web` |
@@ -93,10 +95,10 @@ Dependency direction (imports within the module):
 | `ratelimit/mysql`, `cache/mysql` | `ratelimit` or `cache`, `mysql`, `sqldb` |
 | `ratelimit/sqlite`, `cache/sqlite` | `ratelimit` or `cache`, `sqlite`, `sqldb` |
 | `config`, `fault`, `health`, `uuid` | standard library only |
-| `postgres`              | `forge`, `config`, `migrate`, `sqldb`, `tenancy`, pgx v5 |
-| `outbox/postgres`       | `events`, `postgres` |
-| `mysql`                 | `forge`, `config`, `migrate`, `sqldb`, go-sql-driver/mysql |
-| `sqlite`                | `forge`, `config`, `migrate`, `sqldb`, modernc.org/sqlite |
+| `postgres`              | `forge`, `config`, `migrate`, `sqldb`, `telemetry`, `tenancy`, pgx v5 |
+| `outbox/postgres`       | `events`, `postgres`, `telemetry` |
+| `mysql`                 | `forge`, `config`, `migrate`, `sqldb`, `telemetry`, go-sql-driver/mysql |
+| `sqlite`                | `forge`, `config`, `migrate`, `sqldb`, `telemetry`, modernc.org/sqlite |
 | `postgrestest`, `mysqltest`, `sqlitetest` | their adapter, `config`, `dbtest`, `migrate` (and `sqldb` or pgx) |
 
 Adapters depend on the core; the core never imports an adapter. The core
@@ -168,22 +170,26 @@ Wraps the router in a fixed security/lifecycle chain, outermost first:
    context (`web.RequestID`, `web.Logger`). Incoming `X-Request-ID` headers
    are not trusted or reused. If ID generation fails, the request is answered
    with a JSON `500`.
-3. **Panic recovery** - logs method, path, panic value, and stack with the
+3. **Telemetry** - when enabled, the server span, request metrics and the
+   `trace_id`/`span_id` request-logger fields (`httpserver.Options.Instrument`,
+   between the request ID and panic recovery, so recovered panics and `413`s
+   are measured). See [OBSERVABILITY.md](OBSERVABILITY.md).
+4. **Panic recovery** - logs method, path, panic value, and stack with the
    request logger; responds `500` with the JSON error body
    (`internal_error`). `http.ErrAbortHandler` is re-panicked.
-4. **Body limit** - rejects a declared `Content-Length` above
+5. **Body limit** - rejects a declared `Content-Length` above
    `FORGE_HTTP_MAX_BODY_BYTES` with a JSON `413` (`body_too_large`), and wraps
    the body in `http.MaxBytesReader` for undeclared or chunked bodies.
-5. **Application middleware** - zero or more optional handlers registered
+6. **Application middleware** - zero or more optional handlers registered
    with `forge.WithHTTPMiddleware`. They run in declaration order, outermost
    first among custom middleware, after the body limit and inside panic
    recovery. They receive the framework request ID and may add request-scoped
    context for tracing, metrics, or application-specific behavior.
-6. **`App.Use` middleware** - added from `Configure`, in call order, still
+7. **`App.Use` middleware** - added from `Configure`, in call order, still
    before routing. Generated applications install `web.MethodOverride`,
    `csrf.Protection.Handler` and `web.Flash` here. `Use` fails once the
    application has served a request.
-7. **Router.**
+8. **Router.**
 
 Because security headers and the request ID come first, every response,
 including `413`, recovered panics, and router errors, carries them. Every
@@ -554,12 +560,19 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0019](adr/0019-outbox-dispatch.md) | PostgreSQL outbox dispatch |
 | [0020](adr/0020-background-jobs-scheduling.md) | Background jobs and scheduling |
 | [0021](adr/0021-resource-generator.md) | Resource generator |
+| [0022](adr/0022-openapi-from-typed-routes.md) | OpenAPI from typed routes (proposed) |
+| [0023](adr/0023-persistent-job-queue.md) | Persistent database-backed job queue |
+| [0024](adr/0024-mail.md) | Mail |
 | [0025](adr/0025-server-rendered-html.md) | Server-rendered HTML |
 | [0026](adr/0026-authentication-pages-and-setup.md) | Authentication pages, sign-in redirects and first-owner setup |
+| [0031](adr/0031-rate-limiting.md) | Rate limiting |
+| [0032](adr/0032-cache.md) | Application cache |
+| [0033](adr/0033-file-storage.md) | File storage |
+| [0034](adr/0034-dependency-free-telemetry.md) | Dependency-free telemetry speaking OpenTelemetry protocols |
 
 ## Not yet implemented
 
-OpenTelemetry, OpenAPI generation, the AI execution subsystem, and
+OTLP gRPC and log export, OpenAPI generation, the AI execution subsystem, and
 relationships, decimal types, soft delete and audit columns in generated
 resources (`forge generate` supports SQL migrations, embedded HTML views, job
 stubs and resources). See

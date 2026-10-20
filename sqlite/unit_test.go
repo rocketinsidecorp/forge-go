@@ -256,7 +256,7 @@ func TestMigrationLockIsReleasedWhenHolderCrashes(t *testing.T) {
 
 func TestBrokenConnectionIsDiscarded(t *testing.T) {
 	t.Parallel()
-	db, err := connect(filepath.Join(t.TempDir(), "app.db"), url.Values{})
+	db, err := connect(filepath.Join(t.TempDir(), "app.db"), url.Values{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
