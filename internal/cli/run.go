@@ -39,18 +39,21 @@ func runRollback(args []string, stdout, stderr io.Writer) error {
 // described routes (ADR 0043). It needs what Configure needs, such as the
 // development database.
 func runOpenAPI(args []string, stdout, stderr io.Writer) error {
+	flags := 0
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--output", "--check":
+		switch arg := args[i]; {
+		case arg == "--output" || arg == "--check":
 			if i+1 == len(args) {
 				return errors.New(openAPIUsage)
 			}
 			i++
+		case strings.HasPrefix(arg, "--output=") || strings.HasPrefix(arg, "--check="):
 		default:
 			return errors.New(openAPIUsage)
 		}
+		flags++
 	}
-	if len(args) > 2 {
+	if flags > 1 {
 		return errors.New(openAPIUsage)
 	}
 	return runAppCommand(nil, append([]string{"openapi"}, args...), stdout, stderr)

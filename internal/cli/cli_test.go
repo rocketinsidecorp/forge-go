@@ -722,7 +722,7 @@ func (b *syncBuffer) String() string {
 
 func TestRunOpenAPIValidatesArgumentsBeforeBuilding(t *testing.T) {
 	t.Parallel()
-	for _, args := range [][]string{{"--bogus"}, {"--output"}, {"--output", "a", "--check", "b"}, {"extra"}} {
+	for _, args := range [][]string{{"--bogus"}, {"--output"}, {"--output", "a", "--check", "b"}, {"--output=a", "--check=b"}, {"extra"}} {
 		var stdout, stderr bytes.Buffer
 		if code := Run(append([]string{"openapi"}, args...), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), openAPIUsage) {
 			t.Errorf("forge openapi %v: code=%d stderr=%s", args, code, stderr.String())
