@@ -548,3 +548,13 @@ repository.
 
 Every user-facing feature also updates README.md with copyable commands
 to create, run and use it (owner decision, 2026-10-19).
+
+Forge-Go and Forge-Rust keep feature parity in the same style: a capability
+shipped in one framework ships in the other with the same commands and names,
+or a tracked follow-up records when (owner decision, 2026-10-20).
+
+Nothing merges to main without a passing Claude Code Review (`@claude review`
+on the pull request) with no unresolved blocking findings. Reviews must look
+for malicious or exfiltrating code: unexpected network calls, access to
+credentials, wallets or crypto keys, obfuscated code, install/build scripts and
+new dependencies (owner decision, 2026-10-20).

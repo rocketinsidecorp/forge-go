@@ -439,6 +439,16 @@ A task is complete only when applicable items are satisfied:
 -   [ ] Relevant tests/checks executed.
 -   [ ] README.md carries copyable commands to create, run and use every
     user-facing feature (owner decision, 2026-10-19).
+-   [ ] Feature parity: every user-facing capability also exists in the
+    sibling framework (forge-rust) with the same commands, names and
+    style, or a tracked follow-up says when it will (owner decision,
+    2026-10-20).
+-   [ ] The pull request passed the Claude Code Review (`@claude review`)
+    with no unresolved blocking findings before merging to main,
+    including a check for malicious or exfiltrating code: unexpected
+    network calls, credential or wallet/crypto-key access, obfuscated
+    code, install scripts and new dependencies (owner decision,
+    2026-10-20).
 -   [ ] Type/lint/static checks pass where applicable.
 -   [ ] Build passes where applicable.
 -   [ ] Final diff reviewed.
