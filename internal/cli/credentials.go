@@ -31,7 +31,7 @@ const (
 type credentialsContext struct {
 	dir            string // credentials directory
 	gitignore      string // path of .gitignore
-	dockerignore   string // path of .dockerignore, updated only if it exists
+	dockerignore   string // path of .dockerignore
 	lookup         func(string) (string, bool)
 	stdout, stderr io.Writer
 	stdoutIsTTY    func() bool
@@ -117,10 +117,10 @@ func (c *credentialsContext) init(env string) error {
 	if err := ensureLine(c.gitignore, gitignoreEntry, true); err != nil {
 		return fmt.Errorf("update .gitignore (add %q yourself before committing): %w", gitignoreEntry, err)
 	}
-	if err := ensureLine(c.dockerignore, dockerignoreEntry, false); err != nil {
+	if err := ensureLine(c.dockerignore, dockerignoreEntry, true); err != nil {
 		return fmt.Errorf("update .dockerignore (add %q yourself): %w", dockerignoreEntry, err)
 	}
-	fmt.Fprintf(c.stdout, "  ignore  %s in .gitignore\n", gitignoreEntry)
+	fmt.Fprintf(c.stdout, "  ignore  %s in .gitignore and .dockerignore\n", gitignoreEntry)
 	keyPath := filepath.Join(c.dir, credentials.KeyFileName(env))
 	_, err = fmt.Fprintf(c.stdout, `
 The key in %[1]s is the only way to read %[2]s.

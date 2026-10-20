@@ -115,7 +115,9 @@ alone identifies the values). There is no deterministic encryption mode.
    the active key are skipped; a row changed by the application during the
    run is left alone (counted in `report.Conflicts`) and picked up by the next
    run. A row that cannot be decrypted stops the run with its id: investigate,
-   do not skip. Primary keys must sort bytewise (UUID text does).
+   do not skip. The primary key must be a text or uuid column (UUIDv7); the database's own
+   order drives the batches. On MySQL, MariaDB and SQLite integer keys also work
+   through `NewSQLRewriter`; `postgres.EncryptedColumn` refuses other key types.
 
 3. When `Reencrypt` reports `Rotated == 0` and `Conflicts == 0` on a second run,
    remove the old key from the credentials and deploy. A value still sealed with

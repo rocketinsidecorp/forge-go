@@ -31,6 +31,13 @@ func (c *credentialsContext) edit(env string) error {
 	if len(editor) == 0 {
 		return errors.New("no editor: set $VISUAL or $EDITOR")
 	}
+	// Catch termination for the whole flow, not only while the editor runs:
+	// the default action would end the process without running the deferred
+	// cleanup. Signals are acted on at the checkpoints below.
+	signals := make(chan os.Signal, 4)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+
 	plaintext, keys, _, file, err := c.readPlaintext(env)
 	if err != nil {
 		return err
@@ -56,9 +63,17 @@ func (c *credentialsContext) edit(env string) error {
 	if err := os.WriteFile(path, original.Bytes(), 0o600); err != nil {
 		return err
 	}
+	if err := interrupted(signals, false); err != nil {
+		return err
+	}
 
 	if err := c.editor(editor, path); err != nil {
 		return fmt.Errorf("editor failed; credentials are unchanged: %w", err)
+	}
+	// An interrupt typed in the editor reached us too; it belongs to the
+	// editor, so only termination signals count from here on.
+	if err := interrupted(signals, true); err != nil {
+		return err
 	}
 	edited, err := readBounded(path, credentials.MaxPlaintextBytes)
 	if err != nil {
@@ -74,6 +89,9 @@ func (c *credentialsContext) edit(env string) error {
 	if bytes.Equal(bytes.TrimSpace(edited), bytes.TrimSpace(original.Bytes())) {
 		fmt.Fprintln(c.stdout, "no changes")
 		return nil
+	}
+	if err := interrupted(signals, false); err != nil {
+		return err
 	}
 	sealed, err := credentials.Seal(env, edited, keys[0])
 	if err != nil {
@@ -92,6 +110,22 @@ func (c *credentialsContext) edit(env string) error {
 	return err
 }
 
+// interrupted reports a pending signal as an error, so edit can unwind
+// through its deferred cleanup. With skipInterrupt, SIGINT is discarded.
+func interrupted(signals <-chan os.Signal, skipInterrupt bool) error {
+	for {
+		select {
+		case sig := <-signals:
+			if skipInterrupt && sig == os.Interrupt {
+				continue
+			}
+			return fmt.Errorf("interrupted by %v; credentials are unchanged", sig)
+		default:
+			return nil
+		}
+	}
+}
+
 // editorCommand returns $VISUAL or $EDITOR split into words. No shell is
 // involved, so quoting is not interpreted: wrapper scripts work, shell
 // pipelines do not. Editors known to write swap, backup or history files
@@ -108,12 +142,50 @@ func (c *credentialsContext) editorCommand() []string {
 	return nil
 }
 
+// hardenEditor adds the flags that keep Vim-family editors from writing swap,
+// backup, undo and viminfo files. The editor is recognized by its own name
+// and by what the name resolves to, so vi, editor or a wrapper symlinked to
+// vim.basic, vim.nox, gvim or nvim are covered. Other editors (a busybox vi,
+// nano, Emacs, GUI editors) are launched unchanged and may keep copies; see
+// docs/CREDENTIALS.md.
 func hardenEditor(words []string) []string {
-	switch strings.TrimSuffix(filepath.Base(words[0]), ".exe") {
-	case "vim", "nvim":
-		return append(words, "-n", "-i", "NONE", "-c", "set noundofile nobackup nowritebackup")
+	if !isVimFamily(words[0]) {
+		return words
 	}
-	return words
+	return append(words, "-n", "-i", "NONE", "-c", "set noundofile nobackup nowritebackup viminfo=")
+}
+
+func isVimFamily(command string) bool {
+	names := []string{filepath.Base(command)}
+	if resolved, err := exec.LookPath(command); err == nil {
+		names = append(names, filepath.Base(resolved))
+		if target, err := filepath.EvalSymlinks(resolved); err == nil {
+			names = append(names, filepath.Base(target))
+		}
+	}
+	for _, name := range names {
+		name = strings.ToLower(strings.TrimSuffix(name, ".exe"))
+		for _, prefix := range []string{"vim", "nvim", "gvim", "gview", "mvim", "view", "rvim", "rview"} {
+			if name == prefix || strings.HasPrefix(name, prefix+".") || strings.HasPrefix(name, prefix+"-") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// editorEnvironment is the environment the editor runs with: the caller's,
+// minus every FORGE_ variable. FORGE_MASTER_KEY and the other settings hold
+// secrets, and an editor (with its plugins, shell escapes and subprocesses)
+// has no use for them.
+func editorEnvironment(environ []string) []string {
+	kept := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		if !strings.HasPrefix(strings.ToUpper(entry), "FORGE_") {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
 }
 
 // runEditorProcess runs the editor attached to the terminal. SIGINT is left to
@@ -123,6 +195,7 @@ func runEditorProcess(editor []string, path string) error {
 	args := append(append([]string(nil), editor[1:]...), path)
 	cmd := exec.Command(editor[0], args...) // #nosec G204 -- the editor is the user's own $VISUAL/$EDITOR
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Env = editorEnvironment(os.Environ())
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)

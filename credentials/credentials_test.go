@@ -510,3 +510,19 @@ func TestStoreIsRedactedInUnexportedAndEmbeddedFields(t *testing.T) {
 		t.Errorf("zero Store lookup: %v", err)
 	}
 }
+
+func TestWriteFileCreatesTheDirectoryPrivately(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permissions")
+	}
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "config", "credentials")
+	sealed, _ := credentials.Seal("production", []byte("{}"), newKey(t, 1))
+	if err := credentials.WriteFile(dir, "production", sealed, false); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("credentials directory mode = %v, %v; want 0700", info.Mode().Perm(), err)
+	}
+}

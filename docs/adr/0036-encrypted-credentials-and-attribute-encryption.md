@@ -78,8 +78,10 @@ the JSON, refuses to overwrite a file that changed while the editor was open,
 and replaces the encrypted file atomically (temporary file, `fsync`, `rename`).
 The whole directory, including editor swap files, is overwritten with zeros and
 removed on success, editor failure, invalid input, write failure, `SIGTERM` and
-`SIGHUP`. Vim and Neovim are started without swap, backup, undo and viminfo
-files. `SIGKILL` and power loss can leave the directory behind; this is
+`SIGHUP`. Vim-family editors (recognized by name and by what the name resolves to) are
+started without swap, backup, undo and viminfo files, and the editor does not
+inherit `FORGE_*` variables. Termination signals are caught for the whole
+command and acted on at checkpoints. `SIGKILL` and power loss can leave the directory behind; this is
 documented.
 
 `show` redacts every value unless `--reveal` is given, and `--reveal` refuses to
@@ -90,7 +92,8 @@ logs or redirected files by accident.
 destination (the key file, or `--print-key` for a secret manager). The key file
 first gains the new key beside the old ones, then the encrypted file changes,
 then the old keys are dropped unless `--keep-old` was given, so the pair on disk
-is readable at every instant.
+is readable at every instant. Every check that can refuse the rotation runs
+before the first output or write, and a failed write restores the key file.
 
 ### Attribute encryption
 

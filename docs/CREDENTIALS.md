@@ -22,8 +22,8 @@ forge credentials init --environment production
 
 `init` writes a random 256-bit key (`crypto/rand`) to
 `config/credentials/production.key` with mode 0600, an encrypted skeleton, and
-adds `/config/credentials/*.key` to `.gitignore` (and to `.dockerignore` when
-there is one). It never overwrites a key or an existing file, and it never prints
+adds `/config/credentials/*.key` to `.gitignore` and `config/credentials/*.key`
+to `.dockerignore` (creating either file when missing). It never overwrites a key or an existing file, and it never prints
 the key.
 
 ## Daily workflow
@@ -54,9 +54,17 @@ The document is one JSON object:
   `SIGHUP`. `SIGKILL` or a power loss can leave it behind; on Linux it is in
   memory, elsewhere look for `forge-credentials-*` in your temporary directory;
 - the editor command is split on spaces and run without a shell
-  (`EDITOR="code --wait"` works, quoting and pipelines do not). Vim and Neovim
-  are started without swap, backup, undo and viminfo files; other editors may
-  keep their own copies, so check their backup settings;
+  (`EDITOR="code --wait"` works, quoting and pipelines do not). The editor does
+  not inherit any `FORGE_*` variable, so `FORGE_MASTER_KEY` and the other
+  secrets stay out of its plugins and subprocesses. Vim-family editors are
+  recognized by name and by what the name resolves to (`vi`, `editor`,
+  `vim.basic`, `vim.nox`, `gvim`, `nvim`, `view`, symlinks to them) and started
+  without swap, backup, undo and viminfo files. Other editors (a busybox `vi`,
+  nano, Emacs, GUI editors) are started unchanged and may keep their own
+  copies, in their own directories; check their backup and history settings;
+- termination (`SIGTERM`, `SIGHUP`) is caught from the start of the command, not
+  only while the editor runs, and acted on at checkpoints, so the cleanup also
+  covers validation and encryption;
 - invalid JSON, a duplicate key (at any depth) or a document that is not an
   object is rejected, your edits are discarded and the file is untouched; the
   error gives a line and column, never the content;

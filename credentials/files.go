@@ -192,7 +192,7 @@ func writeAtomic(dir, name string, data []byte, replace bool) (err error) {
 	if dir == "" {
 		dir = DefaultDir
 	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	root, err := os.OpenRoot(dir)

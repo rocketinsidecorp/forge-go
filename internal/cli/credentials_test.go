@@ -18,7 +18,7 @@ import (
 
 const (
 	secretValue = "sk_live_VERY_SECRET_VALUE"
-	helperEnv   = "FORGE_TEST_EDITOR_HELPER"
+	helperEnv   = "CRED_TEST_EDITOR_HELPER"
 )
 
 type credHarness struct {
@@ -121,19 +121,26 @@ func TestCredentialsEditorHelper(t *testing.T) {
 	}
 	args := os.Args
 	path := args[len(args)-1]
-	record := os.Getenv("FORGE_TEST_EDITOR_RECORD")
+	record := os.Getenv("CRED_TEST_EDITOR_RECORD")
 	info, _ := os.Stat(path)
 	dirInfo, _ := os.Stat(filepath.Dir(path))
 	content, _ := os.ReadFile(path)
-	entry, _ := json.Marshal(map[string]any{"path": path, "file_mode": info.Mode().Perm(), "dir_mode": dirInfo.Mode().Perm(), "content": string(content)})
+	var forgeVars []string
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(strings.ToUpper(entry), "FORGE_") {
+			name, _, _ := strings.Cut(entry, "=")
+			forgeVars = append(forgeVars, name)
+		}
+	}
+	entry, _ := json.Marshal(map[string]any{"forge_vars": forgeVars, "has_path": os.Getenv("PATH") != "", "path": path, "file_mode": info.Mode().Perm(), "dir_mode": dirInfo.Mode().Perm(), "content": string(content)})
 	if err := os.WriteFile(record, entry, 0o600); err != nil {
 		os.Exit(3)
 	}
 	// A swap file next to the edited file must be removed with it.
 	_ = os.WriteFile(path+".swp", []byte("plaintext swap "+string(content)), 0o600)
-	switch os.Getenv("FORGE_TEST_EDITOR_MODE") {
+	switch os.Getenv("CRED_TEST_EDITOR_MODE") {
 	case "write":
-		if err := os.WriteFile(path, []byte(os.Getenv("FORGE_TEST_EDITOR_CONTENT")), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte(os.Getenv("CRED_TEST_EDITOR_CONTENT")), 0o600); err != nil {
 			os.Exit(3)
 		}
 	case "fail":
@@ -145,10 +152,12 @@ func TestCredentialsEditorHelper(t *testing.T) {
 }
 
 type editorRecord struct {
-	Path     string      `json:"path"`
-	FileMode os.FileMode `json:"file_mode"`
-	DirMode  os.FileMode `json:"dir_mode"`
-	Content  string      `json:"content"`
+	Path      string      `json:"path"`
+	FileMode  os.FileMode `json:"file_mode"`
+	DirMode   os.FileMode `json:"dir_mode"`
+	Content   string      `json:"content"`
+	ForgeVars []string    `json:"forge_vars"`
+	HasPath   bool        `json:"has_path"`
 }
 
 func (h *credHarness) useHelperEditor(t *testing.T, mode, content string) string {
@@ -159,9 +168,9 @@ func (h *credHarness) useHelperEditor(t *testing.T, mode, content string) string
 	}
 	record := filepath.Join(t.TempDir(), "record.json")
 	t.Setenv(helperEnv, "1")
-	t.Setenv("FORGE_TEST_EDITOR_MODE", mode)
-	t.Setenv("FORGE_TEST_EDITOR_CONTENT", content)
-	t.Setenv("FORGE_TEST_EDITOR_RECORD", record)
+	t.Setenv("CRED_TEST_EDITOR_MODE", mode)
+	t.Setenv("CRED_TEST_EDITOR_CONTENT", content)
+	t.Setenv("CRED_TEST_EDITOR_RECORD", record)
 	h.env["EDITOR"] = exe + " -test.run=^TestCredentialsEditorHelper$ --"
 	return record
 }
@@ -245,8 +254,8 @@ func TestCredentialsInitCreatesGitignoreWhenMissing(t *testing.T) {
 	if got := string(fileBytes(t, h.ctx.gitignore)); !strings.Contains(got, gitignoreEntry) {
 		t.Fatalf(".gitignore = %q", got)
 	}
-	if _, err := os.Stat(h.ctx.dockerignore); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("init must not create a .dockerignore")
+	if got := string(fileBytes(t, h.ctx.dockerignore)); !strings.Contains(got, dockerignoreEntry) {
+		t.Fatalf("init must create a .dockerignore that excludes the key: %q", got)
 	}
 	h.env["FORGE_ENV"] = "staging"
 	if err := h.run(t, "init"); err != nil {
@@ -617,5 +626,109 @@ func TestCredentialsRotateKeyChangedFileLeavesKeyFileAlone(t *testing.T) {
 	}
 	if got, _ := h.read(t, "production").String("theirs"); got != "1" {
 		t.Fatal("the other change was overwritten")
+	}
+}
+
+func TestCredentialsEditStripsForgeVariablesFromTheEditorEnvironment(t *testing.T) {
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	record := h.useHelperEditor(t, "none", "")
+	t.Setenv("FORGE_MASTER_KEY", "must-not-reach-the-editor")
+	t.Setenv("FORGE_DATABASE_URL", "postgres://secret")
+	if err := h.run(t, "edit", "--environment", "production"); err != nil {
+		t.Fatal(err)
+	}
+	r := readRecord(t, record)
+	if len(r.ForgeVars) != 0 || !r.HasPath {
+		t.Fatalf("editor saw FORGE_ variables %v (PATH kept: %v)", r.ForgeVars, r.HasPath)
+	}
+	got := editorEnvironment([]string{"PATH=/bin", "forge_master_key=x", "FORGE_ENV=production", "HOME=/h", "FORGETFUL=1"})
+	if strings.Join(got, ",") != "PATH=/bin,HOME=/h,FORGETFUL=1" {
+		t.Fatalf("editorEnvironment = %v", got)
+	}
+}
+
+func TestEditorHardeningCoversTheVimFamilyByResolvedName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks and executable bits")
+	}
+	dir := t.TempDir()
+	script := func(name string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // test executable
+			t.Fatal(err)
+		}
+		return path
+	}
+	link := func(name, target string) string {
+		path := filepath.Join(dir, name)
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	vimBasic, nano := script("vim.basic"), script("nano")
+	hardened := func(words ...string) bool {
+		return strings.Contains(strings.Join(hardenEditor(words), " "), "-n -i NONE")
+	}
+	for name, command := range map[string]string{
+		"vim.basic":          vimBasic,
+		"vi symlink to vim":  link("vi", vimBasic),
+		"editor via vim":     link("editor", link("alternatives-editor", vimBasic)),
+		"gvim":               script("gvim"),
+		"nvim":               script("nvim"),
+		"view":               script("view"),
+		"vim.nox by name":    filepath.Join(dir, "vim.nox"),
+		"vim-gtk3 by prefix": filepath.Join(dir, "vim-gtk3"),
+	} {
+		if !hardened(command) {
+			t.Errorf("%s: not hardened", name)
+		}
+	}
+	for name, command := range map[string]string{
+		"nano":                nano,
+		"vi symlink to nano":  link("vi2", nano),
+		"unknown wrapper":     script("code"),
+		"viewer is not vim":   script("viewer"),
+		"vimeo-uploader name": filepath.Join(dir, "vimeo"),
+	} {
+		if hardened(command) {
+			t.Errorf("%s: hardened although it is not a Vim", name)
+		}
+	}
+}
+
+// TestCredentialsEditCleansUpOnSIGTERMOutsideTheEditor: a termination signal
+// that arrives after the editor exited (while validating and encrypting) must
+// unwind through the cleanup instead of killing the process.
+func TestCredentialsEditCleansUpOnSIGTERMOutsideTheEditor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX signals")
+	}
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	before := fileBytes(t, h.encPath("production"))
+	h.env["EDITOR"] = "fake"
+	var tempPath string
+	h.ctx.editor = func(_ []string, path string) error {
+		tempPath = path
+		if err := os.WriteFile(path, []byte(`{"changed": "yes"}`), 0o600); err != nil {
+			return err
+		}
+		// Delivered after the editor's own signal handling is gone.
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			return err
+		}
+		time.Sleep(200 * time.Millisecond) // signal delivery is asynchronous
+		return nil
+	}
+	err := h.run(t, "edit", "--environment", "production")
+	if err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("error = %v", err)
+	}
+	assertGone(t, tempPath)
+	assertGone(t, filepath.Dir(tempPath))
+	if !bytes.Equal(before, fileBytes(t, h.encPath("production"))) {
+		t.Fatal("credentials changed after an interrupted edit")
 	}
 }
