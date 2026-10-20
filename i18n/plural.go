@@ -260,7 +260,12 @@ func arabic(o Operands) Category {
 	if o.N != math.Trunc(o.N) { // also NaN
 		return Other
 	}
-	switch mod100 := math.Mod(o.N, 100); {
+	mod100 := math.Mod(o.N, 100)
+	if o.V == 0 {
+		// Exact past 2^53, where the float n is not.
+		mod100 = float64(o.I % 100)
+	}
+	switch {
 	case o.N == 0:
 		return Zero
 	case o.N == 1:

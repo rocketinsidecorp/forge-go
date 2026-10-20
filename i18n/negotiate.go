@@ -263,7 +263,9 @@ func (t *Translator) Middleware(opts NegotiationOptions) (func(http.Handler) htt
 			r = r.WithContext(NewContext(r.Context(), t, locale))
 			if prefix != "" {
 				r = stripPrefix(r, prefix)
-				r = r.WithContext(context.WithValue(r.Context(), prefixKey{}, prefix))
+				// The locale's canonical name, not the request's spelling
+				// of it ("/PT-br" is stored as "/pt-BR").
+				r = r.WithContext(context.WithValue(r.Context(), prefixKey{}, "/"+locale))
 			}
 			next.ServeHTTP(w, r)
 		})

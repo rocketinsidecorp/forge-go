@@ -585,6 +585,7 @@ func TestAuthenticateBrowserKeepsTheLocalePrefix(t *testing.T) {
 		{"prefix on, no prefix in the request", true, "/products?page=2", "/products?page=2"},
 		{"prefix off", false, "/pt-BR/products?page=2", "/pt-BR/products?page=2"}, // routed as is
 		{"prefix on, unknown locale is a plain segment", true, "/fr/products", "/fr/products"},
+		{"prefix on, case variant is stored canonically", true, "/PT-br/products", "/pt-BR/products"},
 		// Hostile paths stay rejected, with and without a prefix.
 		{"double slash", true, "//evil.example/x", ""},
 		{"double slash after the prefix", true, "/pt-BR//evil.example/x", ""},
