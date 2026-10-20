@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="internal/scaffold/templates/assets/forge-go-logo.png" alt="Forge Go — Go Framework" width="280">
+  <img src="internal/scaffold/templates/assets/forge-go-logo.png" alt="Forge Go — Go Framework" width="220">
 </p>
 
 # Forge

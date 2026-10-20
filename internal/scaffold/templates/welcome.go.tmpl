@@ -26,7 +26,7 @@ const welcomePage = `<!doctype html>
 		.masthead strong { color: #f2e9dd; font-weight: 600; }
 		main { flex: 1; display: grid; place-items: center; padding: 44px 0; }
 		.welcome { width: 100%; display: grid; grid-template-columns: minmax(220px, .85fr) minmax(0, 1.15fr); align-items: center; gap: clamp(28px, 6vw, 72px); border: 1px solid rgba(210, 129, 70, .38); border-radius: 3px; padding: clamp(22px, 5vw, 58px); background: linear-gradient(135deg, rgba(255, 255, 255, .035), transparent 52%); box-shadow: 0 24px 80px rgba(0, 0, 0, .32), inset 0 1px rgba(255, 221, 183, .06); }
-		.brand-art { display: block; width: min(100%, 390px); margin: 0 auto; aspect-ratio: 1; object-fit: contain; }
+		.brand-art { display: block; width: min(100%, 390px); height: auto; margin: 0 auto; aspect-ratio: 1; object-fit: contain; }
 		.eyebrow { margin: 0 0 15px; color: #e79758; font-size: 11px; font-weight: 650; letter-spacing: .2em; text-transform: uppercase; }
 		h1 { margin: 0; color: #fff8ef; font-family: Georgia, "Times New Roman", serif; font-size: clamp(36px, 5vw, 62px); font-weight: 400; letter-spacing: -.035em; line-height: 1.04; overflow-wrap: anywhere; }
 		.lede { max-width: 42ch; margin: 21px 0 0; color: #c5b8a9; font-size: 16px; line-height: 1.7; }
@@ -49,7 +49,7 @@ const welcomePage = `<!doctype html>
 		<header class="masthead"><strong>Forge Go</strong><span>Go Framework</span></header>
 		<main>
 			<section class="welcome" aria-labelledby="welcome-title">
-				<img class="brand-art" src="@@LOGO@@" alt="Forge Go — Go Framework">
+				<img class="brand-art" src="@@LOGO@@" width="512" height="512" alt="Forge Go — Go Framework">
 				<div>
 					<p class="eyebrow">Your service is running</p>
 					<h1 id="welcome-title">Welcome to {{.Name}}</h1>
