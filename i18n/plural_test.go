@@ -124,13 +124,22 @@ func TestPluralRulesDecimalSamples(t *testing.T) {
 	}
 }
 
-// TestArabicNotANumber: NaN and infinity must not be zero, one or two.
-func TestArabicNotANumber(t *testing.T) {
+// TestNonFiniteCountsAreOther: NaN and infinity are never zero, one or two
+// in any locale, for built-in rules (even those keyed on the integer digits)
+// and for the locales without one.
+func TestNonFiniteCountsAreOther(t *testing.T) {
 	t.Parallel()
-	rule := i18n.PluralRuleFor("ar")
-	for _, count := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
-		if got := rule(operands(count)); got != i18n.Other {
-			t.Errorf("ar: count %v = %s, want other", count, got)
+	locales := append([]string{"xx"}, i18n.BuiltinPluralLocales()...)
+	for _, locale := range locales {
+		rule := i18n.PluralRuleFor(locale)
+		for _, count := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			if got := rule(operands(count)); got != i18n.Other {
+				t.Errorf("%s: count %v = %s, want other", locale, count, got)
+			}
+		}
+		// Operands built by hand are covered too.
+		if got := rule(i18n.Operands{N: math.Inf(1), I: 0, V: 0}); got != i18n.Other {
+			t.Errorf("%s: infinite operands = %s, want other", locale, got)
 		}
 	}
 }

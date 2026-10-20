@@ -297,13 +297,25 @@ func PluralRuleFor(locale string) PluralRule {
 func ruleIn(custom map[string]PluralRule, locale string) PluralRule {
 	for _, candidate := range parents(locale) {
 		if rule, ok := custom[candidate]; ok {
-			return rule
+			return finiteOnly(rule)
 		}
 		if rule, ok := builtinRules[candidate]; ok {
-			return rule
+			return finiteOnly(rule)
 		}
 	}
 	return onlyOther
+}
+
+// finiteOnly makes NaN and infinity "other" in every language, whatever the
+// rule says: rules keyed on the integer digits (French, Portuguese, Hebrew)
+// would otherwise call NaN singular.
+func finiteOnly(rule PluralRule) PluralRule {
+	return func(o Operands) Category {
+		if math.IsNaN(o.N) || math.IsInf(o.N, 0) {
+			return Other
+		}
+		return rule(o)
+	}
 }
 
 // usedCategories lists the categories a rule gives the integers 0 to 1000,
