@@ -6,19 +6,22 @@ import (
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
-func BenchmarkNew(b *testing.B) {
-	b.ReportAllocs()
-	for b.Loop() {
-		if _, err := uuid.New(); err != nil {
-			b.Fatal(err)
+// BenchmarkUUIDv7 is scenario "uuid_v7" in docs/BENCHMARKS.md: generation of
+// an identifier and its canonical text form.
+func BenchmarkUUIDv7(b *testing.B) {
+	b.Run("new", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := uuid.New(); err != nil {
+				b.Fatal(err)
+			}
 		}
-	}
-}
-
-func BenchmarkString(b *testing.B) {
-	id := uuid.MustNew()
-	b.ReportAllocs()
-	for b.Loop() {
-		_ = id.String()
-	}
+	})
+	b.Run("string", func(b *testing.B) {
+		id := uuid.MustNew()
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = id.String()
+		}
+	})
 }

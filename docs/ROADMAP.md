@@ -527,6 +527,13 @@ standard-library core ([ADR 0036](adr/0036-encrypted-credentials-and-attribute-e
 Benchmarks, profiling, and allocation work on hot paths (router, middleware,
 UUID generation).
 
+- [x] A reproducible benchmark suite: micro-benchmarks of the hot paths and an
+  end-to-end HTTP benchmark of a generated application
+  ([BENCHMARKS.md](BENCHMARKS.md)); CI runs every benchmark once.
+- [ ] Profiling and allocation work on the paths the suite shows to be
+  expensive (the wildcard route match, HTML rendering).
+- [ ] The same suite in Forge-Rust, with the same scenario names.
+
 ## Phase 10 - Security hardening
 
 Review against the [threat model](THREAT_MODEL.md).

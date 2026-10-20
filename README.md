@@ -1010,6 +1010,31 @@ artifact of every CI run, and get an opt-in `.github/workflows/release.yml`
 (enable it with `gh variable set FORGE_RELEASE_IMAGES --body true`, then push
 a `v*` tag); their README shows how to verify the result.
 
+## Benchmarks
+
+Micro-benchmarks of the hot paths (router, middleware chain, JSON and HTML
+rendering, CSRF, session cookie, password hashing, UUIDv7, i18n, attribute
+encryption, rate limiting) and an end-to-end HTTP benchmark of a generated
+application on PostgreSQL, with a load generator written with the standard
+library only. Methodology, scenarios, caveats and a dated results table:
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+```sh
+# micro-benchmarks, one package at a time so they do not compete for CPU
+go test -p 1 -run '^$' -bench . -benchmem -count 3 ./...
+go test -run '^$' -bench 'RouterMatch|MiddlewareChain' -benchmem ./router .   # a subset
+
+# end to end: builds a generated app against this checkout, runs it on PostgreSQL,
+# prints requests/s and p50/p95/p99 of /health, welcome, index, JSON show, create
+export FORGE_TEST_POSTGRES_URL='postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable'
+scripts/bench.sh                                  # 16 workers, 10s per scenario, 3 runs
+BENCH_DURATION=3s BENCH_RUNS=1 scripts/bench.sh   # a quick check
+scripts/bench.sh -format json                     # the same figures as JSON
+```
+
+CI runs every benchmark once (`go test -run '^$' -bench . -benchtime=1x ./...`)
+so they keep compiling and running; it never compares numbers.
+
 ## Example
 
 [`examples/basic-api`](examples/basic-api) is the reference service: a task
@@ -1083,6 +1108,7 @@ signed images for `v*` tags only.
 - [Rails parity (Forge-Go and Forge-Rust)](docs/RAILS_PARITY.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Supply chain: fuzzing, SBOM, signed images](docs/SUPPLY_CHAIN.md)
+- [Benchmarks](docs/BENCHMARKS.md)
 - [Multi-tenancy](docs/MULTI_TENANCY.md)
 - [Security policy](SECURITY.md)
 - Architecture decision records: [docs/adr](docs/adr)
