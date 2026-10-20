@@ -24,7 +24,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,6 +53,7 @@ type Resource struct {
 }
 
 // MetricExporter sends metric snapshots to a backend. It must honor ctx.
+// Shutdown is called once, after the last export (see SpanExporter).
 type MetricExporter interface {
 	ExportMetrics(ctx context.Context, resource Resource, metrics []MetricData) error
 	Shutdown(ctx context.Context) error
@@ -136,7 +139,12 @@ type Telemetry struct {
 	metricsCancel  context.CancelFunc
 	metricsStop    chan struct{}
 	metricsDone    chan struct{}
-	exportTimeout  time.Duration
+	// shutdownMetricExporter releases the metric exporter once the metrics
+	// goroutine stopped; metricsShutdownErr is its result, read after
+	// metricsDone is closed.
+	shutdownMetricExporter func(context.Context) error
+	metricsShutdownErr     error
+	exportTimeout          time.Duration
 
 	tracersMu sync.Mutex
 	tracers   map[string]*Tracer
@@ -241,6 +249,18 @@ func New(opts Options) (*Telemetry, error) {
 	if err := registerRuntimeMetrics(t.metrics); err != nil {
 		return nil, err
 	}
+	// Each exporter is shut down once, by the last signal using it to stop.
+	var shutdowns exporterShutdowns
+	var spanShutdown, logShutdown func(context.Context) error
+	if opts.SpanExporter != nil {
+		spanShutdown = shutdowns.add(opts.SpanExporter, opts.SpanExporter.Shutdown)
+	}
+	if opts.LogExporter != nil {
+		logShutdown = shutdowns.add(opts.LogExporter, opts.LogExporter.Shutdown)
+	}
+	if opts.MetricExporter != nil {
+		t.shutdownMetricExporter = shutdowns.add(opts.MetricExporter, opts.MetricExporter.Shutdown)
+	}
 	if opts.SpanExporter != nil {
 		onError := func(n int) {
 			t.exportErrors.Add(1, "traces")
@@ -251,7 +271,7 @@ func New(opts Options) (*Telemetry, error) {
 			failedMessage:    "telemetry: span export failed; spans dropped",
 			countKey:         "spans",
 			export:           opts.SpanExporter.ExportSpans,
-			shutdownExporter: opts.SpanExporter.Shutdown,
+			shutdownExporter: spanShutdown,
 			resource:         t.resource,
 			logger:           opts.Logger,
 			maxQueue:         opts.MaxQueueSize,
@@ -271,7 +291,7 @@ func New(opts Options) (*Telemetry, error) {
 			failedMessage:    "telemetry: log export failed; log records dropped",
 			countKey:         "log_records",
 			export:           opts.LogExporter.ExportLogs,
-			shutdownExporter: opts.LogExporter.Shutdown,
+			shutdownExporter: logShutdown,
 			resource:         t.resource,
 			logger:           opts.Logger,
 			maxQueue:         opts.LogMaxQueueSize,
@@ -365,7 +385,9 @@ func (t *Telemetry) ForceFlush(ctx context.Context) error {
 
 // Shutdown exports what is queued, stops the exporter goroutines and shuts
 // the exporters down, all within ctx. The signals shut down concurrently, so
-// a hung collector costs each at most the whole budget but not their sum.
+// a hung collector costs each at most the whole budget but not their sum; an
+// exporter shared by several signals is shut down once, after the last of
+// them stopped.
 // Spans and log records still queued when ctx ends are dropped, and so are
 // those produced after Shutdown. Only the first call has an
 // effect; later calls return its result. Its signature matches
@@ -417,7 +439,7 @@ func (t *Telemetry) stopMetrics(ctx context.Context) error {
 	select {
 	case <-t.metricsDone:
 		t.metricsCancel()
-		return t.metricExporter.Shutdown(ctx)
+		return t.metricsShutdownErr
 	case <-ctx.Done():
 		t.metricsCancel()
 		return fmt.Errorf("telemetry: metric export did not finish before the shutdown deadline: %w", ctx.Err())
@@ -439,6 +461,8 @@ func (t *Telemetry) exportMetricsLoop(interval time.Duration) {
 			if err := t.exportMetrics(t.metricsRun); err != nil {
 				t.logger.Warn("telemetry: final metric export failed", "error_type", ErrorType(err), "error", err)
 			}
+			// After the last export, like the batchers.
+			t.metricsShutdownErr = t.shutdownMetricExporter(t.metricsRun)
 			return
 		}
 	}
@@ -503,4 +527,51 @@ func (t *Telemetry) sampleRoot(id TraceID) bool {
 		return true
 	}
 	return binary.BigEndian.Uint64(id[8:])>>1 < t.threshold
+}
+
+// exporterShutdowns shuts each exporter down once, after every signal that
+// exports through it has stopped: FromConfig gives one OTLPExporter to
+// traces, metrics and logs, which stop concurrently, and Shutdown must not
+// run while another signal still exports.
+type exporterShutdowns struct {
+	shared []*sharedExporter
+}
+
+type sharedExporter struct {
+	exporter any
+	shutdown func(context.Context) error
+	// users is the number of signals that have not stopped yet.
+	users atomic.Int32
+}
+
+// add registers one signal exporting through exporter and returns the
+// function that signal calls once, after its last export; the last such call
+// shuts the exporter down. All adds happen before any signal can stop.
+func (s *exporterShutdowns) add(exporter any, shutdown func(context.Context) error) func(context.Context) error {
+	var shared *sharedExporter
+	for _, candidate := range s.shared {
+		if sameExporter(candidate.exporter, exporter) {
+			shared = candidate
+			break
+		}
+	}
+	if shared == nil {
+		shared = &sharedExporter{exporter: exporter, shutdown: shutdown}
+		s.shared = append(s.shared, shared)
+	}
+	shared.users.Add(1)
+	return func(ctx context.Context) error {
+		if shared.users.Add(-1) == 0 {
+			return shared.shutdown(ctx)
+		}
+		return nil
+	}
+}
+
+// sameExporter reports whether a and b are the same exporter. Values that
+// cannot be compared (a struct holding a slice, say) are never the same,
+// rather than panicking.
+func sameExporter(a, b any) bool {
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	return va.Type() == vb.Type() && va.Comparable() && vb.Comparable() && a == b
 }

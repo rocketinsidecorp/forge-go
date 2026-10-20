@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -229,5 +230,85 @@ func waitForGoroutines(t *testing.T, want int) {
 			t.Fatalf("goroutines leaked: %d > %d", runtime.NumGoroutine(), want)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// sharedTestExporter serves traces, metrics and logs, like the OTLP
+// exporter FromConfig builds. Log exports are slow, so the other signals stop
+// first; Shutdown records whether any export was still running.
+type sharedTestExporter struct {
+	inFlight   atomic.Int32
+	shutdowns  atomic.Int32
+	concurrent atomic.Bool
+	logExports atomic.Int32
+}
+
+func (e *sharedTestExporter) run(ctx context.Context, delay time.Duration) error {
+	e.inFlight.Add(1)
+	defer e.inFlight.Add(-1)
+	select {
+	case <-time.After(delay):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (e *sharedTestExporter) ExportSpans(ctx context.Context, _ Resource, _ []SpanData) error {
+	return e.run(ctx, 0)
+}
+
+func (e *sharedTestExporter) ExportMetrics(ctx context.Context, _ Resource, _ []MetricData) error {
+	return e.run(ctx, 0)
+}
+
+func (e *sharedTestExporter) ExportLogs(ctx context.Context, _ Resource, _ []LogRecord) error {
+	e.logExports.Add(1)
+	return e.run(ctx, 200*time.Millisecond)
+}
+
+func (e *sharedTestExporter) Shutdown(context.Context) error {
+	if e.inFlight.Load() != 0 {
+		e.concurrent.Store(true)
+	}
+	e.shutdowns.Add(1)
+	return nil
+}
+
+func TestASharedExporterIsShutDownOnceAfterEverySignalStopped(t *testing.T) {
+	exporter := &sharedTestExporter{}
+	tel := newTestTelemetry(t, Options{SampleRatio: 1, SpanExporter: exporter, MetricExporter: exporter, LogExporter: exporter, MetricsInterval: time.Hour})
+	endSpans(tel, 1)
+	slog.New(tel.LogHandler()).Info("slow to export")
+	shutdown(t, tel)
+	if exporter.logExports.Load() != 1 {
+		t.Fatalf("log exports %d", exporter.logExports.Load())
+	}
+	if exporter.concurrent.Load() || exporter.shutdowns.Load() != 1 {
+		t.Fatalf("shutdowns %d, concurrent with an export: %v", exporter.shutdowns.Load(), exporter.concurrent.Load())
+	}
+
+	// Distinct exporters are each shut down once.
+	spans, logs := &recordingExporter{}, &recordingLogExporter{}
+	tel = newTestTelemetry(t, Options{SpanExporter: spans, LogExporter: logs})
+	shutdown(t, tel)
+	if spans.shutdown != 1 || logs.shutdown != 1 {
+		t.Fatalf("span exporter shutdowns %d, log exporter shutdowns %d", spans.shutdown, logs.shutdown)
+	}
+}
+
+func TestSameExporterNeverPanicsOnIncomparableValues(t *testing.T) {
+	type incomparable struct{ Items []int }
+	type holder struct{ value any }
+	shared := &recordingExporter{}
+	switch {
+	case !sameExporter(shared, shared):
+		t.Fatal("one pointer is the same exporter")
+	case sameExporter(shared, &recordingExporter{}):
+		t.Fatal("two pointers are different exporters")
+	case sameExporter(incomparable{}, incomparable{}):
+		t.Fatal("incomparable values are never the same")
+	case sameExporter(holder{value: 1}, holder{value: []int{1}}):
+		t.Fatal("a holder of an incomparable value is never the same")
 	}
 }

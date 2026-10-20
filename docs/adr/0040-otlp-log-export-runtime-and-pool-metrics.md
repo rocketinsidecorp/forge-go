@@ -59,7 +59,9 @@ and the same retrying, no-redirect exporter as spans and metrics.
   fails to send. A test asserts it.
 - **Shutdown.** `Telemetry.Shutdown` now stops spans, log records and metrics
   concurrently within the application's shutdown budget; what is queued at the
-  deadline is dropped and counted. Lines logged after shutdown (the final
+  deadline is dropped and counted. The OTLP exporter the three signals share is
+  shut down once, by the last signal to stop, so its `Shutdown` never runs
+  concurrently with another signal's export. Lines logged after shutdown (the final
   "application stopped") reach standard output only.
 - **Privacy.** The exporter sends what the logger writes to standard output,
   nothing more. ADR 0034's rule that error messages are never recorded concerns

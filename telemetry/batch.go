@@ -11,7 +11,10 @@ import (
 
 // SpanExporter sends ended spans to a backend. ExportSpans is called from one
 // goroutine at a time; it must honor ctx and must not retain spans after it
-// returns.
+// returns. Shutdown is called once, after the last export. An exporter given
+// for several signals (one OTLPExporter as SpanExporter, MetricExporter and
+// LogRecordExporter) is shut down once, after every one of those signals has
+// stopped, so Shutdown never runs concurrently with an export.
 type SpanExporter interface {
 	ExportSpans(ctx context.Context, resource Resource, spans []SpanData) error
 	Shutdown(ctx context.Context) error
@@ -32,7 +35,9 @@ type batcher[T any] struct {
 	failedMessage string
 	countKey      string
 	// export sends one batch; shutdownExporter is called once, after the
-	// last export and never concurrently with one.
+	// last export. It is the release of a shared exporter (see
+	// exporterShutdowns), which shuts the exporter down after its last
+	// signal stops.
 	export           func(ctx context.Context, resource Resource, batch []T) error
 	shutdownExporter func(ctx context.Context) error
 	resource         Resource

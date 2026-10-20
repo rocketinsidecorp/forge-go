@@ -80,7 +80,8 @@ type LogRecord struct {
 
 // LogRecordExporter sends log records to a backend. ExportLogs is called
 // from one goroutine at a time; it must honor ctx and must not retain
-// records after it returns.
+// records after it returns. Shutdown is called once, after the last export
+// (see SpanExporter).
 type LogRecordExporter interface {
 	ExportLogs(ctx context.Context, resource Resource, records []LogRecord) error
 	Shutdown(ctx context.Context) error
