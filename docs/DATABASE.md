@@ -790,7 +790,7 @@ deletes the file (`0600`) and its `-wal`, `-shm`, `-journal` and
 role instead: it is validated like `FORGE_DATABASE_URL`, must use the same
 adapter, and its database is ignored (the target is always the one in
 `FORGE_DATABASE_URL`). It is used by `create`, `drop`, `schema:*` and
-`console`; the application's own `migrate` still uses `FORGE_DATABASE_URL`. A
+`console`; the application's own `migrate` still uses `FORGE_DATABASE_URL`. These commands refuse either URL when its query picks the server or database (`host`, `hostaddr`, `port`, `dbname`, `service` and the like): put them in the URL's host, port and path, which is what the local-database check reads. A
 database name must be 1-63 characters of letters, digits, `_`, `-` or `$`;
 `postgres`, `template0`, `template1`, `mysql`, `information_schema`,
 `performance_schema` and `sys` are never created or dropped.
@@ -811,7 +811,8 @@ record; the schema file is for fresh databases.
 **Credentials are never arguments.** PostgreSQL tools receive `PGHOST`,
 `PGUSER`, `PGPASSWORD`, `PGDATABASE` and `PGSSL*` in their environment (any
 inherited `PG*` variable is dropped first); MySQL tools read a `0600` temporary
-option file passed as the first argument and removed afterwards; SQLite takes
+option file passed first as `--defaults-file` (the only option file they read,
+so `~/.my.cnf` cannot redirect them) and removed afterwards; SQLite takes
 an absolute path. Error messages name the host and database, never the URL.
 
 **Protected databases.** `drop`, `reset`, `schema:load` and `rollback` refuse to

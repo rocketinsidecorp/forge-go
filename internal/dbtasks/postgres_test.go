@@ -250,3 +250,52 @@ func TestPostgresSchemaDumpIsDeterministicAndLoads(t *testing.T) {
 		t.Fatal("loading into a database that already has the schema must fail")
 	}
 }
+
+// pgConnConfig must not trust net/url and pgx to read a URL alike: these
+// URLs bypass NewTarget's checks on purpose, and pgx would dial another
+// server, port or database than the URL's authority and path name.
+func TestPgConnConfigPinsTheCheckedServerAndDatabase(t *testing.T) {
+	refused := map[string]string{
+		"space before host":   "postgres://m:pw@localhost/shop?sslmode=disable& host=evil.example",
+		"space after host":    "postgres://m:pw@localhost/shop?sslmode=disable&host =evil.example",
+		"space before dbname": "postgres://m:pw@localhost/shop?sslmode=disable& dbname=other",
+		"space before port":   "postgres://m:pw@localhost/shop?sslmode=disable& port=6543",
+		"plain host":          "postgres://m:pw@localhost/shop?host=evil.example",
+		"multiple hosts":      "postgres://m:pw@localhost/shop?host=localhost,evil.example",
+		"service":             "postgres://m:pw@localhost/shop?service=prod",
+		"hostaddr":            "postgres://m:pw@localhost/shop?hostaddr=10.0.0.5",
+		"session setting":     "postgres://m:pw@localhost/shop?search_path=evil",
+	}
+	for name, raw := range refused {
+		priv, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		target := &Target{Adapter: config.AdapterPostgres, Name: "shop", app: priv, priv: priv}
+		cfg, err := target.pgConnConfig("shop")
+		if err == nil {
+			t.Errorf("%s: pgConnConfig = host %q port %d database %q, want a refusal", name, cfg.Host, cfg.Port, cfg.Database)
+			continue
+		}
+		if strings.Contains(err.Error(), "pw") || strings.Contains(err.Error(), "evil") || strings.Contains(err.Error(), "://") {
+			t.Errorf("%s: error quotes the URL: %v", name, err)
+		}
+	}
+
+	// Accepted: the URL's own address, with an explicit default port that
+	// PGPORT in forge's environment cannot change, as for the tools.
+	t.Setenv("PGPORT", "6543")
+	t.Setenv("PGHOST", "evil.example")
+	priv, _ := url.Parse("postgres://m:pw@localhost/shop?sslmode=prefer&connect_timeout=5&application_name=forge")
+	target := &Target{Adapter: config.AdapterPostgres, Name: "shop", app: priv, priv: priv}
+	cfg, err := target.pgConnConfig("postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Host != "localhost" || cfg.Port != 5432 || cfg.Database != "postgres" {
+		t.Errorf("pgConnConfig = host %q port %d database %q", cfg.Host, cfg.Port, cfg.Database)
+	}
+	if env := strings.Join(target.pgEnvironment(nil), "\n"); !strings.Contains(env, "PGPORT=5432") || !strings.Contains(env, "PGHOST=localhost") {
+		t.Errorf("the tools must dial the same address:\n%s", env)
+	}
+}

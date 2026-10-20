@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/rocketinsidecorp/forge-go/config"
 )
@@ -81,6 +82,9 @@ func NewTarget(root string, lookup func(string) (string, bool)) (*Target, error)
 	if t.app, err = parseURL(cfg.Database.URL.Reveal()); err != nil {
 		return nil, err
 	}
+	if err := refuseLocationParams(t.app, "FORGE_DATABASE_URL"); err != nil {
+		return nil, err
+	}
 	t.Name = strings.TrimPrefix(t.app.Path, "/")
 	if !databaseName.MatchString(t.Name) {
 		return nil, errors.New("the database name in FORGE_DATABASE_URL must be 1-63 letters, digits, underscores, hyphens or dollar signs, and start with a letter, digit or underscore")
@@ -105,6 +109,9 @@ func NewTarget(root string, lookup func(string) (string, bool)) (*Target, error)
 		if t.priv, err = parseURL(raw); err != nil {
 			return nil, fmt.Errorf("%s: %w", EnvPrivilegedURL, err)
 		}
+		if err := refuseLocationParams(t.priv, EnvPrivilegedURL); err != nil {
+			return nil, err
+		}
 	}
 	return t, nil
 }
@@ -117,6 +124,41 @@ func parseURL(raw string) (*url.URL, error) {
 		return nil, errors.New("the database URL is not valid")
 	}
 	return parsed, nil
+}
+
+// locationParams are URL query parameters with which a driver or client
+// would pick the server or database instead of the URL's host, port and path:
+// pgx (like libpq) lets ?host=, ?port= and ?dbname= override them, and a
+// service file can supply them. Local and the reserved-name check read the
+// host and path, so a URL carrying any of these is refused rather than
+// guarded against an address the commands do not dial. MySQL's names are
+// included as defense in depth: its adapter already accepts only tls.
+var locationParams = []string{
+	"host", "hostaddr", "port", "dbname", "database", "service", "servicefile",
+	"socket", "unix_socket", "protocol",
+}
+
+// refuseLocationParams fails when u's query names the server or database.
+// Whitespace or a control character in the raw query, or in a decoded key,
+// is refused too: pgx trims raw spaces around a key ("& host=" is host) and
+// net/url does not. The error names the variable and the parameter, never
+// the URL.
+func refuseLocationParams(u *url.URL, variable string) error {
+	unclear := func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }
+	if strings.IndexFunc(u.RawQuery, unclear) >= 0 {
+		return fmt.Errorf("%s has whitespace or a control character in its parameters: percent-encode spaces as %%20", variable)
+	}
+	for key := range u.Query() {
+		if strings.IndexFunc(key, unclear) >= 0 {
+			return fmt.Errorf("%s has a parameter name with whitespace or a control character", variable)
+		}
+		for _, param := range locationParams {
+			if strings.EqualFold(strings.TrimSpace(key), param) {
+				return fmt.Errorf("%s sets the %q parameter: forge db commands take the server and database only from the URL's host, port and path", variable, param)
+			}
+		}
+	}
+	return nil
 }
 
 // Local reports whether every server the commands talk to is on this machine:
@@ -160,12 +202,18 @@ func (t *Target) ProtectionReason() string {
 func (t *Target) SetLookPath(lookPath func(string) (string, error)) { t.lookPath = lookPath }
 
 // Describe names the database for messages: adapter, name, and for servers
-// the host and port. It never includes a user or password.
+// the host and port the commands talk to, which are the privileged URL's
+// when it is set; the application's follow when they differ. It never
+// includes a user or password (url.URL.Host holds neither).
 func (t *Target) Describe() string {
 	if t.Adapter == config.AdapterSQLite {
 		return fmt.Sprintf("sqlite database %s", t.Name)
 	}
-	return fmt.Sprintf("%s database %q on %s", t.Adapter, t.Name, t.app.Host)
+	description := fmt.Sprintf("%s database %q on %s", t.Adapter, t.Name, t.priv.Host)
+	if !strings.EqualFold(t.priv.Host, t.app.Host) {
+		description += fmt.Sprintf(" (application: %s)", t.app.Host)
+	}
+	return description
 }
 
 func (t *Target) connectTimeout() time.Duration {

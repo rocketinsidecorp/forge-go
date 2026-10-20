@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/rocketinsidecorp/forge-go/config"
@@ -52,7 +53,7 @@ func (t *Target) PrepareConsole(extra []string) (*Console, error) {
 			return nil, err
 		}
 		// The option file must be the first argument.
-		return &Console{Path: path, Args: append([]string{"--defaults-extra-file=" + file}, extra...), Env: environ(), Cleanup: cleanup}, nil
+		return &Console{Path: path, Args: append([]string{mysqlDefaults(file)}, extra...), Env: mysqlEnvironment(environ(), file), Cleanup: cleanup}, nil
 	default:
 		path, err := t.lookPath("sqlite3")
 		if err != nil {
@@ -66,29 +67,48 @@ func missingTool(name string, adapter config.Adapter) error {
 	return fmt.Errorf("%s was not found on PATH: install the %s client tools", name, adapter)
 }
 
-// mysqlOptions writes the option file (mode 0600, removed by cleanup) for
-// the named client tool.
+// mysqlOptions writes the option file (mode 0600, in a new 0700 directory
+// that cleanup removes) for the named client tool. Tools read it through
+// mysqlDefaults and mysqlEnvironment, so it is the only option file they read.
 func (t *Target) mysqlOptions(toolName, database string) (name string, cleanup func(), err error) {
 	flavor := t.mysqlFlavor(toolName)
 	content, err := mysqlOptionFile(credentialsOf(t.priv), database, flavor)
 	if err != nil {
 		return "", nil, err
 	}
-	file, err := os.CreateTemp("", "forge-mysql-*.cnf") // 0600
+	dir, err := os.MkdirTemp("", "forge-mysql-*") // 0700
 	if err != nil {
 		return "", nil, fmt.Errorf("create option file: %w", err)
 	}
-	cleanup = func() { _ = os.Remove(file.Name()) }
-	if _, err := file.WriteString(content); err != nil {
-		_ = file.Close()
+	cleanup = func() { _ = os.RemoveAll(dir) }
+	name = filepath.Join(dir, "client.cnf")
+	if err := writeFile(name, []byte(content)); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("write option file: %w", err)
 	}
-	if err := file.Close(); err != nil {
-		cleanup()
-		return "", nil, err
+	return name, cleanup, nil
+}
+
+// mysqlDefaults is the first argument of every mysql client tool:
+// --defaults-file makes the option file the only one read, so a user's
+// ~/.my.cnf or the system's /etc/my.cnf cannot change the host, port, user
+// or protocol (--defaults-extra-file would let ~/.my.cnf override them).
+func mysqlDefaults(optionFile string) string { return "--defaults-file=" + optionFile }
+
+// mysqlEnvironment is the process environment for a client given
+// mysqlDefaults(optionFile). MySQL's clients read the login-path file
+// (~/.mylogin.cnf) even with --defaults-file, after it; pointing
+// MYSQL_TEST_LOGIN_FILE at a name in the option file's private directory,
+// which never exists, keeps it out. MariaDB's clients ignore both. An
+// inherited MYSQL_PWD (used when the URL has no password) and
+// LIBMYSQL_ENABLE_CLEARTEXT_PLUGIN (which lets the client send the password
+// unencrypted) are dropped.
+func mysqlEnvironment(base []string, optionFile string) []string {
+	env := base
+	for _, variable := range []string{"MYSQL_TEST_LOGIN_FILE=", "MYSQL_PWD=", "LIBMYSQL_ENABLE_CLEARTEXT_PLUGIN="} {
+		env = withoutPrefix(env, variable)
 	}
-	return file.Name(), cleanup, nil
+	return append(env, "MYSQL_TEST_LOGIN_FILE="+filepath.Join(filepath.Dir(optionFile), "no-login-path.cnf"))
 }
 
 // mysqlFlavor tells MariaDB's client tools from MySQL's by their version
