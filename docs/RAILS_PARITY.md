@@ -35,7 +35,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | OpenAPI from typed routes | — | Done (`openapi.Describe`, `openapi.Typed`, `GET /openapi.json`, `forge openapi [--output\|--check]`, `FORGE_OPENAPI_ENABLED`, [ADR 0043](adr/0043-openapi-from-typed-routes.md)) | Done (`#[derive(OpenApiSchema)]`, `forge::openapi::typed`/`describe`, `GET /openapi.json`, `FORGE_OPENAPI_ENABLED`, `forge openapi`, Forge-Rust ADR 0039) |
 | Controller, model, mailer and job generators, `destroy` | `rails g`, `rails d` | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, [ADR 0041](adr/0041-generators-and-destroy.md)) | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, Forge-Rust ADR 0038) |
 | Continuous fuzzing, SBOM, signed images | — | Done (every fuzz target per PR and nightly, `scripts/fuzz.sh`; CycloneDX/SPDX SBOMs; keyless cosign-signed images from `v*` tags; [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), [ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)) | Planned |
-| Published benchmarks | — | Planned | Planned |
+| Published benchmarks | — | In review (`go test -bench`, `scripts/bench.sh`, [BENCHMARKS.md](BENCHMARKS.md)) | Planned |
 | Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Planned |
 
 ## Parity follow-ups
@@ -52,6 +52,12 @@ the work is finished and waiting for its review; **Planned** means not started.
   confirmation needs the same explicit-refusal review. Forge-Rust adopts all
   three in its next pull request that touches `/mfa`, tracked in
   [forge-rust#36](https://github.com/rocketinsidecorp/forge-rust/issues/36).
+
+- Benchmarks: [BENCHMARKS.md](BENCHMARKS.md) defines the scenario names, the
+  variants and the output format of both suites; Forge-Rust adopts them in
+  its own benchmark pull request (planned, no date; tracked here until a
+  forge-rust issue exists). Its first results table must use the same
+  scenarios and the same columns, so the two can be read side by side.
 
 ## Review gate
 

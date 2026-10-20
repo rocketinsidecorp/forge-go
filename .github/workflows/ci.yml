@@ -80,6 +80,23 @@ jobs:
       - name: Vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
+  benchmarks:
+    # Smoke test, not a gate: every benchmark must keep compiling and running
+    # (one iteration each). Shared runners are too noisy to compare numbers, so
+    # none are compared or stored; see docs/BENCHMARKS.md for how to measure.
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run every benchmark once
+        run: go test -run '^$' -bench . -benchtime=1x ./...
+
   fuzz:
     # Every fuzz target, found by scripts/fuzz.sh with go test -list, for a
     # short time each. The nightly Fuzz workflow (fuzz.yml) runs them longer.

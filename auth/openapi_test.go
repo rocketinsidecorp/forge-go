@@ -222,7 +222,11 @@ type authScenario struct {
 	headers map[string]string
 	cookies []*http.Cookie
 	body    string
-	status  int
+	// bodyFn, when set, builds the body as the request is sent: a TOTP code
+	// computed when the table is built expires before the request under the
+	// race detector, where the password hashes before it take a minute.
+	bodyFn func() string
+	status int
 }
 
 // Every answer the handlers give below is checked against the document, and
@@ -261,7 +265,9 @@ func TestAuthDescriptionsMatchWhatTheHandlersAnswer(t *testing.T) {
 	wrong := `{"email":"nobody@example.com","password":"wrong","tenant":"acme"}`
 	// The stub store accepts any challenge the cipher can open; the code is
 	// the current TOTP of its fixed secret.
-	validMFA := `{"challenge_token":"` + mfaChallenge.Reveal() + `","code":"` + totpCode([]byte("12345678901234567890"), uint64(time.Now().Unix()/totpPeriodSeconds)) + `"}`
+	validMFA := func() string {
+		return `{"challenge_token":"` + mfaChallenge.Reveal() + `","code":"` + totpCode([]byte("12345678901234567890"), uint64(time.Now().Unix()/totpPeriodSeconds)) + `"}`
+	}
 	origin := map[string]string{"Origin": "https://app.example.com", "Content-Type": jsonType}
 	scenarios := []authScenario{
 		{name: "login", path: "/auth/login", body: login, headers: map[string]string{"Content-Type": jsonType}, status: http.StatusOK},
@@ -275,8 +281,8 @@ func TestAuthDescriptionsMatchWhatTheHandlersAnswer(t *testing.T) {
 		{name: "logout malformed", path: "/auth/logout", headers: map[string]string{"Authorization": "Bearer malformed"}, status: http.StatusUnauthorized},
 		{name: "login needs MFA", path: "/auth/mfa/login", body: login, headers: map[string]string{"Content-Type": jsonType}, status: http.StatusAccepted},
 		{name: "cookie login needs MFA", path: "/auth/mfa/cookie/login", body: login, headers: origin, status: http.StatusAccepted},
-		{name: "mfa complete", path: "/auth/unaudited/mfa", body: validMFA, headers: map[string]string{"Content-Type": jsonType}, status: http.StatusOK},
-		{name: "cookie mfa complete", path: "/auth/cookie/mfa/complete", body: validMFA, headers: origin, status: http.StatusOK},
+		{name: "mfa complete", path: "/auth/unaudited/mfa", bodyFn: validMFA, headers: map[string]string{"Content-Type": jsonType}, status: http.StatusOK},
+		{name: "cookie mfa complete", path: "/auth/cookie/mfa/complete", bodyFn: validMFA, headers: origin, status: http.StatusOK},
 		{name: "mfa wrong challenge", path: "/auth/unaudited/mfa", body: `{"challenge_token":"x","code":"000000"}`, headers: map[string]string{"Content-Type": jsonType}, status: http.StatusUnauthorized},
 		{name: "recovery request", path: "/auth/recovery/request", body: `{"email":"nobody@example.com","tenant":"acme"}`, headers: map[string]string{"Content-Type": jsonType}, status: http.StatusAccepted},
 		{name: "recovery throttled", path: "/auth/recovery/request", body: `{"email":"nobody@example.com","tenant":"acme"}`, headers: map[string]string{"Content-Type": jsonType}, status: http.StatusTooManyRequests},
@@ -294,7 +300,11 @@ func TestAuthDescriptionsMatchWhatTheHandlersAnswer(t *testing.T) {
 		{name: "cookie logout without CSRF", path: "/auth/cookie/logout", status: http.StatusForbidden},
 	}
 	for _, scenario := range scenarios {
-		request := httptest.NewRequest(http.MethodPost, "https://app.example.com"+scenario.path, bytes.NewReader([]byte(scenario.body)))
+		body := scenario.body
+		if scenario.bodyFn != nil {
+			body = scenario.bodyFn()
+		}
+		request := httptest.NewRequest(http.MethodPost, "https://app.example.com"+scenario.path, bytes.NewReader([]byte(body)))
 		request.RemoteAddr = "192.0.2.10:4242"
 		for name, value := range scenario.headers {
 			request.Header.Set(name, value)
