@@ -493,8 +493,8 @@ func validTagName(name string) bool {
 }
 
 // assignNames names every component after its Go type (or its OpenAPIName),
-// with the first letter
-// upper-cased and type arguments reduced to their names
+// in upper camel case (snake_case parts joined), with type arguments reduced
+// to their names
 // (pagination.Page[app/httpapi.postResponse] is Page_PostResponse). Types that
 // would share a name are qualified with their package name, then with their
 // full package path.
@@ -548,7 +548,11 @@ func shortName(t reflect.Type) string {
 		if dot := strings.LastIndex(text, "."); dot >= 0 {
 			text = text[dot+1:]
 		}
-		builder.WriteString(upperFirst(text))
+		// snake_case Go names (reserved_wordResponse) read as
+		// ReservedWordResponse.
+		for part := range strings.SplitSeq(text, "_") {
+			builder.WriteString(upperFirst(part))
+		}
 	}
 	name := t.Name()
 	start := 0

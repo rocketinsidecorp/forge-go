@@ -582,3 +582,15 @@ func TestTypersThroughPointersAndPointerReceivers(t *testing.T) {
 		}
 	}
 }
+
+type snake_case struct {
+	A int `json:"a"`
+}
+
+func TestSnakeCaseTypeNamesBecomeCamelCase(t *testing.T) {
+	t.Parallel()
+	_, tree := build(t, openapi.Route{Method: "GET", Pattern: "/a", Handler: openapi.Describe(ok, openapi.Operation{Responses: []openapi.Response{openapi.JSON[snake_case](http.StatusOK)}})})
+	if _, ok := at(t, tree, "components", "schemas").(map[string]any)["SnakeCase"]; !ok {
+		t.Fatalf("components = %v", at(t, tree, "components", "schemas"))
+	}
+}

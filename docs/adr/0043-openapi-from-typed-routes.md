@@ -68,7 +68,7 @@ worse than none; the document must be stable enough to commit and diff.
    304, and methods OpenAPI 3.1 lacks are build errors.
 4. **Components and determinism.** Every named struct type is a component
    (`$ref: #/components/schemas/Name`), which also terminates recursion.
-   Names are the Go name with an upper-case first letter and type arguments
+   Names are the Go name in upper camel case (snake_case parts joined) and type arguments
    reduced to their names (`pagination.Page[postResponse]` is
    `Page_PostResponse`); a type may choose its name with `openapi.Namer`
    (`OpenAPIName() string`; `health.Result` is `HealthReport`). Names that

@@ -135,7 +135,8 @@ A type whose encoding differs from its structure implements `openapi.Typer`
 (`OpenAPIType() openapi.Type`, "encodes like this type"); generated PATCH
 fields use it to read as `T` or `null`. A type chooses its component name
 with `OpenAPIName() string` (`openapi.Namer`; no import needed). Component
-names are the Go names with a capital first letter (`Page_PostResponse` for
+names are the Go names in upper camel case (`reserved_word` parts become
+`ReservedWord`; `Page_PostResponse` for
 `pagination.Page[postResponse]`); names that collide are qualified with the
 package (`httpapi.Item`).
 
