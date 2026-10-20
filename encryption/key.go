@@ -155,8 +155,3 @@ func (r *KeyRing) ActiveID() string { return r.active.ID }
 
 // IDs returns every identifier, the active one first.
 func (r *KeyRing) IDs() []string { return append([]string(nil), r.ids...) }
-
-func (r *KeyRing) lookup(id string) (Key, bool) {
-	key, ok := r.keys[id]
-	return key, ok
-}

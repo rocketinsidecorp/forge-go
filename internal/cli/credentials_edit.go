@@ -140,7 +140,8 @@ func runEditorProcess(editor []string, path string) error {
 				continue
 			}
 			_ = cmd.Process.Kill()
-			<-done
+			waitErr := <-done
+			_ = waitErr // the exit status of a killed editor is not reported
 			return fmt.Errorf("interrupted by %v", sig)
 		}
 	}
@@ -176,7 +177,7 @@ func shredDir(dir string) error {
 }
 
 func shredFile(path string) error {
-	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	file, err := os.OpenFile(path, os.O_WRONLY, 0) // #nosec G304 -- a file inside the private directory this command created
 	if err != nil {
 		return err
 	}
@@ -195,7 +196,7 @@ type zeroReader struct{}
 func (zeroReader) Read(p []byte) (int, error) { clear(p); return len(p), nil }
 
 func readBounded(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G304 -- the editor file inside the private directory this command created
 	if err != nil {
 		return nil, err
 	}

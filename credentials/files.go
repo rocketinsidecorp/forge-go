@@ -246,7 +246,7 @@ func writeAtomic(dir, name string, data []byte, replace bool) (err error) {
 // syncDir makes the rename durable. It is best effort: some platforms cannot
 // fsync a directory.
 func syncDir(dir string) error {
-	d, err := os.Open(dir)
+	d, err := os.Open(dir) // #nosec G304 -- dir is the credentials directory chosen by the application
 	if err != nil {
 		return nil
 	}

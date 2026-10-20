@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	credentialsUsage = "usage: forge credentials <init|edit|show|rotate-key> [--environment E] [flags]"
-	redactedValue    = "[REDACTED]"
+	commandUsage  = "usage: forge credentials <init|edit|show|rotate-key> [--environment E] [flags]"
+	redactedValue = "[REDACTED]"
 	// gitignoreEntry keeps credential keys out of version control; the
 	// encrypted .json.enc files are meant to be committed.
 	gitignoreEntry    = "/config/credentials/*.key"
@@ -57,7 +57,7 @@ func runCredentials(args []string, stdout, stderr io.Writer) error {
 
 func (c *credentialsContext) run(args []string) error {
 	if len(args) == 0 {
-		return errors.New(credentialsUsage)
+		return errors.New(commandUsage)
 	}
 	flags := flag.NewFlagSet("credentials "+args[0], flag.ContinueOnError)
 	flags.SetOutput(c.stderr)
@@ -77,7 +77,7 @@ func (c *credentialsContext) run(args []string) error {
 		flags.BoolVar(&writeKeyFile, "write-key-file", false, "store the new keys in the environment's key file even when the key came from FORGE_MASTER_KEY")
 	case "init", "edit":
 	default:
-		return fmt.Errorf("unknown credentials command %q\n%s", args[0], credentialsUsage)
+		return fmt.Errorf("unknown credentials command %q\n%s", args[0], commandUsage)
 	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
@@ -133,7 +133,7 @@ Next:         forge credentials edit --environment %[3]s
 // ensureLine appends line to the ignore file at path unless an equivalent
 // entry exists. With create the file is created when missing.
 func ensureLine(path, line string, create bool) error {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- fixed ignore-file names in the working directory
 	if errors.Is(err, fs.ErrNotExist) {
 		if !create {
 			return nil
@@ -149,7 +149,7 @@ func ensureLine(path, line string, create bool) error {
 			return nil
 		}
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 -- fixed ignore-file names in the working directory
 	if err != nil {
 		return err
 	}
