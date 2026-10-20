@@ -10,9 +10,11 @@ import (
 
 var identifierPattern = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
-// SQLColumn describes one encrypted TEXT column of a table with a text
-// primary key (such as a UUIDv7) and generates the statements a Rewriter
-// needs. Identifiers are validated (lowercase letters, digits, underscore):
+// SQLColumn describes one encrypted TEXT column and generates the statements a
+// Rewriter needs. The primary key is read as text and a text parameter resumes
+// after it: use a text or uuid key (UUIDv7 in Forge applications). Integer
+// keys work through SQLRewriter on MySQL, MariaDB and SQLite, which convert,
+// but not on PostgreSQL, where postgres.EncryptedColumn reports an error. Identifiers are validated (lowercase letters, digits, underscore):
 // they come from the application's source, never from user input.
 type SQLColumn struct {
 	Table  string

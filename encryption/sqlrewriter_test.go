@@ -63,3 +63,32 @@ func TestSQLColumnRejectsUnsafeIdentifiers(t *testing.T) {
 		}
 	}
 }
+
+// TestSQLRewriterIntegerKeysUseDatabaseOrder: bigint ids 1..12 sort 9 before
+// 10 in the database but "10" before "9" as Go strings; the rotation must
+// trust the database order instead of failing as out of order.
+func TestSQLRewriterIntegerKeysUseDatabaseOrder(t *testing.T) {
+	t.Parallel()
+	db := sqlitetest.New(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	oldKey, newKey := testKey(t, "k1", 1), testKey(t, "k2", 2)
+	before, after := newCipher(t, oldKey), newCipher(t, newKey, oldKey)
+	for i := 1; i <= 12; i++ {
+		v := encryption.NewValue[string](before, "notes", "body").ForRecord(fmt.Sprint(i))
+		v.Set(fmt.Sprintf("note-%d", i))
+		if _, err := db.ExecContext(ctx, `INSERT INTO notes (id, body) VALUES (?, ?)`, i, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rewriter, err := encryption.NewSQLRewriter(db, encryption.SQLColumn{Table: "notes", Column: "body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := after.Reencrypt(ctx, rewriter, encryption.RotateOptions{BatchSize: 5})
+	if err != nil || report.Rotated != 12 || report.LastID != "12" {
+		t.Fatalf("report %+v, %v", report, err)
+	}
+}

@@ -3,13 +3,16 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/rocketinsidecorp/forge-go/encryption"
 )
 
 // EncryptedColumn returns the encryption.Rewriter for one encrypted TEXT
 // column, used by Cipher.Reencrypt to move a table to the active key. The
-// primary key may be a uuid or text column; it is read as text. The spec's
+// primary key must be a uuid or text column (UUIDv7 in Forge applications);
+// other types, such as bigint, are refused with an error naming the
+// requirement. The spec's
 // placeholder style is always PostgreSQL's.
 func EncryptedColumn(db DBTX, spec encryption.SQLColumn) (encryption.Rewriter, error) {
 	if db == nil {
@@ -45,7 +48,7 @@ func (c encryptedColumn) Page(ctx context.Context, after string, limit int) ([]e
 	for rows.Next() {
 		var record encryption.Record
 		if err := rows.Scan(&record.ID, &record.Sealed); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("postgres: the primary key and the encrypted column must be uuid or text columns: %w", err)
 		}
 		page = append(page, record)
 	}

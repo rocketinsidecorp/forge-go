@@ -33,7 +33,7 @@ type Rewriter interface {
 	Table() string
 	Column() string
 	// Page returns up to limit rows with ID greater than after, ordered by ID
-	// ascending. Rows with a NULL value are omitted.
+	// ascending in the database's own order. Rows with a NULL value are omitted.
 	Page(ctx context.Context, after string, limit int) ([]Record, error)
 	// Replace applies u and reports whether a row was changed. False means the
 	// row no longer holds u.OldSealed.
@@ -90,8 +90,11 @@ func (c *Cipher) Reencrypt(ctx context.Context, rw Rewriter, opts RotateOptions)
 			if err := ctx.Err(); err != nil {
 				return report, err
 			}
-			if record.ID <= report.LastID {
-				return report, fmt.Errorf("encryption: rewriter returned row %q out of order", record.ID)
+			// The database defines the order (integers sort numerically, text
+			// by collation), so the ids are never compared here; a row that
+			// repeats the checkpoint would loop forever and is refused.
+			if record.ID == report.LastID {
+				return report, fmt.Errorf("encryption: rewriter did not advance past row %q", record.ID)
 			}
 			if err := c.reencryptRecord(ctx, rw, record, opts, &report); err != nil {
 				return report, err
