@@ -398,8 +398,10 @@ func (t *Telemetry) ForceFlush(ctx context.Context) error {
 // a hung collector costs each at most the whole budget but not their sum; an
 // exporter shared by several signals is shut down once, after the last of
 // them stopped.
-// Spans and log records still queued when ctx ends are dropped, and so are
-// those produced after Shutdown. Only the first call has an
+// Spans and log records still queued when ctx ends are dropped, those in an
+// export still running then count as failed (whatever it later returns), and
+// those produced after Shutdown are dropped too; Stats and LogStats count
+// them all by the time Shutdown returns. Only the first call has an
 // effect; later calls return its result. Its signature matches
 // forge.ShutdownHook.
 func (t *Telemetry) Shutdown(ctx context.Context) error {
