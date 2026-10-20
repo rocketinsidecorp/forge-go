@@ -12,9 +12,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
-	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/internal/dbtasks"
 	"github.com/rocketinsidecorp/forge-go/internal/devloop"
 )
@@ -294,18 +294,43 @@ func (d *dbCommand) console(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Registered before the option file exists, so no signal can end forge
+	// between writing the password and removing it.
+	signals := make(chan os.Signal, 4)
+	signal.Notify(signals, os.Interrupt, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM)
+	defer signal.Stop(signals)
 	console, err := target.PrepareConsole(extra)
 	if err != nil {
 		return err
 	}
 	defer console.Cleanup()
-	command := console.Command(ctx)
+	// The client is not tied to ctx: Ctrl-C reaches it directly (same
+	// foreground process group) and cancels a query instead of killing the
+	// session. forge stays alive to remove the option file, and forwards the
+	// signals that mean "go away" (hang-up, quit, terminate).
+	command := console.Command(context.WithoutCancel(ctx))
 	command.Stdin, command.Stdout, command.Stderr = d.stdin, d.stdout, d.stderr
-	// Ctrl-C belongs to the client (it cancels a query), not to forge.
-	interrupts := make(chan os.Signal, 1)
-	signal.Notify(interrupts, os.Interrupt)
-	defer signal.Stop(interrupts)
-	if err := command.Run(); err != nil {
+	if err := command.Start(); err != nil {
+		return err
+	}
+	finished := make(chan struct{})
+	var forwarding sync.WaitGroup
+	forwarding.Go(func() {
+		for {
+			select {
+			case sig := <-signals:
+				if sig != os.Interrupt {
+					_ = command.Process.Signal(sig)
+				}
+			case <-finished:
+				return
+			}
+		}
+	})
+	err = command.Wait()
+	close(finished)
+	forwarding.Wait()
+	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return fmt.Errorf("%s exited with status %d", filepath.Base(console.Path), exit.ExitCode())
@@ -315,29 +340,33 @@ func (d *dbCommand) console(ctx context.Context, args []string) error {
 	return nil
 }
 
-// confirm is the guard in front of every destructive command. Outside
-// production there is nothing to confirm. In production it refuses unless
-// --force-production is given AND either a person types the database name at
-// a terminal or --yes is given with FORGE_ALLOW_DESTRUCTIVE=true in the
-// process environment. An env file cannot grant it.
+// confirm is the guard in front of every destructive command. It applies
+// whenever the target is not a local database in the development or test
+// environment: in production and staging, and whenever the server is not on
+// this machine (so a real server is protected even when FORGE_ENV is unset or
+// wrong). It refuses unless --force-production is given AND either a person
+// types the database name at a terminal or --yes is given with
+// FORGE_ALLOW_DESTRUCTIVE=true in the process environment. An env file cannot
+// grant it.
 func (d *dbCommand) confirm(target *dbtasks.Target, action string, f destructiveFlags) error {
-	if target.Environment != config.Production {
+	reason := target.ProtectionReason()
+	if reason == "" {
 		return nil
 	}
 	if !f.forceProduction {
-		return fmt.Errorf("refusing to %s the production database (%s): pass --force-production, and confirm", action, target.Describe())
+		return fmt.Errorf("refusing to %s %s: %s; pass --force-production, and confirm", action, target.Describe(), reason)
 	}
 	if f.yes {
 		if value, _ := d.processEnv("FORGE_ALLOW_DESTRUCTIVE"); value != "true" {
-			return errors.New("--yes in production also needs FORGE_ALLOW_DESTRUCTIVE=true in the process environment")
+			return errors.New("--yes here also needs FORGE_ALLOW_DESTRUCTIVE=true in the process environment")
 		}
 		return nil
 	}
 	if !d.interactive {
-		return errors.New("confirming a destructive command in production needs an interactive terminal, or --yes with FORGE_ALLOW_DESTRUCTIVE=true")
+		return errors.New("confirming a destructive command here needs an interactive terminal, or --yes with FORGE_ALLOW_DESTRUCTIVE=true")
 	}
 	expected := filepath.Base(target.Name)
-	fmt.Fprintf(d.stderr, "This will %s the PRODUCTION %s.\nType the database name (%s) to continue: ", action, target.Describe(), expected)
+	fmt.Fprintf(d.stderr, "This will %s the protected %s (%s).\nType the database name (%s) to continue: ", action, target.Describe(), reason, expected)
 	line, err := bufio.NewReader(d.stdin).ReadString('\n')
 	if err != nil && line == "" {
 		return errors.New("no confirmation given")

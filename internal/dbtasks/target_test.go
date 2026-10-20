@@ -2,6 +2,7 @@ package dbtasks
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,5 +178,56 @@ func TestSQLiteDropRefusesNonRegularFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "db.sqlite")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadSchemaAndConsoleRefuseSystemDatabases(t *testing.T) {
+	t.Parallel()
+	target, err := NewTarget(t.TempDir(), lookupOf(map[string]string{"FORGE_DATABASE_URL": "postgres://u:p@h/postgres?sslmode=disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.SetLookPath(fakeLookPath)
+	if err := target.LoadSchema(context.Background(), filepath.Join(t.TempDir(), "schema.sql")); err == nil || !strings.Contains(err.Error(), "system database") {
+		t.Errorf("LoadSchema into postgres = %v, want a refusal", err)
+	}
+	if _, err := target.PrepareConsole(nil); err == nil || !strings.Contains(err.Error(), "system database") {
+		t.Errorf("PrepareConsole on postgres = %v, want a refusal", err)
+	}
+}
+
+func TestProtectionReason(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		url, env  string
+		protected bool
+	}{
+		"dev local":          {"postgres://u:p@127.0.0.1/db?sslmode=disable", "development", false},
+		"test local":         {"mysql://u:p@localhost/db", "test", false},
+		"sqlite":             {"sqlite:db.sqlite", "development", false},
+		"staging":            {"postgres://u:p@127.0.0.1/db?sslmode=disable", "staging", true},
+		"dev remote":         {"postgres://u:p@db.internal/db?sslmode=disable", "development", true},
+		"dev remote address": {"mysql://u:p@10.1.2.3/db", "development", true},
+	}
+	for name, test := range tests {
+		target, err := NewTarget(t.TempDir(), lookupOf(map[string]string{"FORGE_DATABASE_URL": test.url, "FORGE_ENV": test.env}))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := target.ProtectionReason() != ""; got != test.protected {
+			t.Errorf("%s: protected = %v (%q), want %v", name, got, target.ProtectionReason(), test.protected)
+		}
+	}
+}
+
+func TestIsLocalHost(t *testing.T) {
+	t.Parallel()
+	for host, want := range map[string]bool{
+		"127.0.0.1": true, "127.0.0.2": true, "[::1]:5432": true, "localhost": true, "LOCALHOST": true, "/var/run/postgresql": true,
+		"db.internal": false, "10.0.0.1": false, "localhost.evil.com": false, "0.0.0.0": false,
+	} {
+		if got := isLocalHost(&url.URL{Host: host}); got != want {
+			t.Errorf("isLocalHost(%q) = %v, want %v", host, got, want)
+		}
 	}
 }

@@ -31,6 +31,9 @@ func (c *Console) Command(ctx context.Context) *exec.Cmd {
 // client (psql, mysql, sqlite3). extra arguments follow the connection
 // options, for example -c "select 1".
 func (t *Target) PrepareConsole(extra []string) (*Console, error) {
+	if err := t.checkMutable(); err != nil {
+		return nil, err
+	}
 	nothing := func() {}
 	switch t.Adapter {
 	case config.AdapterPostgres:

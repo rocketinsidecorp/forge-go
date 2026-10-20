@@ -776,11 +776,16 @@ inherited `PG*` variable is dropped first); MySQL tools read a `0600` temporary
 option file passed as the first argument and removed afterwards; SQLite takes
 an absolute path. Error messages name the host and database, never the URL.
 
-**Production.** `drop`, `reset`, `schema:load` and `rollback` refuse to run
-with `FORGE_ENV=production` unless `--force-production` is given and either you
-type the database name at the prompt, or `--yes` is given with
-`FORGE_ALLOW_DESTRUCTIVE=true` in the process environment (an env file cannot
-set it). Other environments need no confirmation. PostgreSQL-only capabilities
+**Protected databases.** `drop`, `reset`, `schema:load` and `rollback` refuse to
+run unless the database is local and `FORGE_ENV` is `development` or `test`.
+Production and staging, and any server that is not on this machine (loopback,
+`localhost`, a Unix socket path and SQLite files are local), need
+`--force-production` and either typing the database name at the prompt, or
+`--yes` with `FORGE_ALLOW_DESTRUCTIVE=true` in the process environment (an env
+file cannot set it). This holds even when `FORGE_ENV` is unset, which defaults to
+`development`: the server address decides. `schema:load` and `console` also
+refuse system databases such as `postgres`. Ctrl-C in `forge db console` goes to
+the client, not to forge. PostgreSQL-only capabilities
 (row-level security, roles, `LISTEN/NOTIFY`) are not emulated on other backends;
 `forge db` behaves the same on every adapter, and tenant isolation on MySQL,
 MariaDB and SQLite remains the repositories' predicates.

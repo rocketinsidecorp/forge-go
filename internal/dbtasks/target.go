@@ -12,6 +12,7 @@ package dbtasks
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os/exec"
 	"path/filepath"
@@ -116,6 +117,43 @@ func parseURL(raw string) (*url.URL, error) {
 		return nil, errors.New("the database URL is not valid")
 	}
 	return parsed, nil
+}
+
+// Local reports whether every server the commands talk to is on this machine:
+// a SQLite file, a loopback or localhost address, or a Unix socket path.
+func (t *Target) Local() bool {
+	if t.Adapter == config.AdapterSQLite {
+		return true
+	}
+	return isLocalHost(t.app) && isLocalHost(t.priv)
+}
+
+func isLocalHost(u *url.URL) bool {
+	if u == nil {
+		return true
+	}
+	host := u.Hostname()
+	if strings.HasPrefix(host, "/") || strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// ProtectionReason explains why destructive commands need an explicit
+// confirmation for this target, or is "" when they do not: only the
+// development and test environments on a local database are unguarded.
+// FORGE_ENV unset counts as development (the CLI defaults it), so a real
+// server is guarded by its address, not by the environment name.
+func (t *Target) ProtectionReason() string {
+	switch {
+	case t.Environment != config.Development && t.Environment != config.Test:
+		return fmt.Sprintf("FORGE_ENV is %s", t.Environment)
+	case !t.Local():
+		return "the database server is not on this machine"
+	default:
+		return ""
+	}
 }
 
 // SetLookPath replaces how vendor tools are found, for tests.

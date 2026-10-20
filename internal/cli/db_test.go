@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -243,8 +244,8 @@ func TestDBProductionGuardAcceptsExplicitConfirmation(t *testing.T) {
 	if err := h.confirm(target, "drop", destructiveFlags{forceProduction: true}); err != nil {
 		t.Fatalf("typed confirmation: %v", err)
 	}
-	if !strings.Contains(h.errOut.String(), "PRODUCTION") {
-		t.Fatalf("the prompt must say it is production: %q", h.errOut.String())
+	if !strings.Contains(h.errOut.String(), "FORGE_ENV is production") {
+		t.Fatalf("the prompt must say why the database is protected: %q", h.errOut.String())
 	}
 
 	// --yes with the explicit environment grant.
@@ -266,13 +267,55 @@ func TestDBProductionGuardIgnoresEnvFileGrants(t *testing.T) {
 	}
 }
 
-func TestDBOutsideProductionNeedsNoConfirmation(t *testing.T) {
+func TestDBGuardCoversEverythingButLocalDevelopmentAndTest(t *testing.T) {
 	t.Parallel()
-	for _, environment := range []string{"development", "test", "staging"} {
-		h := newDBHarness(t, "FORGE_ENV="+environment+"\nFORGE_DATABASE_URL=sqlite:storage/x.db\n")
-		if err := h.do("drop"); err != nil {
-			t.Errorf("FORGE_ENV=%s: %v", environment, err)
-		}
+	const remote = "FORGE_DATABASE_URL=postgres://app:pw@db.example.com:5432/shop?sslmode=disable\n"
+	const local = "FORGE_DATABASE_URL=postgres://app:pw@127.0.0.1:5432/shop?sslmode=disable\n"
+	tests := []struct {
+		name      string
+		env       string
+		protected bool
+	}{
+		{"development, local server", "FORGE_ENV=development\n" + local, false},
+		{"test, local server", "FORGE_ENV=test\n" + local, false},
+		{"FORGE_ENV unset, local server", local, false},
+		{"development, localhost", "FORGE_ENV=development\nFORGE_DATABASE_URL=postgres://a:b@localhost/shop?sslmode=disable\n", false},
+		{"development, IPv6 loopback", "FORGE_ENV=development\nFORGE_DATABASE_URL=postgres://a:b@[::1]:5432/shop?sslmode=disable\n", false},
+		{"development, sqlite file", "FORGE_ENV=development\nFORGE_DATABASE_URL=sqlite:storage/x.db\n", false},
+		{"staging, local server", "FORGE_ENV=staging\n" + local, true},
+		{"staging, sqlite file", "FORGE_ENV=staging\nFORGE_DATABASE_URL=sqlite:storage/x.db\n", true},
+		{"development, real server", "FORGE_ENV=development\n" + remote, true},
+		{"test, real server", "FORGE_ENV=test\n" + remote, true},
+		{"FORGE_ENV unset, real server", remote, true},
+		{"privileged URL on a real server", "FORGE_ENV=development\n" + local + "FORGE_MIGRATION_DATABASE_URL=postgres://root:pw@db.example.com/postgres?sslmode=disable\n", true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			h := newDBHarness(t, test.env)
+			target, err := h.target()
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = h.confirm(target, "drop", destructiveFlags{})
+			if test.protected && (err == nil || !strings.Contains(err.Error(), "pass --force-production")) {
+				t.Fatalf("a drop must be refused without confirmation, got %v", err)
+			}
+			if !test.protected && err != nil {
+				t.Fatalf("no confirmation expected: %v", err)
+			}
+			if test.protected {
+				// And the full command stops before touching anything.
+				for _, args := range [][]string{{"drop"}, {"reset"}, {"schema:load"}, {"rollback"}} {
+					if err := h.do(args...); err == nil || !strings.Contains(err.Error(), "--force-production") {
+						t.Errorf("forge db %v = %v, want it refused", args, err)
+					}
+				}
+				if len(h.app.calls) != 0 {
+					t.Fatalf("a refused command ran %v", h.app.calls)
+				}
+			}
+		})
 	}
 }
 
@@ -450,5 +493,89 @@ func TestDBPostgresConsoleRunsPsqlWithoutPasswordArguments(t *testing.T) {
 	}
 	if lines := strings.Split(strings.TrimSpace(h.out.String()), "\n"); lines[len(lines)-1] != "42" {
 		t.Fatalf("psql output = %q", h.out.String())
+	}
+}
+
+// fakeClient makes the database client a shell script, found for any tool name.
+func fakeClient(t *testing.T, h *dbHarness, script string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "client")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil { // #nosec G306 -- test client must be executable
+		t.Fatal(err)
+	}
+	inner := h.target
+	h.target = func() (*dbtasks.Target, error) {
+		target, err := inner()
+		if err != nil {
+			return nil, err
+		}
+		target.SetLookPath(func(string) (string, error) { return path, nil })
+		return target, nil
+	}
+}
+
+func TestDBConsoleSurvivesACancelledContext(t *testing.T) {
+	t.Parallel()
+	// Ctrl-C cancels forge's context; the client handles the keystroke itself
+	// and must keep running.
+	h := newDBHarness(t, "FORGE_DATABASE_URL=sqlite:storage/dev.db\n")
+	fakeClient(t, h, "sleep 0.4\necho client-finished\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	if err := h.run(ctx, []string{"console"}); err != nil {
+		t.Fatalf("console: %v (the client was killed with the context)", err)
+	}
+	if !strings.Contains(h.out.String(), "client-finished") {
+		t.Fatalf("client output = %q", h.out.String())
+	}
+}
+
+func TestDBConsoleRemovesTheOptionFileOnHangUp(t *testing.T) {
+	// Not parallel: it signals the test process.
+	h := newDBHarness(t, "FORGE_DATABASE_URL=mysql://alice:s3cret@127.0.0.1:3306/shop\n")
+	dir := t.TempDir()
+	recorded, ready := filepath.Join(dir, "option-file"), filepath.Join(dir, "ready")
+	fakeClient(t, h, `if [ "$1" = "--version" ]; then echo "mariadb from 11"; exit 0; fi
+printf '%s' "${1#--defaults-extra-file=}" > '`+recorded+`'
+trap 'exit 0' HUP
+: > '`+ready+`'
+while :; do sleep 0.05; done
+`)
+	done := make(chan error, 1)
+	go func() { done <- h.run(context.Background(), []string{"console"}) }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the client never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	optionFile, err := os.ReadFile(recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(string(optionFile)); err != nil || !strings.Contains(string(content), "s3cret") {
+		t.Fatalf("the option file should hold the password while the client runs: %v", err)
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil { // the terminal closes
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("console: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("console did not end after the hang-up")
+	}
+	if _, err := os.Stat(string(optionFile)); !os.IsNotExist(err) {
+		t.Fatalf("the option file with the password survived the hang-up (stat err = %v)", err)
 	}
 }

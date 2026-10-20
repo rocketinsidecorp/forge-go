@@ -158,10 +158,11 @@ page's Content-Security-Policy gets a per-response nonce only if it would block
 that one script. Nothing of this is in your application binary
 ([ADR 0035](docs/adr/0035-development-loop.md), [Database](docs/DATABASE.md#database-lifecycle-forge-db)).
 
-`drop`, `reset`, `schema:load` and `rollback` are refused with
-`FORGE_ENV=production` unless you pass `--force-production` and either type the
-database name at the prompt or pass `--yes` with `FORGE_ALLOW_DESTRUCTIVE=true`
-in the process environment:
+`drop`, `reset`, `schema:load` and `rollback` are refused unless the database is
+local and `FORGE_ENV` is `development` or `test`: in production and staging, and
+for any server that is not on this machine, you must pass `--force-production`
+and either type the database name at the prompt or pass `--yes` with
+`FORGE_ALLOW_DESTRUCTIVE=true` in the process environment:
 
 ```sh
 FORGE_ALLOW_DESTRUCTIVE=true forge db drop --force-production --yes

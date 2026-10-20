@@ -198,6 +198,9 @@ func (t *Target) sqliteAppliedMigrations(ctx context.Context) ([]appliedMigratio
 // with the vendor client. Tables that already exist make it fail rather
 // than be replaced.
 func (t *Target) LoadSchema(ctx context.Context, schemaPath string) error {
+	if err := t.checkMutable(); err != nil {
+		return err
+	}
 	exists, err := t.Exists(ctx)
 	if err != nil {
 		return err
