@@ -233,8 +233,9 @@ type verifiedStepUp struct {
 // revealed by the answer; a pending rotation is confirmed with
 // ConfirmMFARotation and a current code, never through the password-only
 // path), then the password and, with needCode, a current code that is used
-// up. A refusal other than ErrMFAAlreadyEnabled is audited as action denied. The throttle
-// counter is reset only when the whole change succeeds (stepUpSucceeded).
+// up. Every refusal after the throttle attempt is audited as action denied.
+// The throttle counter is reset only when the whole change succeeds
+// (stepUpSucceeded).
 func (b *Browser) stepUp(w http.ResponseWriter, r *http.Request, action SecurityEventKind, proof MFAStepUp, needCode bool) (verifiedStepUp, error) {
 	noStore(w)
 	if !csrf.Verified(r) {
@@ -270,6 +271,9 @@ func (b *Browser) stepUp(w http.ResponseWriter, r *http.Request, action Security
 			return verifiedStepUp{}, err
 		}
 		if status.Enabled {
+			// Audited whatever the password, so the audit trail keeps the
+			// attempt without depending on it.
+			b.recordStepUpDenied(r, action, subject, key)
 			return verifiedStepUp{}, ErrMFAAlreadyEnabled
 		}
 	}

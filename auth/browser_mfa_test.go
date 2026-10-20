@@ -494,7 +494,8 @@ func TestBrowserMFAEnrollmentNeedsThePasswordAtBothSteps(t *testing.T) {
 	if again := f.post(f.ada, "/mfa", url.Values{"password": {mfaTestPassword}}, true); again.Header().Get("X-Error") != ErrMFAAlreadyEnabled.Error() {
 		t.Fatalf("second enrollment: status=%d error=%q", again.Code, again.Header().Get("X-Error"))
 	}
-	if f.deniedEvents(SecurityMFAEnrollmentStarted) != 1 || f.deniedEvents(SecurityMFAEnabled) != 3 {
+	// The wrong password and the refused second enrollment are audited.
+	if f.deniedEvents(SecurityMFAEnrollmentStarted) != 2 || f.deniedEvents(SecurityMFAEnabled) != 3 {
 		t.Fatalf("denied audit events: start=%d enable=%d", f.deniedEvents(SecurityMFAEnrollmentStarted), f.deniedEvents(SecurityMFAEnabled))
 	}
 	for _, event := range f.events {
@@ -748,7 +749,8 @@ func TestBrowserMFAEnrollmentConfirmCannotFinishARotation(t *testing.T) {
 // answer, or a session holder could test passwords through them.
 func TestBrowserMFAEnrollmentRoutesDoNotRevealThePasswordOfAnEnrolledAccount(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"/mfa", "/mfa/confirm"} {
+	actions := map[string]SecurityEventKind{"/mfa": SecurityMFAEnrollmentStarted, "/mfa/confirm": SecurityMFAEnabled}
+	for path, action := range actions {
 		t.Run(strings.TrimPrefix(path, "/"), func(t *testing.T) {
 			f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
 			key, _ := f.enable(f.ada)
@@ -767,6 +769,10 @@ func TestBrowserMFAEnrollmentRoutesDoNotRevealThePasswordOfAnEnrolledAccount(t *
 			}
 			if !f.status(f.ada).Enabled || f.accounts.account(f.ada).pending != nil {
 				t.Fatal("the refused request changed the account")
+			}
+			// Both refusals are audited, whatever the password.
+			if denied := f.deniedEvents(action); denied != 2 {
+				t.Fatalf("denied %s events = %d, want 2", action, denied)
 			}
 		})
 	}

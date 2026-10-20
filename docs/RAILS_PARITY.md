@@ -50,7 +50,8 @@ the work is finished and waiting for its review; **Planned** means not started.
   Forge-Rust's generated `step_up` has the same password-oracle ordering and
   its pages lack the hint (its `docs/mfa.md` has the sentence); its store's
   confirmation needs the same explicit-refusal review. Forge-Rust adopts all
-  three in its next pull request that touches `/mfa`.
+  three in its next pull request that touches `/mfa`, tracked in
+  [forge-rust#36](https://github.com/rocketinsidecorp/forge-rust/issues/36).
 
 ## Review gate
 

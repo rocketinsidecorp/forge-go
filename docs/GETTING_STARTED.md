@@ -351,12 +351,13 @@ echo; every form needs the CSRF token from the page):
 ```sh
 B=http://localhost:8080 JAR=$(mktemp)
 token() { sed -n 's/.*name="authenticity_token" value="\([^"]*\)".*/\1/p' | head -1; }
-read -rs OWNER_PASSWORD
+printf 'Owner password: '; read -rs OWNER_PASSWORD; echo   # bash or zsh
 T=$(curl -s -c $JAR -b $JAR $B/session/new | token)
 curl -s -o /dev/null -c $JAR -b $JAR -d "authenticity_token=$T" -d tenant=acme -d email=you@example.com --data-urlencode "password=$OWNER_PASSWORD" $B/session
 T=$(curl -s -c $JAR -b $JAR $B/posts/new | token)
 curl -si -c $JAR -b $JAR -d "authenticity_token=$T" --data-urlencode "title=Hello Forge" --data-urlencode "body=My first post" $B/posts | grep -E '^(HTTP|Location)'
 curl -s -b $JAR $B/posts | grep '<td>Hello'
+unset OWNER_PASSWORD
 ```
 
 ```text
@@ -512,8 +513,9 @@ application binary for containers and production, with the password piped
 (never an argument). After `forge build`, from the application directory:
 
 ```sh
-read -rs OWNER_PASSWORD
+printf 'Owner password: '; read -rs OWNER_PASSWORD; echo   # bash or zsh
 printf '%s\n' "$OWNER_PASSWORD" | bin/blog setup --tenant acme --email you@example.com --password-stdin
+unset OWNER_PASSWORD
 ```
 
 Details, tokens for API clients, two-factor enrollment and account recovery:
