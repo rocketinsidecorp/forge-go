@@ -555,3 +555,30 @@ func TestCheckResponsesReportsOnlyDocumentedMismatches(t *testing.T) {
 		t.Fatalf("undocumented route: err = %v", err)
 	}
 }
+
+type pointerTyper struct{ Value int }
+
+func (*pointerTyper) OpenAPIType() openapi.Type { return openapi.TypeOf[string]() }
+
+func TestTypersThroughPointersAndPointerReceivers(t *testing.T) {
+	t.Parallel()
+	type wrapper struct {
+		Maybe   *optional[int] `json:"maybe"`
+		ByPtr   pointerTyper   `json:"by_ptr"`
+		PtrPtr  *pointerTyper  `json:"ptr_ptr"`
+		Missing optional[bool] `json:"missing,omitzero"`
+	}
+	_, tree := build(t, openapi.Route{Method: "GET", Pattern: "/a", Handler: openapi.Describe(ok, openapi.Operation{Responses: []openapi.Response{openapi.JSON[wrapper](http.StatusOK)}})})
+	properties := at(t, tree, "components", "schemas", "Wrapper", "properties").(map[string]any)
+	want := map[string]string{
+		"maybe":   `{"format":"int64","type":["integer","null"]}`,
+		"by_ptr":  `{"type":"string"}`,
+		"ptr_ptr": `{"type":["string","null"]}`,
+		"missing": `{"type":["boolean","null"]}`,
+	}
+	for name, schema := range want {
+		if got := compact(t, properties[name]); got != schema {
+			t.Errorf("%s = %s, want %s", name, got, schema)
+		}
+	}
+}

@@ -28,7 +28,9 @@ import (
 const liveRoutePath = "/health/live"
 
 // OpenAPIPath is where the application serves its OpenAPI document when
-// FORGE_OPENAPI_ENABLED allows it (config.Config.ServesOpenAPI).
+// FORGE_OPENAPI_ENABLED allows it (config.Config.ServesOpenAPI). The route is
+// mounted when the first request arrives, and not at all when the
+// application registered a route for this path itself.
 const OpenAPIPath = "/openapi.json"
 
 // ViewRenderer executes server-side HTML templates with contextual escaping.
@@ -138,11 +140,6 @@ func New(opts ...Option) (*App, error) {
 func (a *App) build(settings options) error {
 	if err := a.registerHealthRoutes(); err != nil {
 		return err
-	}
-	if a.config.ServesOpenAPI() {
-		if err := a.router.HandleFunc("GET "+OpenAPIPath, a.serveOpenAPI); err != nil {
-			return err
-		}
 	}
 	var routes http.Handler = a.router
 	a.chain.Store(&routes)
@@ -286,10 +283,26 @@ func (a *App) Use(middleware httpserver.Middleware) error {
 func (a *App) dispatch(w http.ResponseWriter, r *http.Request) {
 	if !a.serving.Load() {
 		a.middlewareMu.Lock()
-		a.serving.Store(true)
+		if !a.serving.Load() {
+			a.mountOpenAPI()
+			a.serving.Store(true)
+		}
 		a.middlewareMu.Unlock()
 	}
 	(*a.chain.Load()).ServeHTTP(w, r)
+}
+
+// mountOpenAPI registers GET OpenAPIPath just before the first request, when
+// every application route is known, unless the configuration does not serve
+// the document or the application has its own route for the path (an
+// application that published a hand-written document keeps it).
+func (a *App) mountOpenAPI() {
+	if !a.servesOpenAPI() {
+		return
+	}
+	if err := a.router.Handle("GET "+OpenAPIPath, openAPIHandler{a.serveOpenAPI}); err != nil {
+		a.logger.Error("mount the OpenAPI document", "path", OpenAPIPath, "error", err)
+	}
 }
 
 // Resources registers the conventional resource routes for the actions
@@ -335,10 +348,10 @@ func (a *App) OpenAPI() (*openapi.Document, error) {
 	a.apiMu.Unlock()
 	var routes []openapi.Route
 	for _, route := range a.router.Routes() {
-		if route.Method == http.MethodGet && route.Pattern == OpenAPIPath {
+		handler, _ := a.router.Lookup(route)
+		if route.Method == http.MethodGet && route.Pattern == OpenAPIPath && isServeOpenAPI(handler) {
 			continue
 		}
-		handler, _ := a.router.Lookup(route)
 		routes = append(routes, openapi.Route{Method: route.Method, Pattern: route.Pattern, Handler: handler})
 	}
 	return openapi.Build(info, routes)
@@ -366,6 +379,32 @@ func (a *App) servedOpenAPI() (*openapi.Document, error) {
 	return a.apiServed, nil
 }
 
+// servesOpenAPI reports whether Forge serves its document: the configuration
+// allows it and no application route owns OpenAPIPath.
+func (a *App) servesOpenAPI() bool {
+	if !a.config.ServesOpenAPI() {
+		return false
+	}
+	for _, route := range a.router.Routes() {
+		if route.Pattern == OpenAPIPath {
+			handler, _ := a.router.Lookup(route)
+			if !isServeOpenAPI(handler) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// openAPIHandler marks Forge's own document route, so App.OpenAPI leaves it
+// out and documents an application route at the same path.
+type openAPIHandler struct{ http.HandlerFunc }
+
+func isServeOpenAPI(handler http.Handler) bool {
+	_, ok := handler.(openAPIHandler)
+	return ok
+}
+
 func (a *App) serveOpenAPI(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.servedOpenAPI(); err != nil {
 		web.Error(w, r, fmt.Errorf("build the OpenAPI document: %w", err))
@@ -391,7 +430,10 @@ func (a *App) Run(ctx context.Context) error {
 	})
 	defer stopWatching()
 
-	if a.config.ServesOpenAPI() {
+	if a.config.ServesOpenAPI() && !a.servesOpenAPI() {
+		a.logger.Info("the application serves its own " + OpenAPIPath + "; Forge's OpenAPI document is not mounted there")
+	}
+	if a.servesOpenAPI() {
 		// An inaccurate description is a startup error, not a 500 on
 		// the first request.
 		if _, err := a.servedOpenAPI(); err != nil {

@@ -145,7 +145,9 @@ func (s *schemas) schema(t reflect.Type) (map[string]any, error) {
 // special handles types whose JSON encoding is not their Go structure.
 func (s *schemas) special(t reflect.Type) (map[string]any, bool, error) {
 	switch {
-	case t.Implements(typerType) || (t.Kind() != reflect.Pointer && reflect.PointerTo(t).Implements(typerType)):
+	case t.Kind() != reflect.Pointer && (t.Implements(typerType) || reflect.PointerTo(t).Implements(typerType)):
+		// Pointers are described through their element (nullable), so
+		// OpenAPIType is never called on a nil pointer.
 		if s.typers[t] {
 			return nil, true, describable(t, "OpenAPIType refers back to the type itself")
 		}

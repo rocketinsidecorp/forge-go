@@ -172,7 +172,9 @@ with its report) goes in `Responses`.
 The document lists every described route, admin and internal ones included,
 with the permission each requires: publishing it in production is a
 decision ([threat model](THREAT_MODEL.md)). When it is served, it is built as
-the server starts, so an inaccurate description stops startup.
+the server starts, so an inaccurate description stops startup. An
+application that registers its own `/openapi.json` route keeps it; Forge
+then does not mount its document there.
 
 `forge openapi` builds `cmd/NAME` and runs the binary's `openapi` command
 with `.env.development` loaded, like `forge migrate`. It runs `Configure`

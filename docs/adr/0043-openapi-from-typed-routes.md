@@ -100,6 +100,9 @@ worse than none; the document must be stable enough to commit and diff.
    in staging and production too (with a startup warning); `false` never.
    When served, the document is built as `Run` starts, so an inaccurate
    description stops startup rather than failing the first request. The
+   route is mounted when the first request arrives; an application that
+   registered its own `/openapi.json` (a hand-written document) keeps it
+   and Forge's is not mounted, so upgrading breaks no existing route. The
    document lists every documented route, so production does not publish it
    by default ([threat model](../THREAT_MODEL.md)).
 8. **The binary writes it; the CLI mirrors `forge migrate`.** The

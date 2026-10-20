@@ -94,6 +94,10 @@ func (d *Document) ValidateResponse(method, path string, status int, header http
 		return fmt.Errorf("%w: %s %s does not declare status %d", ErrContract, method, route.path, status)
 	}
 	content, hasContent := response["content"].(map[string]any)
+	if method == http.MethodHead {
+		// HEAD answers a GET route's status and headers without the body.
+		return nil
+	}
 	if !hasContent {
 		if len(bytes.TrimSpace(body)) != 0 {
 			return fmt.Errorf("%w: %s %s %d is declared without a body but has one", ErrContract, method, route.path, status)

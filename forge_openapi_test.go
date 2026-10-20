@@ -192,3 +192,29 @@ func TestInaccurateDescriptionStopsStartup(t *testing.T) {
 		t.Fatalf("openapi: code=%d", code)
 	}
 }
+
+// An application that already served a hand-written document keeps it.
+func TestApplicationRouteAtOpenAPIPathWins(t *testing.T) {
+	t.Parallel()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.HandleFunc("GET "+forge.OpenAPIPath, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"hand":"written"}`))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, forge.OpenAPIPath, nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != `{"hand":"written"}` {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	document, err := app.OpenAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := document.Undocumented(); !slices.Equal(got, []string{"GET " + forge.OpenAPIPath}) {
+		t.Fatalf("Undocumented = %v", got)
+	}
+}
