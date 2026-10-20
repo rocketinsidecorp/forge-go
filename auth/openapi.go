@@ -44,7 +44,7 @@ var (
 		Description: "Verifies the email, password and tenant and answers 200 with an opaque bearer session token. " +
 			"When the account has MFA enabled it answers 202 with a challenge instead, to complete at the MFA completion route. " +
 			"Bad credentials always answer 401 (an unknown account cannot be told from a wrong password); attempts are throttled per account and per source. " +
-			"The response is not cacheable.",
+			"Successful responses are sent with Cache-Control: no-store.",
 		Tags:    []string{authTag},
 		Request: openapi.TypeOf[loginRequest](),
 		Responses: []openapi.Response{
@@ -70,7 +70,7 @@ var (
 	mfaCompletionOperation = openapi.Operation{
 		Summary: "Complete a sign-in that needs MFA",
 		Description: "Exchanges the challenge of a 202 sign-in answer and an authenticator or backup code for a bearer session token. " +
-			"A wrong, reused or expired code or challenge answers 401; attempts are throttled. The response is not cacheable.",
+			"A wrong, reused or expired code or challenge answers 401; attempts are throttled. Successful responses are sent with Cache-Control: no-store.",
 		Tags:    []string{authTag},
 		Request: openapi.TypeOf[mfaCompletionRequest](),
 		Responses: []openapi.Response{
@@ -83,7 +83,7 @@ var (
 	passwordRecoveryRequestOperation = openapi.Operation{
 		Summary: "Request a password reset link",
 		Description: "Answers 202 for every well-formed request, whether or not an account matches, so it cannot be used to find accounts; " +
-			"the link is sent only to the address the account holds. Requests are throttled. The response is not cacheable.",
+			"the link is sent only to the address the account holds. Requests are throttled. Successful responses are sent with Cache-Control: no-store.",
 		Tags:    []string{authTag},
 		Request: openapi.TypeOf[recoveryRequestBody](),
 		Responses: []openapi.Response{
@@ -96,7 +96,7 @@ var (
 		Summary: "Reset a password with a recovery token",
 		Description: "Consumes the single-use token of a reset link and sets the new password. " +
 			"400 also answers an invalid, expired or used token (recovery_invalid) and an unacceptable password (password_invalid). " +
-			"Attempts are throttled. The response is not cacheable.",
+			"Attempts are throttled. Successful responses are sent with Cache-Control: no-store.",
 		Tags:    []string{authTag},
 		Request: openapi.TypeOf[passwordResetBody](),
 		Responses: []openapi.Response{
@@ -109,7 +109,7 @@ var (
 		Summary: "Sign in with a password and a browser session cookie",
 		Description: "Like the bearer sign-in, but the session travels only in an HttpOnly, Secure, SameSite=Lax __Host- cookie, " +
 			"and a CSRF cookie and csrf_token are issued for later unsafe requests. Needs a same-origin HTTPS Origin header (403 otherwise). " +
-			"With MFA enabled it answers 202 with a challenge and sets no cookie. The response is not cacheable.",
+			"With MFA enabled it answers 202 with a challenge and sets no cookie. Successful responses are sent with Cache-Control: no-store.",
 		Tags:    []string{authTag},
 		Params:  openapi.TypeOf[originHeader](),
 		Request: openapi.TypeOf[loginRequest](),
@@ -124,7 +124,7 @@ var (
 	cookieMFACompletionOperation = openapi.Operation{
 		Summary: "Complete a cookie sign-in that needs MFA",
 		Description: "Exchanges the challenge of a 202 cookie sign-in answer and an authenticator or backup code for the session and CSRF cookies. " +
-			"Needs a same-origin HTTPS Origin header (403 otherwise); a wrong, reused or expired code or challenge answers 401. The response is not cacheable.",
+			"Needs a same-origin HTTPS Origin header (403 otherwise); a wrong, reused or expired code or challenge answers 401. Successful responses are sent with Cache-Control: no-store.",
 		Tags:    []string{authTag},
 		Params:  openapi.TypeOf[originHeader](),
 		Request: openapi.TypeOf[mfaCompletionRequest](),
