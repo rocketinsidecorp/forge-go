@@ -818,6 +818,16 @@ FORGE_TELEMETRY_EXPORTER=log forge dev
 FORGE_TELEMETRY_ENABLED=false forge dev
 ```
 
+If your standard-output logger redacts with `slog.HandlerOptions.ReplaceAttr`,
+build it with `telemetry.NewOutputHandler` so the log exporter applies the same
+redaction (otherwise the collector receives what stdout hides):
+
+```go
+logger := slog.New(telemetry.NewOutputHandler(os.Stdout, telemetry.LogFormatJSON,
+	&slog.HandlerOptions{ReplaceAttr: redact}))
+app, err := forge.New(forge.WithLogger(logger))
+```
+
 Pass `app.Telemetry()` to adapters to trace database statements and jobs and to
 export their connection pool (in use, idle, limit, waits):
 `postgres.Open(ctx, cfg, postgres.WithTelemetry(app.Telemetry()))` (generated

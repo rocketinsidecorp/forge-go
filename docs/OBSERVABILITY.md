@@ -133,7 +133,10 @@ pool name label is `default`; name each pool with `WithPoolName("replica")`
 when an application opens more than one database of the same kind (a name used
 twice replaces the earlier pool, and the wait counters continue from its
 totals). Closing the database (`Close` or `Shutdown`) stops reading the pool
-and sets its connection counts to zero. With `database/sql` (MySQL, SQLite) a
+and sets its connection counts and its `db.client.connection.max` to zero; a
+collection that was reading the pool when it closed does not write them back.
+`sqldb.Observer.ObservePool` called again for the same database moves it to the
+new name (the earlier series drop to zero) and refuses a closed database. With `database/sql` (MySQL, SQLite) a
 wait means every connection up to the limit was in use; with pgx (PostgreSQL) it
 also counts an acquisition that waited for a new connection to be established.
 The statistics are read when the metrics are collected (a scrape or an OTLP
@@ -195,6 +198,40 @@ redactions apply; a `*url.URL` exports without its password), like
 exports a placeholder naming its type. The exporter therefore never sends more
 than standard output shows: keep personal data and secrets out of log calls as
 you would for standard output.
+
+**Redaction with `ReplaceAttr`.** slog handlers do not reveal their options, so
+a `slog.HandlerOptions.ReplaceAttr` that redacts or removes attributes on
+standard output reaches the exporter only when you hand it over; otherwise the
+collector receives the values standard output hides. Build the standard-output
+handler with `telemetry.NewOutputHandler`, which reports its format and its
+`ReplaceAttr` to `forge.New` (through `telemetry.FromConfig`):
+
+```go
+redact := func(groups []string, a slog.Attr) slog.Attr {
+	if a.Key == "password" {
+		return slog.String(a.Key, "[REDACTED]")
+	}
+	return a
+}
+logger := slog.New(telemetry.NewOutputHandler(os.Stdout, telemetry.LogFormatJSON,
+	&slog.HandlerOptions{ReplaceAttr: redact}))
+app, err := forge.New(forge.WithLogger(logger))
+```
+
+When you build the telemetry yourself (`telemetry.New`, or
+`forge.WithTelemetry`), set `Options.LogReplaceAttr` to the same function and
+`Options.LogFormat` to the handler's format. A custom handler that wraps
+`slog.TextHandler` or carries a `ReplaceAttr` must implement
+`telemetry.LogOutputHandler` (`LogOutput() telemetry.LogOutput`), or the
+exporter encodes values as `slog.JSONHandler` does and applies no
+`ReplaceAttr`; `telemetry.NewLogHandler` reports what the handler it wraps
+reports. The exporter applies `ReplaceAttr` as slog does: to the message (key
+`msg`, no groups) and to every attribute with its open groups, after resolving
+`slog.LogValuer` and again on the result, never to a group itself; an empty
+result removes the attribute, and a group left empty is left out. The record's
+time and level are exported as logged. One deliberate difference: Go 1.27's
+handlers leave a group that `ReplaceAttr` emptied open, so the attributes after
+it are written inside it; the exporter keeps them under their own keys.
 
 Backpressure and lifecycle: records wait in a bounded queue (2048 records);
 one goroutine owned by the `Telemetry` exports batches of up to 512 at least
