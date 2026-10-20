@@ -20,11 +20,11 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Persistent jobs, cron, outbox | Solid Queue | Done | In review |
 | Mailer with previews | Action Mailer | Done | Planned |
 | Rate limiting | `rate_limit` | Done | In review |
-| Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | Done (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Planned ([forge-rust#12](https://github.com/rocketinsidecorp/forge-rust/issues/12); same key and semantics) |
+| Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | Done (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Done (`FORGE_HTTP_TRUSTED_PROXIES`, Forge-Rust ADR 0032) |
 | Cache | Solid Cache | Done | In review |
 | File storage with signed URLs | Active Storage | Done (disk) | In review (disk) |
 | Import maps, Turbo, Stimulus | Hotwire | Done | Done |
-| Turbo Streams over SSE | Action Cable | Done | Planned |
+| Turbo Streams over SSE | Action Cable | Done | Done (`scaffold --broadcast`, Forge-Rust ADR 0031) |
 | Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Planned ([forge-rust#13](https://github.com/rocketinsidecorp/forge-rust/issues/13)) |
 | Preconfigured Prometheus, Grafana, Tempo, Loki | — | Done (`compose.observability.yaml`, [ADR 0038](adr/0038-local-observability-stack.md)) | Planned ([forge-rust#13](https://github.com/rocketinsidecorp/forge-rust/issues/13), after Turbo Streams and trusted proxies) |
 | Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge-proxy`) | Planned |
