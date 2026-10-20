@@ -104,6 +104,11 @@ func runRoutesAt(args []string, output io.Writer, rootPath string) error {
 	fileCount := 0
 	for _, directory := range []string{"app", "cmd"} {
 		inspectSourceTree(root, directory, &fileCount, &report, func(name string, fileSet *token.FileSet, file *ast.File) {
+			if strings.HasSuffix(name, "_test.go") {
+				// Tests mount throwaway routes on test servers; they are not
+				// the application's routes.
+				return
+			}
 			for _, route := range discoverRoutes(fileSet, file) {
 				method, path := splitRoutePattern(route.pattern)
 				rows = append(rows, routeRow{method: method, path: path, action: string(route.action), source: fmt.Sprintf("%s:%d", filepath.ToSlash(name), route.line)})
