@@ -49,7 +49,7 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 			option(&settings)
 		}
 	}
-	observer, err := sqldb.NewObserver(settings.telemetry, "postgresql", classify)
+	observer, err := sqldb.NewObserver(settings.telemetry, poolSystem, classify)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +88,10 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+	if err := observePool(settings.telemetry, settings.poolName, pool); err != nil {
+		pool.Close()
+		return nil, err
 	}
 	return &DB{pool: pool}, nil
 }

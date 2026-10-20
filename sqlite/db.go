@@ -70,7 +70,7 @@ const (
 // cfg.ConnectTimeout, so misconfiguration fails at startup rather than on the
 // first request.
 func Open(ctx context.Context, cfg config.Database, opts ...Option) (*sqldb.DB, error) {
-	obs, err := observer(opts)
+	obs, poolName, err := observer(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +92,10 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*sqldb.DB, 
 	if err := pool.Ping(pingCtx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("open database: %w", err)
+	}
+	if err := obs.ObservePool(poolName, db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	return pool, nil
 }

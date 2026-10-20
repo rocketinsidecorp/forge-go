@@ -32,9 +32,10 @@ const (
 // OTLPOptions configure NewOTLPExporter.
 type OTLPOptions struct {
 	// Endpoint is the collector's base URL, such as
-	// "http://otel-collector:4318". Spans are posted to Endpoint+"/v1/traces"
-	// and metrics to Endpoint+"/v1/metrics". It must be http or https and
-	// carry no credentials, query or fragment.
+	// "http://otel-collector:4318". Spans are posted to Endpoint+"/v1/traces",
+	// metrics to Endpoint+"/v1/metrics" and log records to
+	// Endpoint+"/v1/logs". It must be http or https and carry no
+	// credentials, query or fragment.
 	Endpoint string
 	// Headers are sent with every request, typically an API key. They are
 	// never logged or included in errors.
@@ -53,13 +54,15 @@ type OTLPOptions struct {
 	Client *http.Client
 }
 
-// OTLPExporter sends spans and metrics with the OTLP/HTTP protocol using its
-// JSON encoding (the protobuf JSON mapping: hex trace and span IDs, int64
-// values as strings, enums as numbers). It implements SpanExporter and
-// MetricExporter and is safe for concurrent use.
+// OTLPExporter sends spans, metrics and log records with the OTLP/HTTP
+// protocol using its JSON encoding (the protobuf JSON mapping: hex trace and
+// span IDs, int64 values as strings, enums as numbers). It implements
+// SpanExporter, MetricExporter and LogRecordExporter and is safe for
+// concurrent use.
 type OTLPExporter struct {
 	tracesURL      string
 	metricsURL     string
+	logsURL        string
 	headers        http.Header
 	gzip           bool
 	maxAttempts    int
@@ -111,6 +114,7 @@ func NewOTLPExporter(opts OTLPOptions) (*OTLPExporter, error) {
 	return &OTLPExporter{
 		tracesURL:      base + "/v1/traces",
 		metricsURL:     base + "/v1/metrics",
+		logsURL:        base + "/v1/logs",
 		headers:        headers,
 		gzip:           opts.Gzip,
 		maxAttempts:    opts.MaxAttempts,
@@ -185,6 +189,18 @@ func (e *OTLPExporter) ExportMetrics(ctx context.Context, resource Resource, met
 		return fmt.Errorf("telemetry: encode OTLP metrics: %w", err)
 	}
 	return e.post(ctx, e.metricsURL, body)
+}
+
+// ExportLogs posts log records to /v1/logs.
+func (e *OTLPExporter) ExportLogs(ctx context.Context, resource Resource, records []LogRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	body, err := json.Marshal(encodeLogs(resource, records))
+	if err != nil {
+		return fmt.Errorf("telemetry: encode OTLP logs: %w", err)
+	}
+	return e.post(ctx, e.logsURL, body)
 }
 
 // Shutdown closes idle connections. Exports after Shutdown still work but
@@ -510,8 +526,15 @@ func encodeMetrics(resource Resource, metrics []MetricData) otlpMetrics {
 		case MetricCounter:
 			sum := &otlpSum{AggregationTemporality: aggregationCumulative, IsMonotonic: true}
 			for _, p := range metric.Points {
-				value := strconv.FormatUint(uint64(p.Value), 10)
-				sum.DataPoints = append(sum.DataPoints, otlpNumberPoint{Attributes: encodeAttributes(p.Labels), StartTimeUnixNano: unixNano(p.Start), TimeUnixNano: unixNano(p.Time), AsInt: &value})
+				point := otlpNumberPoint{Attributes: encodeAttributes(p.Labels), StartTimeUnixNano: unixNano(p.Start), TimeUnixNano: unixNano(p.Time)}
+				if metric.Fractional {
+					value := jsonDouble(p.Value)
+					point.AsDouble = &value
+				} else {
+					value := strconv.FormatUint(uint64(p.Value), 10)
+					point.AsInt = &value
+				}
+				sum.DataPoints = append(sum.DataPoints, point)
 			}
 			encoded.Sum = sum
 		case MetricGauge:
@@ -545,6 +568,61 @@ func encodeMetrics(resource Resource, metrics []MetricData) otlpMetrics {
 	return otlpMetrics{ResourceMetrics: []otlpResourceMetrics{{
 		Resource:     otlpResource{Attributes: encodeAttributes(resource.Attributes)},
 		ScopeMetrics: []otlpScopeMetrics{scope},
+	}}}
+}
+
+type otlpLogs struct {
+	ResourceLogs []otlpResourceLogs `json:"resourceLogs"`
+}
+
+type otlpResourceLogs struct {
+	Resource  otlpResource    `json:"resource"`
+	ScopeLogs []otlpScopeLogs `json:"scopeLogs"`
+}
+
+type otlpScopeLogs struct {
+	Scope      otlpScope       `json:"scope"`
+	LogRecords []otlpLogRecord `json:"logRecords"`
+}
+
+type otlpLogRecord struct {
+	TimeUnixNano           string         `json:"timeUnixNano"`
+	ObservedTimeUnixNano   string         `json:"observedTimeUnixNano"`
+	SeverityNumber         int            `json:"severityNumber"`
+	SeverityText           string         `json:"severityText,omitempty"`
+	Body                   otlpAnyValue   `json:"body"`
+	Attributes             []otlpKeyValue `json:"attributes,omitempty"`
+	DroppedAttributesCount int            `json:"droppedAttributesCount,omitempty"`
+	Flags                  uint32         `json:"flags,omitempty"`
+	TraceID                string         `json:"traceId,omitempty"`
+	SpanID                 string         `json:"spanId,omitempty"`
+}
+
+func encodeLogs(resource Resource, records []LogRecord) otlpLogs {
+	scope := otlpScopeLogs{Scope: otlpScope{Name: ScopeName}, LogRecords: make([]otlpLogRecord, 0, len(records))}
+	for _, record := range records {
+		body := record.Body
+		encoded := otlpLogRecord{
+			TimeUnixNano:           unixNano(record.Time),
+			ObservedTimeUnixNano:   unixNano(record.ObservedTime),
+			SeverityNumber:         record.Severity,
+			SeverityText:           record.SeverityText,
+			Body:                   otlpAnyValue{StringValue: &body},
+			Attributes:             encodeAttributes(record.Attributes),
+			DroppedAttributesCount: record.DroppedAttributes,
+		}
+		if record.TraceID.IsValid() {
+			encoded.TraceID = record.TraceID.String()
+			encoded.Flags = uint32(record.Flags)
+			if record.SpanID.IsValid() {
+				encoded.SpanID = record.SpanID.String()
+			}
+		}
+		scope.LogRecords = append(scope.LogRecords, encoded)
+	}
+	return otlpLogs{ResourceLogs: []otlpResourceLogs{{
+		Resource:  otlpResource{Attributes: encodeAttributes(resource.Attributes)},
+		ScopeLogs: []otlpScopeLogs{scope},
 	}}}
 }
 

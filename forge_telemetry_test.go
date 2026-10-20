@@ -297,3 +297,174 @@ func TestPublicMetricsAddressWithoutOptInLogsAWarning(t *testing.T) {
 		t.Fatalf("no warning for a non-loopback metrics listener:\n%s", logs.String())
 	}
 }
+
+// runWithLogs serves one request with the given extra environment, stops the
+// application and returns what the collector received and what was written
+// to standard output.
+func runWithLogs(t *testing.T, collector http.Handler, extra map[string]string) (stdout string) {
+	t.Helper()
+	otlp := httptest.NewServer(collector)
+	defer otlp.Close()
+	appAddress := freeAddress(t)
+	env := map[string]string{
+		"FORGE_ENV":                     "test",
+		"FORGE_HTTP_ADDR":               appAddress,
+		"FORGE_TELEMETRY_SERVICE_NAME":  "orders",
+		"FORGE_TELEMETRY_OTLP_ENDPOINT": otlp.URL,
+	}
+	for key, value := range extra {
+		env[key] = value
+	}
+	configure := func(_ context.Context, app *forge.App) error {
+		return app.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) {
+			web.Logger(r.Context()).Info("order loaded", "customer", "c-1")
+			_, _ = w.Write([]byte("ok"))
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var output safeBuffer
+	done := make(chan int, 1)
+	go func() { done <- forge.Execute(ctx, nil, envLookup(env), &output, io.Discard, configure) }()
+	waitFor(t, func() bool {
+		response, err := http.Get("http://" + appAddress + "/orders/42")
+		if err != nil {
+			return false
+		}
+		_ = response.Body.Close()
+		return response.StatusCode == http.StatusOK
+	})
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit code %d: %s", code, output.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not stop")
+	}
+	return output.String()
+}
+
+func TestExecuteExportsLogsWithTraceCorrelationWhenEnabled(t *testing.T) {
+	collector := &otlpCollector{}
+	output := runWithLogs(t, collector, map[string]string{
+		"FORGE_TELEMETRY_EXPORTER":      "otlp",
+		"FORGE_TELEMETRY_LOGS_EXPORTER": "otlp",
+	})
+	var traces struct {
+		ResourceSpans []struct {
+			ScopeSpans []struct {
+				Spans []struct {
+					TraceID string `json:"traceId"`
+					SpanID  string `json:"spanId"`
+				} `json:"spans"`
+			} `json:"scopeSpans"`
+		} `json:"resourceSpans"`
+	}
+	if err := json.Unmarshal([]byte(strings.SplitN(collector.get("/v1/traces"), "\n", 2)[0]), &traces); err != nil {
+		t.Fatal(err)
+	}
+	span := traces.ResourceSpans[0].ScopeSpans[0].Spans[0]
+
+	var logs struct {
+		ResourceLogs []struct {
+			Resource struct {
+				Attributes []struct {
+					Key   string `json:"key"`
+					Value struct {
+						StringValue string `json:"stringValue"`
+					} `json:"value"`
+				} `json:"attributes"`
+			} `json:"resource"`
+			ScopeLogs []struct {
+				LogRecords []struct {
+					Body struct {
+						StringValue string `json:"stringValue"`
+					} `json:"body"`
+					SeverityText string `json:"severityText"`
+					TraceID      string `json:"traceId"`
+					SpanID       string `json:"spanId"`
+					Attributes   []struct {
+						Key string `json:"key"`
+					} `json:"attributes"`
+				} `json:"logRecords"`
+			} `json:"scopeLogs"`
+		} `json:"resourceLogs"`
+	}
+	found, started := false, false
+	for _, body := range strings.Split(collector.get("/v1/logs"), "\n") {
+		if err := json.Unmarshal([]byte(body), &logs); err != nil {
+			t.Fatalf("logs payload %q: %v", body, err)
+		}
+		service := ""
+		for _, attr := range logs.ResourceLogs[0].Resource.Attributes {
+			if attr.Key == "service.name" {
+				service = attr.Value.StringValue
+			}
+		}
+		if service != "orders" {
+			t.Fatalf("service.name = %q", service)
+		}
+		for _, record := range logs.ResourceLogs[0].ScopeLogs[0].LogRecords {
+			switch record.Body.StringValue {
+			case "order loaded":
+				found = record.TraceID == span.TraceID && record.SpanID == span.SpanID && record.SeverityText == "INFO"
+				for _, attr := range record.Attributes {
+					if attr.Key == "trace_id" || attr.Key == "span_id" {
+						t.Fatalf("trace identifiers must not repeat as attributes: %+v", record)
+					}
+				}
+			case "starting HTTP server":
+				started = true
+			}
+		}
+	}
+	if !found || !started {
+		t.Fatalf("logs exported: %s", collector.get("/v1/logs"))
+	}
+	// Standard output keeps the same lines.
+	if !strings.Contains(output, "order loaded") || !strings.Contains(output, "trace_id="+span.TraceID) {
+		t.Fatalf("stdout lost the log line:\n%s", output)
+	}
+}
+
+func TestExecuteExportsNoLogsByDefault(t *testing.T) {
+	collector := &otlpCollector{}
+	output := runWithLogs(t, collector, map[string]string{"FORGE_TELEMETRY_EXPORTER": "otlp"})
+	if got := collector.get("/v1/logs"); got != "" {
+		t.Fatalf("logs exported without opt-in: %s", got)
+	}
+	if !strings.Contains(output, "order loaded") {
+		t.Fatalf("stdout:\n%s", output)
+	}
+}
+
+// A collector that rejects every log batch must not make the application
+// log about it into the queue it is draining, nor fail the process.
+func TestExecuteLogExportFailureStaysOutOfTheLogQueue(t *testing.T) {
+	var mu sync.Mutex
+	logRequests, records := 0, 0
+	collector := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/v1/logs" {
+			mu.Lock()
+			logRequests++
+			records += strings.Count(string(body), `"severityNumber"`)
+			mu.Unlock()
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	output := runWithLogs(t, collector, map[string]string{"FORGE_TELEMETRY_LOGS_EXPORTER": "otlp"})
+	if !strings.Contains(output, "log export failed") {
+		t.Fatalf("the failure must be reported on standard output:\n%s", output)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// "starting HTTP server" and "order loaded" are the only records queued;
+	// the failure warning must not be among them.
+	if records > 2 || logRequests == 0 {
+		t.Fatalf("log export requests %d, records %d", logRequests, records)
+	}
+}

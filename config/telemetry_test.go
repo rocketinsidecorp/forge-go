@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ func TestTelemetryDefaults(t *testing.T) {
 	got := cfg.Telemetry
 	// Incoming trace context is untrusted unless explicitly enabled.
 	if !got.Enabled || got.Exporter != TelemetryExporterNone || got.SampleRatio != 1 || got.TrustTraceparent || got.MetricsPublic ||
-		got.MetricsAddress != "" || got.OTLPTimeout != 10*time.Second || got.MetricsInterval != time.Minute {
+		got.MetricsAddress != "" || got.LogsExporter != TelemetryLogsExporterNone || got.LogsLevel != "info" || got.OTLPTimeout != 10*time.Second || got.MetricsInterval != time.Minute {
 		t.Fatalf("defaults %+v", got)
 	}
 }
@@ -62,31 +63,36 @@ func TestTelemetryValidation(t *testing.T) {
 		"FORGE_TELEMETRY_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "http://collector:4318",
 	}
 	cases := map[string]map[string]string{
-		"bad bool":            {"FORGE_TELEMETRY_ENABLED": "maybe"},
-		"bad ratio":           {"FORGE_TELEMETRY_SAMPLE_RATIO": "1.5"},
-		"ratio not a number":  {"FORGE_TELEMETRY_SAMPLE_RATIO": "half"},
-		"nan ratio":           {"FORGE_TELEMETRY_SAMPLE_RATIO": "NaN"},
-		"unknown exporter":    {"FORGE_TELEMETRY_EXPORTER": "zipkin"},
-		"otlp no endpoint":    {"FORGE_TELEMETRY_EXPORTER": "otlp"},
-		"endpoint userinfo":   {"FORGE_TELEMETRY_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "https://user:" + secret + "@collector"},
-		"endpoint query":      {"FORGE_TELEMETRY_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "https://collector/?token=" + secret},
-		"endpoint scheme":     {"FORGE_TELEMETRY_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "file:///etc/passwd"},
-		"endpoint port":       {"FORGE_TELEMETRY_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "https://collector:0"},
-		"compression":         merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_COMPRESSION": "zstd"}),
-		"timeout":             merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_TIMEOUT": "0s"}),
-		"header format":       merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_HEADERS": secret}),
-		"header reserved":     merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_HEADERS": "Host=" + secret}),
-		"header control":      merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_HEADERS": "x-key=a%0D%0Ab" + secret}),
-		"header duplicate":    merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_HEADERS": "a=1,A=" + secret}),
-		"metrics addr":        {"FORGE_TELEMETRY_METRICS_ADDR": "9464"},
-		"metrics addr reused": {"FORGE_HTTP_ADDR": "127.0.0.1:8080", "FORGE_TELEMETRY_METRICS_ADDR": "127.0.0.1:8080"},
-		"metrics interval":    {"FORGE_TELEMETRY_METRICS_INTERVAL": "10ms"},
-		"plaintext prod":      production,
-		"log exporter prod":   {"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_TELEMETRY_EXPORTER": "log"},
-		"long service name":   {"FORGE_TELEMETRY_SERVICE_NAME": strings.Repeat("s", 256)},
-		"public metrics prod": {"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_TELEMETRY_METRICS_ADDR": "0.0.0.0:9464"},
-		"metrics all ifaces":  {"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_TELEMETRY_METRICS_ADDR": ":9464"},
-		"bad metrics public":  {"FORGE_TELEMETRY_METRICS_PUBLIC": "yes please"},
+		"bad bool":              {"FORGE_TELEMETRY_ENABLED": "maybe"},
+		"bad ratio":             {"FORGE_TELEMETRY_SAMPLE_RATIO": "1.5"},
+		"ratio not a number":    {"FORGE_TELEMETRY_SAMPLE_RATIO": "half"},
+		"nan ratio":             {"FORGE_TELEMETRY_SAMPLE_RATIO": "NaN"},
+		"unknown exporter":      {"FORGE_TELEMETRY_EXPORTER": "zipkin"},
+		"otlp no endpoint":      {"FORGE_TELEMETRY_EXPORTER": "otlp"},
+		"endpoint userinfo":     {"FORGE_TELEMETRY_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "https://user:" + secret + "@collector"},
+		"endpoint query":        {"FORGE_TELEMETRY_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "https://collector/?token=" + secret},
+		"endpoint scheme":       {"FORGE_TELEMETRY_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "file:///etc/passwd"},
+		"endpoint port":         {"FORGE_TELEMETRY_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "https://collector:0"},
+		"compression":           merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_COMPRESSION": "zstd"}),
+		"timeout":               merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_TIMEOUT": "0s"}),
+		"header format":         merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_HEADERS": secret}),
+		"header reserved":       merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_HEADERS": "Host=" + secret}),
+		"header control":        merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_HEADERS": "x-key=a%0D%0Ab" + secret}),
+		"header duplicate":      merge(base, map[string]string{"FORGE_TELEMETRY_OTLP_HEADERS": "a=1,A=" + secret}),
+		"metrics addr":          {"FORGE_TELEMETRY_METRICS_ADDR": "9464"},
+		"metrics addr reused":   {"FORGE_HTTP_ADDR": "127.0.0.1:8080", "FORGE_TELEMETRY_METRICS_ADDR": "127.0.0.1:8080"},
+		"metrics interval":      {"FORGE_TELEMETRY_METRICS_INTERVAL": "10ms"},
+		"plaintext prod":        production,
+		"log exporter prod":     {"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_TELEMETRY_EXPORTER": "log"},
+		"long service name":     {"FORGE_TELEMETRY_SERVICE_NAME": strings.Repeat("s", 256)},
+		"public metrics prod":   {"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_TELEMETRY_METRICS_ADDR": "0.0.0.0:9464"},
+		"metrics all ifaces":    {"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_TELEMETRY_METRICS_ADDR": ":9464"},
+		"bad metrics public":    {"FORGE_TELEMETRY_METRICS_PUBLIC": "yes please"},
+		"unknown logs exporter": {"FORGE_TELEMETRY_LOGS_EXPORTER": "loki"},
+		"logs otlp no endpoint": {"FORGE_TELEMETRY_LOGS_EXPORTER": "otlp"},
+		"logs plaintext prod":   {"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_TELEMETRY_LOGS_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "http://collector:4318"},
+		"logs bad header":       {"FORGE_TELEMETRY_LOGS_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "https://collector", "FORGE_TELEMETRY_OTLP_HEADERS": secret},
+		"logs bad level":        {"FORGE_TELEMETRY_LOGS_LEVEL": "chatty"},
 	}
 	for name, env := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -113,6 +119,17 @@ func TestTelemetryValidation(t *testing.T) {
 	public := merge(prodMetrics, map[string]string{"FORGE_TELEMETRY_METRICS_ADDR": "0.0.0.0:9464", "FORGE_TELEMETRY_METRICS_PUBLIC": "true"})
 	if _, err := LoadWithLookup(lookupFrom(public)); err != nil {
 		t.Fatalf("explicit public metrics opt-in rejected: %v", err)
+	}
+	logs := map[string]string{"FORGE_TELEMETRY_LOGS_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ENDPOINT": "https://collector.example.com", "FORGE_TELEMETRY_LOGS_LEVEL": "WARN"}
+	cfg, err := LoadWithLookup(lookupFrom(logs))
+	if err != nil {
+		t.Fatalf("logs exporter without the trace exporter rejected: %v", err)
+	}
+	if level, ok := cfg.Telemetry.LogLevel(); !ok || level != slog.LevelWarn || cfg.Telemetry.Exporter != TelemetryExporterNone || cfg.Telemetry.LogsExporter != TelemetryLogsExporterOTLP {
+		t.Fatalf("logs settings %+v", cfg.Telemetry)
+	}
+	if _, err := LoadWithLookup(lookupFrom(merge(production, map[string]string{"FORGE_TELEMETRY_LOGS_EXPORTER": "otlp", "FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT": "true"}))); err != nil {
+		t.Fatalf("plaintext opt-in rejected for logs: %v", err)
 	}
 	disabled := map[string]string{"FORGE_TELEMETRY_ENABLED": "false", "FORGE_TELEMETRY_EXPORTER": "otlp"}
 	if _, err := LoadWithLookup(lookupFrom(disabled)); err != nil {

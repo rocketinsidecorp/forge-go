@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -28,6 +29,20 @@ const (
 	TelemetryExporterLog TelemetryExporter = "log"
 )
 
+// TelemetryLogsExporter selects where application log records go in
+// addition to standard output.
+type TelemetryLogsExporter string
+
+const (
+	// TelemetryLogsExporterNone (the default) leaves logs on standard output.
+	TelemetryLogsExporterNone TelemetryLogsExporter = "none"
+	// TelemetryLogsExporterOTLP also sends every log record, with the trace
+	// and span IDs of its context, to the OpenTelemetry Collector's
+	// /v1/logs over OTLP/HTTP with JSON encoding, using the same
+	// FORGE_TELEMETRY_OTLP_* settings as spans and metrics.
+	TelemetryLogsExporterOTLP TelemetryLogsExporter = "otlp"
+)
+
 const (
 	defaultOTLPTimeout     = 10 * time.Second
 	maxOTLPTimeout         = time.Minute
@@ -49,8 +64,17 @@ type Telemetry struct {
 	ServiceVersion string
 	// Exporter is none (default), otlp or log.
 	Exporter TelemetryExporter
+	// LogsExporter is none (default) or otlp
+	// (FORGE_TELEMETRY_LOGS_EXPORTER). It is independent of Exporter: logs
+	// may go to the collector while spans and metrics do not, and the other
+	// way round. otlp needs OTLPEndpoint.
+	LogsExporter TelemetryLogsExporter
+	// LogsLevel is the lowest slog level sent to the log exporter:
+	// debug, info (default), warn or error (FORGE_TELEMETRY_LOGS_LEVEL).
+	// Standard output keeps the application logger's own level.
+	LogsLevel string
 	// OTLPEndpoint is the collector's base URL, such as
-	// http://otel-collector:4318. Required for the otlp exporter. Production
+	// http://otel-collector:4318. Required for the otlp exporters. Production
 	// requires https unless OTLPAllowPlaintext is set.
 	OTLPEndpoint string
 	// OTLPHeaders are "name=value" pairs separated by commas, values
@@ -88,6 +112,8 @@ func defaultTelemetry() Telemetry {
 	return Telemetry{
 		Enabled:          true,
 		Exporter:         TelemetryExporterNone,
+		LogsExporter:     TelemetryLogsExporterNone,
+		LogsLevel:        "info",
 		OTLPTimeout:      defaultOTLPTimeout,
 		OTLPCompression:  "none",
 		SampleRatio:      1,
@@ -102,6 +128,10 @@ func loadTelemetry(lookup func(string) (string, bool), cfg *Telemetry) error {
 	setString(lookup, "FORGE_TELEMETRY_OTLP_ENDPOINT", &cfg.OTLPEndpoint)
 	setString(lookup, "FORGE_TELEMETRY_OTLP_COMPRESSION", &cfg.OTLPCompression)
 	setString(lookup, "FORGE_TELEMETRY_METRICS_ADDR", &cfg.MetricsAddress)
+	setString(lookup, "FORGE_TELEMETRY_LOGS_LEVEL", &cfg.LogsLevel)
+	if value, ok := lookup("FORGE_TELEMETRY_LOGS_EXPORTER"); ok {
+		cfg.LogsExporter = TelemetryLogsExporter(value)
+	}
 	if value, ok := lookup("FORGE_TELEMETRY_EXPORTER"); ok {
 		cfg.Exporter = TelemetryExporter(value)
 	}
@@ -169,6 +199,10 @@ func (t Telemetry) validate(environment Environment, httpAddress string) error {
 			return errors.New("FORGE_TELEMETRY_METRICS_ADDR is not a loopback address and the metrics listener has no authentication: bind it to 127.0.0.1, or set FORGE_TELEMETRY_METRICS_PUBLIC=true when only a private network can reach it")
 		}
 	}
+	if _, ok := t.LogLevel(); !ok {
+		return fmt.Errorf("unsupported FORGE_TELEMETRY_LOGS_LEVEL %q: expected debug, info, warn or error", t.LogsLevel)
+	}
+	needsOTLP := false
 	switch t.Exporter {
 	case TelemetryExporterNone:
 	case TelemetryExporterLog:
@@ -176,16 +210,42 @@ func (t Telemetry) validate(environment Environment, httpAddress string) error {
 			return errors.New("FORGE_TELEMETRY_EXPORTER=log is for development and cannot be used in production")
 		}
 	case TelemetryExporterOTLP:
-		return t.validateOTLP(environment)
+		needsOTLP = true
 	default:
 		return fmt.Errorf("unsupported FORGE_TELEMETRY_EXPORTER %q: expected none, otlp or log", t.Exporter)
+	}
+	switch t.LogsExporter {
+	case TelemetryLogsExporterNone:
+	case TelemetryLogsExporterOTLP:
+		needsOTLP = true
+	default:
+		return fmt.Errorf("unsupported FORGE_TELEMETRY_LOGS_EXPORTER %q: expected none or otlp", t.LogsExporter)
+	}
+	if needsOTLP {
+		return t.validateOTLP(environment)
 	}
 	return nil
 }
 
+// LogLevel returns the slog level LogsLevel names, and false when it names
+// none.
+func (t Telemetry) LogLevel() (slog.Level, bool) {
+	switch strings.ToLower(t.LogsLevel) {
+	case "debug":
+		return slog.LevelDebug, true
+	case "info", "":
+		return slog.LevelInfo, true
+	case "warn", "warning":
+		return slog.LevelWarn, true
+	case "error":
+		return slog.LevelError, true
+	}
+	return 0, false
+}
+
 func (t Telemetry) validateOTLP(environment Environment) error {
 	if t.OTLPEndpoint == "" {
-		return errors.New("FORGE_TELEMETRY_EXPORTER=otlp requires FORGE_TELEMETRY_OTLP_ENDPOINT")
+		return errors.New("FORGE_TELEMETRY_EXPORTER=otlp and FORGE_TELEMETRY_LOGS_EXPORTER=otlp require FORGE_TELEMETRY_OTLP_ENDPOINT")
 	}
 	// Errors never quote the endpoint or headers.
 	parsed, err := url.Parse(t.OTLPEndpoint)

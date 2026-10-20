@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rocketinsidecorp/forge-go/sqldb"
 	"github.com/rocketinsidecorp/forge-go/telemetry"
@@ -14,9 +15,45 @@ type Option func(*openOptions)
 
 type openOptions struct {
 	telemetry *telemetry.Telemetry
+	poolName  string
 }
 
-// WithTelemetry instruments the pool through pgx's query tracer: every
+// poolSystem is the db.system.name of the pool's metrics.
+const poolSystem = "postgresql"
+
+// DefaultPoolName is the pool name reported when WithPoolName is not used.
+const DefaultPoolName = sqldb.DefaultPoolName
+
+// WithPoolName names the pool in the connection metrics' pool name label
+// (default "default"). Name each pool when an application opens more than
+// one PostgreSQL database; a name used twice replaces the earlier pool's
+// series.
+func WithPoolName(name string) Option {
+	return func(o *openOptions) { o.poolName = name }
+}
+
+// observePool exports pool's connection statistics: db.client.connection.count,
+// db.client.connection.max, forge.db.pool.waits and
+// forge.db.pool.wait.duration.
+func observePool(t *telemetry.Telemetry, name string, pool *pgxpool.Pool) error {
+	if name == "" {
+		name = DefaultPoolName
+	}
+	return t.ObservePool(poolSystem, name, func() telemetry.PoolStats {
+		stat := pool.Stat()
+		return telemetry.PoolStats{
+			InUse:    int(stat.AcquiredConns()),
+			Idle:     int(stat.IdleConns()),
+			Max:      int(stat.MaxConns()),
+			Waits:    stat.EmptyAcquireCount(),
+			WaitTime: stat.EmptyAcquireWaitTime(),
+		}
+	})
+}
+
+// WithTelemetry instruments the pool: its connection statistics are exported
+// (db.client.connection.count and the other pool metrics, see
+// docs/OBSERVABILITY.md), and through pgx's query tracer every
 // statement, including those inside transactions, is measured in
 // db.client.operation.duration and, inside a traced operation, gets a span
 // with db.system.name "postgresql" and db.operation.name. Statement text and

@@ -17,28 +17,34 @@ type SpanExporter interface {
 	Shutdown(ctx context.Context) error
 }
 
-// batcher is the bounded in-memory span queue between End and the exporter.
-// One goroutine, started by newBatcher and stopped by shutdown, owns export.
-// A full queue drops new spans and counts them instead of blocking requests.
+// batcher is the bounded in-memory queue between a producer (span End, a log
+// call) and an exporter, for spans and for log records. One goroutine,
+// started by newBatcher and stopped by shutdown, owns export. A full queue
+// drops new items and counts them instead of blocking requests.
 //
 // Every export runs under runCtx, which shutdown cancels when its own context
 // ends, so a hung collector cannot hold the process past its shutdown budget.
-type batcher struct {
-	exporter SpanExporter
-	resource Resource
-	logger   *slog.Logger
-	maxQueue int
-	maxBatch int
-	interval time.Duration
-	timeout  time.Duration
-	// onError is called after a failed export of n spans.
+type batcher[T any] struct {
+	// signal names the kind of item in messages: "span" or "log record".
+	signal string
+	// export sends one batch; shutdownExporter is called once, after the
+	// last export and never concurrently with one.
+	export           func(ctx context.Context, resource Resource, batch []T) error
+	shutdownExporter func(ctx context.Context) error
+	resource         Resource
+	logger           *slog.Logger
+	maxQueue         int
+	maxBatch         int
+	interval         time.Duration
+	timeout          time.Duration
+	// onError is called after a failed export of n items.
 	onError func(n int)
 
 	runCtx    context.Context
 	cancelRun context.CancelFunc
 
 	mu     sync.Mutex
-	queue  []SpanData
+	queue  []T
 	closed bool
 
 	full     chan struct{}
@@ -52,39 +58,59 @@ type batcher struct {
 	failed   atomic.Uint64
 }
 
-func newBatcher(exporter SpanExporter, resource Resource, logger *slog.Logger, maxQueue, maxBatch int, interval, timeout time.Duration, onError func(n int)) *batcher {
-	runCtx, cancelRun := context.WithCancel(context.Background())
-	b := &batcher{
-		exporter:  exporter,
-		resource:  resource,
-		logger:    logger,
-		maxQueue:  maxQueue,
-		maxBatch:  maxBatch,
-		interval:  interval,
-		timeout:   timeout,
-		onError:   onError,
-		runCtx:    runCtx,
-		cancelRun: cancelRun,
-		queue:     make([]SpanData, 0, maxBatch),
-		full:      make(chan struct{}, 1),
-		flushes:   make(chan chan struct{}),
-		stopping:  make(chan struct{}),
-		done:      make(chan struct{}),
+// newRunContext returns the context every export of one batcher runs under,
+// and the function that cancels it.
+func newRunContext() (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.Background())
+}
+
+// batcherConfig configures newBatcher.
+type batcherConfig[T any] struct {
+	signal           string
+	export           func(ctx context.Context, resource Resource, batch []T) error
+	shutdownExporter func(ctx context.Context) error
+	resource         Resource
+	logger           *slog.Logger
+	maxQueue         int
+	maxBatch         int
+	interval         time.Duration
+	timeout          time.Duration
+	onError          func(n int)
+}
+
+func newBatcher[T any](c batcherConfig[T]) *batcher[T] {
+	b := &batcher[T]{
+		signal:           c.signal,
+		export:           c.export,
+		shutdownExporter: c.shutdownExporter,
+		resource:         c.resource,
+		logger:           c.logger,
+		maxQueue:         c.maxQueue,
+		maxBatch:         c.maxBatch,
+		interval:         c.interval,
+		timeout:          c.timeout,
+		onError:          c.onError,
+		queue:            make([]T, 0, c.maxBatch),
+		full:             make(chan struct{}, 1),
+		flushes:          make(chan chan struct{}),
+		stopping:         make(chan struct{}),
+		done:             make(chan struct{}),
 	}
+	b.runCtx, b.cancelRun = newRunContext()
 	go b.run()
 	return b
 }
 
-// enqueue adds an ended span without blocking. It reports false when the
-// span was dropped.
-func (b *batcher) enqueue(span SpanData) bool {
+// enqueue adds an item without blocking. It reports false when the item was
+// dropped.
+func (b *batcher[T]) enqueue(item T) bool {
 	b.mu.Lock()
 	if b.closed || len(b.queue) >= b.maxQueue {
 		b.mu.Unlock()
 		b.dropped.Add(1)
 		return false
 	}
-	b.queue = append(b.queue, span)
+	b.queue = append(b.queue, item)
 	ready := len(b.queue) >= b.maxBatch
 	b.mu.Unlock()
 	if ready {
@@ -96,7 +122,7 @@ func (b *batcher) enqueue(span SpanData) bool {
 	return true
 }
 
-func (b *batcher) run() {
+func (b *batcher[T]) run() {
 	defer close(b.done)
 	ticker := time.NewTicker(b.interval)
 	defer ticker.Stop()
@@ -113,16 +139,16 @@ func (b *batcher) run() {
 			b.drain(false)
 			// The exporter is shut down here, after its last export, never
 			// concurrently with one.
-			_ = b.exporter.Shutdown(b.runCtx)
+			_ = b.shutdownExporter(b.runCtx)
 			return
 		}
 	}
 }
 
-// drain exports queued spans in batches. With fullOnly it stops once less
+// drain exports queued items in batches. With fullOnly it stops once less
 // than a full batch remains, leaving the rest for the next tick. Once runCtx
-// is cancelled the remaining spans are dropped and counted.
-func (b *batcher) drain(fullOnly bool) {
+// is cancelled the remaining items are dropped and counted.
+func (b *batcher[T]) drain(fullOnly bool) {
 	for {
 		if b.runCtx.Err() != nil {
 			b.dropRemaining()
@@ -134,7 +160,7 @@ func (b *batcher) drain(fullOnly bool) {
 			b.mu.Unlock()
 			return
 		}
-		batch := make([]SpanData, n)
+		batch := make([]T, n)
 		copy(batch, b.queue[:n])
 		rest := copy(b.queue, b.queue[n:])
 		clear(b.queue[rest:])
@@ -142,21 +168,21 @@ func (b *batcher) drain(fullOnly bool) {
 		b.mu.Unlock()
 
 		exportCtx, cancel := context.WithTimeout(b.runCtx, b.timeout)
-		err := b.exporter.ExportSpans(exportCtx, b.resource, batch)
+		err := b.export(exportCtx, b.resource, batch)
 		cancel()
 		if err != nil {
 			b.failed.Add(uint64(n)) // #nosec G115 -- n is a slice length
 			if b.onError != nil {
 				b.onError(n)
 			}
-			b.logger.Warn("telemetry: span export failed; spans dropped", "spans", n, "error_type", ErrorType(err), "error", err)
+			b.logger.Warn("telemetry: "+b.signal+" export failed; items dropped", "items", n, "signal", b.signal, "error_type", ErrorType(err), "error", err)
 		} else {
 			b.exported.Add(uint64(n)) // #nosec G115 -- n is a slice length
 		}
 	}
 }
 
-func (b *batcher) dropRemaining() {
+func (b *batcher[T]) dropRemaining() {
 	b.mu.Lock()
 	n := len(b.queue)
 	clear(b.queue)
@@ -166,7 +192,7 @@ func (b *batcher) dropRemaining() {
 }
 
 // flush exports everything queued so far, waiting at most until ctx ends.
-func (b *batcher) flush(ctx context.Context) error {
+func (b *batcher[T]) flush(ctx context.Context) error {
 	reply := make(chan struct{})
 	select {
 	case b.flushes <- reply:
@@ -185,12 +211,12 @@ func (b *batcher) flush(ctx context.Context) error {
 	}
 }
 
-// shutdown refuses new spans and exports the queue, returning no later than
+// shutdown refuses new items and exports the queue, returning no later than
 // ctx's end. When ctx ends first, the export in progress is cancelled, the
-// spans still queued are dropped and counted, and the wrapped ctx error is
+// items still queued are dropped and counted, and the wrapped ctx error is
 // returned; the goroutine exits as soon as the exporter honors the
 // cancellation.
-func (b *batcher) shutdown(ctx context.Context) error {
+func (b *batcher[T]) shutdown(ctx context.Context) error {
 	b.mu.Lock()
 	b.closed = true
 	b.mu.Unlock()
@@ -204,6 +230,6 @@ func (b *batcher) shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 		b.cancelRun()
 		b.dropRemaining()
-		return fmt.Errorf("telemetry: span export did not finish before the shutdown deadline: %w", ctx.Err())
+		return fmt.Errorf("telemetry: %s export did not finish before the shutdown deadline: %w", b.signal, ctx.Err())
 	}
 }

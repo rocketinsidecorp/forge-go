@@ -58,6 +58,13 @@ type Registry struct {
 	mu          sync.Mutex
 	instruments map[string]*instrument
 	overflows   *Counter
+
+	// collectMu serializes observers, so a callback that turns a source's
+	// running totals into counter increments is never run twice at once;
+	// observersMu guards the map alone.
+	collectMu   sync.Mutex
+	observersMu sync.Mutex
+	observers   map[string]func()
 }
 
 // NewRegistry returns an empty registry. maxSeries bounds the series of each
@@ -81,8 +88,10 @@ type instrument struct {
 	description string
 	unit        string
 	kind        MetricKind
-	labels      []string
-	bounds      []float64
+	// fractional counters hold float64 bits and export as doubles.
+	fractional bool
+	labels     []string
+	bounds     []float64
 
 	mu       sync.RWMutex
 	series   map[labelValues]*point
@@ -102,6 +111,10 @@ type point struct {
 // Counter is a monotonic count, such as requests served.
 type Counter struct{ instrument *instrument }
 
+// FloatCounter is a monotonic sum of fractional values, such as seconds
+// waited.
+type FloatCounter struct{ instrument *instrument }
+
 // Gauge is a value that can go up and down, such as requests in flight.
 type Gauge struct{ instrument *instrument }
 
@@ -113,16 +126,26 @@ type Histogram struct{ instrument *instrument }
 // same counter, so two components can share it; a conflicting definition is
 // an error.
 func (r *Registry) Counter(name, description, unit string, labels ...string) (*Counter, error) {
-	in, err := r.register(name, description, unit, MetricCounter, nil, labels)
+	in, err := r.register(name, description, unit, MetricCounter, nil, labels, false)
 	if in == nil {
 		return nil, err
 	}
 	return &Counter{instrument: in}, err
 }
 
+// FloatCounter returns the fractional counter named name; see Counter. Its
+// definition conflicts with an integer Counter of the same name.
+func (r *Registry) FloatCounter(name, description, unit string, labels ...string) (*FloatCounter, error) {
+	in, err := r.register(name, description, unit, MetricCounter, nil, labels, true)
+	if in == nil {
+		return nil, err
+	}
+	return &FloatCounter{instrument: in}, err
+}
+
 // Gauge returns the gauge named name; see Counter.
 func (r *Registry) Gauge(name, description, unit string, labels ...string) (*Gauge, error) {
-	in, err := r.register(name, description, unit, MetricGauge, nil, labels)
+	in, err := r.register(name, description, unit, MetricGauge, nil, labels, false)
 	if in == nil {
 		return nil, err
 	}
@@ -135,14 +158,14 @@ func (r *Registry) Histogram(name, description, unit string, bounds []float64, l
 	if bounds == nil {
 		bounds = DurationBuckets
 	}
-	in, err := r.register(name, description, unit, MetricHistogram, bounds, labels)
+	in, err := r.register(name, description, unit, MetricHistogram, bounds, labels, false)
 	if in == nil {
 		return nil, err
 	}
 	return &Histogram{instrument: in}, err
 }
 
-func (r *Registry) register(name, description, unit string, kind MetricKind, bounds []float64, labels []string) (*instrument, error) {
+func (r *Registry) register(name, description, unit string, kind MetricKind, bounds []float64, labels []string, fractional bool) (*instrument, error) {
 	if r == nil {
 		return nil, nil
 	}
@@ -165,7 +188,7 @@ func (r *Registry) register(name, description, unit string, kind MetricKind, bou
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing, ok := r.instruments[name]; ok {
-		if existing.kind != kind || existing.unit != unit || !slices.Equal(existing.labels, labels) || !slices.Equal(existing.bounds, bounds) {
+		if existing.kind != kind || existing.fractional != fractional || existing.unit != unit || !slices.Equal(existing.labels, labels) || !slices.Equal(existing.bounds, bounds) {
 			return nil, fmt.Errorf("telemetry: metric %s is already registered with a different definition", name)
 		}
 		return existing, nil
@@ -176,6 +199,7 @@ func (r *Registry) register(name, description, unit string, kind MetricKind, bou
 		description: description,
 		unit:        unit,
 		kind:        kind,
+		fractional:  fractional,
 		labels:      slices.Clone(labels),
 		bounds:      slices.Clone(bounds),
 		series:      make(map[labelValues]*point),
@@ -250,6 +274,48 @@ func (in *instrument) newPoint(key labelValues) *point {
 	return p
 }
 
+// Observe records total, a running count kept elsewhere (a connection
+// pool's waits, the runtime's GC cycles), for the given label values. The
+// counter never decreases: a total below the current value is ignored. Use
+// it from a Registry.Observe callback; do not mix it with Add on the same
+// series.
+func (c *Counter) Observe(total int64, values ...string) {
+	if c == nil || total <= 0 {
+		return
+	}
+	target := &c.instrument.point(values).value
+	for {
+		old := target.Load()
+		if uint64(total) <= old || target.CompareAndSwap(old, uint64(total)) {
+			return
+		}
+	}
+}
+
+// Observe records total, a running sum kept elsewhere, like Counter.Observe.
+// Negative, zero and non-finite totals are ignored.
+func (c *FloatCounter) Observe(total float64, values ...string) {
+	if c == nil || !(total > 0) || math.IsInf(total, 0) {
+		return
+	}
+	target := &c.instrument.point(values).value
+	for {
+		old := target.Load()
+		if total <= math.Float64frombits(old) || target.CompareAndSwap(old, math.Float64bits(total)) {
+			return
+		}
+	}
+}
+
+// Add increases the counter by delta, ignoring negative and non-finite
+// values.
+func (c *FloatCounter) Add(delta float64, values ...string) {
+	if c == nil || !(delta > 0) || math.IsInf(delta, 0) {
+		return
+	}
+	addFloat(&c.instrument.point(values).value, delta)
+}
+
 // Add increases the counter by n for the given label values, which must
 // match the instrument's label names in number and order. Negative n is
 // ignored.
@@ -287,6 +353,21 @@ func (h *Histogram) Record(v float64, values ...string) {
 	addFloat(&p.sum, v)
 }
 
+// set replaces the histogram series for values with cumulative counts and
+// sum read from another source; used by observers that translate a
+// histogram kept elsewhere (the runtime's GC pauses). counts must have
+// len(bounds)+1 entries.
+func (h *Histogram) set(counts []uint64, sum float64, values ...string) {
+	if h == nil || len(counts) != len(h.instrument.bounds)+1 {
+		return
+	}
+	p := h.instrument.point(values)
+	for i, count := range counts {
+		p.counts[i].Store(count)
+	}
+	p.sum.Store(math.Float64bits(sum))
+}
+
 func addFloat(target *atomic.Uint64, delta float64) {
 	for {
 		old := target.Load()
@@ -302,6 +383,8 @@ type MetricData struct {
 	Description string
 	Unit        string
 	Kind        MetricKind
+	// Fractional marks a counter whose values are not whole numbers.
+	Fractional bool
 	// Bounds are a histogram's bucket upper bounds.
 	Bounds []float64
 	Points []PointData
@@ -320,13 +403,59 @@ type PointData struct {
 	BucketCounts []uint64
 }
 
+// Observe registers fn to run before every Collect, so before each
+// Prometheus scrape and OTLP push, to set gauges and counters from state that
+// is cheaper to read on demand than to push: connection pool statistics, the
+// runtime's counters. Callbacks run one at a time, in key order, and must
+// not call Observe or Collect. Registering a key again replaces its
+// callback; a nil fn removes it. A callback that panics is skipped for that
+// collection.
+func (r *Registry) Observe(key string, fn func()) {
+	if r == nil {
+		return
+	}
+	r.observersMu.Lock()
+	defer r.observersMu.Unlock()
+	if fn == nil {
+		delete(r.observers, key)
+		return
+	}
+	if r.observers == nil {
+		r.observers = make(map[string]func())
+	}
+	r.observers[key] = fn
+}
+
+func (r *Registry) runObservers() {
+	r.collectMu.Lock()
+	defer r.collectMu.Unlock()
+	r.observersMu.Lock()
+	keys := make([]string, 0, len(r.observers))
+	for key := range r.observers {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	callbacks := make([]func(), len(keys))
+	for i, key := range keys {
+		callbacks[i] = r.observers[key]
+	}
+	r.observersMu.Unlock()
+	for _, fn := range callbacks {
+		func() {
+			defer func() { _ = recover() }()
+			fn()
+		}()
+	}
+}
+
 // Collect returns a snapshot of every instrument with at least one series,
 // sorted by name, with series sorted by label values. Counter and histogram
-// values are cumulative since the series was created.
+// values are cumulative since the series was created. Observers run first.
 func (r *Registry) Collect() []MetricData {
 	if r == nil {
 		return nil
 	}
+	r.runObservers()
 	now := time.Now()
 	r.mu.Lock()
 	instruments := make([]*instrument, 0, len(r.instruments))
@@ -351,7 +480,7 @@ func (r *Registry) Collect() []MetricData {
 			continue
 		}
 		slices.SortFunc(points, func(a, b *point) int { return slices.Compare(a.labels[:], b.labels[:]) })
-		data := MetricData{Name: in.name, Description: in.description, Unit: in.unit, Kind: in.kind, Bounds: in.bounds, Points: make([]PointData, 0, len(points))}
+		data := MetricData{Name: in.name, Description: in.description, Unit: in.unit, Kind: in.kind, Fractional: in.fractional, Bounds: in.bounds, Points: make([]PointData, 0, len(points))}
 		for _, p := range points {
 			data.Points = append(data.Points, in.snapshot(p, now))
 		}
@@ -368,7 +497,11 @@ func (in *instrument) snapshot(p *point, now time.Time) PointData {
 	data := PointData{Labels: labels, Start: p.start, Time: now}
 	switch in.kind {
 	case MetricCounter:
-		data.Value = float64(p.value.Load())
+		if in.fractional {
+			data.Value = math.Float64frombits(p.value.Load())
+		} else {
+			data.Value = float64(p.value.Load())
+		}
 	case MetricGauge:
 		data.Value = math.Float64frombits(p.value.Load())
 	case MetricHistogram:

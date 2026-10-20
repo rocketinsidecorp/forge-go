@@ -70,7 +70,7 @@ var tlsModes = map[string]bool{"true": true, "skip-verify": true, "preferred": t
 // connectivity within cfg.ConnectTimeout, so misconfiguration fails at
 // startup rather than on the first request. It serves MySQL and MariaDB.
 func Open(ctx context.Context, cfg config.Database, opts ...Option) (*sqldb.DB, error) {
-	obs, err := observer(opts)
+	obs, poolName, err := observer(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +88,10 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*sqldb.DB, 
 	if err := db.Ping(pingCtx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+	if err := obs.ObservePool(poolName, db.SQL()); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	return db, nil
 }

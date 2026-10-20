@@ -10,8 +10,12 @@ import (
 
 // FromConfig builds the Telemetry that cfg.Telemetry describes (the
 // FORGE_TELEMETRY_* variables), or returns nil when it is disabled. logger
-// receives export failures and, with the log exporter, the spans. The caller
-// owns the result and must call Shutdown; forge.App does both.
+// receives export failures and, with the log exporter, the spans; it must
+// write to standard output only, never to the telemetry's own log handler,
+// or a failed log export would log and export again. The caller owns the
+// result and must call Shutdown; forge.App does both. With
+// FORGE_TELEMETRY_LOGS_EXPORTER=otlp the result's LogHandler is non-nil and
+// forge.App tees its logger into it.
 func FromConfig(cfg config.Config, logger *slog.Logger) (*Telemetry, error) {
 	settings := cfg.Telemetry
 	if !settings.Enabled {
@@ -34,15 +38,13 @@ func FromConfig(cfg config.Config, logger *slog.Logger) (*Telemetry, error) {
 		ExportTimeout:   settings.OTLPTimeout,
 		Logger:          logger,
 	}
-	switch settings.Exporter {
-	case config.TelemetryExporterLog:
-		opts.SpanExporter = NewLogExporter(logger)
-	case config.TelemetryExporterOTLP:
+	var otlp *OTLPExporter
+	if settings.Exporter == config.TelemetryExporterOTLP || settings.LogsExporter == config.TelemetryLogsExporterOTLP {
 		headers, err := settings.OTLPHeaderMap()
 		if err != nil {
 			return nil, err
 		}
-		exporter, err := NewOTLPExporter(OTLPOptions{
+		otlp, err = NewOTLPExporter(OTLPOptions{
 			Endpoint: settings.OTLPEndpoint,
 			Headers:  headers,
 			Gzip:     settings.OTLPCompression == "gzip",
@@ -50,8 +52,17 @@ func FromConfig(cfg config.Config, logger *slog.Logger) (*Telemetry, error) {
 		if err != nil {
 			return nil, err
 		}
-		opts.SpanExporter = exporter
-		opts.MetricExporter = exporter
+	}
+	switch settings.Exporter {
+	case config.TelemetryExporterLog:
+		opts.SpanExporter = NewLogExporter(logger)
+	case config.TelemetryExporterOTLP:
+		opts.SpanExporter = otlp
+		opts.MetricExporter = otlp
+	}
+	if settings.LogsExporter == config.TelemetryLogsExporterOTLP {
+		opts.LogExporter = otlp
+		opts.LogLevel, _ = settings.LogLevel()
 	}
 	return New(opts)
 }
