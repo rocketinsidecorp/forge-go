@@ -423,6 +423,16 @@ type redactingText struct{ Token string }
 
 func (redactingText) MarshalText() ([]byte, error) { return []byte("[hidden]"), nil }
 
+// appendingText answers AppendText and MarshalText differently.
+// slog.TextHandler checks encoding.TextAppender before
+// encoding.TextMarshaler (Go 1.27's appendTextValue, although its doc
+// comment names only TextMarshaler); the exporter must pick the same one.
+type appendingText struct{}
+
+func (appendingText) AppendText(b []byte) ([]byte, error) { return append(b, "[appended]"...), nil }
+
+func (appendingText) MarshalText() ([]byte, error) { return []byte("[marshaled]"), nil }
+
 // redactingString hides itself from fmt but not from encoding/json.
 type redactingString string
 
@@ -528,7 +538,8 @@ func TestLogExportEncodesValuesLikeTheJSONHandler(t *testing.T) {
 }
 
 func TestLogExportEncodesValuesLikeTheTextHandler(t *testing.T) {
-	attrs := append(hiddenLogValues(t), slog.Any("stringer", redactingString(logValueSecret)), slog.Any("bytes", []byte("raw")))
+	attrs := append(hiddenLogValues(t), slog.Any("stringer", redactingString(logValueSecret)), slog.Any("bytes", []byte("raw")),
+		slog.Any("append_text", appendingText{}), slog.Any("append_text_ptr", &appendingText{}))
 	exported := exportedLogValues(t, LogFormatText, attrs)
 	for _, attr := range attrs {
 		var stdout bytes.Buffer
@@ -560,28 +571,264 @@ func TestLogExportEncodesValuesLikeTheTextHandler(t *testing.T) {
 			t.Fatalf("%s: exported %q, standard output %q", attr.Key, got, want)
 		}
 	}
-	if exported["stringer"] != "[hidden]" || exported["marshal_text"] != "[hidden]" || exported["error"] != "card declined" || exported["bytes"] != "raw" {
+	if exported["stringer"] != "[hidden]" || exported["marshal_text"] != "[hidden]" || exported["error"] != "card declined" || exported["bytes"] != "raw" ||
+		exported["append_text"] != "[appended]" || exported["append_text_ptr"] != "[appended]" {
 		t.Fatalf("exported %v", exported)
 	}
 }
 
 func TestFromConfigMatchesTheStandardOutputFormat(t *testing.T) {
+	redact := func(_ []string, a slog.Attr) slog.Attr { return a }
 	for _, tc := range []struct {
-		name   string
-		logger *slog.Logger
-		want   LogFormat
+		name    string
+		handler slog.Handler
+		want    LogFormat
+		replace bool
 	}{
-		{"nil", nil, LogFormatJSON},
-		{"json", slog.New(NewLogHandler(slog.NewJSONHandler(io.Discard, nil))), LogFormatJSON},
-		{"text", slog.New(NewLogHandler(slog.NewTextHandler(io.Discard, nil))), LogFormatText},
-		{"bare text", slog.New(slog.NewTextHandler(io.Discard, nil)).With("a", 1), LogFormatText},
-		{"other", slog.New(slog.DiscardHandler), LogFormatJSON},
+		{"json", NewLogHandler(slog.NewJSONHandler(io.Discard, nil)), LogFormatJSON, false},
+		{"text", NewLogHandler(slog.NewTextHandler(io.Discard, nil)), LogFormatText, false},
+		{"bare text", slog.New(slog.NewTextHandler(io.Discard, nil)).With("a", 1).Handler(), LogFormatText, false},
+		{"other", slog.DiscardHandler, LogFormatJSON, false},
+		{"output json", NewOutputHandler(io.Discard, LogFormatJSON, &slog.HandlerOptions{ReplaceAttr: redact}), LogFormatJSON, true},
+		{"output text", NewOutputHandler(io.Discard, LogFormatText, &slog.HandlerOptions{ReplaceAttr: redact}), LogFormatText, true},
+		{"output text without options", NewOutputHandler(io.Discard, LogFormatText, nil), LogFormatText, false},
+		{"output derived", NewOutputHandler(io.Discard, LogFormatText, &slog.HandlerOptions{ReplaceAttr: redact}).WithAttrs([]slog.Attr{slog.Int("a", 1)}).WithGroup("g"), LogFormatText, true},
+		{"wrapper reporting", reportingWrapper{slog.NewTextHandler(io.Discard, nil), LogOutput{Format: LogFormatText, ReplaceAttr: redact}}, LogFormatText, true},
+		// A wrapper that does not report its output exports as JSON.
+		{"silent wrapper", silentWrapper{slog.NewTextHandler(io.Discard, nil)}, LogFormatJSON, false},
 	} {
-		if got := logFormatOf(tc.logger); got != tc.want {
-			t.Errorf("%s: format %d, want %d", tc.name, got, tc.want)
+		got := logOutputOf(tc.handler)
+		if got.Format != tc.want || (got.ReplaceAttr != nil) != tc.replace {
+			t.Errorf("%s: format %d replace %t, want %d %t", tc.name, got.Format, got.ReplaceAttr != nil, tc.want, tc.replace)
 		}
 	}
 	if _, err := New(Options{ServiceName: "x", LogFormat: LogFormatText + 1}); err == nil {
 		t.Fatal("an unknown log format must be rejected")
 	}
+}
+
+type reportingWrapper struct {
+	slog.Handler
+	output LogOutput
+}
+
+func (w reportingWrapper) LogOutput() LogOutput { return w.output }
+
+type silentWrapper struct{ slog.Handler }
+
+// replacedSecret is what the test ReplaceAttr redacts; it must never be
+// exported.
+const replacedSecret = "zz-replaced-secret-qq"
+
+// lateSecret resolves to the secret: ReplaceAttr sees the resolved value.
+type lateSecret struct{}
+
+func (lateSecret) LogValue() slog.Value { return slog.StringValue(replacedSecret) }
+
+// valuerRedaction is what ReplaceAttr returns for "valuer": a LogValuer,
+// resolved again after the call.
+type valuerRedaction struct{}
+
+func (valuerRedaction) LogValue() slog.Value { return slog.StringValue("[VALUER]") }
+
+// redactAttr is an application's ReplaceAttr: it scrubs the message,
+// redacts password, removes token and every member of a card group, and
+// replaces a resolved valuer with another LogValuer.
+func redactAttr(groups []string, a slog.Attr) slog.Attr {
+	switch {
+	case a.Key == slog.MessageKey && len(groups) == 0:
+		return slog.String(a.Key, strings.ReplaceAll(a.Value.String(), replacedSecret, "[REDACTED]"))
+	case a.Key == "password":
+		return slog.String(a.Key, "[REDACTED]")
+	case a.Key == "token":
+		return slog.Attr{}
+	case len(groups) > 0 && groups[len(groups)-1] == "card":
+		return slog.Attr{}
+	case a.Key == "valuer":
+		if a.Value.Kind() != slog.KindString || a.Value.String() != replacedSecret {
+			return slog.String(a.Key, "unresolved")
+		}
+		return slog.Any(a.Key, valuerRedaction{})
+	}
+	return a
+}
+
+// replaceCalls records the calls a ReplaceAttr receives, except those for
+// the time and level keys, which only standard output's handler makes.
+type replaceCalls struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (c *replaceCalls) replace(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) > 0 || (a.Key != slog.TimeKey && a.Key != slog.LevelKey) {
+		c.mu.Lock()
+		c.calls = append(c.calls, fmt.Sprintf("%q %s", groups, a.Key))
+		c.mu.Unlock()
+	}
+	return redactAttr(groups, a)
+}
+
+// TestLogExportAppliesReplaceAttrLikeStandardOutput: the exporter must never
+// carry more than standard output shows. The application's ReplaceAttr is
+// applied with slog's semantics: same calls (groups included), removal of
+// empty attributes and of groups left empty, resolution before and after.
+func TestLogExportAppliesReplaceAttrLikeStandardOutput(t *testing.T) {
+	for _, format := range []LogFormat{LogFormatJSON, LogFormatText} {
+		t.Run(fmt.Sprint(format), func(t *testing.T) {
+			var stdoutCalls, exportCalls replaceCalls
+			var stdout bytes.Buffer
+			exporter := &recordingLogExporter{}
+			tel := newTestTelemetry(t, Options{LogExporter: exporter, LogFormat: format, LogReplaceAttr: exportCalls.replace})
+			output := NewOutputHandler(&stdout, format, &slog.HandlerOptions{ReplaceAttr: stdoutCalls.replace})
+			logger := slog.New(NewTeeHandler(output, tel.LogHandler()))
+			logger.With("password", replacedSecret, "token", replacedSecret).WithGroup("req").Info("login with "+replacedSecret,
+				"password", replacedSecret,
+				"id", 7,
+				slog.Group("", "inline", "x"),
+				"valuer", lateSecret{},
+				"token", replacedSecret,
+				// Last: slog leaves a group that ReplaceAttr emptied open
+				// for the attributes after it (see
+				// TestLogExportClosesAGroupThatReplaceAttrEmptied).
+				slog.Group("card", "number", replacedSecret, "cvv", replacedSecret),
+			)
+			shutdown(t, tel)
+
+			records := exporter.exported()
+			if len(records) != 1 {
+				t.Fatalf("records: %+v", records)
+			}
+			exported := attrMap(records[0])
+			want := map[string]string{"password": "[REDACTED]", "req.password": "[REDACTED]", "req.id": "7", "req.inline": "x", "req.valuer": "[VALUER]"}
+			if fmt.Sprint(exported) != fmt.Sprint(want) {
+				t.Fatalf("exported %v, want %v", exported, want)
+			}
+			if records[0].Body != "login with [REDACTED]" {
+				t.Fatalf("body %q", records[0].Body)
+			}
+			for _, attr := range records[0].Attributes {
+				if strings.Contains(attr.Key+attr.Value.Emit(), replacedSecret) {
+					t.Fatalf("exported the secret: %+v", records[0])
+				}
+			}
+
+			shown := standardOutputValues(t, format, stdout.String())
+			if shown["msg"] != records[0].Body {
+				t.Fatalf("standard output message %q, exported %q", shown["msg"], records[0].Body)
+			}
+			delete(shown, "time")
+			delete(shown, "level")
+			delete(shown, "msg")
+			if fmt.Sprint(shown) != fmt.Sprint(exported) {
+				t.Fatalf("standard output %v, exported %v", shown, exported)
+			}
+			if fmt.Sprint(stdoutCalls.calls) != fmt.Sprint(exportCalls.calls) {
+				t.Fatalf("ReplaceAttr calls differ:\nstandard output %v\nexport          %v", stdoutCalls.calls, exportCalls.calls)
+			}
+		})
+	}
+}
+
+// TestLogExportClosesAGroupThatReplaceAttrEmptied: slog's built-in handlers
+// (Go 1.27) do not close a group whose members ReplaceAttr all removed, so
+// the attributes after it are written inside it ("card.after=2"; the JSON
+// handler writes a malformed line). The exporter keeps each attribute under
+// its own key and passes ReplaceAttr its own groups: it never exports more
+// than ReplaceAttr lets through.
+func TestLogExportClosesAGroupThatReplaceAttrEmptied(t *testing.T) {
+	var calls replaceCalls
+	exporter := &recordingLogExporter{}
+	tel := newTestTelemetry(t, Options{LogExporter: exporter, LogReplaceAttr: calls.replace})
+	logsLogger(tel).Info("m", slog.Group("card", "number", replacedSecret), "after", 2)
+	shutdown(t, tel)
+	records := exporter.exported()
+	if len(records) != 1 || fmt.Sprint(attrMap(records[0])) != "map[after:2]" {
+		t.Fatalf("records: %+v", records)
+	}
+	if want := `[[] msg ["card"] number [] after]`; fmt.Sprint(calls.calls) != want {
+		t.Fatalf("calls %v, want %s", calls.calls, want)
+	}
+}
+
+// TestFromConfigAppliesTheOutputHandlersReplaceAttr: forge.New passes its
+// logger to FromConfig; a logger built with NewOutputHandler hands its
+// ReplaceAttr to the exporter without any other setting.
+func TestFromConfigAppliesTheOutputHandlersReplaceAttr(t *testing.T) {
+	c, server := newCollector(t)
+	cfg := config.Default()
+	cfg.Telemetry.ServiceName = "svc"
+	cfg.Telemetry.LogsExporter = config.TelemetryLogsExporterOTLP
+	cfg.Telemetry.OTLPEndpoint = server.URL
+	var stdout bytes.Buffer
+	logger := slog.New(NewOutputHandler(&stdout, LogFormatText, &slog.HandlerOptions{ReplaceAttr: redactAttr}))
+	tel, err := FromConfig(cfg, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slog.New(NewTeeHandler(logger.Handler(), tel.LogHandler())).Info("login", "password", replacedSecret, "user", "ana")
+	shutdown(t, tel)
+	requests := c.received()
+	if len(requests) == 0 {
+		t.Fatal("nothing exported")
+	}
+	encoded, _ := json.Marshal(requests[0].payload)
+	if strings.Contains(string(encoded), replacedSecret) || !strings.Contains(string(encoded), "[REDACTED]") || !strings.Contains(string(encoded), "ana") {
+		t.Fatalf("export: %s", encoded)
+	}
+	if strings.Contains(stdout.String(), replacedSecret) || !strings.Contains(stdout.String(), "password=[REDACTED]") {
+		t.Fatalf("standard output: %s", stdout.String())
+	}
+}
+
+// standardOutputValues parses one line written by slog's JSON or text
+// handler into flattened keys and their text.
+func standardOutputValues(t *testing.T, format LogFormat, line string) map[string]string {
+	t.Helper()
+	values := make(map[string]string)
+	line = strings.TrimSuffix(line, "\n")
+	if strings.Contains(line, "\n") {
+		t.Fatalf("more than one line: %q", line)
+	}
+	if format == LogFormatJSON {
+		decoder := json.NewDecoder(strings.NewReader(line))
+		decoder.UseNumber()
+		var object map[string]any
+		if err := decoder.Decode(&object); err != nil {
+			t.Fatalf("%q: %v", line, err)
+		}
+		var flatten func(prefix string, object map[string]any)
+		flatten = func(prefix string, object map[string]any) {
+			for key, value := range object {
+				if nested, ok := value.(map[string]any); ok {
+					flatten(prefix+key+".", nested)
+					continue
+				}
+				values[prefix+key] = fmt.Sprint(value)
+			}
+		}
+		flatten("", object)
+		return values
+	}
+	for line != "" {
+		key, rest, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("unparsable text output %q", line)
+		}
+		var value string
+		if strings.HasPrefix(rest, `"`) {
+			quoted, err := strconv.QuotedPrefix(rest)
+			if err != nil {
+				t.Fatalf("%q: %v", rest, err)
+			}
+			value, _ = strconv.Unquote(quoted)
+			rest = rest[len(quoted):]
+		} else {
+			value, rest, _ = strings.Cut(rest, " ")
+			rest = " " + rest
+		}
+		values[key] = value
+		line = strings.TrimPrefix(rest, " ")
+	}
+	return values
 }

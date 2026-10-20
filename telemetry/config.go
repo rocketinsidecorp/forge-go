@@ -15,7 +15,11 @@ import (
 // or a failed log export would log and export again. The caller owns the
 // result and must call Shutdown; forge.App does both. With
 // FORGE_TELEMETRY_LOGS_EXPORTER=otlp the result's LogHandler is non-nil and
-// forge.App tees its logger into it.
+// forge.App tees its logger into it; the exporter then encodes and rewrites
+// attributes as logger's handler does: Options.LogFormat and
+// Options.LogReplaceAttr come from its LogOutput when it is a
+// LogOutputHandler (NewOutputHandler's and NewLogHandler's results are), text
+// for a bare slog.TextHandler, and JSON without ReplaceAttr otherwise.
 func FromConfig(cfg config.Config, logger *slog.Logger) (*Telemetry, error) {
 	settings := cfg.Telemetry
 	if !settings.Enabled {
@@ -37,7 +41,10 @@ func FromConfig(cfg config.Config, logger *slog.Logger) (*Telemetry, error) {
 		MetricsInterval: settings.MetricsInterval,
 		ExportTimeout:   settings.OTLPTimeout,
 		Logger:          logger,
-		LogFormat:       logFormatOf(logger),
+	}
+	if logger != nil {
+		output := logOutputOf(logger.Handler())
+		opts.LogFormat, opts.LogReplaceAttr = output.Format, output.ReplaceAttr
 	}
 	var otlp *OTLPExporter
 	if settings.Exporter == config.TelemetryExporterOTLP || settings.LogsExporter == config.TelemetryLogsExporterOTLP {
@@ -66,22 +73,4 @@ func FromConfig(cfg config.Config, logger *slog.Logger) (*Telemetry, error) {
 		opts.LogLevel, _ = settings.LogLevel()
 	}
 	return New(opts)
-}
-
-// logFormatOf returns the format of the handler logger writes standard
-// output with: text for slog.TextHandler, directly or wrapped by
-// NewLogHandler (what forge's development and test environments use), JSON
-// otherwise, the production format.
-func logFormatOf(logger *slog.Logger) LogFormat {
-	if logger == nil {
-		return LogFormatJSON
-	}
-	handler := logger.Handler()
-	if wrapped, ok := handler.(*logHandler); ok {
-		handler = wrapped.next
-	}
-	if _, ok := handler.(*slog.TextHandler); ok {
-		return LogFormatText
-	}
-	return LogFormatJSON
 }

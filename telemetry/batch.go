@@ -55,6 +55,17 @@ type batcher[T any] struct {
 	mu     sync.Mutex
 	queue  []T
 	closed bool
+	// inFlight is the size of the batch being exported, 0 between exports.
+	// shutdown claims it at its deadline (see claimAtDeadline); the export
+	// goroutine then finds it 0 and leaves the late result uncounted, so
+	// every item is counted exactly once. Whoever settles items (clears
+	// inFlight or takes them off the queue without exporting) adds them to
+	// the counters before releasing mu, so the counters are complete as soon
+	// as the items are gone; nothing else is acquired while mu is held.
+	inFlight int
+	// afterSettle, set only by tests, runs in drain right after the result
+	// of an export was settled under mu, before it is reported.
+	afterSettle func()
 
 	full     chan struct{}
 	flushes  chan chan struct{}
@@ -178,30 +189,68 @@ func (b *batcher[T]) drain(fullOnly bool) {
 		rest := copy(b.queue, b.queue[n:])
 		clear(b.queue[rest:])
 		b.queue = b.queue[:rest]
+		b.inFlight = n
 		b.mu.Unlock()
 
 		exportCtx, cancel := context.WithTimeout(b.runCtx, b.timeout)
 		err := b.export(exportCtx, b.resource, batch)
 		cancel()
-		if err != nil {
+		b.mu.Lock()
+		// When shutdown's deadline passed during this export, shutdown
+		// already counted the batch as failed; its late result is not
+		// counted.
+		claimed := b.inFlight == 0
+		b.inFlight = 0
+		switch {
+		case claimed:
+		case err != nil:
 			b.failed.Add(uint64(n)) // #nosec G115 -- n is a slice length
-			if b.onError != nil {
-				b.onError(n)
-			}
-			b.logger.Warn(b.failedMessage, b.countKey, n, "error_type", ErrorType(err), "error", err)
-		} else {
+		default:
 			b.exported.Add(uint64(n)) // #nosec G115 -- n is a slice length
+		}
+		b.mu.Unlock()
+		if b.afterSettle != nil {
+			b.afterSettle()
+		}
+		if !claimed && err != nil {
+			b.reportFailure(n, err)
 		}
 	}
 }
 
+// reportFailure reports a failed export of n items, already counted in
+// failed, to onError and the diagnostics logger. It runs without mu.
+func (b *batcher[T]) reportFailure(n int, err error) {
+	if b.onError != nil {
+		b.onError(n)
+	}
+	b.logger.Warn(b.failedMessage, b.countKey, n, "error_type", ErrorType(err), "error", err)
+}
+
 func (b *batcher[T]) dropRemaining() {
 	b.mu.Lock()
-	n := len(b.queue)
+	b.dropped.Add(uint64(len(b.queue))) // #nosec G115 -- a slice length
 	clear(b.queue)
 	b.queue = b.queue[:0]
 	b.mu.Unlock()
-	b.dropped.Add(uint64(n)) // #nosec G115 -- n is a slice length
+}
+
+// claimAtDeadline settles every item shutdown leaves behind when its context
+// ends first: the batch whose export is still running is counted as a failed
+// export, whatever that export later returns, and the queue is dropped. It
+// runs before shutdown returns, so the counters are final by then.
+func (b *batcher[T]) claimAtDeadline(err error) {
+	b.mu.Lock()
+	inFlight := b.inFlight
+	b.inFlight = 0
+	b.failed.Add(uint64(inFlight))      // #nosec G115 -- inFlight is a slice length
+	b.dropped.Add(uint64(len(b.queue))) // #nosec G115 -- a slice length
+	clear(b.queue)
+	b.queue = b.queue[:0]
+	b.mu.Unlock()
+	if inFlight > 0 {
+		b.reportFailure(inFlight, err)
+	}
 }
 
 // flush exports everything queued so far, waiting at most until ctx ends.
@@ -225,10 +274,11 @@ func (b *batcher[T]) flush(ctx context.Context) error {
 }
 
 // shutdown refuses new items and exports the queue, returning no later than
-// ctx's end. When ctx ends first, the export in progress is cancelled, the
-// items still queued are dropped and counted, and the wrapped ctx error is
-// returned; the goroutine exits as soon as the exporter honors the
-// cancellation.
+// ctx's end. When ctx ends first, the export in progress is cancelled and
+// counted as failed, the items still queued are dropped and counted, and the
+// wrapped ctx error is returned: every item not exported is counted exactly
+// once before shutdown returns. The goroutine exits as soon as the exporter
+// honors the cancellation.
 func (b *batcher[T]) shutdown(ctx context.Context) error {
 	b.mu.Lock()
 	b.closed = true
@@ -242,7 +292,7 @@ func (b *batcher[T]) shutdown(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		b.cancelRun()
-		b.dropRemaining()
+		b.claimAtDeadline(ctx.Err())
 		return fmt.Errorf("telemetry: %s export did not finish before the shutdown deadline: %w", b.signal, ctx.Err())
 	}
 }

@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +59,87 @@ const (
 	// text, anything else as fmt's %+v (which uses Error and String).
 	LogFormatText
 )
+
+// LogOutput describes how the handler that writes standard output renders a
+// record, so that the log exporter never carries more than that output
+// shows.
+type LogOutput struct {
+	// Format is the standard-output handler's encoding.
+	Format LogFormat
+	// ReplaceAttr is the standard-output handler's
+	// slog.HandlerOptions.ReplaceAttr, or nil. The exporter applies it as
+	// slog does: to the message (key slog.MessageKey, no groups) and to every
+	// attribute, after resolving its slog.LogValuer and again on what it
+	// returns, with the open groups, never to a group itself; an attribute
+	// it returns empty is dropped.
+	ReplaceAttr func(groups []string, a slog.Attr) slog.Attr
+}
+
+// LogOutputHandler is implemented by a standard-output handler that reports
+// how it renders records. FromConfig, and so forge.New, reads it from the
+// logger it is given to configure the log exporter. NewOutputHandler's
+// result and NewLogHandler's (which reports what the handler it wraps
+// reports) implement it; a custom wrapper around slog.TextHandler, or around
+// a handler with a ReplaceAttr, should implement it too, or the exporter
+// encodes as slog.JSONHandler does and does not apply the ReplaceAttr.
+type LogOutputHandler interface {
+	slog.Handler
+	LogOutput() LogOutput
+}
+
+// NewOutputHandler returns the standard-output handler that writes to w in
+// format with opts (nil means slog's defaults), as slog.NewJSONHandler or
+// slog.NewTextHandler would, wrapped by NewLogHandler for trace correlation.
+// It reports format and opts.ReplaceAttr through LogOutputHandler, so the log
+// exporter that forge.New tees the logger into applies the same ReplaceAttr:
+//
+//	logger := slog.New(telemetry.NewOutputHandler(os.Stdout, telemetry.LogFormatJSON,
+//		&slog.HandlerOptions{ReplaceAttr: redact}))
+//	app, err := forge.New(forge.WithLogger(logger))
+func NewOutputHandler(w io.Writer, format LogFormat, opts *slog.HandlerOptions) slog.Handler {
+	output := LogOutput{Format: format}
+	if opts != nil {
+		output.ReplaceAttr = opts.ReplaceAttr
+	}
+	var handler slog.Handler
+	if format == LogFormatText {
+		handler = slog.NewTextHandler(w, opts)
+	} else {
+		output.Format = LogFormatJSON
+		handler = slog.NewJSONHandler(w, opts)
+	}
+	return NewLogHandler(outputHandler{Handler: handler, output: output})
+}
+
+// outputHandler is a standard-output handler that reports its LogOutput.
+type outputHandler struct {
+	slog.Handler
+	output LogOutput
+}
+
+func (h outputHandler) LogOutput() LogOutput { return h.output }
+
+func (h outputHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return outputHandler{Handler: h.Handler.WithAttrs(attrs), output: h.output}
+}
+
+func (h outputHandler) WithGroup(name string) slog.Handler {
+	return outputHandler{Handler: h.Handler.WithGroup(name), output: h.output}
+}
+
+// logOutputOf returns how handler renders standard output: what it reports
+// as a LogOutputHandler, text without ReplaceAttr for a bare
+// slog.TextHandler, and otherwise JSON without ReplaceAttr, the production
+// format.
+func logOutputOf(handler slog.Handler) LogOutput {
+	switch h := handler.(type) {
+	case LogOutputHandler:
+		return h.LogOutput()
+	case *slog.TextHandler:
+		return LogOutput{Format: LogFormatText}
+	}
+	return LogOutput{Format: LogFormatJSON}
+}
 
 // LogRecord is one log entry queued for export: the data model of
 // OpenTelemetry logs, reduced to what Forge fills in.
@@ -107,11 +190,14 @@ func (t *Telemetry) LogStats() Stats {
 // The record carries what the standard-output handler writes and nothing
 // more: message and attributes, flattened with dotted group names, with
 // values resolved through slog.LogValuer (config.Secret therefore exports its
-// redaction, not its value) and other values encoded as Options.LogFormat
-// says, the way slog.JSONHandler (the default) or slog.TextHandler encodes
-// them; a value that fails to encode exports a placeholder naming its type.
-// The trace context comes from the ctx given to InfoContext and friends, or
-// from trace_id and span_id attributes (the request logger's).
+// redaction, not its value), rewritten by Options.LogReplaceAttr as slog
+// rewrites them with HandlerOptions.ReplaceAttr, and other values encoded as
+// Options.LogFormat says, the way slog.JSONHandler (the default) or
+// slog.TextHandler encodes them; a value that fails to encode exports a
+// placeholder naming its type. The record's time and level are exported as
+// logged, whatever LogReplaceAttr does with the time and level keys. The
+// trace context comes from the ctx given to InfoContext and friends, or from
+// trace_id and span_id attributes (the request logger's).
 func (t *Telemetry) LogHandler() slog.Handler {
 	if t == nil || t.logs == nil {
 		return nil
@@ -184,7 +270,10 @@ type otlpLogHandler struct {
 	// attrs are the attributes added with WithAttrs, already flattened with
 	// the group prefix that was current when they were added.
 	attrs []Attribute
-	// prefix is the current group path with a trailing dot, or "".
+	// groups is the current group path (WithGroup), passed to
+	// LogReplaceAttr; prefix is the same path joined with dots, with a
+	// trailing dot, or "".
+	groups []string
 	prefix string
 }
 
@@ -200,9 +289,10 @@ func (h *otlpLogHandler) Handle(ctx context.Context, record slog.Record) error {
 		ObservedTime: now,
 		Severity:     severity,
 		SeverityText: text,
-		Body:         truncate(record.Message, MaxLogBodyLength),
 	}
-	if len(record.Message) <= MaxLogBodyLength {
+	body := h.telemetry.logBody(record.Message)
+	out.Body = truncate(body, MaxLogBodyLength)
+	if len(body) <= MaxLogBodyLength {
 		// truncate copies only what it cuts; a short message may still
 		// share a larger string's memory.
 		out.Body = strings.Clone(out.Body)
@@ -213,7 +303,7 @@ func (h *otlpLogHandler) Handle(ctx context.Context, record slog.Record) error {
 	attrs := make([]Attribute, 0, len(h.attrs)+record.NumAttrs())
 	attrs = append(attrs, h.attrs...)
 	record.Attrs(func(attr slog.Attr) bool {
-		attrs = appendLogAttr(attrs, h.telemetry.logFormat, h.prefix, attr)
+		attrs = h.telemetry.appendLogAttr(attrs, h.groups, h.prefix, attr)
 		return true
 	})
 
@@ -247,7 +337,7 @@ func (h *otlpLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	next := *h
 	next.attrs = append(make([]Attribute, 0, len(h.attrs)+len(attrs)), h.attrs...)
 	for _, attr := range attrs {
-		next.attrs = appendLogAttr(next.attrs, h.telemetry.logFormat, h.prefix, attr)
+		next.attrs = h.telemetry.appendLogAttr(next.attrs, h.groups, h.prefix, attr)
 	}
 	return &next
 }
@@ -257,6 +347,7 @@ func (h *otlpLogHandler) WithGroup(name string) slog.Handler {
 		return h
 	}
 	next := *h
+	next.groups = append(slices.Clip(h.groups), name)
 	next.prefix = h.prefix + name + "."
 	return &next
 }
@@ -301,48 +392,89 @@ func decodeHexID(dst []byte, s string) bool {
 	return err == nil
 }
 
-// appendLogAttr flattens attr, resolved through slog.LogValuer, into dst.
-// Groups become dotted prefixes ("http.status"), as OpenTelemetry has no
-// nested attribute maps in Forge's encoding.
-func appendLogAttr(dst []Attribute, format LogFormat, prefix string, attr slog.Attr) []Attribute {
-	value := attr.Value.Resolve()
-	if attr.Key == "" && value.Kind() == slog.KindAny && value.Any() == nil {
-		return dst // slog ignores empty attributes
+// logBody returns the record body for message: the message itself, or with
+// LogReplaceAttr what standard output shows under the message key, which is
+// empty when LogReplaceAttr removes the message or turns it into a group.
+func (t *Telemetry) logBody(message string) string {
+	if t.logReplace == nil {
+		return message
 	}
-	if value.Kind() == slog.KindGroup {
-		group := value.Group()
-		if len(group) == 0 {
+	attr := t.logReplace(nil, slog.String(slog.MessageKey, message))
+	attr.Value = attr.Value.Resolve()
+	switch {
+	case isEmptyLogAttr(attr) || attr.Value.Kind() == slog.KindGroup:
+		return ""
+	case attr.Value.Kind() == slog.KindString:
+		return attr.Value.String() // bounded by MaxLogBodyLength, not by an attribute's limit
+	case attr.Value.Kind() == slog.KindAny:
+		return encodeLogValue(t.logFormat, attr.Value.Any())
+	}
+	return logAttribute(t.logFormat, "", attr.Value).Value.Emit()
+}
+
+// appendLogAttr flattens attr into dst as slog's built-in handlers write
+// it: the value resolved through slog.LogValuer, then rewritten by
+// LogReplaceAttr with the open groups (never a group itself) and resolved
+// again; empty attributes and empty groups are left out, and a group with an
+// empty key is inlined. Groups become dotted prefixes ("http.status"), as
+// OpenTelemetry has no nested attribute maps in Forge's encoding.
+func (t *Telemetry) appendLogAttr(dst []Attribute, groups []string, prefix string, attr slog.Attr) []Attribute {
+	attr.Value = attr.Value.Resolve()
+	if t.logReplace != nil && attr.Value.Kind() != slog.KindGroup {
+		// Clipped, so a ReplaceAttr that appends cannot write into the
+		// handler's group path.
+		attr = t.logReplace(slices.Clip(groups), attr)
+		// ReplaceAttr may return an unresolved value.
+		attr.Value = attr.Value.Resolve()
+	}
+	if isEmptyLogAttr(attr) {
+		return dst
+	}
+	if attr.Value.Kind() == slog.KindGroup {
+		members := attr.Value.Group()
+		if len(members) == 0 {
 			return dst
 		}
 		if attr.Key != "" {
+			groups = append(slices.Clip(groups), attr.Key)
 			prefix += attr.Key + "."
 		}
-		for _, member := range group {
-			dst = appendLogAttr(dst, format, prefix, member)
+		for _, member := range members {
+			dst = t.appendLogAttr(dst, groups, prefix, member)
 		}
 		return dst
 	}
-	key := truncate(prefix+attr.Key, maxLogKeyLength)
+	return append(dst, logAttribute(t.logFormat, truncate(prefix+attr.Key, maxLogKeyLength), attr.Value))
+}
+
+// isEmptyLogAttr reports whether slog's handlers ignore attr: an empty key
+// with a nil value, which is what a zero slog.Attr holds.
+func isEmptyLogAttr(attr slog.Attr) bool {
+	return attr.Key == "" && attr.Value.Kind() == slog.KindAny && attr.Value.Any() == nil
+}
+
+// logAttribute converts a resolved value that is not a group.
+func logAttribute(format LogFormat, key string, value slog.Value) Attribute {
 	switch value.Kind() {
 	case slog.KindString:
-		return append(dst, String(key, value.String()))
+		return String(key, value.String())
 	case slog.KindInt64:
-		return append(dst, Int64(key, value.Int64()))
+		return Int64(key, value.Int64())
 	case slog.KindUint64:
 		if u := value.Uint64(); u <= math.MaxInt64 {
-			return append(dst, Int64(key, int64(u)))
+			return Int64(key, int64(u))
 		}
-		return append(dst, String(key, strconv.FormatUint(value.Uint64(), 10)))
+		return String(key, strconv.FormatUint(value.Uint64(), 10))
 	case slog.KindFloat64:
-		return append(dst, Float64(key, value.Float64()))
+		return Float64(key, value.Float64())
 	case slog.KindBool:
-		return append(dst, Bool(key, value.Bool()))
+		return Bool(key, value.Bool())
 	case slog.KindDuration:
-		return append(dst, String(key, value.Duration().String()))
+		return String(key, value.Duration().String())
 	case slog.KindTime:
-		return append(dst, String(key, value.Time().Format(time.RFC3339Nano)))
+		return String(key, value.Time().Format(time.RFC3339Nano))
 	}
-	return append(dst, String(key, encodeLogValue(format, value.Any())))
+	return String(key, encodeLogValue(format, value.Any()))
 }
 
 // encodeLogValue encodes a KindAny value as the standard-output handler of
@@ -387,7 +519,10 @@ func encodeJSONLogValue(v any) string {
 	return string(data)
 }
 
-// encodeTextLogValue mirrors slog.TextHandler.
+// encodeTextLogValue mirrors slog.TextHandler's appendTextValue (Go 1.27):
+// encoding.TextAppender first, then encoding.TextMarshaler (slog's doc
+// comment names only the latter, its code checks both in this order), then a
+// byte slice as its text, then fmt's %+v. A test compares the two outputs.
 func encodeTextLogValue(v any) string {
 	switch value := v.(type) {
 	case encoding.TextAppender:

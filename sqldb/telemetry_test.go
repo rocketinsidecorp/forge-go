@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/rocketinsidecorp/forge-go/sqldb"
@@ -159,5 +161,60 @@ func TestInstrumentationPreservesTransactionSemantics(t *testing.T) {
 	}
 	if err := db.Ping(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ObservePool may be called again for a DB, concurrently with itself and
+// with Close: the earlier registration is stopped, a closed DB is refused,
+// and Close stops whatever registration won.
+func TestObservePoolAgainStopsTheEarlierRegistration(t *testing.T) {
+	tel, _ := telemetrytest.New(t)
+	observer, err := sqldb.NewObserver(tel, "sqlite", func(error) sqldb.Classification { return sqldb.Classification{} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sqlite.Open(context.Background(), sqlitetest.Config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	maxOf := func(name string) (float64, bool) {
+		value, ok := telemetrytest.Series(tel, telemetry.MetricDBConnectionMax)["db.system.name=sqlite,db.client.connection.pool.name="+name]
+		return value, ok
+	}
+	if err := observer.ObservePool("first", db); err != nil {
+		t.Fatal(err)
+	}
+	if limit, ok := maxOf("first"); !ok || limit == 0 {
+		t.Fatalf("first pool max %v %t", limit, ok)
+	}
+	if err := observer.ObservePool("second", db); err != nil {
+		t.Fatal(err)
+	}
+	if limit, _ := maxOf("first"); limit != 0 {
+		t.Fatalf("the earlier registration still reads the pool: max %v", limit)
+	}
+	if limit, ok := maxOf("second"); !ok || limit == 0 {
+		t.Fatalf("second pool max %v %t", limit, ok)
+	}
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			_ = observer.ObservePool(fmt.Sprintf("racer%d", i), db)
+		})
+	}
+	wg.Go(func() { _ = db.Close() })
+	wg.Wait()
+	for key, value := range telemetrytest.Series(tel, telemetry.MetricDBConnectionMax) {
+		if value != 0 {
+			t.Fatalf("a closed DB is still observed: %s = %v", key, value)
+		}
+	}
+	if err := observer.ObservePool("late", db); err == nil {
+		t.Fatal("a closed DB must not be observed")
+	}
+	if err := observer.ObservePool("nil", nil); err == nil {
+		t.Fatal("a nil DB must be refused")
 	}
 }

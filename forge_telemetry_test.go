@@ -509,3 +509,48 @@ func TestExportedLogsNeverCarryMoreThanJSONStandardOutput(t *testing.T) {
 		t.Fatalf("password exported: %s", exported)
 	}
 }
+
+// An application that redacts with ReplaceAttr on standard output gets the
+// same redaction in the export when its logger comes from
+// telemetry.NewOutputHandler: forge.New hands the ReplaceAttr to the
+// exporter.
+func TestExportedLogsApplyTheStandardOutputReplaceAttr(t *testing.T) {
+	const password = "zz-hunter2-qq"
+	collector := &otlpCollector{}
+	otlp := httptest.NewServer(collector)
+	defer otlp.Close()
+	cfg, err := config.LoadWithLookup(envLookup(map[string]string{
+		"FORGE_ENV":                     "test",
+		"FORGE_TELEMETRY_SERVICE_NAME":  "orders",
+		"FORGE_TELEMETRY_OTLP_ENDPOINT": otlp.URL,
+		"FORGE_TELEMETRY_LOGS_EXPORTER": "otlp",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	redact := func(_ []string, a slog.Attr) slog.Attr {
+		if a.Key == "password" {
+			return slog.String(a.Key, "[REDACTED]")
+		}
+		return a
+	}
+	var stdout bytes.Buffer
+	logger := slog.New(telemetry.NewOutputHandler(&stdout, telemetry.LogFormatJSON, &slog.HandlerOptions{ReplaceAttr: redact}))
+	app, err := forge.New(forge.WithConfig(cfg), forge.WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.Logger().WithGroup("login").Info("attempt", "user", "ana", "password", password)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := app.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	exported := collector.get("/v1/logs")
+	if !strings.Contains(exported, `"key":"login.password"`) || !strings.Contains(exported, "[REDACTED]") || !strings.Contains(stdout.String(), `"password":"[REDACTED]"`) {
+		t.Fatalf("exported %s\nstdout %s", exported, stdout.String())
+	}
+	if strings.Contains(exported, password) || strings.Contains(stdout.String(), password) {
+		t.Fatalf("password exported: %s", exported)
+	}
+}

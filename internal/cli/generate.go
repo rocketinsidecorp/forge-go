@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
+	"github.com/rocketinsidecorp/forge-go/migrate"
 )
 
 const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate job NAME [field:type...] --queue [--dry-run]\n       forge generate model NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate controller NAME ACTION... [--api] [--public] [--dry-run]\n       forge generate mailer NAME METHOD[:field,field...]... [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate authentication [--dry-run]"
@@ -406,8 +408,11 @@ func planMigration(root, name string, now time.Time) ([]generatedFile, error) {
 }
 
 // nextMigrationVersion returns the migrations directory and the UTC timestamp
-// version for a migration generated at now, bumped past any existing version
-// so migrations generated in the same second stay ordered.
+// version for a migration generated at now, moved to the next free second
+// while the version is taken: by a migration already in db/migrations, so
+// migrations generated in the same second stay ordered, or by a framework
+// migration (migrate.FrameworkMigrations), whose versions are reserved and
+// which the migrator would refuse alongside an application migration.
 func nextMigrationVersion(projectRoot *os.Root, now time.Time) (dir, version string, err error) {
 	dir = filepath.Join("db", "migrations")
 	if err := rejectExistingSymlinkPaths(projectRoot, []string{dir}); err != nil {
@@ -417,11 +422,15 @@ func nextMigrationVersion(projectRoot *os.Root, now time.Time) (dir, version str
 	if err != nil {
 		return "", "", errors.New("db/migrations not found: run this inside a Forge application with a database")
 	}
-	versions := make(map[string]bool, len(entries))
+	framework := migrate.FrameworkMigrations()
+	versions := make(map[string]bool, len(entries)+len(framework))
 	for _, entry := range entries {
 		if len(entry.Name()) > 14 {
 			versions[entry.Name()[:14]] = true
 		}
+	}
+	for _, migration := range framework {
+		versions[strconv.FormatInt(migration.Version, 10)] = true
 	}
 	stamp := now.UTC()
 	for versions[stamp.Format("20060102150405")] {

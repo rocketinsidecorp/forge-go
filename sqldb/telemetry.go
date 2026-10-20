@@ -77,14 +77,26 @@ const DefaultPoolName = "default"
 // and forge.db.pool.wait.duration, until db is closed (Close or Shutdown).
 // Registering a name again replaces the pool, so reopening a database in a
 // process does not duplicate series, and the wait counters keep counting from
-// the earlier pool's totals (see telemetry.Telemetry.ObservePool). Call it
-// once per DB. A nil Observer does nothing.
+// the earlier pool's totals (see telemetry.Telemetry.ObservePool). Calling
+// it again for the same DB moves the pool to the new name: the earlier
+// registration is stopped. It is safe to call concurrently with Close and
+// Shutdown, and refuses a closed DB. A nil Observer does nothing.
 func (o *Observer) ObservePool(name string, db *DB) error {
 	if o == nil {
 		return nil
 	}
+	if db == nil {
+		return errors.New("sqldb: database is required")
+	}
 	if name == "" {
 		name = DefaultPoolName
+	}
+	// Held through the registration, so a concurrent Close either sees
+	// the new registration and stops it or makes this call refuse.
+	db.observeMu.Lock()
+	defer db.observeMu.Unlock()
+	if db.closed {
+		return errors.New("sqldb: database is closed")
 	}
 	pool := db.SQL()
 	stop, err := o.telemetry.ObservePool(o.system, name, func() telemetry.PoolStats {
@@ -100,7 +112,14 @@ func (o *Observer) ObservePool(name string, db *DB) error {
 	if err != nil {
 		return err
 	}
+	previous := db.unobserve
 	db.unobserve = stop
+	if previous != nil {
+		// Under another name the earlier series drop to zero; under the
+		// same name the registration above already replaced it and this
+		// does nothing.
+		previous()
+	}
 	return nil
 }
 

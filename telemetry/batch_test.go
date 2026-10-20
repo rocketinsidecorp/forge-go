@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,13 +98,125 @@ func TestShutdownRespectsItsDeadlineAndStopsTheGoroutine(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatal("Shutdown overran its deadline")
 	}
+	// The counters are final when Shutdown returns, whether the batch was
+	// still queued or its export was in flight at the deadline.
+	if stats := tel.Stats(); stats.Dropped != 3 || stats.Exported != 0 {
+		t.Fatalf("spans at the deadline are dropped when Shutdown returns: %+v", stats)
+	}
 	if again := tel.Shutdown(context.Background()); !errors.Is(again, context.DeadlineExceeded) {
 		t.Fatalf("second Shutdown must return the first result, got %v", again)
 	}
 	endSpans(tel, 2)
+	waitForBatcher(t, tel.spans.done)
 	waitForGoroutines(t, before)
-	if stats := tel.Stats(); stats.Dropped != 5 {
-		t.Fatalf("spans after shutdown and at the deadline are dropped: %+v", stats)
+	if stats := tel.Stats(); stats.Dropped != 5 || stats.Exported != 0 {
+		t.Fatalf("spans after shutdown and at the deadline are dropped once: %+v", stats)
+	}
+}
+
+// TestAnExportInFlightAtTheDeadlineIsCountedOnceWhenShutdownReturns covers
+// the batcher behind both spans and log records: an export still running when
+// shutdown's deadline passes is counted as failed before shutdown returns, and
+// whatever it returns later is not counted again.
+func TestAnExportInFlightAtTheDeadlineIsCountedOnceWhenShutdownReturns(t *testing.T) {
+	for _, late := range []error{nil, errors.New("collector hung")} {
+		t.Run(fmt.Sprintf("late result %v", late), func(t *testing.T) {
+			started, release := make(chan struct{}), make(chan struct{})
+			var errorsReported atomic.Int64
+			b := newBatcher(batcherConfig[int]{
+				signal: "test", failedMessage: "export failed", countKey: "items",
+				// Ignores its context: the result arrives after the deadline.
+				export: func(context.Context, Resource, []int) error {
+					close(started)
+					<-release
+					return late
+				},
+				shutdownExporter: func(context.Context) error { return nil },
+				logger:           slog.New(slog.DiscardHandler),
+				maxQueue:         8, maxBatch: 2, interval: time.Hour, timeout: time.Hour,
+				onError: func(n int) { errorsReported.Add(int64(n)) },
+			})
+			for i := range 5 {
+				if !b.enqueue(i) {
+					t.Fatalf("item %d dropped", i)
+				}
+			}
+			<-started // a full batch of 2 is in flight, 3 items are queued
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := b.shutdown(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("shutdown = %v, want the context error", err)
+			}
+			check := func(when string) {
+				t.Helper()
+				if f, d, e := b.failed.Load(), b.dropped.Load(), b.exported.Load(); f != 2 || d != 3 || e != 0 || errorsReported.Load() != 2 {
+					t.Fatalf("%s: failed %d, dropped %d, exported %d, reported %d; want 2, 3, 0, 2", when, f, d, e, errorsReported.Load())
+				}
+			}
+			check("when shutdown returns")
+			close(release)
+			waitForBatcher(t, b.done)
+			check("after the late export returned")
+		})
+	}
+}
+
+// TestAnExportSettledJustBeforeTheDeadlineIsCountedWhenShutdownReturns pins
+// the other order: the cancelled export returns and its goroutine settles the
+// batch before shutdown claims what is left, then stalls before reporting it.
+// The batch must already be counted when shutdown returns.
+func TestAnExportSettledJustBeforeTheDeadlineIsCountedWhenShutdownReturns(t *testing.T) {
+	started, settled, resume := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var errorsReported atomic.Int64
+	b := newBatcher(batcherConfig[int]{
+		signal: "test", failedMessage: "export failed", countKey: "items",
+		// Honors its context, like the OTLP exporter.
+		export: func(ctx context.Context, _ Resource, _ []int) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		shutdownExporter: func(context.Context) error { return nil },
+		logger:           slog.New(slog.DiscardHandler),
+		maxQueue:         8, maxBatch: 2, interval: time.Hour, timeout: time.Hour,
+		onError: func(n int) { errorsReported.Add(int64(n)) },
+	})
+	b.afterSettle = func() {
+		close(settled)
+		<-resume
+	}
+	for i := range 5 {
+		if !b.enqueue(i) {
+			t.Fatalf("item %d dropped", i)
+		}
+	}
+	<-started // a full batch of 2 is in flight, 3 items are queued
+	// The deadline's cancellation reaches the export first (shutdown's
+	// context.AfterFunc), and the goroutine settles the batch.
+	b.cancelRun()
+	<-settled
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := b.shutdown(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown = %v, want the context error", err)
+	}
+	if f, d, e := b.failed.Load(), b.dropped.Load(), b.exported.Load(); f != 2 || d != 3 || e != 0 {
+		t.Fatalf("when shutdown returns: failed %d, dropped %d, exported %d; want 2, 3, 0", f, d, e)
+	}
+	close(resume)
+	waitForBatcher(t, b.done)
+	if f, d, e, r := b.failed.Load(), b.dropped.Load(), b.exported.Load(), errorsReported.Load(); f != 2 || d != 3 || e != 0 || r != 2 {
+		t.Fatalf("after the goroutine stopped: failed %d, dropped %d, exported %d, reported %d; want 2, 3, 0, 2", f, d, e, r)
+	}
+}
+
+// waitForBatcher waits for a batcher's goroutine to exit.
+func waitForBatcher(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the batcher goroutine did not stop")
 	}
 }
 
@@ -143,7 +257,8 @@ func TestShutdownWithAHungCollectorAndAFullQueueMeetsItsDeadline(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exporter := &hangingExporter{release: make(chan struct{}), calls: make(chan struct{}, 1)}
-			defer close(exporter.release)
+			release := sync.OnceFunc(func() { close(exporter.release) })
+			defer release()
 			opts := tc.exporter(exporter)
 			opts.ServiceName = "s"
 			opts.SampleRatio = 1
@@ -177,17 +292,15 @@ func TestShutdownWithAHungCollectorAndAFullQueueMeetsItsDeadline(t *testing.T) {
 			if elapsed > budget+200*time.Millisecond {
 				t.Fatalf("Shutdown took %s with a %s budget", elapsed, budget)
 			}
-			// Everything not exported is counted as dropped once the
-			// in-flight export gives up.
-			if _, ok := opts.SpanExporter.(*hangingExporter); ok {
-				exporter.release <- struct{}{}
+			// Everything not exported, the hung export included, is counted
+			// as dropped by the time Shutdown returns, and only once.
+			if stats := tel.Stats(); stats.Dropped != 34 {
+				t.Fatalf("stats %+v when Shutdown returned, want all 34 spans dropped", stats)
 			}
-			deadline := time.Now().Add(5 * time.Second)
-			for tel.Stats().Dropped != 34 {
-				if time.Now().After(deadline) {
-					t.Fatalf("stats %+v, want all 34 spans dropped", tel.Stats())
-				}
-				time.Sleep(5 * time.Millisecond)
+			release()
+			waitForBatcher(t, tel.spans.done)
+			if stats := tel.Stats(); stats.Dropped != 34 || stats.Exported != 0 {
+				t.Fatalf("stats %+v after the hung export returned, want all 34 spans dropped once", stats)
 			}
 		})
 	}

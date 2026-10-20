@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -184,11 +186,89 @@ func TestObservePoolCountersKeepGrowingAcrossReplacedAndStoppedPools(t *testing.
 		!strings.Contains(text, `db_client_connection_count{db_system_name="sqlite",db_client_connection_pool_name="main",db_client_connection_state="used"} 0`) {
 		t.Fatalf("a closed pool has no connections:\n%s", text)
 	}
+	if !strings.Contains(text, `db_client_connection_max{db_system_name="sqlite",db_client_connection_pool_name="main"} 0`+"\n") {
+		t.Fatalf("a closed pool allows no connections:\n%s", text)
+	}
 
 	if _, err := tel.ObservePool("sqlite", "main", func() PoolStats { return PoolStats{Waits: 1, WaitTime: time.Second} }); err != nil {
 		t.Fatal(err)
 	}
 	expect("12", "3")
+}
+
+// expectClosedPool fails unless the pool's connection gauges are zero.
+func expectClosedPool(t *testing.T, tel *Telemetry, name string) {
+	t.Helper()
+	text := prometheusText(t, tel)
+	labels := `db_system_name="sqlite",db_client_connection_pool_name="` + name + `"`
+	for _, want := range []string{
+		`db_client_connection_count{` + labels + `,db_client_connection_state="idle"} 0` + "\n",
+		`db_client_connection_count{` + labels + `,db_client_connection_state="used"} 0` + "\n",
+		`db_client_connection_max{` + labels + `} 0` + "\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("a stopped pool must read zero, want %q:\n%s", want, text)
+		}
+	}
+}
+
+// A collection that started reading the pool before stop must not write the
+// pool's counts back after stop zeroed them.
+func TestObservePoolStopDuringACollectionKeepsTheGaugesAtZero(t *testing.T) {
+	tel := newTestTelemetry(t, Options{})
+	reading, release := make(chan struct{}), make(chan struct{})
+	var block atomic.Bool
+	stop, err := tel.ObservePool("sqlite", "main", func() PoolStats {
+		if block.CompareAndSwap(true, false) {
+			close(reading)
+			<-release
+		}
+		return PoolStats{InUse: 3, Idle: 1, Max: 8, Waits: 2, WaitTime: time.Second}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := prometheusText(t, tel); !strings.Contains(text, `db_client_connection_max{db_system_name="sqlite",db_client_connection_pool_name="main"} 8`) {
+		t.Fatalf("pool not observed:\n%s", text)
+	}
+	block.Store(true)
+	collected := make(chan struct{})
+	go func() {
+		defer close(collected)
+		tel.Metrics().Collect()
+	}()
+	<-reading
+	stop()
+	close(release)
+	<-collected
+	expectClosedPool(t, tel, "main")
+	if text := prometheusText(t, tel); !strings.Contains(text, `forge_db_pool_waits_total{db_system_name="sqlite",db_client_connection_pool_name="main"} 2`) {
+		t.Fatalf("the wait counters keep their totals:\n%s", text)
+	}
+}
+
+// Collections racing with stop never leave a stopped pool's counts behind.
+func TestObservePoolStopRacingCollectionsKeepsTheGaugesAtZero(t *testing.T) {
+	tel := newTestTelemetry(t, Options{})
+	for i := range 50 {
+		name := fmt.Sprintf("pool%d", i)
+		stop, err := tel.ObservePool("sqlite", name, func() PoolStats { return PoolStats{InUse: 3, Idle: 1, Max: 8} })
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(func() {
+				for range 5 {
+					tel.Metrics().Collect()
+				}
+			})
+		}
+		runtime.Gosched()
+		stop()
+		wg.Wait()
+		expectClosedPool(t, tel, name)
+	}
 }
 
 func TestObserversAndObservedCounters(t *testing.T) {

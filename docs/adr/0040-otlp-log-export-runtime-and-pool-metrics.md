@@ -153,3 +153,43 @@ port 24224 are not generated, the collector logs pipeline is `otlp`, and the
 Grafana provisioning and dashboard JSON can be copied verbatim as long as the
 metric names and labels match. The port is tracked in
 [rocketinsidecorp/forge-rust#13](https://github.com/rocketinsidecorp/forge-rust/issues/13).
+
+## Addendum (2026-10-20, rocketinsidecorp/forge-go#16)
+
+Follow-ups from the review of the log exporter and pool metrics:
+
+- **`ReplaceAttr`.** The tee hands the exporter the raw record, so an attribute
+  the application redacted on standard output with
+  `slog.HandlerOptions.ReplaceAttr` was exported unredacted. `Options` gains
+  `LogReplaceAttr`, applied with slog's semantics (the message under `msg`
+  without groups, every non-group attribute with its open groups, `LogValuer`
+  resolved before and after the call, empty results and emptied groups
+  removed, empty-key groups inlined); time and level stay as logged. Because
+  slog handlers do not reveal their options, the standard-output handler reports
+  them through the optional `LogOutputHandler` interface (`LogOutput()`
+  returning the format and the `ReplaceAttr`); `NewOutputHandler(w, format,
+  opts)` builds slog's JSON or text handler that implements it, `NewLogHandler`
+  reports what it wraps, and `FromConfig` (so `forge.New`) reads it. A custom
+  wrapper that does not implement it still exports as JSON without
+  `ReplaceAttr`: documented, not guessed. Go 1.27's handlers leave a group that
+  `ReplaceAttr` emptied open for the attributes after it; the exporter does not
+  copy that bug and keeps those attributes under their own keys.
+- **Text encoding.** The issue suggested `slog.TextHandler` checks only
+  `encoding.TextMarshaler`; Go 1.27's `appendTextValue` checks
+  `encoding.TextAppender` first, as the exporter does. A test now compares a
+  value whose two methods differ against the handler's output.
+- **Pool gauges after stop.** Stopping a pool also zeroes
+  `db.client.connection.max`, and the collection callback holds the pool's lock
+  from the generation check through its writes, so a collection that read the
+  pool before stop cannot write the old counts back.
+  `sqldb.Observer.ObservePool` guards the stop function with a mutex, stops
+  the earlier registration when called again for the same database and refuses
+  a closed one.
+
+Forge-Rust has no `slog` and no `ReplaceAttr`; its equivalent is that the
+exporting layer sees the same fields as the stdout formatter after any
+redaction the application configures there. Whether its tracing layer needs a
+matching hook is for the Forge-Rust log-export port
+([rocketinsidecorp/forge-rust#13](https://github.com/rocketinsidecorp/forge-rust/issues/13))
+to state; the pool-gauge rules (max zeroed, no stale write after stop) apply
+to its pool metrics unchanged.

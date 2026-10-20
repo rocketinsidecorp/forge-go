@@ -201,11 +201,12 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger, configur
 // where a developer is watching the terminal.
 func newLogger(environment config.Environment, output io.Writer) *slog.Logger {
 	// Records logged with a traced context (logger.InfoContext(ctx, ...))
-	// carry trace_id and span_id.
+	// carry trace_id and span_id, and the OTLP log exporter encodes values
+	// in the same format.
 	if environment == config.Development || environment == config.Test {
-		return slog.New(telemetry.NewLogHandler(slog.NewTextHandler(output, nil)))
+		return slog.New(telemetry.NewOutputHandler(output, telemetry.LogFormatText, nil))
 	}
-	return slog.New(telemetry.NewLogHandler(slog.NewJSONHandler(output, nil)))
+	return slog.New(telemetry.NewOutputHandler(output, telemetry.LogFormatJSON, nil))
 }
 
 // probeLiveness calls the liveness endpoint over loopback on the configured

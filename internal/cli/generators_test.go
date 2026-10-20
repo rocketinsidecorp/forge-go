@@ -21,6 +21,9 @@ import (
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 )
 
+// generatorNow is also the version of a framework migration
+// (auth/postgres's login_throttle_pair_scope), so migrations generated at it
+// land one second later, at 20261020120001.
 var generatorNow = time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 
 // generate runs `forge generate GENERATOR ARGS...` in root.
@@ -104,7 +107,7 @@ func TestGenerateModelHasNoHTTPLayer(t *testing.T) {
 			root := resourceProject(t, database.url)
 			output := mustGenerate(t, root, "model", "post", "title:string", "body:text?", "--tenant-scoped")
 			for _, want := range []string{
-				"create  db/migrations/20261020120000_create_posts.up.sql",
+				"create  db/migrations/20261020120001_create_posts.up.sql",
 				"create  " + filepath.Join("app", "domain", "post.go"),
 				"create  " + filepath.Join("app", "domain", "post_test.go"),
 				"create  " + filepath.Join("app", "application", "post.go"),
@@ -131,7 +134,7 @@ func TestGenerateModelHasNoHTTPLayer(t *testing.T) {
 			// The persistence layer is the one the resource generates.
 			resourceRoot := resourceProject(t, database.url)
 			mustGenerate(t, resourceRoot, "resource", "post", "title:string", "body:text?", "--tenant-scoped")
-			for _, path := range []string{"app/domain/post.go", "app/application/post.go", "app/adapters/persistence/post.go", "app/adapters/persistence/post_test.go", "db/migrations/20261020120000_create_posts.up.sql"} {
+			for _, path := range []string{"app/domain/post.go", "app/application/post.go", "app/adapters/persistence/post.go", "app/adapters/persistence/post_test.go", "db/migrations/20261020120001_create_posts.up.sql"} {
 				if readFile(t, filepath.Join(root, filepath.FromSlash(path))) != readFile(t, filepath.Join(resourceRoot, filepath.FromSlash(path))) {
 					t.Errorf("%s differs from what `generate resource` writes", path)
 				}
@@ -318,8 +321,8 @@ func TestGenerateControllerInIdentityApplicationsRegistersItsPermission(t *testi
 	root := resourceProject(t, "postgres://u:p@localhost/db") // cmd/shop imports auth/postgres
 	output := mustGenerate(t, root, "controller", "reports", "monthly")
 	for _, want := range []string{
-		"create  db/migrations/20261020120000_create_reports_controller_permissions.up.sql",
-		"create  db/migrations/20261020120000_create_reports_controller_permissions.down.sql",
+		"create  db/migrations/20261020120001_create_reports_controller_permissions.up.sql",
+		"create  db/migrations/20261020120001_create_reports_controller_permissions.down.sql",
 		"protectCookie :=", "htmlui.RegisterReportsController(app, renderer, protectCookie)", "reports:read",
 		"Then: forge migrate && forge test",
 	} {
@@ -327,8 +330,8 @@ func TestGenerateControllerInIdentityApplicationsRegistersItsPermission(t *testi
 			t.Errorf("output lacks %q:\n%s", want, output)
 		}
 	}
-	up := readFile(t, filepath.Join(root, "db", "migrations", "20261020120000_create_reports_controller_permissions.up.sql"))
-	down := readFile(t, filepath.Join(root, "db", "migrations", "20261020120000_create_reports_controller_permissions.down.sql"))
+	up := readFile(t, filepath.Join(root, "db", "migrations", "20261020120001_create_reports_controller_permissions.up.sql"))
+	down := readFile(t, filepath.Join(root, "db", "migrations", "20261020120001_create_reports_controller_permissions.down.sql"))
 	if !strings.Contains(up, "'reports:read'") || strings.Contains(up, "reports:write") || !strings.Contains(down, "DELETE FROM forge_permissions WHERE name = 'reports:read'") {
 		t.Errorf("permission migration:\n%s\n%s", up, down)
 	}
@@ -419,7 +422,7 @@ func TestGenerateResourceRefusesAPermissionAnotherMigrationRegisters(t *testing.
 	t.Parallel()
 	root := resourceProject(t, "postgres://u:p@localhost/db")
 	mustGenerate(t, root, "controller", "widgets", "dashboard")
-	controllerMigration := "db/migrations/20261020120000_create_widgets_controller_permissions.up.sql"
+	controllerMigration := "db/migrations/20261020120001_create_widgets_controller_permissions.up.sql"
 	if !exists(root, controllerMigration) {
 		t.Fatalf("the guarded controller registered no permission: %v", migrationsMatching(t, root, ""))
 	}
@@ -801,12 +804,12 @@ func TestDestroyKeepsMigrationsUnlessAsked(t *testing.T) {
 	t.Parallel()
 	root := resourceProject(t, "sqlite:storage/development.db")
 	mustGenerate(t, root, "model", "post", "title:string", "--global")
-	migration := "db/migrations/20261020120000_create_posts.up.sql"
+	migration := "db/migrations/20261020120001_create_posts.up.sql"
 	output, err := destroy(root, "model", "post", "title:string", "--global")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !exists(root, migration) || !exists(root, "db/migrations/20261020120000_create_posts.down.sql") {
+	if !exists(root, migration) || !exists(root, "db/migrations/20261020120001_create_posts.down.sql") {
 		t.Error("a migration was removed without --migrations")
 	}
 	if !strings.Contains(output, "keep") || !strings.Contains(output, "forge rollback") || exists(root, "app/domain/post.go") {
@@ -1032,13 +1035,13 @@ func TestControllerPermissionMigrationRunsOnPostgreSQL(t *testing.T) {
 	ctx := context.Background()
 	database, databaseConfig := postgrestest.NewWithConfig(t)
 	root := resourceProject(t, "postgres://u:p@localhost/db")
-	// generatorNow is the version of a Forge identity migration; a later one
-	// keeps the two sets' versions apart.
-	var output bytes.Buffer
-	if err := runGenerateEnv([]string{"controller", "reports", "monthly"}, &output, root, nil, time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)); err != nil {
+	// generatorNow is the version of a Forge identity migration
+	// (login_throttle_pair_scope): the generator moves the controller's
+	// migration to the next second, so both sets load and run together.
+	if _, err := generate(root, "controller", "reports", "monthly"); err != nil {
 		t.Fatal(err)
 	}
-	up := readFile(t, filepath.Join(root, "db", "migrations", "20300102030405_create_reports_controller_permissions.up.sql"))
+	up := readFile(t, filepath.Join(root, "db", "migrations", "20261020120001_create_reports_controller_permissions.up.sql"))
 
 	migrator := func(sets ...fs.FS) *migrate.Migrator {
 		t.Helper()
