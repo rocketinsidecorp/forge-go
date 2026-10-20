@@ -22,13 +22,13 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Rate limiting | `rate_limit` | Done | In review |
 | Cache | Solid Cache | Done | In review |
 | File storage with signed URLs | Active Storage | Done (disk) | In review (disk) |
-| Import maps, Turbo, Stimulus | Hotwire | In review | Done |
-| Turbo Streams over SSE | Action Cable | In review | Planned |
+| Import maps, Turbo, Stimulus | Hotwire | Done | Done |
+| Turbo Streams over SSE | Action Cable | Done | Planned |
 | Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Planned |
 | Preconfigured Prometheus, Grafana, Tempo, Loki | — | Planned | Planned |
-| Zero-downtime deploys, rollback, remote logs | Kamal | In review (`forge deploy`) | Planned |
-| Live reload and database lifecycle | `bin/dev`, `db:*` | In review (`forge dev`, `forge db`) | Planned |
-| Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | In review | Planned |
+| Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge-proxy`) | Planned |
+| Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | Planned |
+| Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`) | Planned |
 | i18n | I18n | Planned | Planned |
 | OpenAPI from typed routes | — | Planned | Planned |
 | Controller, model and mailer generators | `rails g` | Planned | Planned |
