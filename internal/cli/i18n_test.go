@@ -150,8 +150,9 @@ func TestGeneratedApplicationTranslationsAreComplete(t *testing.T) {
 			if report.missingCount+report.pluralCount != 0 || len(report.Unused) != 0 {
 				t.Fatalf("forge new --locale %s:\n%s", locale, out.String())
 			}
-			// A scaffold adds its English text: complete in English, and
-			// listed as missing in the other locale until it is translated.
+			// A scaffold adds its English text under en and under the
+			// default locale, so no locale lacks a key until another one is
+			// added to config/locales.
 			if _, err := runScaffold(dir, "post", "title:string", "body:text?", "published:bool?", "--global"); err != nil {
 				t.Fatal(err)
 			}
@@ -160,11 +161,11 @@ func TestGeneratedApplicationTranslationsAreComplete(t *testing.T) {
 			}
 			out.Reset()
 			_ = writeI18nReport(&out, report)
-			if len(report.Missing["en"]) != 0 || len(report.Unused) != 0 {
+			if report.missingCount+report.pluralCount != 0 || len(report.Unused) != 0 {
 				t.Fatalf("after scaffold:\n%s", out.String())
 			}
-			if locale != "en" && (len(report.Missing[locale]) == 0 || !slices.Contains(report.Missing[locale], "posts.index.title")) {
-				t.Fatalf("the scaffold's keys are not reported missing in %s:\n%s", locale, out.String())
+			if !slices.Contains(report.Locales, locale) {
+				t.Fatalf("locales = %v, want %s", report.Locales, locale)
 			}
 		})
 	}

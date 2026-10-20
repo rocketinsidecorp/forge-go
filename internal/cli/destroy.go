@@ -288,6 +288,11 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 			return fmt.Errorf("refusing to remove %s: it is not a regular file", file.path)
 		}
 		if string(current) != file.content {
+			if file.translation && !force {
+				actions = append(actions, destroyAction{file.path, "keep", "translated since it was generated: remove it by hand if no longer needed"})
+				kept = append(kept, file.path)
+				continue
+			}
 			modified = append(modified, file.path)
 			if !force {
 				continue

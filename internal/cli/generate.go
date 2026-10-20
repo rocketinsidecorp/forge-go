@@ -134,6 +134,10 @@ type generatedFile struct {
 	// migration marks a migration file: `forge destroy` keeps those unless
 	// asked, because the database may already have applied them.
 	migration bool
+	// translation marks a file the user is asked to translate: when it
+	// differs from what the generator writes, `forge destroy` keeps it
+	// instead of refusing the whole run.
+	translation bool
 }
 
 // generatedView is a page of the application's view tree (app/views): it

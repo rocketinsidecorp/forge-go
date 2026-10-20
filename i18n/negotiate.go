@@ -307,9 +307,18 @@ func stripPrefix(r *http.Request, prefix string) *http.Request {
 		stripped.Path = "/"
 	}
 	if stripped.RawPath != "" {
-		stripped.RawPath = strings.TrimPrefix(stripped.RawPath, prefix)
-		if stripped.RawPath == "" {
+		// Keep the escaped form (a%2Fb) only while it still starts with the
+		// whole segment; for /pt-BR%2F..%2Fadmin the decoded segment ends
+		// earlier than the escaped one, so the escaped path is dropped and
+		// derived from Path again, never left without its leading slash.
+		rest, ok := strings.CutPrefix(stripped.RawPath, prefix)
+		switch {
+		case !ok || (rest != "" && rest[0] != '/'):
+			stripped.RawPath = ""
+		case rest == "":
 			stripped.RawPath = "/"
+		default:
+			stripped.RawPath = rest
 		}
 	}
 	r.URL = &stripped

@@ -60,8 +60,9 @@ type Translator struct {
 	logger        *slog.Logger
 	rules         map[string]PluralRule
 
-	mu     sync.Mutex
-	warned map[string]struct{}
+	mu         sync.Mutex
+	warned     map[string]struct{}
+	suppressed int // warnings dropped because warned was full
 }
 
 // Load reads the translation files at the root of fsys: LOCALE.json and
@@ -299,7 +300,8 @@ func (t *Translator) missing(locale, key string) string {
 }
 
 // warn logs a problem once per locale and key, for the first maxWarnings
-// distinct problems.
+// distinct problems. The first one past that bound logs a single "suppressed"
+// line, and the rest are only counted (SuppressedWarnings).
 func (t *Translator) warn(message, locale, key string, err error) {
 	if len(key) > MaxKeyLength+1 {
 		key = key[:MaxKeyLength+1] // longer keys are invalid anyway; bound the memory a warning holds
@@ -308,10 +310,19 @@ func (t *Translator) warn(message, locale, key string, err error) {
 	t.mu.Lock()
 	_, seen := t.warned[id]
 	full := len(t.warned) >= maxWarnings
-	if !seen && !full {
+	first := false
+	switch {
+	case seen:
+	case full:
+		t.suppressed++
+		first = t.suppressed == 1
+	default:
 		t.warned[id] = struct{}{}
 	}
 	t.mu.Unlock()
+	if first {
+		t.logger.Warn("missing-translation warnings suppressed", "limit", maxWarnings)
+	}
 	if seen || full {
 		return
 	}
@@ -320,6 +331,16 @@ func (t *Translator) warn(message, locale, key string, err error) {
 		attrs = append(attrs, "error", err.Error())
 	}
 	t.logger.Warn(message, attrs...)
+}
+
+// SuppressedWarnings returns how many translation warnings were dropped
+// because 1,024 distinct ones were already logged. It counts occurrences of
+// new problems, not distinct ones (those are no longer remembered), so a
+// non-zero value tells an operator the log is no longer complete.
+func (t *Translator) SuppressedWarnings() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.suppressed
 }
 
 // Humanize turns a key's last segment into text: "users.welcome_back" gives

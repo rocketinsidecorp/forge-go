@@ -404,9 +404,8 @@ forge new shop --locale pt-BR                       # en.json + pt-BR.json; pt-B
 cd shop && forge dev
 curl -H 'Accept-Language: en' http://127.0.0.1:8080/        # Welcome to shop
 curl -H 'Accept-Language: pt-BR' http://127.0.0.1:8080/     # Bem-vindo ao shop
-forge generate scaffold post title:string --global  # adds config/locales/posts.en.json
-forge i18n check                                    # pt-BR lacks the posts.* keys: exit 1
-cp config/locales/posts.en.json config/locales/posts.pt-BR.json   # translate, rename the top-level key to "pt-BR"
+forge generate scaffold post title:string --global  # adds config/locales/posts.en.json and posts.pt-BR.json (English text)
+forge i18n check                                    # nothing missing: translate posts.pt-BR.json (values only; keep the "pt-BR" key)
 FORGE_I18N_DEFAULT_LOCALE=en forge dev              # change the default without a rebuild
 ```
 

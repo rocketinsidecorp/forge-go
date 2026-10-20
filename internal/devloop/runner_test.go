@@ -318,7 +318,7 @@ func TestProcessStopsGracefullyOnSIGTERM(t *testing.T) {
 	t.Parallel()
 	ready := filepath.Join(t.TempDir(), "ready")
 	script := writeScript(t, "trap 'exit 0' TERM\n: > \"$1\"\nwhile :; do sleep 0.05; done\n")
-	process, err := StartProcess(script, []string{ready}, t.TempDir(), os.Environ(), nil, nil)
+	process, err := StartProcess("/bin/sh", []string{script, ready}, t.TempDir(), os.Environ(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestProcessIsKilledWhenItIgnoresSIGTERM(t *testing.T) {
 	t.Parallel()
 	ready := filepath.Join(t.TempDir(), "ready")
 	script := writeScript(t, "trap '' TERM\n: > \"$1\"\nwhile :; do sleep 0.05; done\n")
-	process, err := StartProcess(script, []string{ready}, t.TempDir(), os.Environ(), nil, nil)
+	process, err := StartProcess("/bin/sh", []string{script, ready}, t.TempDir(), os.Environ(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,10 +370,14 @@ func waitForFile(t *testing.T, name string) {
 	t.Fatal("script never became ready")
 }
 
+// writeScript writes a shell script for the tests to run as `/bin/sh
+// script`. Executing the file itself races with parallel tests: a fork in
+// another test can still hold the write descriptor, and exec then fails with
+// "text file busy" (ETXTBSY).
 func writeScript(t *testing.T, body string) string {
 	t.Helper()
 	name := filepath.Join(t.TempDir(), "app.sh")
-	if err := os.WriteFile(name, []byte("#!/bin/sh\n"+body), 0o700); err != nil { // #nosec G306 -- test script must be executable
+	if err := os.WriteFile(name, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return name
