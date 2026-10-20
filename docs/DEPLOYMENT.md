@@ -429,8 +429,25 @@ Docker; your machine needs `ssh` and, to build, the `docker` CLI.
 
 1. **Prepare each host** (Debian/Ubuntu shown) as root:
 
+   Install Docker Engine from Docker's signed apt repository, following
+   Docker's guide for [Ubuntu](https://docs.docker.com/engine/install/ubuntu/)
+   or [Debian](https://docs.docker.com/engine/install/debian/) (check it for
+   changes), rather than piping a script into a shell:
+
    ```sh
-   curl -fsSL https://get.docker.com | sh
+   apt-get update && apt-get install -y ca-certificates curl
+   install -m 0755 -d /etc/apt/keyrings
+   . /etc/os-release   # ID is ubuntu or debian
+   curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+   chmod a+r /etc/apt/keyrings/docker.asc
+   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" \
+     > /etc/apt/sources.list.d/docker.list
+   apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io
+   ```
+
+   Then create the deploy user and open the firewall:
+
+   ```sh
    adduser --disabled-password --gecos '' deploy
    usermod -aG docker deploy          # docker access is root-equivalent
    install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
@@ -539,8 +556,16 @@ error. Quotes are removed and nothing inside them is expanded. There is no
 command substitution. The file must be mode `0600`. Values are sent to each
 host on stdin and written to `~/.forge/SERVICE/env/ROLE.env` (mode `0600`,
 `umask 077`, atomic rename), which containers read with `--env-file`. They
-never appear in command lines, dry runs or progress output, and `forge logs`
-redacts them from application output.
+never appear in command lines, dry runs or progress output.
+
+Redaction of streamed output is best effort. `forge logs` and non-interactive
+`forge app exec` replace the exact values from `.forge/secrets` (4 characters
+or longer) line by line, but **output is otherwise not redacted**: an encoded,
+partial or derived value (URL-encoded, base64, a decrypted credential, a
+token the application created) passes through, and interactive sessions
+(`forge app exec --interactive`, `forge app shell`) and `docker logs` on the
+host are not filtered at all. Applications must not print secrets; treat
+streamed output as sensitive.
 
 ### Commands
 
