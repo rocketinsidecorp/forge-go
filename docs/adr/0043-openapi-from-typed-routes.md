@@ -158,7 +158,7 @@ worse than none; the document must be stable enough to commit and diff.
 
 ## Forge-Rust port
 
-Planned (forge-rust#?, issue to be opened). Same contract, Rust idioms:
+Planned ([forge-rust#25](https://github.com/rocketinsidecorp/forge-rust/issues/25)). Same contract, Rust idioms:
 
 - **Declaration:** an opt-in description attached to a route next to its
   handler, with the same fields (`id`, `summary`, `description`, `tags`,
