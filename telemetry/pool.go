@@ -33,7 +33,9 @@ type PoolStats struct {
 // db.client.connection.max, forge.db.pool.waits and
 // forge.db.pool.wait.duration, labelled with the database system (the
 // OpenTelemetry db.system.name) and the pool name. Call stop when the pool is
-// closed: the pool is no longer read and its connection counts drop to zero.
+// closed: the pool is no longer read, its connection counts and its limit
+// drop to zero, and a collection that was reading it when stop ran does not
+// write them back.
 // Registering the same system and name again replaces the earlier pool,
 // which is what reopening a database in the same process means. The wait
 // counters keep growing across pools of one name: the totals of a stopped or
@@ -87,7 +89,12 @@ func (t *Telemetry) ObservePool(system, name string, stats func() PoolStats) (st
 	// Registered under totals.mu, so registrations of one key take effect
 	// in generation order.
 	r.Observe(key, func() {
-		s := stats()
+		s := stats() // outside the lock: reading a pool may wait
+		// The generation check and the writes hold totals.mu together, so
+		// a stop or a replacement that lands while this collection reads
+		// the pool cannot be overwritten with the old pool's counts.
+		totals.mu.Lock()
+		defer totals.mu.Unlock()
 		allWaits, allWaited, current := totals.add(generation, s.Waits, s.WaitTime.Seconds())
 		if !current {
 			return // a replaced or stopped pool read in a collection already under way
@@ -110,6 +117,7 @@ func (t *Telemetry) ObservePool(system, name string, stats func() PoolStats) (st
 			r.Observe(key, nil)
 			count.Set(0, system, name, "idle")
 			count.Set(0, system, name, "used")
+			limit.Set(0, system, name)
 		})
 	}, nil
 }
@@ -141,10 +149,9 @@ func (p *poolTotals) retire() uint64 {
 
 // add records the totals the pool of generation reported and returns the
 // totals of every pool of the name, or current false when that pool is no
-// longer the observed one. A pool's own totals never decrease here.
+// longer the observed one. A pool's own totals never decrease here. The
+// caller holds mu.
 func (p *poolTotals) add(generation uint64, waits int64, waited float64) (int64, float64, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	if generation != p.generation {
 		return 0, 0, false
 	}
