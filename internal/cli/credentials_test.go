@@ -593,3 +593,29 @@ func TestCredentialsCommandValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestCredentialsRotateKeyChangedFileLeavesKeyFileAlone(t *testing.T) {
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keyBefore := fileBytes(t, h.keyPath("production"))
+	h.ctx.afterRead = func() {
+		keys, _, _ := credentials.LoadKeys(h.ctx.dir, "production", h.ctx.lookup)
+		sealed, _ := credentials.Seal("production", []byte(`{"theirs": "1"}`), keys[0])
+		if err := credentials.WriteFile(h.ctx.dir, "production", sealed, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := h.run(t, "rotate-key", "--environment", "production", "--keep-old", "--print-key")
+	if err == nil || !strings.Contains(err.Error(), "changed during rotation") {
+		t.Fatalf("concurrent change: %v", err)
+	}
+	if !bytes.Equal(keyBefore, fileBytes(t, h.keyPath("production"))) {
+		t.Fatal("the key file gained a new key although the rotation was refused")
+	}
+	if h.stdout.Len() != 0 {
+		t.Fatalf("a key was printed although the rotation was refused: %q", h.stdout.String())
+	}
+	if got, _ := h.read(t, "production").String("theirs"); got != "1" {
+		t.Fatal("the other change was overwritten")
+	}
+}

@@ -36,6 +36,7 @@ type credentialsContext struct {
 	stdout, stderr io.Writer
 	stdoutIsTTY    func() bool
 	editor         editorRunner
+	afterRead      func() // test hook: runs after rotate-key has read the file
 }
 
 func runCredentials(args []string, stdout, stderr io.Writer) error {
@@ -271,6 +272,16 @@ func (c *credentialsContext) rotate(env string, keepOld, printKey, writeKeyFile 
 	if err != nil {
 		return err
 	}
+	if c.afterRead != nil {
+		c.afterRead()
+	}
+	// Everything that can reject the rotation happens before any output or
+	// file change: a refused rotation must not leave a fresh key behind that
+	// nobody was told about.
+	current, err := credentials.ReadFile(c.dir, env)
+	if err != nil || !bytes.Equal(current, file) {
+		return errors.New("the credentials file changed during rotation; nothing was re-encrypted, run the command again")
+	}
 	if printKey {
 		// Before any file changes: if this fails, nothing was modified.
 		if _, err := fmt.Fprintln(c.stdout, joinKeys(final)); err != nil {
@@ -286,11 +297,13 @@ func (c *credentialsContext) rotate(env string, keepOld, printKey, writeKeyFile 
 			return err
 		}
 	}
-	current, err := credentials.ReadFile(c.dir, env)
-	if err != nil || !bytes.Equal(current, file) {
-		return errors.New("the credentials file changed during rotation; nothing was re-encrypted, run the command again")
-	}
 	if err := credentials.WriteFile(c.dir, env, sealed, true); err != nil {
+		if toFile {
+			// The file is unchanged: put the previous key list back.
+			if restoreErr := credentials.WriteKeyFile(c.dir, env, keys, true); restoreErr != nil {
+				err = errors.Join(err, fmt.Errorf("could not restore the previous key file: %w", restoreErr))
+			}
+		}
 		return err
 	}
 	if toFile && !keepOld {
