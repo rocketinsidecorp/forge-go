@@ -199,7 +199,12 @@ func (h *otlpLogHandler) Handle(ctx context.Context, record slog.Record) error {
 		ObservedTime: now,
 		Severity:     severity,
 		SeverityText: text,
-		Body:         strings.Clone(truncate(record.Message, MaxLogBodyLength)),
+		Body:         truncate(record.Message, MaxLogBodyLength),
+	}
+	if len(record.Message) <= MaxLogBodyLength {
+		// truncate copies only what it cuts; a short message may still
+		// share a larger string's memory.
+		out.Body = strings.Clone(out.Body)
 	}
 	if out.Time.IsZero() {
 		out.Time = now
