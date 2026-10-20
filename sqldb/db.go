@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/rocketinsidecorp/forge-go/config"
 )
@@ -24,9 +25,14 @@ type DBTX interface {
 type DB struct {
 	db       *sql.DB
 	classify Classifier
+	// observeMu guards unobserve and closed: ObservePool, Close and
+	// Shutdown may run concurrently.
+	observeMu sync.Mutex
 	// unobserve stops the pool metrics (Observer.ObservePool); nil when
 	// the pool is not observed.
 	unobserve func()
+	// closed is set by Close and Shutdown; a closed pool is not observed.
+	closed bool
 }
 
 var _ DBTX = (*DB)(nil)
@@ -130,8 +136,12 @@ func (d *DB) Shutdown(ctx context.Context) error {
 // stopObserving removes the pool from the connection metrics: a closed pool
 // is no longer read at every collection.
 func (d *DB) stopObserving() {
-	if d.unobserve != nil {
-		d.unobserve()
+	d.observeMu.Lock()
+	stop := d.unobserve
+	d.unobserve, d.closed = nil, true
+	d.observeMu.Unlock()
+	if stop != nil {
+		stop()
 	}
 }
 
