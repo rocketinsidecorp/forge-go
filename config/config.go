@@ -170,7 +170,7 @@ func (c Config) Validate() error {
 		return errors.New("HTTP size limits must be positive")
 	}
 	for i, prefix := range c.HTTP.TrustedProxies {
-		if err := checkTrustedProxy(prefix); err != nil {
+		if err := CheckTrustedProxy(prefix); err != nil {
 			return fmt.Errorf("invalid FORGE_HTTP_TRUSTED_PROXIES: entry %d %s", i+1, err)
 		}
 	}

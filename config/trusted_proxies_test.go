@@ -50,6 +50,17 @@ func TestTrustedProxiesParse(t *testing.T) {
 	}
 }
 
+func TestTrustedProxiesAcceptTheMinimumPrefixLengths(t *testing.T) {
+	t.Parallel()
+	cfg, err := loadTrustedProxies("10.0.0.0/8, fc00::/16", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.HTTP.TrustedProxies) != 2 {
+		t.Fatalf("prefixes = %v, want 2", cfg.HTTP.TrustedProxies)
+	}
+}
+
 func TestTrustedProxiesRejectInvalidEntries(t *testing.T) {
 	t.Parallel()
 	for _, value := range []string{
@@ -59,6 +70,10 @@ func TestTrustedProxiesRejectInvalidEntries(t *testing.T) {
 		"172.18.0.0/16,,10.0.0.0/8",
 		"0.0.0.0/0",
 		"::/0",
+		"0.0.0.0/1,128.0.0.0/1",
+		"10.0.0.0/7",
+		"::/1",
+		"fc00::/15",
 		"10.0.0.0/8, 0.0.0.0/0",
 		"::ffff:10.0.0.0/104",
 		"::ffff:10.0.0.1",
@@ -83,7 +98,7 @@ func TestTrustedProxiesRejectInvalidEntries(t *testing.T) {
 
 func TestValidateRejectsUnsafeTrustedProxies(t *testing.T) {
 	t.Parallel()
-	for _, prefix := range []netip.Prefix{{}, netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0"), netip.MustParsePrefix("::ffff:10.0.0.0/104")} {
+	for _, prefix := range []netip.Prefix{{}, netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0"), netip.MustParsePrefix("0.0.0.0/1"), netip.MustParsePrefix("10.0.0.0/7"), netip.MustParsePrefix("::/1"), netip.MustParsePrefix("fc00::/15"), netip.MustParsePrefix("::ffff:10.0.0.0/104")} {
 		cfg := config.Default()
 		cfg.HTTP.TrustedProxies = []netip.Prefix{prefix}
 		if err := cfg.Validate(); err == nil {

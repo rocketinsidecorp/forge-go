@@ -109,14 +109,22 @@ func TestOtherForwardingHeadersAreNeverRead(t *testing.T) {
 	}
 }
 
-func TestOverlongTrustedChainFallsBackToPeer(t *testing.T) {
+func TestForwardedChainLimit(t *testing.T) {
 	trusted := mustTrust(t, "10.0.0.0/8")
-	hops := make([]string, maxForwardedHops+1)
-	for i := range hops {
-		hops[i] = "10.0.0.1"
+	chain := func(hops int) string {
+		entries := make([]string, hops)
+		for i := range entries {
+			entries[i] = "10.0.0.1"
+		}
+		return strings.Join(entries, ",")
 	}
-	if got := trusted.Resolve(requestFrom("10.9.9.9:1", strings.Join(hops, ","))); got != "10.9.9.9" {
-		t.Fatalf("overlong chain resolved %q, want the peer", got)
+	// Exactly maxForwardedHops trusted hops still resolve (to the leftmost).
+	if got := trusted.Resolve(requestFrom("10.9.9.9:1", chain(maxForwardedHops))); got != "10.0.0.1" {
+		t.Fatalf("%d trusted hops resolved %q, want the leftmost entry", maxForwardedHops, got)
+	}
+	// One more falls back to the peer.
+	if got := trusted.Resolve(requestFrom("10.9.9.9:1", chain(maxForwardedHops+1))); got != "10.9.9.9" {
+		t.Fatalf("%d trusted hops resolved %q, want the peer", maxForwardedHops+1, got)
 	}
 }
 
@@ -127,9 +135,18 @@ func TestNewTrustedProxiesRefusesUnsafePrefixes(t *testing.T) {
 		"v6 any":        netip.MustParsePrefix("::/0"),
 		"v4-mapped":     netip.MustParsePrefix("::ffff:10.0.0.0/104"),
 		"bits too long": netip.PrefixFrom(netip.MustParseAddr("10.0.0.1"), 33),
+		"v4 /1":         netip.MustParsePrefix("0.0.0.0/1"),
+		"v4 /7":         netip.MustParsePrefix("10.0.0.0/7"),
+		"v6 /1":         netip.MustParsePrefix("::/1"),
+		"v6 /15":        netip.MustParsePrefix("fc00::/15"),
 	} {
 		if _, err := NewTrustedProxies(prefix); err == nil {
 			t.Errorf("%s: %v accepted", name, prefix)
+		}
+	}
+	for _, accepted := range []string{"10.0.0.0/8", "fc00::/16"} {
+		if _, err := NewTrustedProxies(netip.MustParsePrefix(accepted)); err != nil {
+			t.Errorf("%s refused: %v", accepted, err)
 		}
 	}
 	trusted, err := NewTrustedProxies(netip.MustParsePrefix("172.18.5.9/16"))

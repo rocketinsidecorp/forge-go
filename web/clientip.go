@@ -2,13 +2,14 @@ package web
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
+
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 // maxForwardedHops bounds the X-Forwarded-For entries examined per request.
@@ -27,32 +28,21 @@ type TrustedProxies struct {
 
 // NewTrustedProxies returns the set of the given prefixes (for a single
 // proxy, a /32 or /128); config.HTTP.TrustedProxies holds them, parsed from
-// FORGE_HTTP_TRUSTED_PROXIES under the same rules. It refuses invalid
-// prefixes, prefixes of length 0 (they would trust the whole internet,
-// letting any client choose its address) and IPv4-mapped IPv6 prefixes
-// (peers are compared in their IPv4 form, so such a prefix would silently
-// never match; write the IPv4 form).
+// FORGE_HTTP_TRUSTED_PROXIES under the same rules, which are
+// config.CheckTrustedProxy: it refuses invalid prefixes, IPv4 prefixes
+// shorter than /8 and IPv6 prefixes shorter than /16 (they would let almost
+// any client choose its address) and IPv4-mapped IPv6 prefixes (peers are
+// compared in their IPv4 form, so such a prefix would silently never match;
+// write the IPv4 form).
 func NewTrustedProxies(prefixes ...netip.Prefix) (TrustedProxies, error) {
 	normalized := make([]netip.Prefix, 0, len(prefixes))
 	for i, prefix := range prefixes {
-		if err := checkTrustedPrefix(prefix); err != nil {
+		if err := config.CheckTrustedProxy(prefix); err != nil {
 			return TrustedProxies{}, fmt.Errorf("trusted proxy %d %w", i+1, err)
 		}
 		normalized = append(normalized, prefix.Masked())
 	}
 	return TrustedProxies{prefixes: normalized}, nil
-}
-
-func checkTrustedPrefix(prefix netip.Prefix) error {
-	switch {
-	case !prefix.IsValid():
-		return errors.New("is not a valid CIDR prefix")
-	case prefix.Addr().Is4In6():
-		return errors.New("is an IPv4-mapped IPv6 prefix; use the IPv4 form")
-	case prefix.Bits() == 0:
-		return errors.New("trusts every address; list the proxy networks instead")
-	}
-	return nil
 }
 
 // Prefixes returns a copy of the trusted prefixes.
@@ -109,7 +99,7 @@ func (t TrustedProxies) Resolve(r *http.Request) string {
 			if !t.trusts(addr) {
 				return addr.String()
 			}
-			if hops++; hops >= maxForwardedHops {
+			if hops++; hops > maxForwardedHops {
 				return peer.String()
 			}
 			client = addr

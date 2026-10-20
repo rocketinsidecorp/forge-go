@@ -84,7 +84,7 @@ Dependency direction (imports within the module):
 | `router`                | `fault`, `web` |
 | `pagination`            | `fault`, `uuid` |
 | `events`                | `uuid` |
-| `web`                   | `fault`, `uuid` |
+| `web`                   | `config`, `fault`, `uuid` |
 | `sqldb`                 | `config`, `fault`, `telemetry` |
 | `telemetry`             | `config`, `fault`, `web` |
 | `migrate`               | `forge`, `config` |
