@@ -48,7 +48,8 @@ Contents: [1 Prerequisites](#1-prerequisites) ·
   Docker (with Compose): the generated `compose.yaml` starts it. Without
   Docker, any PostgreSQL 18 server whose user may create databases works.
   SQLite needs nothing installed ([see below](#sqlite-instead-of-postgresql)).
-- `curl` and `openssl` for a few commands.
+- `curl` and `openssl` for a few commands, and the `psql` client for `forge db
+  console` (section 11).
 
 Docker is also what builds the production image (`docker build`, `forge
 deploy`) and runs the observability stack; none of the rest needs it.
@@ -116,16 +117,19 @@ seed data loaded
 
 The port (`27521`) is derived from the application name so it does not clash
 with a PostgreSQL on your machine; `.env.development` has the URL. To use a
-server you already run instead, put its URL in `.env.local`:
+server you already run instead of the Compose one, put its URL in `.env.local`
+and run `forge db prepare` against it (it creates the database if the user may,
+so `docker compose up` is not needed):
 
 ```sh
 echo 'FORGE_DATABASE_URL=postgres://you:secret@127.0.0.1:5432/blog_development?sslmode=disable' >> .env.local
 echo 'FORGE_TEST_DATABASE_URL=postgres://you:secret@127.0.0.1:5432/postgres?sslmode=disable' >> .env.local
+forge db prepare
 ```
 
-(`forge db prepare` creates the database if the user may.) Then create the
-first organization, tenant and owner account. The command prompts twice for
-the password (12 or more characters) and never takes it as an argument:
+Then create the first organization, tenant and owner account. The command
+prompts twice for the password (12 or more characters) and never takes it as an
+argument:
 
 ```sh
 forge setup --tenant acme --email you@example.com --organization "Acme Inc"
@@ -347,12 +351,13 @@ echo; every form needs the CSRF token from the page):
 ```sh
 B=http://localhost:8080 JAR=$(mktemp)
 token() { sed -n 's/.*name="authenticity_token" value="\([^"]*\)".*/\1/p' | head -1; }
-read -rs OWNER_PASSWORD
+printf 'Owner password: '; read -rs OWNER_PASSWORD; echo   # bash or zsh
 T=$(curl -s -c $JAR -b $JAR $B/session/new | token)
 curl -s -o /dev/null -c $JAR -b $JAR -d "authenticity_token=$T" -d tenant=acme -d email=you@example.com --data-urlencode "password=$OWNER_PASSWORD" $B/session
 T=$(curl -s -c $JAR -b $JAR $B/posts/new | token)
 curl -si -c $JAR -b $JAR -d "authenticity_token=$T" --data-urlencode "title=Hello Forge" --data-urlencode "body=My first post" $B/posts | grep -E '^(HTTP|Location)'
 curl -s -b $JAR $B/posts | grep '<td>Hello'
+unset OWNER_PASSWORD
 ```
 
 ```text
@@ -505,9 +510,15 @@ forge: refusing to overwrite app/adapters/htmlauth/htmlauth.go; nothing was writ
 
 `forge setup` refuses once a tenant exists. The same command exists in the
 application binary for containers and production, with the password piped
-(never an argument): `printf '%s\n' "$OWNER_PASSWORD" | blog setup --tenant acme
---email you@example.com --password-stdin`. Details, tokens for API clients,
-two-factor enrollment and account recovery:
+(never an argument). After `forge build`, from the application directory:
+
+```sh
+printf 'Owner password: '; read -rs OWNER_PASSWORD; echo   # bash or zsh
+printf '%s\n' "$OWNER_PASSWORD" | bin/blog setup --tenant acme --email you@example.com --password-stdin
+unset OWNER_PASSWORD
+```
+
+Details, tokens for API clients, two-factor enrollment and account recovery:
 [AUTHENTICATION.md](AUTHENTICATION.md), [MFA.md](MFA.md),
 [ACCOUNT_RECOVERY.md](ACCOUNT_RECOVERY.md).
 
@@ -529,7 +540,7 @@ forge i18n check
 ```
 
 ```text
-config/locales: en, pt-BR; 94 keys, 79 referenced in templates and Go code
+config/locales: en, pt-BR; 130 keys, 115 referenced in templates and Go code
 
 en: complete
 
@@ -757,7 +768,7 @@ forge openapi --check openapi.json                           # exit 1 when the f
 ```
 
 ```text
-openapi: 22 routes are not described (openapi.Describe or openapi.Typed): GET /assets/, GET /comments, ...
+openapi: 29 routes are not described (openapi.Describe or openapi.Typed): GET /_mail/user/, GET /assets/, GET /comments, ...
 openapi: wrote openapi.json (15 paths)
 openapi: openapi.json is up to date
 ```
@@ -779,7 +790,7 @@ forge routes                # every route found in the source, with its action a
 forge inspect --json        # versioned inventory: commands, migrations, routes, modules
 forge build                 # static binary in bin/blog
 forge db status             # applied and pending migrations
-forge db console -- -c 'select name from forge_permissions order by 1'
+forge db console -- -c 'select name from forge_permissions order by 1'   # runs psql
 ```
 
 `forge doctor` prints:
@@ -849,8 +860,10 @@ A deploy migrates before any switch, keeps the previous containers until every
 host passes its health check, and routes everything back if one fails. Secrets
 come from `.forge/secrets` or your environment and never appear in command
 lines or dry runs. Before deploying: build the proxy image once
-(`docker build -f cmd/forge-proxy/Dockerfile ...` from a Forge checkout), set
-`FORGE_STREAMS_KEY`, `FORGE_AUTH_MFA_KEY` and your mail settings as secrets,
+(`docker build -f cmd/forge-proxy/Dockerfile -t REGISTRY/forge-proxy:TAG .` from
+a Forge checkout, then `docker push` it; DEPLOYMENT.md has the signed image to
+pull instead), set `FORGE_STREAMS_KEY`, `FORGE_AUTH_MFA_KEY` and your mail
+settings as secrets,
 and read the production notes in [DEPLOYMENT.md](DEPLOYMENT.md). You can run
 the image yourself with `docker build -t blog .`.
 

@@ -45,7 +45,11 @@ the Go pages must not repeat:
    `current_code`), new backup codes and turning off need the password and a
    current authenticator or backup code, which is used up (its TOTP period
    is recorded as accepted, a backup code is consumed). A wrong password or
-   code is one answer, `ErrMFAStepUpInvalid`. The pending key is shown again
+   code is one answer, `ErrMFAStepUpInvalid` (a right password with a wrong
+   code takes one more database round trip: a throttled timing residual).
+   For an account that already has a factor, turning on and confirming are
+   refused with `ErrMFAAlreadyEnabled` before the password is checked, so
+   their answer does not depend on it; the refusal is audited as denied. The pending key is shown again
    only after a confirmation whose step-up succeeded but whose new code was
    wrong (`MFAPendingCodeError`).
 4. **Throttling.** Every step-up counts one attempt on the MFA throttler

@@ -494,7 +494,8 @@ func TestBrowserMFAEnrollmentNeedsThePasswordAtBothSteps(t *testing.T) {
 	if again := f.post(f.ada, "/mfa", url.Values{"password": {mfaTestPassword}}, true); again.Header().Get("X-Error") != ErrMFAAlreadyEnabled.Error() {
 		t.Fatalf("second enrollment: status=%d error=%q", again.Code, again.Header().Get("X-Error"))
 	}
-	if f.deniedEvents(SecurityMFAEnrollmentStarted) != 1 || f.deniedEvents(SecurityMFAEnabled) != 3 {
+	// The wrong password and the refused second enrollment are audited.
+	if f.deniedEvents(SecurityMFAEnrollmentStarted) != 2 || f.deniedEvents(SecurityMFAEnabled) != 3 {
 		t.Fatalf("denied audit events: start=%d enable=%d", f.deniedEvents(SecurityMFAEnrollmentStarted), f.deniedEvents(SecurityMFAEnabled))
 	}
 	for _, event := range f.events {
@@ -739,5 +740,40 @@ func TestBrowserMFAEnrollmentConfirmCannotFinishARotation(t *testing.T) {
 	account := f.accounts.account(f.ada)
 	if account.pending == nil || account.factor == nil || account.factor.SecretDigest == account.pending.SecretDigest {
 		t.Fatal("the rotation was confirmed without a current code")
+	}
+}
+
+// TestBrowserMFAEnrollmentRoutesDoNotRevealThePasswordOfAnEnrolledAccount:
+// POST /mfa and POST /mfa/confirm need no code, so for an account that
+// already has a factor a right and a wrong password must get the same
+// answer, or a session holder could test passwords through them.
+func TestBrowserMFAEnrollmentRoutesDoNotRevealThePasswordOfAnEnrolledAccount(t *testing.T) {
+	t.Parallel()
+	actions := map[string]SecurityEventKind{"/mfa": SecurityMFAEnrollmentStarted, "/mfa/confirm": SecurityMFAEnabled}
+	for path, action := range actions {
+		t.Run(strings.TrimPrefix(path, "/"), func(t *testing.T) {
+			f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
+			key, _ := f.enable(f.ada)
+			answer := func(password string) (int, string, string) {
+				form := url.Values{"password": {password}, "code": {f.code(key)}}
+				refused := f.post(f.ada, path, form, true)
+				return refused.Code, refused.Header().Get("X-Error"), refused.Header().Get("X-Key")
+			}
+			rightStatus, rightError, rightKey := answer(mfaTestPassword)
+			wrongStatus, wrongError, wrongKey := answer("wrong password")
+			if rightStatus != wrongStatus || rightError != wrongError || rightKey != wrongKey {
+				t.Fatalf("right password: %d %q, wrong password: %d %q", rightStatus, rightError, wrongStatus, wrongError)
+			}
+			if rightError != ErrMFAAlreadyEnabled.Error() || rightKey != "" {
+				t.Fatalf("status=%d error=%q key=%q, want ErrMFAAlreadyEnabled and no key", rightStatus, rightError, rightKey)
+			}
+			if !f.status(f.ada).Enabled || f.accounts.account(f.ada).pending != nil {
+				t.Fatal("the refused request changed the account")
+			}
+			// Both refusals are audited, whatever the password.
+			if denied := f.deniedEvents(action); denied != 2 {
+				t.Fatalf("denied %s events = %d, want 2", action, denied)
+			}
+		})
 	}
 }
