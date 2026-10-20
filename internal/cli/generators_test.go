@@ -816,6 +816,10 @@ func TestDestroyKeepsMigrationsUnlessAsked(t *testing.T) {
 	if _, err := generate(root, "model", "post", "title:string", "--global"); err == nil {
 		t.Error("the model was generated again over its kept migration")
 	}
+	// A second destroy points at what is left, the kept migrations.
+	if _, err := destroy(root, "model", "post", "title:string", "--global"); err == nil || !strings.Contains(err.Error(), "--migrations") || !strings.Contains(err.Error(), migration) || strings.Contains(err.Error(), "check the arguments") {
+		t.Errorf("a second destroy must point to --migrations: %v", err)
+	}
 	if _, err := destroy(root, "model", "post", "title:string", "--global", "--migrations"); err == nil {
 		// Nothing but the migrations remain; they go now.
 		if exists(root, migration) {
@@ -823,6 +827,85 @@ func TestDestroyKeepsMigrationsUnlessAsked(t *testing.T) {
 		}
 	} else {
 		t.Fatalf("destroy --migrations: %v", err)
+	}
+}
+
+// A model inside a resource or scaffold, and a resource inside a scaffold,
+// belong to that bigger generation: destroying them alone would leave
+// adapters that no longer compile.
+func TestDestroyRefusesAModelABiggerGeneratorStillNeeds(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		generator, destroyed, httpLayer string
+	}{
+		{"resource", "model", "app/adapters/httpapi/post.go"},
+		{"scaffold", "model", "app/adapters/htmlui/post.go"},
+		{"scaffold", "resource", "app/adapters/htmlui/post.go"},
+	} {
+		t.Run(c.destroyed+" in "+c.generator, func(t *testing.T) {
+			t.Parallel()
+			root := resourceProject(t, "sqlite:storage/development.db")
+			mustGenerate(t, root, c.generator, "post", "title:string", "--global")
+			before := fileTree(t, root)
+			for _, extra := range [][]string{nil, {"--dry-run"}} {
+				_, err := destroy(root, append([]string{c.destroyed, "post", "title:string", "--global"}, extra...)...)
+				if err == nil {
+					t.Fatalf("destroy %s %v removed part of a %s", c.destroyed, extra, c.generator)
+				}
+				for _, want := range []string{c.httpLayer, "forge destroy " + c.generator, "--force"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("refusal lacks %q: %v", want, err)
+					}
+				}
+			}
+			if after := fileTree(t, root); !reflectEqual(before, after) {
+				t.Fatal("a refused destroy removed files")
+			}
+			if output, err := destroy(root, c.destroyed, "post", "title:string", "--global", "--force"); err != nil {
+				t.Fatalf("destroy --force: %v\n%s", err, output)
+			}
+			if exists(root, "app/domain/post.go") || !exists(root, c.httpLayer) {
+				t.Error("--force must remove only the destroyed generator's files")
+			}
+		})
+	}
+	// Destroying the bigger generator itself is not refused.
+	root := resourceProject(t, "sqlite:storage/development.db")
+	mustGenerate(t, root, "scaffold", "post", "title:string", "--global")
+	if output, err := destroy(root, "scaffold", "post", "title:string", "--global"); err != nil {
+		t.Fatalf("destroy scaffold: %v\n%s", err, output)
+	}
+}
+
+// A controller's pages are the stub `generate view` writes, byte for byte:
+// they belong to `destroy controller`, not `destroy view`.
+func TestDestroyViewRefusesAPageAControllerRenders(t *testing.T) {
+	t.Parallel()
+	root := resourceProject(t, "sqlite:storage/development.db")
+	mustGenerate(t, root, "controller", "pages", "home", "about_us")
+	mustGenerate(t, root, "view", "pages/extra") // the controller does not render it
+	before := fileTree(t, root)
+	_, err := destroy(root, "view", "pages/home")
+	if err == nil {
+		t.Fatal("destroy view removed a page the pages controller renders")
+	}
+	for _, want := range []string{"app/views/pages/home.gohtml", "app/adapters/htmlui/pages_controller.go", "forge destroy controller pages", "--force"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal lacks %q: %v", want, err)
+		}
+	}
+	if after := fileTree(t, root); !reflectEqual(before, after) {
+		t.Fatal("a refused destroy removed files")
+	}
+	if output, err := destroy(root, "view", "pages/extra"); err != nil || exists(root, "app/views/pages/extra.gohtml") {
+		t.Fatalf("destroy view of a page no controller renders: %v\n%s", err, output)
+	}
+	if output, err := destroy(root, "view", "pages/about_us", "--force"); err != nil || exists(root, "app/views/pages/about_us.gohtml") {
+		t.Fatalf("destroy view --force: %v\n%s", err, output)
+	}
+	// The controller's own destroy is not refused, and skips the page that is gone.
+	if output, err := destroy(root, "controller", "pages", "home", "about_us"); err != nil || exists(root, "app/adapters/htmlui/pages_controller.go") {
+		t.Fatalf("destroy controller: %v\n%s", err, output)
 	}
 }
 
@@ -834,7 +917,8 @@ func TestDestroyRefusesModifiedFilesUnlessForced(t *testing.T) {
 	writeFile(t, path, readFile(t, path)+"<p>mine</p>\n")
 	before := fileTree(t, root)
 	output, err := destroy(root, "controller", "pages", "home", "about_us")
-	if err == nil || !strings.Contains(err.Error(), "app/views/pages/home.gohtml") || !strings.Contains(err.Error(), "--force") {
+	if err == nil || !strings.Contains(err.Error(), "app/views/pages/home.gohtml") || !strings.Contains(err.Error(), "--force") ||
+		!strings.Contains(err.Error(), "differ from what this generator would write") || strings.Contains(err.Error(), "changed since") {
 		t.Fatalf("destroy of a modified file: err=%v\n%s", err, output)
 	}
 	if after := fileTree(t, root); !reflectEqual(before, after) {
@@ -846,7 +930,7 @@ func TestDestroyRefusesModifiedFilesUnlessForced(t *testing.T) {
 		t.Error("destroy removed a modified file")
 	}
 	output, err = destroy(root, "controller", "pages", "home", "about_us", "--force")
-	if err != nil || !strings.Contains(output, "modified; removed because of --force") {
+	if err != nil || !strings.Contains(output, "differs from what the generator writes; removed because of --force") {
 		t.Fatalf("destroy --force: %v\n%s", err, output)
 	}
 	if exists(root, "app/views/pages/home.gohtml") || exists(root, "app/adapters/htmlui/pages_controller.go") {

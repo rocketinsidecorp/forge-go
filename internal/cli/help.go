@@ -239,16 +239,16 @@ func configEnvironment(notes string) environmentInfo {
 func destroyCommandDetail() commandDetail {
 	return commandDetail{
 		Name: "destroy", Usage: "forge destroy <model|resource|scaffold|controller|mailer|job|view> ARGUMENTS... [--force] [--migrations] [--dry-run]",
-		Summary:     "Remove the files a generator created, found by regenerating them from the same arguments; a file changed since it was generated is never removed without --force, and migrations are kept unless --migrations.",
+		Summary:     "Remove the files a generator created, found by regenerating them from the same arguments; a file that differs from what the generator would write, or that a bigger generation still needs, is never removed without --force, and migrations are kept unless --migrations.",
 		SideEffects: []string{"filesystem_read", "filesystem_write"},
 		Examples: []string{
 			"forge destroy scaffold post title:string --tenant-scoped --dry-run", "forge destroy controller pages home about_us",
 			"forge destroy mailer user welcome:name", "forge destroy model post title:string --global --migrations",
 		},
-		Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Takes the arguments the generator was run with, so it can compare what is on disk with what the generator writes; a file that differs is listed and nothing is removed, unless --force. The views base, the live-update transport and other files shared with the application are never removed. app/bootstrap/bootstrap.go is never edited: the wiring to take out is printed."},
+		Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Takes the arguments the generator was run with, so it can compare what is on disk with what the generator writes; a file that differs is listed and nothing is removed, unless --force. A model or resource whose resource or scaffold HTTP layer is still there, and a view a controller renders, are refused the same way. The views base, the live-update transport and other files shared with the application are never removed. app/bootstrap/bootstrap.go is never edited: the wiring to take out is printed."},
 		Flags: []flagDetail{
 			{Name: "--dry-run", Description: "Print what would be removed without removing anything."},
-			{Name: "--force", Description: "Remove files that changed since they were generated."},
+			{Name: "--force", Description: "Remove files that differ from what this generator would write (edited, or written by another generator), and files a bigger generation (the resource or scaffold around a model, the controller that renders a view) still needs."},
 			{Name: "--migrations", Description: "Also remove the generator's migration files. Run `forge rollback` first if they were applied."},
 		},
 	}

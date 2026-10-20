@@ -349,7 +349,8 @@ forge destroy model post title:string 'body:text?' published:bool --tenant-scope
 `forge destroy GENERATOR ARGUMENTS...` (the arguments the generator was run
 with) removes exactly the files the generator creates, and only while each is
 unchanged: a file you edited is listed, nothing is removed, and `--force`
-overrides. Migrations are kept unless `--migrations` (run `forge rollback`
+overrides. The same goes for files a bigger generation still needs: a model
+inside a resource or scaffold, a view a controller renders. Migrations are kept unless `--migrations` (run `forge rollback`
 first if they ran), shared files such as the views base are never removed, and
 the wiring to take out of `bootstrap.go` is printed.
 
@@ -459,7 +460,7 @@ rotation are in [docs/CREDENTIALS.md](docs/CREDENTIALS.md).
 | `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
 | `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--broadcast] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests; `--broadcast` adds live updates over Server-Sent Events. Never public: see below |
 | `forge generate authentication [--dry-run]` | PostgreSQL: add the sign-in, sign-out, two-factor and password-reset pages `forge new` generates to an application that lacks them, and print their wiring; other databases are refused (identity persistence is PostgreSQL-only) |
-| `forge destroy GENERATOR ARGUMENTS... [--force] [--migrations] [--dry-run]` | Remove what a generator created (`model`, `resource`, `scaffold`, `controller`, `mailer`, `job`, `view`): the same arguments as the generate command; a file changed since generation is never removed without `--force`, migrations are kept without `--migrations` |
+| `forge destroy GENERATOR ARGUMENTS... [--force] [--migrations] [--dry-run]` | Remove what a generator created (`model`, `resource`, `scaffold`, `controller`, `mailer`, `job`, `view`): the same arguments as the generate command; a file that differs from what the generator writes, or that a bigger generation still needs, is never removed without `--force`, migrations are kept without `--migrations` |
 | `forge deploy [init\|setup\|rollback VERSION\|prune\|details\|lock\|maintenance] [--dry-run] [--json]` | Deploy the image to your servers over SSH with zero-downtime switches through forge-proxy, Kamal-style: see [Deploy](#deploy) |
 | `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream container logs from every host, prefixed `host\|` |
 | `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...`, `forge app shell [--image IMAGE]` | Run a command or a shell next to the deployed application |

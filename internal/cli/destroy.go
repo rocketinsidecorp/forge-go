@@ -56,6 +56,11 @@ type destroyPlan struct {
 	// unwire says what to take out of app/bootstrap/bootstrap.go, which
 	// neither generating nor destroying edits.
 	unwire string
+	// ownedElsewhere, when set, says why the files belong to a bigger
+	// generation (a model inside a resource or scaffold, a view a controller
+	// renders): removing them alone would break the application, so the
+	// destroy is refused unless --force.
+	ownedElsewhere string
 }
 
 func planDestroy(generator string, args []string, root string, env []string, now time.Time) (destroyPlan, error) {
@@ -71,7 +76,11 @@ func planDestroy(generator string, args []string, root string, env []string, now
 			return destroyPlan{}, err
 		}
 		line := fmt.Sprintf("%[1]sService, err := application.New%[2]sService(persistence.New%[2]sRepository(database), time.Now, uuid.New)", lowerCamel(spec.Name), exportedName(spec.Name))
-		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + spec.Name + " use cases you built: " + line}, nil
+		owned, err := httpLayerOf(root, "model", spec.Name)
+		if err != nil {
+			return destroyPlan{}, err
+		}
+		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + spec.Name + " use cases you built: " + line, ownedElsewhere: owned}, nil
 	case "resource", "scaffold":
 		usage := resourceUsage
 		if generator == "scaffold" {
@@ -91,7 +100,13 @@ func planDestroy(generator string, args []string, root string, env []string, now
 		if err != nil {
 			return destroyPlan{}, err
 		}
-		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + generator + " wiring:\n" + buildResourceWiring(spec).Usage}, nil
+		var owned string
+		if generator == "resource" {
+			if owned, err = httpLayerOf(root, generator, spec.Name); err != nil {
+				return destroyPlan{}, err
+			}
+		}
+		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + generator + " wiring:\n" + buildResourceWiring(spec).Usage, ownedElsewhere: owned}, nil
 	case "controller":
 		request, err := parseControllerArgs(args)
 		if err != nil {
@@ -123,6 +138,35 @@ func planDestroy(generator string, args []string, root string, env []string, now
 	default:
 		return destroyPlan{}, fmt.Errorf("unknown generator %q\n%s", generator, destroyUsage)
 	}
+}
+
+// httpLayerOf reports, for `destroy model` or `destroy resource`, the HTTP
+// layer a bigger generator wrote around the same name: the JSON adapter of
+// `generate resource` (for a model) or the pages of `generate scaffold`. The
+// model's files are that generation's too, and removing them alone would
+// leave adapters that no longer compile.
+func httpLayerOf(root, generator, name string) (string, error) {
+	projectRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return "", errors.New("go.mod not found: run this inside a Forge application")
+	}
+	defer func() { _ = projectRoot.Close() }()
+	candidates := []struct{ path, owner string }{
+		{filepath.Join("app", "adapters", "htmlui", name+".go"), "scaffold"},
+	}
+	if generator == "model" {
+		candidates = append(candidates, struct{ path, owner string }{filepath.Join("app", "adapters", "httpapi", name+".go"), "resource"})
+	}
+	for _, candidate := range candidates {
+		_, err := projectRoot.Lstat(candidate.path)
+		switch {
+		case err == nil:
+			return fmt.Sprintf("%[1]s exists, and `forge generate %[2]s %[3]s` writes it around this %[4]s: the %[4]s's files belong to that %[2]s, and removing them alone would leave code that no longer compiles. Run `forge destroy %[2]s` with the arguments it was generated with, or pass --force to remove only the %[4]s's files", filepath.ToSlash(candidate.path), candidate.owner, name, generator), nil
+		case !errors.Is(err, fs.ErrNotExist):
+			return "", err
+		}
+	}
+	return "", nil
 }
 
 func planDestroyJob(args []string, root string) (destroyPlan, error) {
@@ -172,12 +216,27 @@ func planDestroyView(args []string, root string) (destroyPlan, error) {
 	if err != nil {
 		return destroyPlan{}, err
 	}
-	_ = projectRoot.Close()
+	defer func() { _ = projectRoot.Close() }()
 	path := filepath.Join("app", "views", dir, base+".gohtml")
+	// A controller's pages are the same stub `generate view` writes, so the
+	// content cannot tell them apart: a view the DIR controller renders
+	// belongs to `destroy controller`.
+	var owned string
+	controller := filepath.Join("app", "adapters", "htmlui", dir+"_controller.go")
+	source, err := projectRoot.ReadFile(controller)
+	switch {
+	case err == nil:
+		if strings.Contains(string(source), filepath.ToSlash(path)) || strings.Contains(string(source), fmt.Sprintf("%q", base)) {
+			owned = fmt.Sprintf("%[1]s is a page of the %[2]s controller (%[3]s renders it), and removing it alone would make that page fail. Run `forge destroy controller %[2]s` with the actions it was generated with, or pass --force to remove only the view", filepath.ToSlash(path), dir, filepath.ToSlash(controller))
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return destroyPlan{}, err
+	}
 	return destroyPlan{
-		files:  []generatedFile{{path: path, content: generatedView}},
-		dryRun: flags["--dry-run"],
-		unwire: fmt.Sprintf("the handler that renders %q", dir+"/"+base),
+		files:          []generatedFile{{path: path, content: generatedView}},
+		dryRun:         flags["--dry-run"],
+		unwire:         fmt.Sprintf("the handler that renders %q", dir+"/"+base),
+		ownedElsewhere: owned,
 	}, nil
 }
 
@@ -197,8 +256,12 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 		return errors.New("go.mod not found: run this inside a Forge application")
 	}
 	defer func() { _ = root.Close() }()
+	if plan.ownedElsewhere != "" && !force {
+		return errors.New("refusing to destroy, nothing was removed: " + plan.ownedElsewhere)
+	}
 
 	var actions []destroyAction
+	var kept []string
 	var modified []string
 	var removable []string
 	for _, file := range plan.files {
@@ -214,6 +277,7 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 			return err
 		case file.migration && !migrations:
 			actions = append(actions, destroyAction{file.path, "keep", "a migration may already have run: `forge rollback` first, then pass --migrations"})
+			kept = append(kept, file.path)
 			continue
 		}
 		info, err := root.Lstat(file.path)
@@ -228,14 +292,17 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 			if !force {
 				continue
 			}
-			actions = append(actions, destroyAction{file.path, "remove", "modified; removed because of --force"})
+			actions = append(actions, destroyAction{file.path, "remove", "differs from what the generator writes; removed because of --force"})
 		} else {
 			actions = append(actions, destroyAction{file.path, "remove", ""})
 		}
 		removable = append(removable, file.path)
 	}
 	if len(modified) > 0 && !force {
-		return fmt.Errorf("refusing to destroy: %d file(s) changed since they were generated, so nothing was removed:\n  %s\nReview them, or pass --force to remove them anyway", len(modified), strings.Join(modified, "\n  "))
+		return fmt.Errorf("refusing to destroy: %d file(s) differ from what this generator would write from these arguments (edited since, generated with other arguments, or written by another generator), so nothing was removed:\n  %s\nReview them, or pass --force to remove them anyway", len(modified), strings.Join(modified, "\n  "))
+	}
+	if len(removable) == 0 && len(kept) > 0 {
+		return fmt.Errorf("nothing to destroy but the migrations, which are kept:\n  %s\nRevert them with `forge rollback` if they ran, then run this command again with --migrations", strings.Join(kept, "\n  "))
 	}
 	if len(removable) == 0 {
 		return errors.New("nothing to destroy: none of the files this generator creates exist here (check the arguments: they must be the ones the generator was run with)")
