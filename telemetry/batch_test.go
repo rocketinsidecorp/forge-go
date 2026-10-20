@@ -161,6 +161,55 @@ func TestAnExportInFlightAtTheDeadlineIsCountedOnceWhenShutdownReturns(t *testin
 	}
 }
 
+// TestAnExportSettledJustBeforeTheDeadlineIsCountedWhenShutdownReturns pins
+// the other order: the cancelled export returns and its goroutine settles the
+// batch before shutdown claims what is left, then stalls before reporting it.
+// The batch must already be counted when shutdown returns.
+func TestAnExportSettledJustBeforeTheDeadlineIsCountedWhenShutdownReturns(t *testing.T) {
+	started, settled, resume := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var errorsReported atomic.Int64
+	b := newBatcher(batcherConfig[int]{
+		signal: "test", failedMessage: "export failed", countKey: "items",
+		// Honors its context, like the OTLP exporter.
+		export: func(ctx context.Context, _ Resource, _ []int) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		shutdownExporter: func(context.Context) error { return nil },
+		logger:           slog.New(slog.DiscardHandler),
+		maxQueue:         8, maxBatch: 2, interval: time.Hour, timeout: time.Hour,
+		onError: func(n int) { errorsReported.Add(int64(n)) },
+	})
+	b.afterSettle = func() {
+		close(settled)
+		<-resume
+	}
+	for i := range 5 {
+		if !b.enqueue(i) {
+			t.Fatalf("item %d dropped", i)
+		}
+	}
+	<-started // a full batch of 2 is in flight, 3 items are queued
+	// The deadline's cancellation reaches the export first (shutdown's
+	// context.AfterFunc), and the goroutine settles the batch.
+	b.cancelRun()
+	<-settled
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := b.shutdown(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown = %v, want the context error", err)
+	}
+	if f, d, e := b.failed.Load(), b.dropped.Load(), b.exported.Load(); f != 2 || d != 3 || e != 0 {
+		t.Fatalf("when shutdown returns: failed %d, dropped %d, exported %d; want 2, 3, 0", f, d, e)
+	}
+	close(resume)
+	waitForBatcher(t, b.done)
+	if f, d, e, r := b.failed.Load(), b.dropped.Load(), b.exported.Load(), errorsReported.Load(); f != 2 || d != 3 || e != 0 || r != 2 {
+		t.Fatalf("after the goroutine stopped: failed %d, dropped %d, exported %d, reported %d; want 2, 3, 0, 2", f, d, e, r)
+	}
+}
+
 // waitForBatcher waits for a batcher's goroutine to exit.
 func waitForBatcher(t *testing.T, done <-chan struct{}) {
 	t.Helper()
