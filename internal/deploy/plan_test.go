@@ -298,7 +298,7 @@ func TestRevertFailureIsInconsistent(t *testing.T) {
 func TestLockHeldIsReported(t *testing.T) {
 	d, runner, _, _ := planFixture(t, false)
 	runner.fail = func(host string, cmd Command) error {
-		if host == "192.0.2.11" && strings.Contains(cmd.Script, "{ mkdir .forge/shop/lock") {
+		if host == "192.0.2.11" && strings.Contains(cmd.Script, "if mkdir .forge/shop/lock 2>/dev/null") {
 			return &RemoteError{Host: host, ExitCode: lockHeldExitStatus}
 		}
 		return nil

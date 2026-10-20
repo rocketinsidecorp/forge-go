@@ -320,21 +320,33 @@ func (c commands) waitReady(name string) Command {
 
 // acquireLock stores the record in a temporary file and claims the lock by
 // hard-linking it to lock/info: ln fails when info exists, so exactly one
-// claimant wins and the record is never visible half written. The directory
-// comes from an atomic mkdir. A directory with no info file at all (the
-// acquire was killed between mkdir and ln) that is older than a minute is
-// taken over in place with the same ln, so nothing is ever removed and two
-// recoverers cannot both win; the script says so on stderr. An empty info
-// file (left by earlier versions) is not taken over: --force clears it.
+// claimant wins and the record is never visible half written. Only a
+// successful ln wins; nothing else in the script can turn a loss into a win
+// or a win into a loss, and the takeover notice is printed after the win is
+// decided. The directory comes from an atomic mkdir. A directory with no info
+// file at all (the acquire was killed between mkdir and ln) that is older
+// than a minute is taken over in place with the same ln, so nothing is ever
+// removed and two recoverers cannot both win; the script says so on stderr.
+// An empty info file (left by earlier versions) is not taken over: --force
+// clears it.
+//
+// The temporary file is created under noclobber (set -C), so a name left by
+// an earlier process with the same PID, possibly still linked to lock/info,
+// is never truncated: the redirection fails and the acquire exits 1. When ln
+// fails and info does not exist (hard links unsupported on the file system),
+// its own error is printed on stderr before the acquire reports the lock as
+// held.
 func (c commands) acquireLock(record []byte) Command {
 	lock, info := Quote(c.lockDir()), Quote(c.lockDir()+"/info")
 	tmp := Quote(c.stateDir()+"/lock.tmp.") + "$$"
 	return Command{
-		Script: Join("mkdir", "-p", c.stateDir()) + " && " + Join("cat") + " > " + tmp + " || { rm -f " + tmp + "; exit 1; }; " +
-			"if { " + Join("mkdir", c.lockDir()) + " 2>/dev/null && ln " + tmp + " " + info + " 2>/dev/null; } || { [ ! -e " + info + " ] && " +
-			"[ -n \"$(find " + lock + " -maxdepth 0 -mmin +1 2>/dev/null)\" ] && ln " + tmp + " " + info + " 2>/dev/null && " +
-			"echo " + Quote(staleLockNotice) + " >&2; }; then rm -f " + tmp + "; else rm -f " + tmp + "; " +
-			Join("cat", c.lockDir()+"/info") + " 2>/dev/null; exit " + fmt.Sprint(lockHeldExitStatus) + "; fi",
+		Script: "set -C; " + Join("mkdir", "-p", c.stateDir()) + " && " + Join("cat") + " > " + tmp + " || { rm -f " + tmp + "; exit 1; }; " +
+			"claim() { if err=$(ln " + tmp + " " + info + " 2>&1); then return 0; fi; [ -e " + info + " ] || echo \"$err\" >&2; return 1; }; " +
+			"won=; if " + Join("mkdir", c.lockDir()) + " 2>/dev/null; then claim && won=1; " +
+			"elif [ ! -e " + info + " ] && [ -n \"$(find " + lock + " -maxdepth 0 -mmin +1 2>/dev/null)\" ]; then " +
+			"if claim; then won=1; { echo " + Quote(staleLockNotice) + " >&2; true; }; fi; fi; " +
+			"rm -f " + tmp + "; [ -n \"$won\" ] && exit 0; " +
+			Join("cat", c.lockDir()+"/info") + " 2>/dev/null; exit " + fmt.Sprint(lockHeldExitStatus),
 		Stdin:     record,
 		StdinNote: "lock record (holder, time, message)",
 	}
