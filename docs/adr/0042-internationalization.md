@@ -160,7 +160,7 @@ HTML, so escaping must be decided once, by the framework.
 
 ## Forge-Rust port
 
-Tracked in forge-rust#? (to be opened). Same file layout and format (JSON,
+Tracked in [forge-rust#22](https://github.com/rocketinsidecorp/forge-rust/issues/22). Same file layout and format (JSON,
 one locale key, `SCOPE.LOCALE.json`, duplicate keys refused, same limits),
 same key and locale grammar and canonicalization, same `%{name}`/`%%`
 interpolation, same `_html` rule and escaping, the same plural rules and
