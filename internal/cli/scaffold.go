@@ -7,9 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/i18n"
 )
 
 const scaffoldUsage = "usage: forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--broadcast] [--dry-run]"
@@ -22,6 +25,11 @@ const scaffoldUsage = "usage: forge generate scaffold NAME field:type... (--tena
 // and its partials, not pages.
 var scaffoldReservedPlurals = []string{"assets", "auth", "health", "v1", "layouts", "shared", "session", "sessions", "passwords"}
 
+// scaffoldFormattingScopes are plural names whose translation scope would
+// merge into the formatting data (date.formats, number.format, time.am) that
+// `l` and `number` read and `forge i18n check` skips.
+var scaffoldFormattingScopes = []string{"date", "time", "number"}
+
 // runGenerateScaffold is `forge generate scaffold`: everything `forge generate
 // resource` generates, plus server-rendered HTML pages (index, show, new,
 // edit, create, update, destroy) with their templates and tests.
@@ -33,6 +41,9 @@ func runGenerateScaffold(args []string, stdout io.Writer, root string, env []str
 	request.Scaffold = true
 	if slices.Contains(scaffoldReservedPlurals, request.Plural) {
 		return fmt.Errorf("plural %q is a path the application or its view tree already uses (%s); pass another --plural", request.Plural, strings.Join(scaffoldReservedPlurals, ", "))
+	}
+	if slices.Contains(scaffoldFormattingScopes, request.Plural) {
+		return fmt.Errorf("plural %q is a formatting scope of the locale files (%s), which `l` and `number` read and `forge i18n check` skips; pass another --plural", request.Plural, strings.Join(scaffoldFormattingScopes, ", "))
 	}
 	spec, files, err := planResourceWith(root, request, env, now, planScaffoldFiles)
 	if err != nil {
@@ -83,11 +94,21 @@ func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFil
 		}
 		files = append(files, generatedFile{path: source.path, content: string(formatted)})
 	}
-	translations, err := view.Translations()
-	if err != nil {
-		return nil, err
+	// The text is English; an application whose default locale is another one
+	// gets it under that locale too, so production never falls back to
+	// humanized keys, and `forge i18n check` finds nothing missing.
+	spec.DefaultLocale = appDefaultLocale(projectRoot)
+	locales := []string{i18n.DefaultLocale}
+	if spec.DefaultLocale != i18n.DefaultLocale {
+		locales = append(locales, spec.DefaultLocale)
 	}
-	files = append(files, generatedFile{path: filepath.Join(localesDir, spec.Plural+".en.json"), content: translations})
+	for _, locale := range locales {
+		translations, err := view.Translations(locale)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, generatedFile{path: filepath.Join(localesDir, spec.Plural+"."+locale+".json"), content: translations})
+	}
 	for _, page := range scaffoldPages {
 		if page.broadcastOnly && !spec.Broadcast {
 			continue
@@ -125,6 +146,30 @@ func hasBrowserPipeline(projectRoot *os.Root) bool {
 	}
 	text := string(source)
 	return strings.Contains(text, "csrf.New(") && strings.Contains(text, "web.MethodOverride") && strings.Contains(text, "web.Flash")
+}
+
+// defaultLocalePattern matches the DefaultLocale constant of the generated
+// config/locales/locales.go.
+var defaultLocalePattern = regexp.MustCompile(`(?m)^const DefaultLocale = "([^"]+)"`)
+
+// appDefaultLocale is the application's default locale: the DefaultLocale
+// constant of config/locales/locales.go (`forge new --locale`), else "en" for
+// applications that predate i18n or edited the file beyond recognition.
+// FORGE_I18N_DEFAULT_LOCALE is a deployment override and does not apply.
+func appDefaultLocale(projectRoot *os.Root) string {
+	source, err := projectRoot.ReadFile(filepath.Join(localesDir, "locales.go"))
+	if err != nil {
+		return i18n.DefaultLocale
+	}
+	match := defaultLocalePattern.FindSubmatch(source)
+	if match == nil {
+		return i18n.DefaultLocale
+	}
+	locale, err := i18n.CanonicalLocale(string(match[1]))
+	if err != nil {
+		return i18n.DefaultLocale
+	}
+	return locale
 }
 
 // hasI18nMiddleware reports whether bootstrap.go appears to build the

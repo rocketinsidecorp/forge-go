@@ -312,3 +312,94 @@ func TestScaffoldDetectsTheBrowserPipeline(t *testing.T) {
 		t.Errorf("no warning without a pipeline:\n%s", output)
 	}
 }
+
+func TestScaffoldRefusesTheFormattingScopesAsPlurals(t *testing.T) {
+	t.Parallel()
+	root := scaffoldProject(t, "sqlite:storage/development.db")
+	before := snapshotTree(t, root)
+	for _, plural := range scaffoldFormattingScopes {
+		_, err := runScaffold(root, "thing", "name:string", "--global", "--plural", plural)
+		// "time" is also a package the generated code imports, which the
+		// argument parser refuses first; either way it is refused.
+		if err == nil || !strings.Contains(err.Error(), "--plural") || (plural != "time" && !strings.Contains(err.Error(), "formatting scope")) {
+			t.Errorf("plural %q: err = %v, want a refusal naming the formatting scopes", plural, err)
+		}
+	}
+	if after := snapshotTree(t, root); !slices.Equal(before, after) {
+		t.Fatal("a refused run left files behind")
+	}
+}
+
+// An application created with --locale pt-BR has no pt-BR text for a
+// scaffold unless the scaffold writes it: production would show humanized
+// keys. The file starts as the English text, so `forge i18n check` is clean.
+func TestScaffoldWritesTheDefaultLocalesFileAndDestroyRemovesItOnlyWhenUnchanged(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, locales string
+		want          string // the extra file, empty for none
+	}{
+		{"pt-BR", "const DefaultLocale = \"pt-BR\"\n", "posts.pt-BR.json"},
+		{"es", "package locales\n\n// DefaultLocale is x.\nconst DefaultLocale = \"es\"\n", "posts.es.json"},
+		{"en", "const DefaultLocale = \"en\"\n", ""},
+		{"no locales.go", "", ""},
+		{"unreadable constant", "const DefaultLocale = \"not a locale\"\n", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root := scaffoldProject(t, "sqlite:storage/development.db")
+			if test.locales != "" {
+				writeFile(t, filepath.Join(root, "config", "locales", "locales.go"), test.locales)
+			}
+			if _, err := runScaffold(root, "post", "title:string", "--global"); err != nil {
+				t.Fatal(err)
+			}
+			entries, err := os.ReadDir(filepath.Join(root, "config", "locales"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var scoped []string
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), "posts.") {
+					scoped = append(scoped, entry.Name())
+				}
+			}
+			want := []string{"posts.en.json"}
+			if test.want != "" {
+				want = append(want, test.want)
+			}
+			slices.Sort(want)
+			if !slices.Equal(scoped, want) {
+				t.Fatalf("scoped locale files = %v, want %v", scoped, want)
+			}
+			if test.want == "" {
+				return
+			}
+			locale := strings.Split(test.want, ".")[1]
+			english := readFile(t, filepath.Join(root, "config", "locales", "posts.en.json"))
+			text := readFile(t, filepath.Join(root, "config", "locales", test.want))
+			if strings.ReplaceAll(text, `"`+locale+`"`, `"en"`) != english {
+				t.Errorf("%s is not the English text under %q:\n%s", test.want, locale, text)
+			}
+
+			// Edited since: destroy refuses, and removes nothing.
+			writeFile(t, filepath.Join(root, "config", "locales", test.want), strings.Replace(text, "Back to posts", "Voltar", 1))
+			if _, err := destroy(root, "scaffold", "post", "title:string", "--global"); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("destroy of an edited %s: err = %v", test.want, err)
+			}
+			if _, err := os.Stat(filepath.Join(root, "config", "locales", "posts.en.json")); err != nil {
+				t.Errorf("a refused destroy removed posts.en.json: %v", err)
+			}
+			// Unchanged: both go.
+			writeFile(t, filepath.Join(root, "config", "locales", test.want), text)
+			if _, err := destroy(root, "scaffold", "post", "title:string", "--global"); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range want {
+				if _, err := os.Stat(filepath.Join(root, "config", "locales", name)); !os.IsNotExist(err) {
+					t.Errorf("%s survived the destroy: %v", name, err)
+				}
+			}
+		})
+	}
+}

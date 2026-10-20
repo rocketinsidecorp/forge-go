@@ -109,6 +109,9 @@ type resourceSpec struct {
 	// I18nMiddleware reports that bootstrap.go appears to build the
 	// translator and install its middleware.
 	I18nMiddleware bool
+	// DefaultLocale is the application's default locale (see
+	// appDefaultLocale). Only scaffolds look.
+	DefaultLocale string
 	// ViewRenderer reports that bootstrap.go already builds the view
 	// renderer (renderer, err := views.New()), as PostgreSQL applications
 	// from `forge new` do for the sign-in pages. Only scaffolds look.

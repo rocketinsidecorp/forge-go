@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"strings"
+
+	"github.com/rocketinsidecorp/forge-go/i18n"
 )
 
 // resourceWiringParts is the code the application owner adds to
@@ -218,7 +220,11 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 	if !spec.BrowserPipeline {
 		parts.Notes = append(parts.Notes, "WARNING: app/bootstrap/bootstrap.go does not appear to install csrf.Protection, web.MethodOverride and web.Flash (forge new generates useBrowserPipeline for them). Without them the forms are not CSRF-protected and update and delete do not work: add them before serving these pages (docs/VIEWS.md).")
 	}
-	parts.Notes = append(parts.Notes, fmt.Sprintf("The pages' text is in config/locales/%s.en.json (English). Translate it into %s.LOCALE.json for every other locale in config/locales; `forge i18n check` lists what is missing.", spec.Plural, spec.Plural))
+	files := fmt.Sprintf("config/locales/%s.en.json (English)", spec.Plural)
+	if spec.DefaultLocale != "" && spec.DefaultLocale != i18n.DefaultLocale {
+		files = fmt.Sprintf("config/locales/%[1]s.en.json and, as the starting point for the default locale, config/locales/%[1]s.%[2]s.json (both English: translate the second)", spec.Plural, spec.DefaultLocale)
+	}
+	parts.Notes = append(parts.Notes, fmt.Sprintf("The pages' text is in %s. Translate it into %s.LOCALE.json for every other locale in config/locales; `forge i18n check` lists what is missing.", files, spec.Plural))
 	if !spec.I18nMiddleware {
 		parts.Notes = append(parts.Notes, "WARNING: app/bootstrap/bootstrap.go does not appear to build the translator and install its middleware (forge new does: `translator, err := locales.New(app.Config(), app.Logger())` in Configure, and `translator.Middleware(i18n.NegotiationOptions{})` first in useBrowserPipeline). The pages' t helper fails without them (docs/I18N.md).")
 	}
