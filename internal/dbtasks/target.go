@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -85,6 +86,9 @@ func NewTarget(root string, lookup func(string) (string, bool)) (*Target, error)
 	if err := refuseLocationParams(t.app, "FORGE_DATABASE_URL"); err != nil {
 		return nil, err
 	}
+	if err := refuseInvalidPort(t.app, "FORGE_DATABASE_URL"); err != nil {
+		return nil, err
+	}
 	t.Name = strings.TrimPrefix(t.app.Path, "/")
 	if !databaseName.MatchString(t.Name) {
 		return nil, errors.New("the database name in FORGE_DATABASE_URL must be 1-63 letters, digits, underscores, hyphens or dollar signs, and start with a letter, digit or underscore")
@@ -112,6 +116,9 @@ func NewTarget(root string, lookup func(string) (string, bool)) (*Target, error)
 			return nil, fmt.Errorf("%s: %w", EnvPrivilegedURL, err)
 		}
 		if err := refuseLocationParams(t.priv, EnvPrivilegedURL); err != nil {
+			return nil, err
+		}
+		if err := refuseInvalidPort(t.priv, EnvPrivilegedURL); err != nil {
 			return nil, err
 		}
 	}
@@ -162,6 +169,26 @@ func refuseLocationParams(u *url.URL, variable string) error {
 				return fmt.Errorf("%s sets the %q parameter: forge db commands take the server and database only from the URL's host, port and path", variable, param)
 			}
 		}
+	}
+	return nil
+}
+
+// refuseInvalidPort fails unless u's port is absent or a number from 1 to
+// 65535 written without leading zeros. net/url accepts any digits, and the
+// consumers of the port disagree beyond that: pgx and the Go MySQL driver
+// refuse 99999, while the mysql and mysqldump clients store the option file's
+// port in an unsigned int and dial it truncated to 16 bits (99999 becomes
+// 34463), another port on the same host. One spelling for every consumer
+// means the PG* variables, the option file and pgx all name the port forge
+// checked. The error names the variable, never the URL.
+func refuseInvalidPort(u *url.URL, variable string) error {
+	port := u.Port()
+	if port == "" {
+		return nil
+	}
+	number, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || number == 0 || strconv.FormatUint(number, 10) != port {
+		return fmt.Errorf("%s has an invalid port: use a number from 1 to 65535", variable)
 	}
 	return nil
 }
