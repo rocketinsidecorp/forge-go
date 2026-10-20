@@ -471,3 +471,42 @@ func TestWriteFileIsAtomicAndKeepsNoTemporaries(t *testing.T) {
 		t.Fatalf("directory holds %v; want only the credentials file", entries)
 	}
 }
+
+type storeHolder struct {
+	creds credentials.Store
+	Open  credentials.Store
+}
+
+type embeddedStore struct{ credentials.Store }
+
+// TestStoreIsRedactedInUnexportedAndEmbeddedFields: fmt cannot call Format or
+// GoString on an unexported field, so a Store embedded by value must not hold
+// its content inline.
+func TestStoreIsRedactedInUnexportedAndEmbeddedFields(t *testing.T) {
+	t.Parallel()
+	store, err := credentials.Parse("production", []byte(document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, v := range map[string]any{
+		"unexported value": storeHolder{creds: *store, Open: *store},
+		"pointer holder":   &storeHolder{creds: *store},
+		"embedded":         embeddedStore{*store},
+		"slice":            []credentials.Store{*store},
+		"map":              map[string]credentials.Store{"k": *store},
+	} {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+			out := fmt.Sprintf(verb, v)
+			if strings.Contains(out, "SUPERSECRET") || strings.Contains(out, "stripe") {
+				t.Errorf("%s with %s leaked: %s", name, verb, out)
+			}
+		}
+	}
+	var zero credentials.Store // the zero value is usable and empty
+	if zero.Exists() || zero.Has("a") || zero.Environment() != "" {
+		t.Error("zero Store is not empty")
+	}
+	if _, err := zero.String("a"); !errors.Is(err, credentials.ErrMissing) {
+		t.Errorf("zero Store lookup: %v", err)
+	}
+}

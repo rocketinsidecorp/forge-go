@@ -56,10 +56,30 @@ type Options struct {
 
 // Store is a decrypted credentials document. It is immutable and safe for
 // concurrent use. Printing or logging a Store never shows its content.
-type Store struct {
+//
+// Store holds its content behind a function value. fmt cannot call Format or
+// GoString on an unexported struct field and falls back to printing what it
+// finds there, expanding structs, maps and even pointers to them (a bad verb
+// such as %s does so too); a func value always prints as an address, so a
+// Store embedded as an unexported field cannot reveal its secrets. As a
+// consequence a Store is not comparable with ==.
+type Store struct{ get func() *storeData }
+
+type storeData struct {
 	env    string
 	data   map[string]any
 	exists bool
+}
+
+var emptyStore = &storeData{data: map[string]any{}}
+
+func newStore(d *storeData) *Store { return &Store{get: func() *storeData { return d }} }
+
+func (s Store) content() *storeData {
+	if s.get == nil {
+		return emptyStore
+	}
+	return s.get()
 }
 
 // Load opens the credentials of env with default options.
@@ -89,7 +109,7 @@ func Open(env string, opts Options) (*Store, error) {
 		if strict(env) {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, path.Join(filepathSlash(dir), FileName(env)))
 		}
-		return &Store{env: env, data: map[string]any{}}, nil
+		return newStore(&storeData{env: env, data: map[string]any{}}), nil
 	}
 	if err != nil {
 		return nil, err
@@ -168,21 +188,21 @@ func parseStore(env string, plaintext []byte) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{env: env, data: doc, exists: true}, nil
+	return newStore(&storeData{env: env, data: doc, exists: true}), nil
 }
 
 // Environment returns the environment the store belongs to.
-func (s *Store) Environment() string { return s.env }
+func (s Store) Environment() string { return s.content().env }
 
 // Exists reports whether a credentials file was read. It is false only for a
 // development or test environment without a file.
-func (s *Store) Exists() bool { return s.exists }
+func (s Store) Exists() bool { return s.content().exists }
 
-func (s *Store) lookup(keys []string) (any, error) {
+func (s Store) lookup(keys []string) (any, error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("%w: empty path", ErrMissing)
 	}
-	var current any = s.data
+	var current any = s.content().data
 	for _, key := range keys {
 		object, ok := current.(map[string]any)
 		if !ok {
@@ -196,14 +216,14 @@ func (s *Store) lookup(keys []string) (any, error) {
 }
 
 // Has reports whether path exists.
-func (s *Store) Has(keys ...string) bool {
+func (s Store) Has(keys ...string) bool {
 	_, err := s.lookup(keys)
 	return err == nil
 }
 
 // String returns the string at path. A missing path is ErrMissing, a value of
 // another JSON type is ErrType; errors name the path, never the value.
-func (s *Store) String(keys ...string) (string, error) {
+func (s Store) String(keys ...string) (string, error) {
 	value, err := s.lookup(keys)
 	if err != nil {
 		return "", err
@@ -217,7 +237,7 @@ func (s *Store) String(keys ...string) (string, error) {
 
 // Secret returns the string at path as a config.Secret, which prints as
 // [REDACTED] everywhere; call Reveal at the point of use.
-func (s *Store) Secret(keys ...string) (config.Secret, error) {
+func (s Store) Secret(keys ...string) (config.Secret, error) {
 	text, err := s.String(keys...)
 	if err != nil {
 		return config.Secret{}, err
@@ -228,8 +248,8 @@ func (s *Store) Secret(keys ...string) (config.Secret, error) {
 // Decode unmarshals the object at path (the whole document when no path is
 // given) into v, which is typically a pointer to a struct with json tags.
 // Unknown fields are ignored.
-func (s *Store) Decode(v any, keys ...string) error {
-	var value any = s.data
+func (s Store) Decode(v any, keys ...string) error {
+	var value any = s.content().data
 	if len(keys) > 0 {
 		var err error
 		if value, err = s.lookup(keys); err != nil {
@@ -254,7 +274,7 @@ func (s *Store) Decode(v any, keys ...string) error {
 // ready for encryption.NewCipher. Keeping data-encryption keys in the
 // credentials file means one master key protects them, and rotation is an
 // edit: add a key, make it active, run the re-encryption, remove the old key.
-func (s *Store) KeyRing(keys ...string) (*encryption.KeyRing, error) {
+func (s Store) KeyRing(keys ...string) (*encryption.KeyRing, error) {
 	var ring struct {
 		Active string            `json:"active"`
 		Keys   map[string]string `json:"keys"`
@@ -268,7 +288,7 @@ func (s *Store) KeyRing(keys ...string) (*encryption.KeyRing, error) {
 // Require checks that every dotted path (for example "stripe.api_key") exists
 // and is a non-empty string, number or boolean value or a non-empty
 // object/array, and reports all that are not at once.
-func (s *Store) Require(paths ...string) error {
+func (s Store) Require(paths ...string) error {
 	var missing []string
 	for _, dotted := range paths {
 		value, err := s.lookup(strings.Split(dotted, "."))
@@ -280,7 +300,7 @@ func (s *Store) Require(paths ...string) error {
 		return nil
 	}
 	sort.Strings(missing)
-	return fmt.Errorf("%w in %s credentials: %s", ErrMissing, s.env, strings.Join(missing, ", "))
+	return fmt.Errorf("%w in %s credentials: %s", ErrMissing, s.content().env, strings.Join(missing, ", "))
 }
 
 func isEmpty(value any) bool {
@@ -338,5 +358,5 @@ func (s Store) LogValue() slog.Value { return slog.StringValue(s.redacted()) }
 func (s Store) MarshalJSON() ([]byte, error) { return json.Marshal(s.redacted()) }
 
 func (s Store) redacted() string {
-	return "credentials.Store(" + s.env + ", [REDACTED])"
+	return "credentials.Store(" + s.content().env + ", [REDACTED])"
 }
