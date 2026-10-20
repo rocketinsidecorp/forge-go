@@ -186,7 +186,8 @@ tenant, so scaffold with `--global` instead of `--tenant-scoped`. A scaffold's
 pages and its `--broadcast` stream refuse everyone until you write the guard
 the printed wiring asks for; its placeholder is deny-all. For local
 experiments only, replace the body of that `protect` function with
-`return next, nil` (every request passes) and pages such as `/posts` work.
+`return next, nil` (every request passes) and pages such as `/posts` work;
+never deploy that.
 Sections 5 (without sign-in), 8, 11 and 14 apply; the rest of this guide was run
 on PostgreSQL.
 
@@ -473,8 +474,11 @@ two-factor and password-reset pages, and `forge setup` created the owner.
 Sign in as the owner at <http://localhost:8080/session/new>. Visiting a
 guarded page signed out redirects to the sign-in page and back afterwards;
 an API client gets a `401` JSON error instead. A page asks for one permission
-(`posts:read`, `comments:read`...), roles hold permissions, and every refusal
-and sign-in is audited. To let a signed-in user sign out, put
+(`posts:read`, `comments:read`...) and roles hold permissions. Sign-ins
+(success, failure, throttling) and permission denials of signed-in users are
+audited; a request with no or an invalid session is refused with a `401` or a
+redirect but not recorded unless you add `auth.WithAuthenticationAuditor`
+([AUTHENTICATION.md](AUTHENTICATION.md), [AUDIT.md](AUDIT.md)). To let a signed-in user sign out, put
 `{{template "sessions/_sign_out" .}}` in a page: it renders a `DELETE /session`
 form.
 
@@ -751,7 +755,8 @@ openapi: openapi.json is up to date
 The HTML pages are not part of the API document, so they are listed on stderr,
 not failed. `forge openapi` builds your application and runs `Configure`
 without listening; staging and production serve `/openapi.json` only with
-`FORGE_OPENAPI_ENABLED=true`. Declare your own JSON routes with
+`FORGE_OPENAPI_ENABLED=true` (the document lists every documented route, and
+the application logs a warning at start-up). Declare your own JSON routes with
 `openapi.Typed`/`openapi.Describe` ([OPENAPI.md](OPENAPI.md)).
 
 The rest of the toolbox:

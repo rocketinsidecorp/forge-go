@@ -127,7 +127,7 @@ func Test[[.Title]]ControllerRendersEveryAction(t *testing.T) {
 		if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
 			t.Errorf("GET %s Content-Type = %q, want text/html", page.path, got)
 		}
-		// Only the heading is pinned: the page body is yours to rewrite.
+		// Only the <h1> heading is pinned: keep it, the rest of the page is yours.
 		if want := "<h1>" + page.heading + "</h1>"; !strings.Contains(recorder.Body.String(), want) {
 			t.Errorf("GET %s does not contain %q:\n%s", page.path, want, recorder.Body)
 		}
