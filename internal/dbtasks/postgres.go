@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -18,17 +20,64 @@ const (
 	forceDropVersion = 130000
 )
 
+// pgDefaultPort is the port of a URL without one, for pgx and the tools alike.
+const pgDefaultPort = "5432"
+
+// pgOptionKeys are the URL parameters the administration commands pass to
+// pgx: options that do not pick another server or database. service,
+// servicefile, hostaddr and session settings are refused by pgx; host, port
+// and database (dbname is its alias) are allowed only because the URL's
+// authority and path set them, and pgConnConfig pins their parsed values.
+var pgOptionKeys = []string{
+	"user", "password", "passfile", "connect_timeout", "application_name", "options",
+	"sslmode", "sslrootcert", "sslcert", "sslkey", "sslpassword", "sslnegotiation", "sslsni",
+	"channel_binding", "require_auth", "min_protocol_version", "max_protocol_version", "krbsrvname", "krbspn",
+}
+
 // pgConnect connects with the administration credentials to database name.
 func (t *Target) pgConnect(ctx context.Context, name string) (*pgx.Conn, error) {
+	cfg, err := t.pgConnConfig(name)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.ConnectConfig(ctx, cfg)
+}
+
+// pgConnConfig parses the administration URL for database name with pgx and
+// checks that pgx will dial exactly the host, port and database that Local
+// and the reserved-name check judged, rather than trusting net/url and pgx
+// to read the URL alike. The port is made explicit so PGPORT in forge's own
+// environment cannot change it and the tools (pgEnvironment) use the same.
+func (t *Target) pgConnConfig(name string) (*pgx.ConnConfig, error) {
 	u := *t.priv
+	host, port := u.Hostname(), portOr(u.Port(), pgDefaultPort)
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return nil, errors.New("the PostgreSQL connection URL has an invalid port")
+	}
+	u.Host = net.JoinHostPort(host, port)
 	u.Path, u.RawPath = "/"+name, ""
-	cfg, err := pgx.ParseConfig(u.String())
+	cfg, err := pgx.ParseConfigWithOptions(u.String(), pgx.ParseConfigOptions{
+		ParseConfigOptions: pgconn.ParseConfigOptions{ConnStringAllowedKeys: append([]string{"host", "port", "database"}, pgOptionKeys...)},
+	})
 	if err != nil {
 		// Not wrapped: parse errors can quote the URL.
-		return nil, errors.New("the PostgreSQL connection URL is not valid")
+		return nil, fmt.Errorf("the PostgreSQL connection URL is not valid, or has a parameter forge db commands do not accept (they accept %s)", strings.Join(pgOptionKeys, ", "))
+	}
+	ambiguous := errors.New("the PostgreSQL connection URL is ambiguous: PostgreSQL would connect to another server or database than the one forge checked")
+	if cfg.Database != name {
+		return nil, ambiguous
+	}
+	// sslmode=prefer and allow add a fallback attempt; every attempt must
+	// dial the same address.
+	attempts := append([]*pgconn.FallbackConfig{{Host: cfg.Host, Port: cfg.Port}}, cfg.Fallbacks...)
+	for _, attempt := range attempts {
+		if attempt.Host != host || uint64(attempt.Port) != portNumber {
+			return nil, ambiguous
+		}
 	}
 	cfg.ConnectTimeout = t.connectTimeout()
-	return pgx.ConnectConfig(ctx, cfg)
+	return cfg, nil
 }
 
 // pgAdmin connects to a maintenance database: the one place from which the
@@ -161,10 +210,9 @@ func (t *Target) pgEnvironment(base []string) []string {
 		"PGDATABASE="+t.Name,
 		"PGAPPNAME=forge-cli",
 		"PGCONNECT_TIMEOUT="+strconv.Itoa(max(1, int(t.connectTimeout().Seconds()))),
+		// Explicit, like pgConnConfig's, so tools and pgx dial the same port.
+		"PGPORT="+portOr(c.port, pgDefaultPort),
 	)
-	if c.port != "" {
-		env = append(env, "PGPORT="+c.port)
-	}
 	if c.user != "" {
 		env = append(env, "PGUSER="+c.user)
 	}
