@@ -60,6 +60,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runBuild(args[1:], stdout, commandStderr)
 	case "test":
 		err = runTest(args[1:], stdout, commandStderr)
+	case "db":
+		err = runDB(args[1:], stdout, commandStderr)
 	case "migrate":
 		err = runMigrate(args[1:], stdout, commandStderr)
 	case "rollback":
@@ -292,6 +294,9 @@ commands:
                       reload the browser when files change
   test [ARGS]         go test with .env.development loaded (default ./...)
   build               compile the application into bin/
+  db COMMAND          database lifecycle: create, drop, reset, setup, prepare,
+                      migrate, rollback, status, seed, schema:dump,
+                      schema:load, console (see README)
   migrate [status]    apply pending migrations, or list them
   rollback [-steps N] revert the latest migrations
   setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]

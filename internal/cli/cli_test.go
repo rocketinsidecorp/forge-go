@@ -113,7 +113,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
 		t.Fatalf("decode command catalog: %v\n%s", err, stdout.String())
 	}
-	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 18 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
+	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 19 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
 		t.Fatalf("unexpected catalog header: %+v", catalog)
 	}
 	rollbackDeclaredDestructive := false
@@ -122,7 +122,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	commandsSeen := make(map[string]bool, len(catalog.Commands))
 	processExitCodesSeen := make(map[int]bool, len(catalog.ProcessExitCodes))
 	expectedCommands := map[string]bool{
-		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true, "setup": true, "seed": true,
+		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true, "setup": true, "seed": true, "db": true,
 		"generate": true, "doctor": true, "inspect": true, "routes": true, "uuid": true, "version": true, "help": true,
 		"deploy": true, "logs": true, "app": true,
 	}

@@ -17,3 +17,27 @@ func devCommandDetail() commandDetail {
 		},
 	}
 }
+
+// dbCommandDetail is the catalog entry of `forge db` (ADR 0035).
+func dbCommandDetail() commandDetail {
+	environment := runtimeEnvironment()
+	environment.Variables = append(environment.Variables, "FORGE_MIGRATION_DATABASE_URL", "FORGE_ALLOW_DESTRUCTIVE")
+	environment.Notes = "Loads .env.development and .env.local (process environment wins). create/drop connect to the server's maintenance database with FORGE_MIGRATION_DATABASE_URL when set (a privileged role; its database is ignored) or FORGE_DATABASE_URL; the target database is always the one in FORGE_DATABASE_URL. migrate, status, rollback and seed build the application and run its own commands. schema:dump/schema:load and console run pg_dump/psql, mysqldump/mysql or sqlite3 from PATH with credentials in PG* environment variables or a 0600 option file, never in arguments. Names reserved by the server (postgres, template0, template1, mysql, sys, ...) are never created or dropped. drop, reset, schema:load and rollback are refused when FORGE_ENV=production unless --force-production is given and either a person types the database name at a terminal, or --yes is given with FORGE_ALLOW_DESTRUCTIVE=true in the process environment (an env file cannot grant it)."
+	return commandDetail{
+		Name: "db", Usage: "forge db <create|drop|reset|setup|prepare|migrate|rollback|status|seed|schema:dump|schema:load|console> [flags]",
+		Summary:     "Database lifecycle like Rails' db:*: create, drop, reset, setup (create + migrate + seed), prepare (setup if missing, else migrate), migrate, rollback, status, seed, schema dump/load (db/schema.sql) and the database's own console. drop, reset, schema:load and rollback destroy or change data.",
+		SideEffects: []string{"database_write", "database_destructive", "filesystem_write", "subprocess", "interactive_input", "network_optional"},
+		Examples: []string{
+			"forge db setup", "forge db prepare", "forge db migrate", "forge db status", "forge db rollback -steps 2",
+			"forge db reset", "forge db schema:dump", "forge db schema:load", "forge db console", "forge db console -- -c 'select 1'",
+			"forge db drop --force-production --yes",
+		},
+		Environment: environment,
+		Flags: []flagDetail{
+			{Name: "--force-production", Description: "drop, reset, schema:load, rollback: allow the command when FORGE_ENV=production, after confirmation."},
+			{Name: "--yes", Description: "With --force-production: confirm without a prompt; requires FORGE_ALLOW_DESTRUCTIVE=true in the process environment."},
+			{Name: "-steps", Value: "N", Default: "1", Description: "rollback: number of migrations to revert."},
+			{Name: "--", Description: "console: arguments after it go to the database client."},
+		},
+	}
+}
