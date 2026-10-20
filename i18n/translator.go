@@ -301,6 +301,9 @@ func (t *Translator) missing(locale, key string) string {
 // warn logs a problem once per locale and key, for the first maxWarnings
 // distinct problems.
 func (t *Translator) warn(message, locale, key string, err error) {
+	if len(key) > MaxKeyLength+1 {
+		key = key[:MaxKeyLength+1] // longer keys are invalid anyway; bound the memory a warning holds
+	}
 	id := message + "\x00" + locale + "\x00" + key
 	t.mu.Lock()
 	_, seen := t.warned[id]
