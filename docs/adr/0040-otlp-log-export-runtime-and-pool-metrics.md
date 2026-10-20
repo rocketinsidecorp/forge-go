@@ -142,7 +142,7 @@ non-blocking batch exporter with drop-and-count, failure diagnostics kept off th
 exported path and a bounded flush at shutdown; the same record mapping (body is
 the message, attributes flattened with dots, severity ranges, trace and span ID
 as fields, `service.name` shared with traces and metrics, secret types
-redacted); and the same metric names and units: `go.*` becomes the process
+redacted, values never carrying more than the stdout formatter writes); and the same metric names and units: `go.*` becomes the process
 metrics Rust can read cheaply (resident memory, allocations if a counting
 allocator is opted in, task and thread counts; there is no goroutine or GC
 equivalent), `db.client.connection.count`/`.max`, `forge.db.pool.waits` and
@@ -151,4 +151,5 @@ wait totals the Forge pool wrapper counts). The generated stack files are the
 same as Forge-Go's: the log-driver block, the `fluent_forward` receiver and
 port 24224 are not generated, the collector logs pipeline is `otlp`, and the
 Grafana provisioning and dashboard JSON can be copied verbatim as long as the
-metric names and labels match. A follow-up in Forge-Rust tracks the port.
+metric names and labels match. The port is tracked in
+[rocketinsidecorp/forge-rust#13](https://github.com/rocketinsidecorp/forge-rust/issues/13).
