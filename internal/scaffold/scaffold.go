@@ -114,6 +114,7 @@ var files = []file{
 	{"Dockerfile.tmpl", fixed("Dockerfile"), everyApplication},
 	{"dockerignore.tmpl", fixed(".dockerignore"), everyApplication},
 	{"compose.yaml.tmpl", fixed("compose.yaml"), everyApplication},
+	{"compose.observability.yaml.tmpl", fixed("compose.observability.yaml"), everyApplication},
 	{"gitignore.tmpl", fixed(".gitignore"), everyApplication},
 	{"ci.yml.tmpl", fixed(filepath.Join(".github", "workflows", "ci.yml")), everyApplication},
 	{"dependabot.yml.tmpl", fixed(filepath.Join(".github", "dependabot.yml")), everyApplication},
@@ -133,6 +134,13 @@ var assets = []asset{
 	{source: "templates/javascript/controllers/index.js", target: filepath.Join("app", "javascript", "controllers", "index.js")},
 	{source: "templates/javascript/controllers/hello_controller.js", target: filepath.Join("app", "javascript", "controllers", "hello_controller.js")},
 }
+
+// observabilityDir is the embedded directory of static configuration for the
+// opt-in observability stack (compose.observability.yaml). Its files are
+// copied unchanged, so they may contain {{ }} and $ sequences that belong to
+// Grafana and Prometheus. Compose bind-mounts them into containers that run as
+// other users, so they are written world-readable (they hold no secrets).
+const observabilityDir = "templates/observability"
 
 // viewTemplateSuffix marks templates that produce Go HTML templates. They are
 // parsed with [[ ]] delimiters so the {{ }} actions pass through unchanged.
@@ -203,6 +211,11 @@ func Generate(opts Options) ([]string, error) {
 		}
 		paths = append(paths, asset.target)
 	}
+	observability, err := writeObservability(opts.Dir)
+	if err != nil {
+		return nil, cleanup(opts.Dir, created, err)
+	}
+	paths = append(paths, observability...)
 	// Encrypted credentials for development: config/credentials/development.json.enc
 	// (committed) and its key (git-ignored, mode 0600).
 	if _, err := credentials.Init(filepath.Join(opts.Dir, credentials.DefaultDir), "development"); err != nil {
@@ -315,4 +328,35 @@ func cleanup(dir string, created bool, cause error) error {
 		}
 	}
 	return cause
+}
+
+// writeObservability copies the static observability configuration under dir
+// and returns the written paths relative to dir.
+func writeObservability(dir string) ([]string, error) {
+	var paths []string
+	err := fs.WalkDir(templateFS, observabilityDir, func(source string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		content, err := templateFS.ReadFile(source)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", source, err)
+		}
+		relative := filepath.FromSlash(strings.TrimPrefix(source, "templates/"))
+		target := filepath.Join(dir, relative)
+		// Containers read these files as other users: directories must be
+		// traversable and files readable by everyone. No secrets live here.
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // G301: public, non-secret configuration
+			return err
+		}
+		if err := os.WriteFile(target, content, 0o644); err != nil { //nolint:gosec // G306: public, non-secret configuration
+			return err
+		}
+		paths = append(paths, relative)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("write observability configuration: %w", err)
+	}
+	return paths, nil
 }

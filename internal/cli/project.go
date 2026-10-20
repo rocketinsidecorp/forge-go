@@ -64,7 +64,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("resolve dependencies (files were generated; fix the cause and run `go mod tidy` in %s): %w", opts.Dir, err)
 		}
 	}
-	_, err = fmt.Fprintf(stdout, "\nNext steps:\n  cd %s\n  docker compose up --build   # or: forge dev\n\n  After it starts, visit http://127.0.0.1:8080/ for the welcome screen.\n", opts.Dir)
+	_, err = fmt.Fprintf(stdout, "\nNext steps:\n  cd %s\n  docker compose up --build   # or: forge dev\n\n  After it starts, visit http://127.0.0.1:8080/ for the welcome screen.\n\n  Traces, metrics and logs in Grafana (Prometheus, Tempo, Loki): see \"Observability stack\" in README.md.\n", opts.Dir)
 	return err
 }
 

@@ -1,0 +1,74 @@
+# OpenTelemetry Collector for the local observability stack.
+#
+#   app --OTLP/HTTP--------> collector --> Tempo       (traces)
+#                                      --> Prometheus  (metrics, OTLP receiver)
+#   Docker fluentd driver -> collector --> Loki        (logs, native OTLP)
+#
+# Receivers listen on all interfaces of the container network only; Compose
+# publishes them to 127.0.0.1 on the host (see compose.observability.yaml).
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+  # Container logs of the app, sent by Docker's fluentd logging driver.
+  fluent_forward:
+    endpoint: 0.0.0.0:24224
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch: {}
+  # Turns one Docker log record into a structured OpenTelemetry log record.
+  # The receiver makes the "log" field the body (the line stays whole, so
+  # Grafana can match trace_id in it); container_id, container_name and source
+  # become attributes. The level becomes the severity, and trace_id/span_id
+  # from the slog line become the record's trace context, which Loki stores as
+  # structured metadata.
+  transform/logs:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - merge_maps(log.cache, ExtractPatterns(log.body, "level\"?[=:]\"?(?P<level>[A-Za-z]+)"), "upsert")
+          - merge_maps(log.cache, ExtractPatterns(log.body, "trace_id\"?[=:]\"?(?P<trace_id>[0-9a-f]{32})"), "upsert")
+          - merge_maps(log.cache, ExtractPatterns(log.body, "span_id\"?[=:]\"?(?P<span_id>[0-9a-f]{16})"), "upsert")
+          - set(log.severity_text, ToUpperCase(log.cache["level"])) where log.cache["level"] != nil
+          - set(log.severity_number, SEVERITY_NUMBER_DEBUG) where log.severity_text == "DEBUG"
+          - set(log.severity_number, SEVERITY_NUMBER_INFO) where log.severity_text == "INFO"
+          - set(log.severity_number, SEVERITY_NUMBER_WARN) where log.severity_text == "WARN"
+          - set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.severity_text == "ERROR"
+          - set(log.trace_id.string, log.cache["trace_id"]) where log.cache["trace_id"] != nil
+          - set(log.span_id.string, log.cache["span_id"]) where log.cache["span_id"] != nil
+          # The Docker tag is the application name, the same value the app
+          # reports as service.name for its traces and metrics.
+          - set(resource.attributes["service.name"], log.attributes["fluent.tag"])
+          - delete_key(log.attributes, "fluent.tag")
+
+exporters:
+  otlp_http/tempo:
+    endpoint: http://tempo:4318
+  otlp_http/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+
+service:
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/prometheus]
+    logs:
+      receivers: [fluent_forward]
+      processors: [memory_limiter, transform/logs, batch]
+      exporters: [otlp_http/loki]
