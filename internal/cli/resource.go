@@ -463,7 +463,7 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 			}
 			return resourceSpec{}, nil, fmt.Errorf("refusing to generate: %[1]s already registers the permission %[2]s, which the %[3]s's migration would register too. "+
 				"A permission belongs to the one migration that registers it (rolling that migration back removes it and every grant of it), so it never gets a second one. "+
-				"Choose another name or --plural; or, to let the %[3]s own %[2]s, revert %[1]s (`forge rollback`) and delete that migration pair first: a controller that asks for %[2]s keeps working with the %[3]s's permission", owner, permission, kind)
+				"Choose another name or --plural; or, to let the %[3]s own %[2]s, revert %[1]s (`forge rollback`) and delete that migration pair first: a controller that asks for %[2]s keeps working with the %[3]s's permission", filepath.ToSlash(owner), permission, kind)
 		}
 	}
 	files := migrations
