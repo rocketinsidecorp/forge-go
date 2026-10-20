@@ -144,7 +144,12 @@ var assets = []asset{
 	{source: "templates/javascript/controllers/application.js", target: filepath.Join("app", "javascript", "controllers", "application.js")},
 	{source: "templates/javascript/controllers/index.js", target: filepath.Join("app", "javascript", "controllers", "index.js")},
 	{source: "templates/javascript/controllers/hello_controller.js", target: filepath.Join("app", "javascript", "controllers", "hello_controller.js")},
-	// Copied unchanged: GitHub Actions expressions use {{ }} too.
+}
+
+// repositoryFiles are copied unchanged by Generate only (generators that add
+// the view base to an existing application leave them alone): GitHub Actions
+// expressions use {{ }} too.
+var repositoryFiles = []asset{
 	{source: "templates/github/release.yml", target: filepath.Join(".github", "workflows", "release.yml")},
 }
 
@@ -268,7 +273,7 @@ func Generate(opts Options) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	paths := make([]string, 0, len(files)+len(assets))
+	paths := make([]string, 0, len(files)+len(assets)+len(repositoryFiles))
 	for _, f := range selectedFiles(opts) {
 		relative := f.path(opts.Name)
 		target := filepath.Join(opts.Dir, relative)
@@ -280,7 +285,8 @@ func Generate(opts Options) ([]string, error) {
 		}
 		paths = append(paths, relative)
 	}
-	for _, asset := range append(slices.Clone(assets), localeAssets(opts.Locale, hasIdentity(opts))...) {
+	copied := append(slices.Clone(assets), repositoryFiles...)
+	for _, asset := range append(copied, localeAssets(opts.Locale, hasIdentity(opts))...) {
 		content, err := templateFS.ReadFile(asset.source)
 		if err != nil {
 			return nil, cleanup(opts.Dir, created, fmt.Errorf("read asset %s: %w", asset.source, err))
