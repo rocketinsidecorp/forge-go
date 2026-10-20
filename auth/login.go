@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
@@ -282,26 +281,80 @@ func (s *LoginService) recordLoginEvent(
 	return nil
 }
 
+// MaxLoginBytes is the longest login (an email address) Forge accepts.
+const MaxLoginBytes = 320
+
+// CanonicalLogin returns the one canonical form of a login, the email
+// address a person types: surrounding whitespace removed and ASCII letters
+// lowercased. ok is false unless the login is 1 to MaxLoginBytes printable
+// ASCII bytes (no space, control or non-ASCII character) with exactly one
+// '@' and text on both sides of it.
+//
+// Storage (provisioning), lookup, throttle keys and recovery all use this
+// form. Unicode case mapping differs between Go, PostgreSQL collations and
+// mail systems (PostgreSQL can fold user@İcloud.com to user@icloud.com and
+// strings.ToLower maps the Kelvin sign to 'k'), so a look-alike spelling
+// could match another account, get its own throttle counters or receive
+// another account's reset link. A non-ASCII login is therefore refused at
+// the boundary and treated as an unknown account.
+func CanonicalLogin(email string) (login string, ok bool) {
+	email = strings.TrimSpace(email)
+	if email == "" || len(email) > MaxLoginBytes {
+		return "", false
+	}
+	for i := 0; i < len(email); i++ {
+		if c := email[i]; c <= ' ' || c >= 0x7f {
+			return "", false
+		}
+	}
+	local, domain, found := strings.Cut(email, "@")
+	if !found || local == "" || domain == "" || strings.Contains(domain, "@") {
+		return "", false
+	}
+	return asciiLower(email), true
+}
+
 // NormalizeIdentity returns email and tenantSlug exactly as LoginService and
-// RecoveryService look them up: surrounding whitespace trimmed and case
-// folded. ok is false when the email is not a single-@ address without
-// spaces or control characters (at most 320 bytes) or the slug does not
-// match ^[a-z][a-z0-9-]{1,62}$. Provisioning code uses it so every stored
-// identity can sign in.
+// RecoveryService look them up: the email in its CanonicalLogin form and the
+// slug trimmed and ASCII-lowercased. ok is false when the email is not a
+// canonical login or the slug does not match ^[a-z][a-z0-9-]{1,62}$.
+// Provisioning code uses it so every stored identity can sign in.
 func NormalizeIdentity(email, tenantSlug string) (normalizedEmail, normalizedTenant string, ok bool) {
 	return normalizeLogin(email, tenantSlug)
 }
 
 func normalizeLogin(email, tenant string) (string, string, bool) {
-	email = strings.ToLower(strings.TrimSpace(email))
-	tenant = strings.ToLower(strings.TrimSpace(tenant))
-	hasUnsafeRune := func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }
-	if len(email) == 0 || len(email) > 320 || strings.Count(email, "@") != 1 || strings.ContainsFunc(email, hasUnsafeRune) {
+	login, ok := CanonicalLogin(email)
+	if !ok {
 		return "", "", false
 	}
-	local, domain, _ := strings.Cut(email, "@")
-	if local == "" || domain == "" || !tenantSlugPattern.MatchString(tenant) {
+	slug, ok := canonicalTenant(tenant)
+	if !ok {
 		return "", "", false
 	}
-	return email, tenant, true
+	return login, slug, true
+}
+
+// canonicalTenant trims and ASCII-lowercases a tenant slug (never Unicode
+// case mapping: U+212A KELVIN SIGN would otherwise become 'k') and checks it
+// against the slug pattern.
+func canonicalTenant(tenant string) (string, bool) {
+	slug := asciiLower(strings.TrimSpace(tenant))
+	return slug, tenantSlugPattern.MatchString(slug)
+}
+
+// asciiLower lowercases only the ASCII letters of s.
+func asciiLower(s string) string {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; 'A' <= c && c <= 'Z' {
+			lower := []byte(s)
+			for j := i; j < len(lower); j++ {
+				if c := lower[j]; 'A' <= c && c <= 'Z' {
+					lower[j] = c + 'a' - 'A'
+				}
+			}
+			return string(lower)
+		}
+	}
+	return s
 }

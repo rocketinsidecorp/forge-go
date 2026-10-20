@@ -207,7 +207,7 @@ func NewRecoveryService(store RecoveryStore, sender RecoverySender, options ...R
 // that account-dependent failure as the same 202 response. Infrastructure,
 // throttling, persistence and delivery failures remain errors.
 func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) error {
-	email, tenant, ok := normalizeRecoveryIdentity(request.Email, request.TenantSlug)
+	email, tenant, ok := normalizeLogin(request.Email, request.TenantSlug)
 	if !ok {
 		return nil
 	}
@@ -358,16 +358,6 @@ type RecoveryThrottledError struct {
 func (e *RecoveryThrottledError) Error() string { return ErrRecoveryThrottled.Error() }
 
 func (e *RecoveryThrottledError) Unwrap() error { return ErrRecoveryThrottled }
-
-func normalizeRecoveryIdentity(email, tenant string) (string, string, bool) {
-	email = strings.ToLower(strings.TrimSpace(email))
-	tenant = strings.ToLower(strings.TrimSpace(tenant))
-	if email == "" || tenant == "" {
-		return "", "", false
-	}
-	normalizedEmail, normalizedTenant, ok := normalizeLogin(email, tenant)
-	return normalizedEmail, normalizedTenant, ok
-}
 
 func deriveRecoveryThrottleKey(email, tenant, source string) LoginThrottleKey {
 	key := LoginThrottleKey{
