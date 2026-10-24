@@ -17,6 +17,74 @@ var (
 	_                      auth.MFAStore = (*Repository)(nil)
 )
 
+// Lock order: every MFA transaction locks the account's forge_users row
+// first (lockMFAUser), and only then its enrollment, factor, backup code,
+// membership, session and challenge rows. MFA transactions of one account
+// therefore run one at a time, and none of them ever waits for the user row
+// while it holds an MFA row, so no two of them can deadlock. Before, issuing
+// and completing a challenge locked the challenge or membership first and
+// confirming a key locked the enrollment first, and then waited for the user
+// row that a disable or a rotation held while it waited for those rows
+// (40P01). The single statements that wait holding nothing (advancing a
+// counter, using a backup code) close no cycle.
+
+// lockMFAUser locks the forge_users row of subjectID FOR UPDATE; false when
+// there is no such user.
+func lockMFAUser(ctx context.Context, tx pgx.Tx, subjectID uuid.UUID) (bool, error) {
+	var locked uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT id
+		FROM forge_users
+		WHERE id = $1
+		FOR UPDATE
+	`, subjectID).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, postgres.Translate(err)
+	}
+	return true, nil
+}
+
+// lockMFAUserOf locks the user row of the account that query (one row, one
+// user ID, no row locks) names; false when it names none.
+func lockMFAUserOf(ctx context.Context, tx pgx.Tx, query string, arguments ...any) (bool, error) {
+	var subjectID uuid.UUID
+	err := tx.QueryRow(ctx, query, arguments...).Scan(&subjectID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, postgres.Translate(err)
+	}
+	return lockMFAUser(ctx, tx, subjectID)
+}
+
+// spendStepUp uses up stepUp, a backup code given for step-up authentication
+// of the change the transaction applies, with the user row locked:
+// auth.ErrMFAStepUpInvalid (the transaction rolls back) when it is not an
+// unused code of the account.
+func spendStepUp(ctx context.Context, tx pgx.Tx, subjectID uuid.UUID, stepUp *auth.Digest) error {
+	if stepUp == nil {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE forge_mfa_backup_codes
+		SET consumed_at = now()
+		WHERE user_id = $1
+		  AND code_digest = $2
+		  AND consumed_at IS NULL
+	`, subjectID, stepUp[:])
+	if err != nil {
+		return postgres.Translate(err)
+	}
+	if tag.RowsAffected() != 1 {
+		return auth.ErrMFAStepUpInvalid
+	}
+	return nil
+}
+
 func (r *Repository) BeginTOTPEnrollment(
 	ctx context.Context,
 	subjectID uuid.UUID,
@@ -77,13 +145,16 @@ func (r *Repository) LoadPendingTOTP(ctx context.Context, subjectID uuid.UUID) (
 		record    auth.TOTPSecretRecord
 		rawDigest []byte
 	)
+	// One statement, one snapshot: the key is a rotation's exactly when the
+	// account has a factor.
 	err := r.db.QueryRow(ctx, `
-		SELECT e.user_id, e.secret_digest, e.secret_ciphertext, e.expires_at
+		SELECT e.user_id, e.secret_digest, e.secret_ciphertext, e.expires_at,
+		       EXISTS (SELECT 1 FROM forge_totp_factors f WHERE f.user_id = e.user_id)
 		FROM forge_totp_enrollments e
 		JOIN forge_users u ON u.id = e.user_id
 		WHERE e.user_id = $1
 		  AND u.status = 'active'
-	`, subjectID).Scan(&record.SubjectID, &rawDigest, &record.SecretCiphertext, &record.ExpiresAt)
+	`, subjectID).Scan(&record.SubjectID, &rawDigest, &record.SecretCiphertext, &record.ExpiresAt, &record.FactorActive)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auth.TOTPSecretRecord{}, false, nil
 	}
@@ -114,6 +185,9 @@ func (r *Repository) ConfirmTOTPEnrollment(
 	}
 	confirmed := false
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		if locked, err := lockMFAUser(ctx, tx, subjectID); err != nil || !locked {
+			return err
+		}
 		var (
 			ciphertext []byte
 			rawDigest  []byte
@@ -239,8 +313,15 @@ func (r *Repository) CreateMFAChallenge(
 		return errors.New("MFA challenge and session expiry must be in the future")
 	}
 	return r.db.InTx(ctx, func(tx pgx.Tx) error {
+		userLocked, err := lockMFAUserOf(ctx, tx, `SELECT user_id FROM forge_memberships WHERE id = $1`, membershipID)
+		if err != nil {
+			return err
+		}
+		if !userLocked {
+			return ErrMFAIdentityRequired
+		}
 		var locked uuid.UUID
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			SELECT m.id
 			FROM forge_memberships m
 			JOIN forge_users u ON u.id = m.user_id
@@ -351,6 +432,15 @@ func (r *Repository) LoadMFAChallenge(ctx context.Context, digest auth.Digest) (
 	return record, true, nil
 }
 
+// challengeUserQuery names the user of the challenge whose digest is $1,
+// without locking anything.
+const challengeUserQuery = `
+	SELECT m.user_id
+	FROM forge_mfa_challenges c
+	JOIN forge_memberships m ON m.id = c.membership_id
+	WHERE c.token_digest = $1
+`
+
 func (r *Repository) ConsumeMFAChallenge(
 	ctx context.Context,
 	digest auth.Digest,
@@ -363,6 +453,9 @@ func (r *Repository) ConsumeMFAChallenge(
 	var membershipID uuid.UUID
 	consumed := false
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		if locked, err := lockMFAUserOf(ctx, tx, challengeUserQuery, digest[:]); err != nil || !locked {
+			return err
+		}
 		var (
 			subjectID   uuid.UUID
 			lastCounter int64
@@ -440,6 +533,9 @@ func (r *Repository) ConsumeMFABackupChallenge(
 	var membershipID uuid.UUID
 	consumed := false
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		if locked, err := lockMFAUserOf(ctx, tx, challengeUserQuery, digest[:]); err != nil || !locked {
+			return err
+		}
 		var backupID uuid.UUID
 		err := tx.QueryRow(ctx, `
 			SELECT m.id, b.id
@@ -512,6 +608,7 @@ func (r *Repository) BeginTOTPRotation(
 	secretDigest auth.Digest,
 	secretCiphertext []byte,
 	expiresAt time.Time,
+	stepUp *auth.Digest,
 ) error {
 	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
 		return errors.New("MFA subject ID must be a UUIDv7")
@@ -538,6 +635,9 @@ func (r *Repository) BeginTOTPRotation(
 		if err != nil {
 			return postgres.Translate(err)
 		}
+		if err := spendStepUp(ctx, tx, subjectID, stepUp); err != nil {
+			return err
+		}
 		_, err = tx.Exec(ctx, `
 			INSERT INTO forge_totp_enrollments
 				(user_id, secret_digest, secret_ciphertext, expires_at, created_at)
@@ -558,6 +658,7 @@ func (r *Repository) ConfirmTOTPRotation(
 	secretDigest auth.Digest,
 	counter int64,
 	backupCodeDigests []auth.Digest,
+	stepUp *auth.Digest,
 ) (bool, error) {
 	if counter < 0 {
 		return false, errors.New("TOTP counter must be non-negative")
@@ -567,6 +668,9 @@ func (r *Repository) ConfirmTOTPRotation(
 	}
 	confirmed := false
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		if locked, err := lockMFAUser(ctx, tx, subjectID); err != nil || !locked {
+			return err
+		}
 		var (
 			ciphertext []byte
 			rawDigest  []byte
@@ -594,6 +698,9 @@ func (r *Repository) ConfirmTOTPRotation(
 		}
 		if storedDigest != secretDigest {
 			return errors.New("MFA rotation digest changed while locked")
+		}
+		if err := spendStepUp(ctx, tx, subjectID, stepUp); err != nil {
+			return err
 		}
 
 		tag, err := tx.Exec(ctx, `
@@ -657,7 +764,7 @@ func (r *Repository) ConfirmTOTPRotation(
 	return confirmed, err
 }
 
-func (r *Repository) DisableMFA(ctx context.Context, subjectID uuid.UUID) (bool, error) {
+func (r *Repository) DisableMFA(ctx context.Context, subjectID uuid.UUID, stepUp *auth.Digest) (bool, error) {
 	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
 		return false, errors.New("MFA subject ID must be a UUIDv7")
 	}
@@ -677,6 +784,9 @@ func (r *Repository) DisableMFA(ctx context.Context, subjectID uuid.UUID) (bool,
 		}
 		if err != nil {
 			return postgres.Translate(err)
+		}
+		if err := spendStepUp(ctx, tx, subjectID, stepUp); err != nil {
+			return err
 		}
 
 		if _, err := tx.Exec(ctx, `DELETE FROM forge_mfa_backup_codes WHERE user_id = $1`, subjectID); err != nil {

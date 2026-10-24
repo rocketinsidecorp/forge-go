@@ -116,13 +116,13 @@ func TestMFASettingsAgainstPostgres(t *testing.T) {
 	}
 
 	second := backup("second")
-	if _, err := repo.ReplaceMFABackupCodes(ctx, ada, second[:3]); err == nil {
+	if _, err := repo.ReplaceMFABackupCodes(ctx, ada, second[:3], nil); err == nil {
 		t.Fatal("a partial backup-code set was accepted")
 	}
-	if replaced, err := repo.ReplaceMFABackupCodes(ctx, bob, second); err != nil || replaced {
+	if replaced, err := repo.ReplaceMFABackupCodes(ctx, bob, second, nil); err != nil || replaced {
 		t.Fatalf("an account without a factor got backup codes: %v %v", replaced, err)
 	}
-	if replaced, err := repo.ReplaceMFABackupCodes(ctx, ada, second); err != nil || !replaced {
+	if replaced, err := repo.ReplaceMFABackupCodes(ctx, ada, second, nil); err != nil || !replaced {
 		t.Fatalf("replaced=%v err=%v", replaced, err)
 	}
 	if consumed, err := repo.ConsumeMFABackupCode(ctx, ada, first[1]); err != nil || consumed {

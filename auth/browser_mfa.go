@@ -26,7 +26,8 @@ var (
 
 // MFAStepUp is the proof a signed-in account gives again before it changes
 // its second factor: the password and, when the account already has a
-// factor, a current authenticator or backup code (used up).
+// factor, a current authenticator code (used up) or backup code (used up by
+// the change only if it succeeds).
 type MFAStepUp struct {
 	Password string
 	Code     string
@@ -98,13 +99,13 @@ func (b *Browser) beginMFAChange(w http.ResponseWriter, r *http.Request, issuer 
 	}
 	var enrollment TOTPEnrollment
 	if rotation {
-		enrollment, err = b.mfa.BeginTOTPRotation(r.Context(), step.subject, issuer, step.login)
+		enrollment, err = b.mfa.BeginTOTPRotation(r.Context(), step.subject, issuer, step.login, step.change())
 	} else {
 		enrollment, err = b.mfa.BeginTOTPEnrollment(r.Context(), step.subject, issuer, step.login)
 	}
 	if err != nil {
 		if _, applied := logSecurityAuditFailure(r, err); !applied {
-			return TOTPEnrollment{}, err
+			return TOTPEnrollment{}, b.stepUpCodeSpent(r, action, step, err)
 		}
 	}
 	b.stepUpSucceeded(r, step)
@@ -147,19 +148,23 @@ func (b *Browser) confirmMFAChange(w http.ResponseWriter, r *http.Request, issue
 	ctx := r.Context()
 	var confirmation TOTPConfirmation
 	if rotation {
-		confirmation, err = b.mfa.ConfirmTOTPRotation(ctx, step.subject, code)
+		// A backup code given as the current code is used up only if the
+		// new key is installed: a wrong code of it keeps the backup code.
+		confirmation, err = b.mfa.ConfirmTOTPRotation(ctx, step.subject, code, step.change())
 	} else {
 		confirmation, err = b.mfa.ConfirmTOTPEnrollment(ctx, step.subject, code)
 	}
 	if err != nil {
 		if _, applied := logSecurityAuditFailure(r, err); !applied {
 			if !errors.Is(err, ErrMFAEnrollmentInvalid) {
-				return nil, err
+				return nil, b.stepUpCodeSpent(r, action, step, err)
 			}
 			// The step-up counter is not reset: wrong codes of the new key
 			// count against it.
 			b.recordStepUpDenied(r, action, step.subject, step.key)
-			enrollment, found, pendingErr := b.mfa.PendingTOTP(ctx, step.subject, issuer, step.login)
+			// Only a pending key of this kind: a rotation's while the
+			// account has a factor, an enrollment's otherwise.
+			enrollment, found, pendingErr := b.mfa.PendingTOTP(ctx, step.subject, issuer, step.login, rotation)
 			if pendingErr != nil {
 				return nil, pendingErr
 			}
@@ -185,10 +190,10 @@ func (b *Browser) RegenerateMFABackupCodes(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		return nil, err
 	}
-	codes, err := b.mfa.RegenerateMFABackupCodes(r.Context(), step.subject)
+	codes, err := b.mfa.RegenerateMFABackupCodes(r.Context(), step.subject, step.change())
 	if err != nil {
 		if _, applied := logSecurityAuditFailure(r, err); !applied {
-			return nil, err
+			return nil, b.stepUpCodeSpent(r, SecurityMFABackupCodesRegenerated, step, err)
 		}
 	}
 	b.stepUpSucceeded(r, step)
@@ -205,9 +210,9 @@ func (b *Browser) DisableMFA(w http.ResponseWriter, r *http.Request, proof MFASt
 	if err != nil {
 		return err
 	}
-	if err := b.mfa.DisableMFA(r.Context(), step.subject); err != nil {
+	if err := b.mfa.DisableMFA(r.Context(), step.subject, step.change()); err != nil {
 		if _, applied := logSecurityAuditFailure(r, err); !applied {
-			return err
+			return b.stepUpCodeSpent(r, SecurityMFADisabled, step, err)
 		}
 	}
 	clearSessionCookies(w)
@@ -224,6 +229,22 @@ type verifiedStepUp struct {
 	subject uuid.UUID
 	login   string
 	key     LoginThrottleKey
+	// proof is the current code's: a backup code is used up by the change.
+	proof MFAStepUpProof
+}
+
+// change passes the step-up proof to the change it authorizes.
+func (v verifiedStepUp) change() MFAChangeOption { return WithMFAStepUp(v.proof) }
+
+// stepUpCodeSpent turns err, a refused change, into ErrMFAStepUpInvalid
+// (audited as action denied) when the step-up backup code was used up
+// meanwhile, and returns it unchanged otherwise.
+func (b *Browser) stepUpCodeSpent(r *http.Request, action SecurityEventKind, step verifiedStepUp, err error) error {
+	if !errors.Is(err, ErrMFAStepUpInvalid) {
+		return err
+	}
+	b.recordStepUpDenied(r, action, step.subject, step.key)
+	return ErrMFAStepUpInvalid
 }
 
 // stepUp re-authenticates the signed-in account for action: the CSRF token,
@@ -232,8 +253,10 @@ type verifiedStepUp struct {
 // already has a factor (ErrMFAAlreadyEnabled, so the password is not
 // revealed by the answer; a pending rotation is confirmed with
 // ConfirmMFARotation and a current code, never through the password-only
-// path), then the password and, with needCode, a current code that is used
-// up. Every refusal after the throttle attempt is audited as action denied.
+// path), then the password and, with needCode, a current code: an
+// authenticator code is used up, a backup code only checked (the change uses
+// it up, so a change that fails keeps it). Every refusal after the throttle
+// attempt is audited as action denied.
 // The throttle counter is reset only when the whole change succeeds
 // (stepUpSucceeded).
 func (b *Browser) stepUp(w http.ResponseWriter, r *http.Request, action SecurityEventKind, proof MFAStepUp, needCode bool) (verifiedStepUp, error) {
@@ -285,19 +308,18 @@ func (b *Browser) stepUp(w http.ResponseWriter, r *http.Request, action Security
 		b.recordStepUpDenied(r, action, subject, key)
 		return verifiedStepUp{}, ErrMFAStepUpInvalid
 	}
+	var codeProof MFAStepUpProof
 	if needCode {
-		if err := b.mfa.VerifyMFACode(ctx, subject, proof.Code); err != nil {
+		codeProof, err = b.mfa.VerifyMFAStepUp(ctx, subject, proof.Code)
+		if err != nil {
 			if errors.Is(err, ErrMFAInvalid) {
 				b.recordStepUpDenied(r, action, subject, key)
 				return verifiedStepUp{}, ErrMFAStepUpInvalid
 			}
-			// A backup code whose use was not audited is still used up.
-			if _, applied := logSecurityAuditFailure(r, err); !applied {
-				return verifiedStepUp{}, err
-			}
+			return verifiedStepUp{}, err
 		}
 	}
-	return verifiedStepUp{subject: subject, login: login, key: key}, nil
+	return verifiedStepUp{subject: subject, login: login, key: key, proof: codeProof}, nil
 }
 
 // stepUpSucceeded resets the step-up counter after a completed change. A

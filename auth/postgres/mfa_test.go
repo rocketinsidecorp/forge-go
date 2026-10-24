@@ -299,14 +299,14 @@ func TestMFARotationAndDisableAgainstPostgres(t *testing.T) {
 	}
 
 	newDigest := sha256.Sum256([]byte("new-totp-secret"))
-	if err := repo.BeginTOTPRotation(ctx, userID, newDigest, []byte("new-ciphertext"), time.Now().Add(10*time.Minute)); err != nil {
+	if err := repo.BeginTOTPRotation(ctx, userID, newDigest, []byte("new-ciphertext"), time.Now().Add(10*time.Minute), nil); err != nil {
 		t.Fatal(err)
 	}
 	backupDigests := make([]auth.Digest, auth.DefaultMFABackupCodeCount)
 	for i := range backupDigests {
 		backupDigests[i] = sha256.Sum256([]byte(fmt.Sprintf("backup-%d", i)))
 	}
-	confirmed, err := repo.ConfirmTOTPRotation(ctx, userID, newDigest, 123, backupDigests)
+	confirmed, err := repo.ConfirmTOTPRotation(ctx, userID, newDigest, 123, backupDigests, nil)
 	if err != nil || !confirmed {
 		t.Fatalf("confirmed=%v err=%v", confirmed, err)
 	}
@@ -343,7 +343,7 @@ func TestMFARotationAndDisableAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	disabled, err := repo.DisableMFA(ctx, userID)
+	disabled, err := repo.DisableMFA(ctx, userID, nil)
 	if err != nil || !disabled {
 		t.Fatalf("disabled=%v err=%v", disabled, err)
 	}
@@ -388,7 +388,7 @@ func TestConfirmTOTPEnrollmentRefusesAnAccountWithAFactorAgainstPostgres(t *test
 		t.Fatal(err)
 	}
 	pendingDigest := sha256.Sum256([]byte("pending-totp-secret"))
-	if err := repo.BeginTOTPRotation(ctx, userID, pendingDigest, []byte("pending-ciphertext"), time.Now().Add(10*time.Minute)); err != nil {
+	if err := repo.BeginTOTPRotation(ctx, userID, pendingDigest, []byte("pending-ciphertext"), time.Now().Add(10*time.Minute), nil); err != nil {
 		t.Fatal(err)
 	}
 	backupDigests := make([]auth.Digest, auth.DefaultMFABackupCodeCount)
@@ -425,7 +425,7 @@ func TestConfirmTOTPEnrollmentRefusesAnAccountWithAFactorAgainstPostgres(t *test
 	}
 
 	// The pending rotation is still confirmable with a current code.
-	rotated, err := repo.ConfirmTOTPRotation(ctx, userID, pendingDigest, 124, backupDigests)
+	rotated, err := repo.ConfirmTOTPRotation(ctx, userID, pendingDigest, 124, backupDigests, nil)
 	if err != nil || !rotated {
 		t.Fatalf("rotation confirmed=%v err=%v", rotated, err)
 	}

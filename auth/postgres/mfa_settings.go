@@ -136,9 +136,33 @@ func (r *Repository) ConsumeMFABackupCode(ctx context.Context, subjectID uuid.UU
 	return tag.RowsAffected() == 1, nil
 }
 
+// HasMFABackupCode reports whether codeDigest is an unused backup code of an
+// active user with a factor, without using it.
+func (r *Repository) HasMFABackupCode(ctx context.Context, subjectID uuid.UUID, codeDigest auth.Digest) (bool, error) {
+	var unused bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM forge_mfa_backup_codes b
+			JOIN forge_totp_factors f ON f.user_id = b.user_id
+			JOIN forge_users u ON u.id = b.user_id
+			WHERE b.user_id = $1
+			  AND b.code_digest = $2
+			  AND b.consumed_at IS NULL
+			  AND u.status = 'active'
+		)
+	`, subjectID, codeDigest[:]).Scan(&unused)
+	if err != nil {
+		return false, postgres.Translate(err)
+	}
+	return unused, nil
+}
+
 // ReplaceMFABackupCodes replaces every backup code of an active user with a
-// factor, in one transaction holding the user and factor rows.
-func (r *Repository) ReplaceMFABackupCodes(ctx context.Context, subjectID uuid.UUID, codeDigests []auth.Digest) (bool, error) {
+// factor, in one transaction holding the user and factor rows, using up
+// stepUp first (auth.ErrMFAStepUpInvalid, nothing replaced, when it is not an
+// unused code).
+func (r *Repository) ReplaceMFABackupCodes(ctx context.Context, subjectID uuid.UUID, codeDigests []auth.Digest, stepUp *auth.Digest) (bool, error) {
 	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
 		return false, errors.New("MFA subject ID must be a UUIDv7")
 	}
@@ -161,6 +185,9 @@ func (r *Repository) ReplaceMFABackupCodes(ctx context.Context, subjectID uuid.U
 		}
 		if err != nil {
 			return postgres.Translate(err)
+		}
+		if err := spendStepUp(ctx, tx, subjectID, stepUp); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM forge_mfa_backup_codes WHERE user_id = $1`, subjectID); err != nil {
 			return postgres.Translate(err)
