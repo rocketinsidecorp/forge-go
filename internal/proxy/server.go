@@ -30,6 +30,11 @@ const bodyReadTimeout = 30 * time.Second
 // carry no data in either direction.
 const defaultIdleTimeout = 120 * time.Second
 
+// writeChunk is the most a single deadline covers when writing to a client:
+// larger writes are split, so a client that reads slowly but steadily (at
+// least writeChunk per idle timeout) is never cut off.
+const writeChunk = 4 << 10
+
 // Server routes requests to the current target of each service. Create it
 // with [New]; it is safe for concurrent use.
 type Server struct {
@@ -214,6 +219,9 @@ func (t *target) drain(timeout time.Duration) (bool, int64) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	recorder := &statusRecorder{ResponseWriter: w, controller: http.NewResponseController(w), idle: s.idleTimeout}
+	// The server's own writes before the first response byte (a
+	// `100 Continue` when the body is first read) get the same budget.
+	recorder.extendWriteDeadline()
 	svc := s.route(r.Host)
 	targetAddr := s.serve(recorder, r, svc)
 	// The server flushes what is still buffered after ServeHTTP returns,
@@ -675,10 +683,18 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
 	}
-	r.extendWriteDeadline()
-	n, err := r.ResponseWriter.Write(p)
-	r.bytes += int64(n)
-	return n, err
+	written := 0
+	for written < len(p) {
+		end := min(written+writeChunk, len(p))
+		r.extendWriteDeadline()
+		n, err := r.ResponseWriter.Write(p[written:end])
+		written += n
+		r.bytes += int64(n)
+		if err != nil {
+			return written, err
+		}
+	}
+	return written, nil
 }
 
 // Hijack hands over an upgraded (WebSocket) connection that is closed once
@@ -690,7 +706,11 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	_ = conn.SetDeadline(time.Time{})
+	// The reverse proxy writes the 101 response through rw, on the raw
+	// connection: it gets the idle budget too. idleConn sets its own
+	// deadlines afterwards.
+	_ = conn.SetReadDeadline(time.Time{})
+	_ = conn.SetWriteDeadline(time.Now().Add(r.idle))
 	return newIdleConn(conn, r.idle), rw, nil
 }
 
@@ -706,7 +726,9 @@ func (r *statusRecorder) Flush() {
 // idleConn is a tunnel's client connection. A read fails once no data
 // moved in either direction for idle (a read that times out while the
 // other direction is busy waits again); a write fails once it made no
-// progress for idle, as every write to a client does.
+// progress for idle, as every write to a client does. Writes go out in
+// chunks of at most writeChunk, each recorded as activity when it lands,
+// so a long write that progresses keeps the reading side alive.
 type idleConn struct {
 	net.Conn
 	idle time.Duration
@@ -748,17 +770,19 @@ func (c *idleConn) Read(p []byte) (int, error) {
 
 func (c *idleConn) Write(p []byte) (int, error) {
 	written := 0
-	for {
+	for written < len(p) {
+		end := min(written+writeChunk, len(p))
 		_ = c.SetWriteDeadline(time.Now().Add(c.idle))
-		n, err := c.Conn.Write(p[written:])
+		n, err := c.Conn.Write(p[written:end])
 		written += n
 		if n > 0 {
 			c.touch()
 		}
-		if errors.Is(err, os.ErrDeadlineExceeded) && n > 0 && written < len(p) {
-			// Progress was made: the client is reading, slowly.
-			continue
+		if err != nil && (!errors.Is(err, os.ErrDeadlineExceeded) || n == 0) {
+			return written, err
 		}
-		return written, err
+		// A chunk that timed out after partial progress is retried: the
+		// client is reading, slowly.
 	}
+	return written, nil
 }

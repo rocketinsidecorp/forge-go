@@ -731,11 +731,16 @@ restart. It:
   application `response_timeout` to send response headers;
 - disconnects clients that hold connections without using them, after
   `-idle-timeout` (120 s by default): a keep-alive connection waiting for its
-  next request, a response the client stops reading (each write must
-  complete within it), and an upgraded (WebSocket) connection with no data
-  in either direction. The application connection and the in-flight count
-  are released with it, so a stalled client cannot hold a drain open.
-  WebSocket applications should ping more often than that;
+  next request, a response the client stops reading (writes go out in
+  4 KiB pieces, each of which must reach the client within the timeout),
+  and an upgraded (WebSocket) connection with no data in either direction.
+  The application connection and the in-flight count are released with it,
+  so a stalled client cannot hold a drain open. WebSocket applications
+  should ping more often than that. There is no total time limit per
+  connection: like nginx's `send_timeout`, a client that reads or sends a
+  little in every interval keeps its connection, bounded only by the
+  container's open-file limit (forge-proxy caps neither connections nor
+  connections per address);
 - writes JSON access logs (service, host, method, path without query,
   status, bytes, duration, client IP, target) to `docker logs forge-proxy`;
 - is controlled only through a Unix socket inside the container (directory

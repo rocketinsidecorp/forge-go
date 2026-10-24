@@ -354,6 +354,34 @@ func TestDurableCacheStoresPrivateFiles(t *testing.T) {
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("temporary files left: %v %v", entries, err)
 	}
+	// A cancelled Put leaves the entry as it was.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := cache.Put(ctx, "app.example.com", []byte("new")); err == nil {
+		t.Fatal("cancelled Put succeeded")
+	}
+	if got, _ := cache.Get(t.Context(), "app.example.com"); string(got) != "pem" {
+		t.Fatalf("cancelled Put overwrote the entry: %q", got)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("temporary files left after a cancelled Put: %v", entries)
+	}
+}
+
+func TestPrivateDirRefusesADirectoryOfAnotherUser(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to give a directory to another user")
+	}
+	dir := filepath.Join(t.TempDir(), "foreign")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(dir, 54321, 54321); err != nil {
+		t.Fatal(err)
+	}
+	if err := privateDir(dir); err == nil || !strings.Contains(err.Error(), "is owned by uid 54321") {
+		t.Fatalf("foreign directory: %v", err)
+	}
 }
 
 // The write deadline of one request does not carry over to the next request
