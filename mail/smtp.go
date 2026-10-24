@@ -269,7 +269,10 @@ var legacyAuthFirst = []string{
 
 // authMechanisms lists what the server offers in its "AUTH PLAIN LOGIN"
 // advertisement and in the legacy "AUTH=PLAIN LOGIN" one (see
-// legacyAuthFirst). Extension names are matched case-insensitively.
+// legacyAuthFirst). net/smtp keeps the extension names exactly as the server
+// sent them and upper-cases only the name asked for, so a server that
+// advertises "auth=plain" in lower case is not recognised (neither is a
+// lower-case "auth plain").
 func authMechanisms(client *smtp.Client) []string {
 	var mechanisms []string
 	if ok, params := client.Extension("AUTH"); ok {

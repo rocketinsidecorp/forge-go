@@ -67,8 +67,10 @@ func NewFileSender(dir string, logger *slog.Logger) (*FileSender, error) {
 // tightenDirectory removes group and other access from an existing directory.
 // It inspects and changes the directory through one open handle (fstat,
 // fchmod), so the path cannot be swapped for another between the check and
-// the change; a symbolic link is detected beforehand with Lstat, and the
-// handle must be the very directory Lstat saw. A link, or a sticky shared
+// the change; a symbolic link is detected beforehand with Lstat, the open
+// itself refuses a link or a non-directory (O_NOFOLLOW, O_DIRECTORY where the
+// platform has them), and the handle must be the very directory Lstat saw.
+// Symbolic links in the parent components of dir are still followed. A link, or a sticky shared
 // directory, is left alone with a warning.
 func tightenDirectory(dir string, logger *slog.Logger) error {
 	if runtime.GOOS == "windows" {
@@ -82,7 +84,7 @@ func tightenDirectory(dir string, logger *slog.Logger) error {
 		logger.Warn("development mail directory is a symbolic link and was not tightened", "dir", dir)
 		return nil
 	}
-	handle, err := os.Open(dir) // #nosec G304 -- operator-configured development directory
+	handle, err := openDirectory(dir)
 	if err != nil {
 		return fmt.Errorf("mail: inspect file sender directory: %w", err)
 	}
