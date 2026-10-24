@@ -17,6 +17,7 @@ Forge is a Go framework with Rails conventions, so the names carry over:
 | `rails d ...` | `forge destroy ...` |
 | `rails routes` | `forge routes` |
 | `rails test` | `forge test` |
+| `rails credentials:edit` | `forge credentials edit` |
 | Kamal | `forge deploy` |
 
 One difference to know up front: **generators never edit
@@ -35,10 +36,11 @@ Contents: [1 Prerequisites](#1-prerequisites) ·
 [9 Email](#9-email) ·
 [10 Background jobs](#10-background-jobs) ·
 [11 OpenAPI, tests and diagnostics](#11-openapi-tests-and-diagnostics) ·
-[12 Observability](#12-observability) ·
-[13 Deploy](#13-deploy) ·
-[14 Undo with `forge destroy`](#14-undo-with-forge-destroy) ·
-[15 Where to go next](#15-where-to-go-next)
+[12 Credentials](#12-credentials) ·
+[13 Observability](#13-observability) ·
+[14 Deploy](#14-deploy) ·
+[15 Undo with `forge destroy`](#15-undo-with-forge-destroy) ·
+[16 Where to go next](#16-where-to-go-next)
 
 ## 1. Prerequisites
 
@@ -192,7 +194,7 @@ the printed wiring asks for; its placeholder is deny-all. For local
 experiments only, replace the body of that `protect` function with
 `return next, nil` (every request passes) and pages such as `/posts` work;
 never deploy that.
-Sections 5 (without sign-in), 8, 11 and 14 apply; the rest of this guide was run
+Sections 5 (without sign-in), 8, 11, 12 and 15 apply; the rest of this guide was run
 on PostgreSQL.
 
 ## 5. Scaffold posts
@@ -754,7 +756,7 @@ can never report fake success. Running the queue needs its tables and a worker
 first (`queuepostgres.Migrations()`, `queuepostgres.NewStore`, `queue.NewWorker`
 started in `Configure` and stopped in `OnShutdown`); [JOBS.md](JOBS.md)
 sections 1 and 4 have the wiring. This guide leaves it unwired and removes it in
-section 14.
+section 15.
 
 ## 11. OpenAPI, tests and diagnostics
 
@@ -807,7 +809,81 @@ database: postgres://blog@127.0.0.1:27521/blog_development?sslmode=disable
 framework table. The generated `.github/workflows/ci.yml` runs gofmt, vet, the
 tests against a PostgreSQL service, `govulncheck` and a Docker build.
 
-## 12. Observability
+## 12. Credentials
+
+Secrets that do not belong in `.env` files live encrypted in
+`config/credentials/ENV.json.enc`, which you commit; the key stays out of git
+(`config/credentials/development.key`, mode 0600, created by `forge new`, or
+the `FORGE_MASTER_KEY` variable in deployed environments). Like `rails
+credentials:edit`:
+
+```sh
+forge credentials show
+```
+
+```text
+{
+  "encryption": {
+    "active": "[REDACTED]",
+    "keys": {
+      "k1": "[REDACTED]"
+    }
+  }
+}
+```
+
+`show` prints the structure with every value redacted (`--reveal` prints the
+values, in an interactive terminal only). `edit` decrypts into a private
+temporary file, opens `$VISUAL` or `$EDITOR`, validates the JSON, re-encrypts
+atomically and wipes the plaintext. Add a secret of your own, for example
+`"payments": { "api_key": "sk_test_example" }` next to `"encryption"`, save and
+quit:
+
+```sh
+VISUAL=nano forge credentials edit      # any editor; $VISUAL wins over $EDITOR
+forge credentials show
+```
+
+```text
+saved config/credentials/development.json.enc (key 46b0d18d056656c2)
+{
+  "encryption": {
+    ...
+  },
+  "payments": {
+    "api_key": "[REDACTED]"
+  }
+}
+```
+
+Create another environment's pair, and rotate its key when someone who knew it
+leaves. The new key list is written to the key file and the old keys stay
+readable until every deployment has the new file (`--keep-old`):
+
+```sh
+forge credentials init --environment production
+forge credentials rotate-key --environment production --keep-old
+```
+
+```text
+  create  config/credentials/production.key
+  create  config/credentials/production.json.enc
+  ignore  /config/credentials/*.key in .gitignore and .dockerignore
+
+The key in config/credentials/production.key is the only way to read config/credentials/production.json.enc.
+Back it up in a password manager or secret store; it is never committed.
+Deploy with:  FORGE_MASTER_KEY=$(cat config/credentials/production.key)   (see docs/CREDENTIALS.md)
+Next:         forge credentials edit --environment production
+re-encrypted config/credentials/production.json.enc with key 51063fafdc95178c; the previous key list stays readable (1 key(s)); drop it once every deployment has the new file
+update FORGE_MASTER_KEY wherever it is stored (docs/CREDENTIALS.md, "Rotating the key")
+```
+
+Back up every key: without it the file cannot be read. Application code reads
+values with `credentials.Open` in your composition root, and the `encryption`
+package encrypts a column with the key ring that is already in the file
+([CREDENTIALS.md](CREDENTIALS.md), [ENCRYPTION.md](ENCRYPTION.md)).
+
+## 13. Observability
 
 Telemetry is on by default and exports nothing. To see metrics without any
 extra tooling:
@@ -836,7 +912,7 @@ Loki for logs; Prometheus is at <http://127.0.0.1:9090>. Log lines carry
 to delete the data). Details, the metric catalogue and what is never recorded:
 [OBSERVABILITY.md](OBSERVABILITY.md).
 
-## 13. Deploy
+## 14. Deploy
 
 `forge deploy` ships your image to servers that have only SSH and Docker,
 Kamal-style, with health-gated, zero-downtime switches behind **forge-proxy**.
@@ -867,7 +943,7 @@ settings as secrets,
 and read the production notes in [DEPLOYMENT.md](DEPLOYMENT.md). You can run
 the image yourself with `docker build -t blog .`.
 
-## 14. Undo with `forge destroy`
+## 15. Undo with `forge destroy`
 
 `forge destroy GENERATOR ARGUMENTS...` takes the arguments you generated with
 and removes exactly the files the generator wrote, but **only while they are
@@ -907,7 +983,7 @@ directories only when they become empty. Supported generators: `model`,
 `resource`, `scaffold`, `controller`, `mailer`, `job` (both kinds) and `view`.
 Do not run it while an editor or formatter writes the same files.
 
-## 15. Where to go next
+## 16. Where to go next
 
 - [README](../README.md): the full command reference, deploy and credentials.
 - [GENERATORS.md](GENERATORS.md): every generator, `--api` controllers, `resource`, permission ownership.
