@@ -242,11 +242,10 @@ func (s *SMTPSender) authenticate(client *smtp.Client, secure bool) error {
 	if !secure && !clearAuthOK {
 		return errAuthPlaintext
 	}
-	ok, params := client.Extension("AUTH")
-	if !ok {
+	mechanisms := authMechanisms(client)
+	if len(mechanisms) == 0 {
 		return errAuthUnsupported
 	}
-	mechanisms := strings.Fields(strings.ToUpper(params))
 	password := s.cfg.Password.Reveal()
 	switch {
 	case containsString(mechanisms, "PLAIN"):
@@ -256,6 +255,24 @@ func (s *SMTPSender) authenticate(client *smtp.Client, secure bool) error {
 	default:
 		return errAuthUnsupported
 	}
+}
+
+// authMechanisms lists what the server offers in its "AUTH PLAIN LOGIN"
+// advertisement and in the legacy "AUTH=PLAIN LOGIN" one, which net/smtp
+// reports as the extension "AUTH=PLAIN" with the rest as its parameters.
+// Only the mechanisms Forge speaks are looked for in the legacy form.
+func authMechanisms(client *smtp.Client) []string {
+	var mechanisms []string
+	if ok, params := client.Extension("AUTH"); ok {
+		mechanisms = append(mechanisms, strings.Fields(strings.ToUpper(params))...)
+	}
+	for _, mechanism := range []string{"PLAIN", "LOGIN"} {
+		if ok, params := client.Extension("AUTH=" + mechanism); ok {
+			mechanisms = append(mechanisms, mechanism)
+			mechanisms = append(mechanisms, strings.Fields(strings.ToUpper(params))...)
+		}
+	}
+	return mechanisms
 }
 
 var (

@@ -146,6 +146,15 @@ func TestPreviewHTMLTextRawAndInlineParts(t *testing.T) {
 			t.Errorf("HTML CSP %q misses %q", csp, want)
 		}
 	}
+	// Remote images and fonts would phone home from the developer's browser.
+	for _, want := range []string{"img-src 'self' data:;"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("HTML CSP %q misses %q", csp, want)
+		}
+	}
+	if strings.Contains(csp, "http:") || strings.Contains(csp, "https:") || strings.Contains(csp, "font-src") {
+		t.Errorf("HTML CSP allows remote content: %q", csp)
+	}
 	if strings.Contains(csp, "script-src") || strings.Contains(csp, "'unsafe-eval'") {
 		t.Errorf("HTML CSP allows scripts: %q", csp)
 	}

@@ -44,7 +44,7 @@ type Attachment struct {
 	// contain control or bidirectional-override characters.
 	Filename string
 	// ContentType defaults to application/octet-stream. Multipart and message
-	// types are rejected.
+	// types, parameters and types longer than 127 bytes are rejected.
 	ContentType string
 	Data        []byte
 	// ContentID, when set, makes the attachment inline and addressable as
@@ -340,6 +340,11 @@ func isBidiControl(r rune) bool {
 	return r == '\u200e' || r == '\u200f' || r == '\u061c'
 }
 
+// maxMediaTypeBytes caps an attachment's media type (RFC 6838 limits each of
+// type and subtype to 127 bytes): with a file name of at most 255 bytes, a
+// part header then stays far below the 998-byte line limit.
+const maxMediaTypeBytes = 127
+
 // attachmentContentType returns a canonical media type for the attachment.
 func attachmentContentType(value string) (string, error) {
 	if value == "" {
@@ -348,6 +353,9 @@ func attachmentContentType(value string) (string, error) {
 	mediaType, params, err := mime.ParseMediaType(value)
 	if err != nil || len(params) > 0 {
 		return "", invalid("content type", "is malformed")
+	}
+	if len(mediaType) > maxMediaTypeBytes {
+		return "", invalid("content type", "is too long")
 	}
 	if strings.HasPrefix(mediaType, "multipart/") || strings.HasPrefix(mediaType, "message/") {
 		return "", invalid("content type", "multipart and message types are not allowed")

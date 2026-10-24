@@ -124,6 +124,14 @@ embedded pointer, whose fields may be absent). Embedded structs are
 flattened with Go's rules; `json:"-"` is skipped; `json:",string"` makes
 the value a string.
 
+One schema serves requests and responses: the type's schema says what
+`encoding/json` writes, and the same component describes a request body of
+that type. A member without `omitempty` is therefore `required` although
+decoding a request without it succeeds (it keeps its zero value), and
+`web.DecodeJSON` answers `415` for a `Content-Type` other than
+`application/json` and `400` for a member the schema does not list. When
+requests and responses differ, use two types.
+
 Field tags:
 
 | Tag | Effect |

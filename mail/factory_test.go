@@ -130,6 +130,41 @@ func TestFromConfigPlaintextOverride(t *testing.T) {
 	}
 }
 
+func TestFromConfigWarnsAboutPlaintextWithoutCredentialsInProduction(t *testing.T) {
+	t.Parallel()
+	base := func() map[string]string {
+		return map[string]string{
+			"FORGE_ENV":                  "production",
+			"FORGE_HTTP_TRANSPORT":       "trusted-proxy",
+			"FORGE_MAIL_URL":             "smtp://relay.example.com:25",
+			"FORGE_MAIL_FROM":            "app@example.com",
+			"FORGE_MAIL_ALLOW_PLAINTEXT": "true",
+		}
+	}
+	logged := func(env map[string]string) string {
+		var out bytes.Buffer
+		if _, err := forgemail.FromConfig(configFor(t, env), forgemail.WithLogger(slog.New(slog.NewTextHandler(&out, nil)))); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if out := logged(base()); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "strip STARTTLS") {
+		t.Fatalf("no warning: %q", out)
+	}
+	withoutFlag := base()
+	delete(withoutFlag, "FORGE_MAIL_ALLOW_PLAINTEXT")
+	development := base()
+	delete(development, "FORGE_ENV")
+	delete(development, "FORGE_HTTP_TRANSPORT")
+	credentials := base()
+	credentials["FORGE_MAIL_URL"] = "smtp://user:pass@localhost:25"
+	for name, env := range map[string]map[string]string{"no flag": withoutFlag, "development": development, "credentials": credentials} {
+		if out := logged(env); strings.Contains(out, "STARTTLS") || strings.Contains(out, "pass") {
+			t.Errorf("%s: unexpected output %q", name, out)
+		}
+	}
+}
+
 func TestFromConfigBadCAFileDoesNotLeak(t *testing.T) {
 	t.Parallel()
 	bad := filepath.Join(t.TempDir(), "bad.pem")

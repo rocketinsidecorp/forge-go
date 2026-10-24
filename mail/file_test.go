@@ -135,3 +135,71 @@ func TestNewFileSenderRejectsEmptyDirectory(t *testing.T) {
 		t.Fatal("empty directory accepted")
 	}
 }
+
+func TestNewFileSenderTightensAnExistingOpenDirectory(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits carry no meaning on Windows")
+	}
+	mode := func(dir string) fs.FileMode {
+		t.Helper()
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Mode().Perm()
+	}
+	newSender := func(dir string, logs *bytes.Buffer) {
+		t.Helper()
+		sender, err := forgemail.NewFileSender(dir, slog.New(slog.NewTextHandler(logs, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sender.Close() })
+	}
+
+	open := filepath.Join(t.TempDir(), "open")
+	if err := os.Mkdir(open, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(open, 0o755); err != nil { // not subject to the umask
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	newSender(open, &logs)
+	if got := mode(open); got != 0o700 {
+		t.Fatalf("mode = %v, want 0700", got)
+	}
+	if !strings.Contains(logs.String(), "tightened") {
+		t.Fatalf("no warning: %q", logs.String())
+	}
+
+	// Already private: untouched, including a narrower owner mode.
+	private := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(private, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	newSender(private, &bytes.Buffer{})
+	if got := mode(private); got != 0o500 {
+		t.Fatalf("mode = %v, want 0500", got)
+	}
+	_ = os.Chmod(private, 0o700)
+
+	// A sticky shared directory is left alone.
+	shared := filepath.Join(t.TempDir(), "shared")
+	if err := os.Mkdir(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777|fs.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	logs.Reset()
+	newSender(shared, &logs)
+	info, err := os.Stat(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o777 || info.Mode()&fs.ModeSticky == 0 || !strings.Contains(logs.String(), "sticky") {
+		t.Fatalf("mode = %v, logs = %q", info.Mode(), logs.String())
+	}
+}

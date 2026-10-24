@@ -155,6 +155,35 @@ func TestSMTPAuthLoginFallback(t *testing.T) {
 	}
 }
 
+func TestSMTPLegacyAuthEqualsAdvertisement(t *testing.T) {
+	t.Parallel()
+	for _, mechanisms := range []string{"PLAIN LOGIN", "LOGIN"} {
+		cert, pool := testCert(t)
+		server := newFakeSMTPWithCert(t, cert, func(s *fakeSMTP) { s.authMechanisms = mechanisms; s.legacyAuth = true })
+		if err := newSender(t, server, pool, nil).Send(context.Background(), sendMessage()); err != nil {
+			t.Fatalf("%q: Send: %v", mechanisms, err)
+		}
+		if !server.Sessions()[0].AuthSucceeded {
+			t.Fatalf("%q: authentication did not run", mechanisms)
+		}
+	}
+}
+
+func TestSMTPUnsupportedLegacyAuthFailsClosed(t *testing.T) {
+	t.Parallel()
+	cert, pool := testCert(t)
+	server := newFakeSMTPWithCert(t, cert, func(s *fakeSMTP) { s.authMechanisms = "CRAM-MD5"; s.legacyAuth = true })
+	err := newSender(t, server, pool, nil).Send(context.Background(), sendMessage())
+	if !errors.Is(err, forgemail.ErrAuthFailed) {
+		t.Fatalf("err = %v, want ErrAuthFailed", err)
+	}
+	for _, command := range server.Sessions()[0].Commands {
+		if strings.HasPrefix(command, "MAIL") {
+			t.Fatalf("sent %q after refusing every mechanism", command)
+		}
+	}
+}
+
 func TestSMTPRefusesWhenServerLacksSTARTTLS(t *testing.T) {
 	t.Parallel()
 	server := newFakeSMTP(t, func(s *fakeSMTP) { s.offerSTARTTLS = false; s.authOnPlain = true })

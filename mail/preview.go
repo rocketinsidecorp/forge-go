@@ -149,7 +149,7 @@ func secure(w http.ResponseWriter, csp string) {
 
 const (
 	pageCSP    = "default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'; base-uri 'none'; form-action 'none'"
-	contentCSP = "default-src 'none'; img-src 'self' data: https: http:; style-src 'unsafe-inline'; font-src https: http:; sandbox"
+	contentCSP = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
 )
 
 func serve(w http.ResponseWriter, contentType string, body []byte) {

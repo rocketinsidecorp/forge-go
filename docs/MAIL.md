@@ -10,7 +10,7 @@ through a `Sender` port, and the defaults are the safe ones. The design is in
 |----------|---------|---------|
 | `FORGE_MAIL_URL` | empty (mail disabled) | `smtp://user:password@host:587` (STARTTLS), `smtps://user:password@host:465` (implicit TLS) or `file:///path` (development `.eml` files). Percent-encode `@`, `:` and `/` in the password. |
 | `FORGE_MAIL_FROM` | required with a URL | Default sender, `app@example.com` or `App <app@example.com>`. |
-| `FORGE_MAIL_ALLOW_PLAINTEXT` | `false` | `true` lets the SMTP sender continue when the server offers no STARTTLS. It never allows the password in clear: AUTH without TLS is sent only to `localhost`, 127.0.0.0/8 or `::1` (a local Mailpit); to any other host the send fails. In `production` it cannot be combined with credentials for a remote host. |
+| `FORGE_MAIL_ALLOW_PLAINTEXT` | `false` | `true` lets the SMTP sender continue when the server offers no STARTTLS. It never allows the password in clear: AUTH without TLS is sent only to `localhost`, 127.0.0.0/8 or `::1` (a local Mailpit); to any other host the send fails. In `production` it cannot be combined with credentials for a remote host; without credentials it is accepted but logs a warning at start-up, because nothing then stops a network attacker from stripping `STARTTLS` (the mail itself travels in clear). |
 | `FORGE_MAIL_TIMEOUT` | `30s` | Bounds one delivery attempt (maximum 10m). |
 | `FORGE_MAIL_PREVIEW` | `false` | `true` enables the preview handler. Only valid when `FORGE_ENV` is `development` or `test`. |
 | `FORGE_MAIL_TLS_CA_FILE` | empty | PEM file with extra trusted roots for a private relay. There is no setting to skip certificate verification. |
@@ -57,6 +57,15 @@ bounded. Errors name the field, never the value.
 
 `Bcc` recipients get the message but appear in no header.
 
+Header text is encoded so that it reads back exactly as written: a non-ASCII
+display name is base64 encoded words (Q-encoding would leave a `\` or `"`
+raw, which an address header does not allow); a subject or name containing
+`=?` (which a client would decode as a hand-written encoded word) or a run of
+spaces is base64 encoded words of the text without its outer spaces (folding
+would otherwise collapse the run); other non-ASCII subjects are Q-encoded.
+An attachment's media type is at most 127 bytes, so a part header never
+approaches the 998-byte line limit.
+
 Errors are `fault.Error`s you can match with `errors.Is`: `mail.ErrInvalid`,
 `ErrUnavailable` (retryable), `ErrRejected`, `ErrAuthFailed`, `ErrTLSRequired`,
 `ErrTLSFailed`, `ErrTemplate`. They never contain credentials, recipient
@@ -72,6 +81,19 @@ Addresses must be ASCII: Forge supports neither SMTPUTF8 nor IDNA. An address
 such as `joão@exemplo.com` is rejected with `mail.ErrAddressUnsupported`
 (`mail_address_unsupported`), never converted, and the recovery adapter logs
 that code. Display names may contain any Unicode text.
+
+The SMTP sender reads the `AUTH` mechanisms from both `250-AUTH PLAIN LOGIN`
+and the legacy `250-AUTH=PLAIN LOGIN` advertisement, prefers `PLAIN` and falls
+back to `LOGIN`; a server offering neither fails with `mail.ErrAuthFailed`.
+
+**A delivery can be duplicated.** SMTP has no way to confirm a message that
+was accepted: if the deadline (`FORGE_MAIL_TIMEOUT`) expires, or the
+connection drops, after the server accepted the message data but before its
+`250` reply reaches Forge, `Send` fails with `mail.ErrUnavailable` although
+the server queued the message. A retry then delivers a second copy. This is
+inherent to SMTP; make mail handlers tolerate a repeated message (an
+idempotent action, or a deduplication key in the body), and do not retry
+errors that are not retryable.
 
 ## Templates
 
@@ -125,7 +147,11 @@ would reject. `recorder.FailWith(mail.ErrUnavailable)` simulates an outage.
 ## Development
 
 With `FORGE_MAIL_URL=file:tmp/mails` (or `file:///var/tmp/mails`) every message
-becomes an `.eml` file (mode 0600) and only its path is logged. For a browser
+becomes an `.eml` file (mode 0600) and only its path is logged. The directory
+is created 0700; an existing one that is group- or world-accessible is
+tightened to 0700 (with a warning), and one that cannot be tightened is an
+error. A sticky shared directory such as `/tmp` is left alone with a warning.
+For a browser
 preview with fixture data, register previews, available only in `development`
 and `test` and only with `FORGE_MAIL_PREVIEW=true` (an unset `FORGE_ENV` means
 development, so the environment alone is not enough):
@@ -140,7 +166,10 @@ if cfg.Mail.Preview { // FORGE_MAIL_PREVIEW=true, off by default
 
 The preview shows headers, the HTML part in a sandboxed frame, the text part,
 inline images, the raw MIME source and the validation error if the message
-would not be sent.
+would not be sent. HTML is served under a Content-Security-Policy that allows
+images only from the preview itself and `data:` URIs (`img-src 'self' data:`):
+remote images and fonts are not loaded, so opening a preview does not contact
+any server. Inline `cid:` images work.
 
 ## Password recovery
 

@@ -39,7 +39,9 @@ func WithHelloName(name string) FromConfigOption {
 // for file://. It repeats the production rules of config validation so a
 // hand-built Config cannot bypass them: the file sender is refused in
 // production, and the SMTP sender requires verified TLS unless
-// AllowPlaintext is set.
+// AllowPlaintext is set. Production with AllowPlaintext and no credentials
+// is accepted (an internal relay) but logs a warning: nothing then stops a
+// network attacker from stripping STARTTLS, so the mail travels in clear.
 func FromConfig(cfg config.Config, options ...FromConfigOption) (Sender, error) {
 	var settings fromConfig
 	for _, option := range options {
@@ -65,6 +67,13 @@ func FromConfig(cfg config.Config, options ...FromConfigOption) (Sender, error) 
 		if err != nil {
 			return nil, err
 		}
+		if plaintextWithoutCredentialsInProduction(cfg, endpoint) {
+			logger := settings.logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Warn("FORGE_MAIL_ALLOW_PLAINTEXT=true in production without credentials: mail may be sent unencrypted, and a network attacker can strip STARTTLS")
+		}
 		return NewSMTPSender(SMTPConfig{
 			Host:           endpoint.Host,
 			Port:           endpoint.Port,
@@ -77,6 +86,10 @@ func FromConfig(cfg config.Config, options ...FromConfigOption) (Sender, error) 
 			Timeout:        cfg.Mail.EffectiveTimeout(),
 		})
 	}
+}
+
+func plaintextWithoutCredentialsInProduction(cfg config.Config, endpoint config.MailEndpoint) bool {
+	return cfg.Environment == config.Production && cfg.Mail.AllowPlaintext && endpoint.Username == ""
 }
 
 // DefaultFrom parses FORGE_MAIL_FROM into an Address.

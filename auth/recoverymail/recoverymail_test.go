@@ -199,6 +199,8 @@ func TestConfigValidation(t *testing.T) {
 		"credentials in url":  func(c *recoverymail.Config) { c.ResetURL = "https://user:pw@app.example.com/reset" },
 		"fragment in url":     func(c *recoverymail.Config) { c.ResetURL = "https://app.example.com/reset#x" },
 		"mailto url":          func(c *recoverymail.Config) { c.ResetURL = "mailto:a@example.com" },
+		"backslash in host":   func(c *recoverymail.Config) { c.ResetURL = "https://app.example.com\\.evil.example/reset" },
+		"backslash userinfo":  func(c *recoverymail.Config) { c.ResetURL = "https://app.example.com\\@evil.example/reset" },
 		"http localhost like": func(c *recoverymail.Config) { c.ResetURL = "http://localhost.evil.com/reset" },
 	}
 	for name, mutate := range bad {
