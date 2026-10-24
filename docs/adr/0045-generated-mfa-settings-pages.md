@@ -44,7 +44,9 @@ the Go pages must not repeat:
    confirming it need the password; rotating, confirming a rotation (field
    `current_code`), new backup codes and turning off need the password and a
    current authenticator or backup code, which is used up (its TOTP period
-   is recorded as accepted, a backup code is consumed). A wrong password or
+   is recorded as accepted, a backup code is consumed; amended 2026-10-24: a
+   backup code is consumed by the change itself, in its transaction, so a
+   failed change keeps it). A wrong password or
    code is one answer, `ErrMFAStepUpInvalid` (a right password with a wrong
    code takes one more database round trip: a throttled timing residual).
    For an account that already has a factor, turning on and confirming are

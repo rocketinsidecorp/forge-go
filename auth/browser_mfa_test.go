@@ -47,7 +47,20 @@ func (m *memoryMFAAccounts) LookupSubjectPassword(_ context.Context, subjectID u
 	return SubjectPassword{SubjectID: subjectID, Login: account.login, PasswordHash: account.hash}, true, nil
 }
 
-func (m *memoryMFAAccounts) begin(subjectID uuid.UUID, digest Digest, ciphertext []byte, expiresAt time.Time, rotation bool) error {
+// spend uses up stepUp, as auth/postgres does in the change's transaction;
+// call it with the lock held, once every other precondition holds.
+func (a *mfaAccount) spend(stepUp *Digest) error {
+	if stepUp == nil {
+		return nil
+	}
+	if used, exists := a.backupCodes[*stepUp]; !exists || used {
+		return ErrMFAStepUpInvalid
+	}
+	a.backupCodes[*stepUp] = true
+	return nil
+}
+
+func (m *memoryMFAAccounts) begin(subjectID uuid.UUID, digest Digest, ciphertext []byte, expiresAt time.Time, rotation bool, stepUp *Digest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	account := m.account(subjectID)
@@ -60,16 +73,19 @@ func (m *memoryMFAAccounts) begin(subjectID uuid.UUID, digest Digest, ciphertext
 	if !rotation && account.factor != nil {
 		return ErrMFAAlreadyEnabled
 	}
+	if err := account.spend(stepUp); err != nil {
+		return err
+	}
 	account.pending = &TOTPSecretRecord{SubjectID: subjectID, SecretDigest: digest, SecretCiphertext: ciphertext, ExpiresAt: expiresAt}
 	return nil
 }
 
 func (m *memoryMFAAccounts) BeginTOTPEnrollment(_ context.Context, subjectID uuid.UUID, digest Digest, ciphertext []byte, expiresAt time.Time) error {
-	return m.begin(subjectID, digest, ciphertext, expiresAt, false)
+	return m.begin(subjectID, digest, ciphertext, expiresAt, false, nil)
 }
 
-func (m *memoryMFAAccounts) BeginTOTPRotation(_ context.Context, subjectID uuid.UUID, digest Digest, ciphertext []byte, expiresAt time.Time) error {
-	return m.begin(subjectID, digest, ciphertext, expiresAt, true)
+func (m *memoryMFAAccounts) BeginTOTPRotation(_ context.Context, subjectID uuid.UUID, digest Digest, ciphertext []byte, expiresAt time.Time, stepUp *Digest) error {
+	return m.begin(subjectID, digest, ciphertext, expiresAt, true, stepUp)
 }
 
 func (m *memoryMFAAccounts) LoadPendingTOTP(_ context.Context, subjectID uuid.UUID) (TOTPSecretRecord, bool, error) {
@@ -79,15 +95,20 @@ func (m *memoryMFAAccounts) LoadPendingTOTP(_ context.Context, subjectID uuid.UU
 	if account == nil || account.pending == nil {
 		return TOTPSecretRecord{}, false, nil
 	}
-	return *account.pending, true, nil
+	record := *account.pending
+	record.FactorActive = account.factor != nil
+	return record, true, nil
 }
 
-func (m *memoryMFAAccounts) confirm(subjectID uuid.UUID, digest Digest, counter int64, backup []Digest, rotation bool) (bool, error) {
+func (m *memoryMFAAccounts) confirm(subjectID uuid.UUID, digest Digest, counter int64, backup []Digest, rotation bool, stepUp *Digest) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	account := m.account(subjectID)
 	if account == nil || account.pending == nil || account.pending.SecretDigest != digest || (account.factor != nil) != rotation {
 		return false, nil
+	}
+	if err := account.spend(stepUp); err != nil {
+		return false, err
 	}
 	factor := *account.pending
 	factor.LastCounter = counter
@@ -101,19 +122,22 @@ func (m *memoryMFAAccounts) confirm(subjectID uuid.UUID, digest Digest, counter 
 }
 
 func (m *memoryMFAAccounts) ConfirmTOTPEnrollment(_ context.Context, subjectID uuid.UUID, digest Digest, counter int64, backup []Digest) (bool, error) {
-	return m.confirm(subjectID, digest, counter, backup, false)
+	return m.confirm(subjectID, digest, counter, backup, false, nil)
 }
 
-func (m *memoryMFAAccounts) ConfirmTOTPRotation(_ context.Context, subjectID uuid.UUID, digest Digest, counter int64, backup []Digest) (bool, error) {
-	return m.confirm(subjectID, digest, counter, backup, true)
+func (m *memoryMFAAccounts) ConfirmTOTPRotation(_ context.Context, subjectID uuid.UUID, digest Digest, counter int64, backup []Digest, stepUp *Digest) (bool, error) {
+	return m.confirm(subjectID, digest, counter, backup, true, stepUp)
 }
 
-func (m *memoryMFAAccounts) DisableMFA(_ context.Context, subjectID uuid.UUID) (bool, error) {
+func (m *memoryMFAAccounts) DisableMFA(_ context.Context, subjectID uuid.UUID, stepUp *Digest) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	account := m.account(subjectID)
 	if account == nil || account.factor == nil {
 		return false, nil
+	}
+	if err := account.spend(stepUp); err != nil {
+		return false, err
 	}
 	account.factor, account.pending, account.backupCodes = nil, nil, nil
 	account.revocations++
@@ -172,12 +196,26 @@ func (m *memoryMFAAccounts) ConsumeMFABackupCode(_ context.Context, subjectID uu
 	return true, nil
 }
 
-func (m *memoryMFAAccounts) ReplaceMFABackupCodes(_ context.Context, subjectID uuid.UUID, digests []Digest) (bool, error) {
+func (m *memoryMFAAccounts) HasMFABackupCode(_ context.Context, subjectID uuid.UUID, digest Digest) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	account := m.account(subjectID)
 	if account == nil || account.factor == nil {
 		return false, nil
+	}
+	used, exists := account.backupCodes[digest]
+	return exists && !used, nil
+}
+
+func (m *memoryMFAAccounts) ReplaceMFABackupCodes(_ context.Context, subjectID uuid.UUID, digests []Digest, stepUp *Digest) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	account := m.account(subjectID)
+	if account == nil || account.factor == nil {
+		return false, nil
+	}
+	if err := account.spend(stepUp); err != nil {
+		return false, err
 	}
 	account.backupCodes = map[Digest]bool{}
 	for _, digest := range digests {
@@ -213,6 +251,7 @@ type mfaSettingsFixture struct {
 	clockMu  sync.Mutex
 	events   []SecurityEvent
 	app      http.Handler
+	mfa      *MFAService
 }
 
 const mfaTestPassword = "correct horse battery staple"
@@ -257,6 +296,7 @@ func newMFASettingsFixture(t *testing.T, throttle LoginThrottleConfig) *mfaSetti
 		t.Fatal(err)
 	}
 	f.app = mfaSettingsApp(t, browser)
+	f.mfa = mfa
 	return f
 }
 
@@ -775,5 +815,130 @@ func TestBrowserMFAEnrollmentRoutesDoNotRevealThePasswordOfAnEnrolledAccount(t *
 				t.Fatalf("denied %s events = %d, want 2", action, denied)
 			}
 		})
+	}
+}
+
+// TestBrowserMFAFailedChangeKeepsTheStepUpBackupCode: a backup code given
+// as the current code is only checked by the step-up and used up by the
+// change itself, so a confirmation with a wrong code of the new key keeps
+// it, and it confirms the rotation afterwards.
+func TestBrowserMFAFailedChangeKeepsTheStepUpBackupCode(t *testing.T) {
+	t.Parallel()
+	f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
+	_, backup := f.enable(f.ada)
+	begun := f.post(f.ada, "/mfa/rotation", url.Values{"password": {mfaTestPassword}, "code": {backup[0]}}, true)
+	newKey := begun.Header().Get("X-Key")
+	if begun.Code != http.StatusOK || newKey == "" {
+		t.Fatalf("rotation status=%d error=%q", begun.Code, begun.Header().Get("X-Error"))
+	}
+	if remaining := f.status(f.ada).BackupCodesRemaining; remaining != DefaultMFABackupCodeCount-1 {
+		t.Fatalf("starting the rotation must use its backup code up: remaining=%d", remaining)
+	}
+	wrong := "000000"
+	if f.code(newKey) == wrong {
+		wrong = "111111"
+	}
+	for range 2 {
+		retry := f.post(f.ada, "/mfa/rotation/confirm", url.Values{
+			"password": {mfaTestPassword}, "current_code": {backup[1]}, "code": {wrong},
+		}, true)
+		if retry.Code != http.StatusUnprocessableEntity || retry.Header().Get("X-Key") != newKey {
+			t.Fatalf("wrong new code: status=%d headers=%v", retry.Code, retry.Header())
+		}
+	}
+	if f.accounts.account(f.ada).backupCodes[mustBackupDigest(t, backup[1])] {
+		t.Fatal("a failed confirmation must not use up the step-up backup code")
+	}
+	rotated := f.post(f.ada, "/mfa/rotation/confirm", url.Values{
+		"password": {mfaTestPassword}, "current_code": {backup[1]}, "code": {f.code(newKey)},
+	}, true)
+	if rotated.Code != http.StatusOK {
+		t.Fatalf("rotation confirm status=%d error=%q", rotated.Code, rotated.Header().Get("X-Error"))
+	}
+}
+
+// TestMFAStepUpBackupCodeUsedMeanwhileRefusesTheChange: a step-up backup
+// code used elsewhere after it was checked refuses every change with
+// ErrMFAStepUpInvalid, and nothing changes; a TOTP step-up is used up at once.
+func TestMFAStepUpBackupCodeUsedMeanwhileRefusesTheChange(t *testing.T) {
+	t.Parallel()
+	f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
+	ctx := context.Background()
+	key, backup := f.enable(f.ada)
+	rotation, err := f.mfa.BeginTOTPRotation(ctx, f.ada, "Forge", "ada@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := f.mfa.VerifyMFAStepUp(ctx, f.ada, backup[0])
+	if err != nil || !proof.BackupCode() {
+		t.Fatalf("proof=%+v err=%v", proof, err)
+	}
+	if _, err := f.mfa.VerifyMFAStepUp(ctx, f.ada, backup[0]); err != nil {
+		t.Fatalf("checking a backup code must not use it up: %v", err)
+	}
+	if consumed, err := f.accounts.ConsumeMFABackupCode(ctx, f.ada, mustBackupDigest(t, backup[0])); err != nil || !consumed {
+		t.Fatalf("consumed=%v err=%v", consumed, err)
+	}
+	if _, err := f.mfa.ConfirmTOTPRotation(ctx, f.ada, f.code(rotation.Secret.Reveal()), WithMFAStepUp(proof)); !errors.Is(err, ErrMFAStepUpInvalid) {
+		t.Fatalf("confirm rotation err=%v", err)
+	}
+	if _, err := f.mfa.RegenerateMFABackupCodes(ctx, f.ada, WithMFAStepUp(proof)); !errors.Is(err, ErrMFAStepUpInvalid) {
+		t.Fatalf("regenerate err=%v", err)
+	}
+	if err := f.mfa.DisableMFA(ctx, f.ada, WithMFAStepUp(proof)); !errors.Is(err, ErrMFAStepUpInvalid) {
+		t.Fatalf("disable err=%v", err)
+	}
+	account := f.accounts.account(f.ada)
+	if account.factor == nil || account.pending == nil || f.status(f.ada).BackupCodesRemaining != DefaultMFABackupCodeCount-1 {
+		t.Fatal("a refused change must change nothing")
+	}
+	totp := f.code(key)
+	if proof, err := f.mfa.VerifyMFAStepUp(ctx, f.ada, totp); err != nil || proof.BackupCode() {
+		t.Fatalf("totp proof=%+v err=%v", proof, err)
+	}
+	if _, err := f.mfa.VerifyMFAStepUp(ctx, f.ada, totp); !errors.Is(err, ErrMFAInvalid) {
+		t.Fatalf("a TOTP step-up must be used up at once: %v", err)
+	}
+	if _, err := f.mfa.VerifyMFAStepUp(ctx, f.bob, backup[1]); !errors.Is(err, ErrMFAInvalid) {
+		t.Fatalf("another account's backup code: %v", err)
+	}
+}
+
+// TestPendingTOTPIsNeverReadAsTheOtherKind: a pending key is a rotation's
+// while the account has a factor and an enrollment's otherwise, so a
+// confirmation of the other kind never checks it and PendingTOTP never shows
+// it.
+func TestPendingTOTPIsNeverReadAsTheOtherKind(t *testing.T) {
+	t.Parallel()
+	f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
+	ctx := context.Background()
+	f.enable(f.ada)
+	rotation, err := f.mfa.BeginTOTPRotation(ctx, f.ada, "Forge", "ada@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"000000", f.code(rotation.Secret.Reveal())} {
+		if _, err := f.mfa.ConfirmTOTPEnrollment(ctx, f.ada, code); !errors.Is(err, ErrMFAAlreadyEnabled) {
+			t.Fatalf("enrollment confirmation of a pending rotation: %v", err)
+		}
+	}
+	if _, found, err := f.mfa.PendingTOTP(ctx, f.ada, "Forge", "ada@example.com", false); err != nil || found {
+		t.Fatalf("a rotation's key shown as an enrollment's: found=%v err=%v", found, err)
+	}
+	if _, found, err := f.mfa.PendingTOTP(ctx, f.ada, "Forge", "ada@example.com", true); err != nil || !found {
+		t.Fatalf("rotation key: found=%v err=%v", found, err)
+	}
+
+	enrollment, err := f.mfa.BeginTOTPEnrollment(ctx, f.bob, "Forge", "bob@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"000000", f.code(enrollment.Secret.Reveal())} {
+		if _, err := f.mfa.ConfirmTOTPRotation(ctx, f.bob, code); !errors.Is(err, ErrMFANotEnabled) {
+			t.Fatalf("rotation confirmation of a pending enrollment: %v", err)
+		}
+	}
+	if _, found, err := f.mfa.PendingTOTP(ctx, f.bob, "Forge", "bob@example.com", true); err != nil || found {
+		t.Fatalf("an enrollment's key shown as a rotation's: found=%v err=%v", found, err)
 	}
 }

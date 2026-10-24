@@ -49,15 +49,17 @@ func (s *mfaStoreStub) BeginTOTPEnrollment(_ context.Context, subjectID uuid.UUI
 	return nil
 }
 
-func (s *mfaStoreStub) BeginTOTPRotation(_ context.Context, subjectID uuid.UUID, digest Digest, ciphertext []byte, expiresAt time.Time) error {
+func (s *mfaStoreStub) BeginTOTPRotation(_ context.Context, subjectID uuid.UUID, digest Digest, ciphertext []byte, expiresAt time.Time, _ *Digest) error {
 	if err := s.BeginTOTPEnrollment(context.Background(), subjectID, digest, ciphertext, expiresAt); err != nil {
 		return err
 	}
+	// A rotation's pending key sits beside an active factor.
+	s.pending.FactorActive = true
 	s.rotationStarted = true
 	return nil
 }
 
-func (s *mfaStoreStub) ConfirmTOTPRotation(_ context.Context, _ uuid.UUID, _ Digest, counter int64, backupCodeDigests []Digest) (bool, error) {
+func (s *mfaStoreStub) ConfirmTOTPRotation(_ context.Context, _ uuid.UUID, _ Digest, counter int64, backupCodeDigests []Digest, _ *Digest) (bool, error) {
 	if s.err != nil {
 		return false, s.err
 	}
@@ -66,7 +68,7 @@ func (s *mfaStoreStub) ConfirmTOTPRotation(_ context.Context, _ uuid.UUID, _ Dig
 	return s.rotationConfirmResult, nil
 }
 
-func (s *mfaStoreStub) DisableMFA(context.Context, uuid.UUID) (bool, error) {
+func (s *mfaStoreStub) DisableMFA(context.Context, uuid.UUID, *Digest) (bool, error) {
 	if s.err != nil {
 		return false, s.err
 	}

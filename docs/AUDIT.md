@@ -113,7 +113,8 @@ emit `auth.mfa.challenge_failed`; successful backup-code use emits
 `auth.mfa.backup_code_used`; a completed MFA login also emits
 `auth.login.succeeded`. `RegenerateMFABackupCodes` emits
 `auth.mfa.backup_codes_regenerated`, and a backup code used up by a step-up
-(`VerifyMFACode`) emits `auth.mfa.backup_code_used`.
+(`VerifyMFACode`, or a change given a `VerifyMFAStepUp` proof once it
+commits) emits `auth.mfa.backup_code_used`.
 
 The two-factor settings (`auth.Browser`, the generated `/mfa` pages) record a
 refused, throttled or wrong-code change as its target action with outcome

@@ -135,6 +135,14 @@ shared throttler.
 `Repository.PruneMFA(ctx, limit)` removes expired enrollments and
 consumed/expired challenges in bounded `SKIP LOCKED` batches.
 
+Every MFA transaction locks the account's `forge_users` row first and only
+then its enrollment, factor, backup code, membership and challenge rows, so a
+sign-in and a factor change of the same account wait for each other instead
+of deadlocking. A pending key is a rotation's while the account has a factor
+and an enrollment's otherwise (`TOTPSecretRecord.FactorActive`, read in the
+same statement), so a key of one kind is never confirmed or shown as the
+other. Custom stores should keep both rules.
+
 ## Factor rotation and disable
 
 Active TOTP factors are changed only through explicit lifecycle operations.
@@ -188,10 +196,14 @@ export FORGE_AUTH_MFA_KEY=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
 | `DELETE` | `/mfa` | turn off (the password and a current code); signs out everywhere |
 
 A "current code" is a code of the active authenticator or an unused backup
-code; either is used up, so it works once. Starting a rotation therefore uses
-up the current code of the authenticator app, and confirming it needs a
-current code again: wait for the next code or use a backup code (the pages
-say so). Every one of these requests:
+code; either works once. An authenticator code is used up at once, a backup
+code by the change it authorizes, in the same transaction: a change that
+fails (a wrong code of the new key, an expired rotation, an account changed
+meanwhile) keeps the backup code, and a backup code used elsewhere in the
+meantime refuses the change (`ErrMFAStepUpInvalid`). Starting a rotation
+therefore uses up the current code of the authenticator app, and confirming
+it needs a current code again: wait for the next code or use a backup code
+(the pages say so). Every one of these requests:
 
 - needs the CSRF token (`403` without it) and a session (signed-out browsers
   go to `/session/new`);
@@ -218,8 +230,12 @@ the security steps are in `auth.Browser` (`BeginMFAEnrollment`,
 `BrowserOptions.Passwords` (an `auth.SubjectPasswordStore`, implemented by
 `auth/postgres.Repository`) besides the MFA service.
 
-In code, `MFAService.VerifyMFACode` checks and uses up a current code outside
-sign-in, `RegenerateMFABackupCodes` replaces the backup codes (event
+In code, `MFAService.VerifyMFAStepUp` checks a current code before a factor
+change and returns the proof to pass to it with `auth.WithMFAStepUp(proof)`
+(`BeginTOTPRotation`, `ConfirmTOTPRotation`, `RegenerateMFABackupCodes`,
+`DisableMFA`), which uses a backup code up only with the change;
+`MFAService.VerifyMFACode` checks and uses up a current code at once, for a
+step-up that changes no factor; `RegenerateMFABackupCodes` replaces the backup codes (event
 `auth.mfa.backup_codes_regenerated`) and `MFAStatus` reports the state; they
 need a store implementing `auth.MFASettingsStore`. `auth.TOTPCodeAt(key,
 time)` computes the code an authenticator app shows, for end-to-end tests.

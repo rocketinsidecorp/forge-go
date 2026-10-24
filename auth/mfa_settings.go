@@ -32,7 +32,11 @@ type MFASettingsStore interface {
 	LoadActiveTOTP(ctx context.Context, subjectID uuid.UUID) (record TOTPSecretRecord, found bool, err error)
 	AdvanceTOTPCounter(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, counter int64) (advanced bool, err error)
 	ConsumeMFABackupCode(ctx context.Context, subjectID uuid.UUID, codeDigest Digest) (consumed bool, err error)
-	ReplaceMFABackupCodes(ctx context.Context, subjectID uuid.UUID, codeDigests []Digest) (replaced bool, err error)
+	// HasMFABackupCode reports whether codeDigest is an unused backup code
+	// of an active account with a factor, without using it.
+	HasMFABackupCode(ctx context.Context, subjectID uuid.UUID, codeDigest Digest) (unused bool, err error)
+	// ReplaceMFABackupCodes takes stepUp as MFALifecycleStore's methods do.
+	ReplaceMFABackupCodes(ctx context.Context, subjectID uuid.UUID, codeDigests []Digest, stepUp *Digest) (replaced bool, err error)
 }
 
 // SubjectPassword is the password credential of a signed-in account, for
@@ -63,11 +67,13 @@ func (s *MFAService) MFAStatus(ctx context.Context, subjectID uuid.UUID) (MFASta
 	return store.LoadMFAStatus(ctx, subjectID)
 }
 
-// PendingTOTP returns the key of subjectID's unconfirmed enrollment or
-// rotation, for showing it again after a wrong confirmation code. found is
-// false when there is none or it expired. Callers must have re-authenticated
-// the account first: the key is a credential.
-func (s *MFAService) PendingTOTP(ctx context.Context, subjectID uuid.UUID, issuer, account string) (TOTPEnrollment, bool, error) {
+// PendingTOTP returns the key of subjectID's unconfirmed rotation (rotation
+// true) or enrollment, for showing it again after a wrong confirmation code.
+// found is false when there is none, it expired or the pending key is of the
+// other kind (a rotation's while the account has a factor, an enrollment's
+// otherwise). Callers must have re-authenticated the account first: the key
+// is a credential.
+func (s *MFAService) PendingTOTP(ctx context.Context, subjectID uuid.UUID, issuer, account string, rotation bool) (TOTPEnrollment, bool, error) {
 	issuer = strings.TrimSpace(issuer)
 	account = strings.TrimSpace(account)
 	if !validTOTPLabel(issuer, 128) || !validTOTPLabel(account, 320) {
@@ -77,7 +83,7 @@ func (s *MFAService) PendingTOTP(ctx context.Context, subjectID uuid.UUID, issue
 	if err != nil {
 		return TOTPEnrollment{}, false, err
 	}
-	if !found || record.ExpiresAt.IsZero() || !s.now().UTC().Before(record.ExpiresAt) {
+	if !found || record.FactorActive != rotation || record.ExpiresAt.IsZero() || !s.now().UTC().Before(record.ExpiresAt) {
 		return TOTPEnrollment{}, false, nil
 	}
 	secret, err := s.openTOTPSecret(record.SecretCiphertext, record.SecretDigest)
@@ -87,12 +93,109 @@ func (s *MFAService) PendingTOTP(ctx context.Context, subjectID uuid.UUID, issue
 	return newTOTPEnrollment(secret, issuer, account, record.ExpiresAt.UTC()), true, nil
 }
 
+// MFAStepUpProof is a current code VerifyMFAStepUp accepted. Pass it to the
+// change it authorizes with WithMFAStepUp: a backup code is used up only by
+// that change, in the transaction that applies it.
+type MFAStepUpProof struct {
+	backupCode *Digest
+}
+
+// BackupCode reports whether the proof is a backup code (still unused until
+// the change it authorizes succeeds).
+func (p MFAStepUpProof) BackupCode() bool { return p.backupCode != nil }
+
+// MFAChangeOption configures one factor change (BeginTOTPRotation,
+// ConfirmTOTPRotation, DisableMFA, RegenerateMFABackupCodes).
+type MFAChangeOption func(*mfaChange) error
+
+type mfaChange struct {
+	stepUp *MFAStepUpProof
+}
+
+// WithMFAStepUp passes the step-up proof of the change: a backup code is used
+// up in the change's own transaction, so a change that fails keeps it, and a
+// code used meanwhile refuses the change with ErrMFAStepUpInvalid.
+func WithMFAStepUp(proof MFAStepUpProof) MFAChangeOption {
+	return func(change *mfaChange) error {
+		change.stepUp = &proof
+		return nil
+	}
+}
+
+func newMFAChange(options []MFAChangeOption) (mfaChange, error) {
+	var change mfaChange
+	for _, option := range options {
+		if option == nil {
+			return mfaChange{}, errors.New("nil MFA change option")
+		}
+		if err := option(&change); err != nil {
+			return mfaChange{}, err
+		}
+	}
+	return change, nil
+}
+
+func (c mfaChange) backupCode() *Digest {
+	if c.stepUp == nil || c.stepUp.backupCode == nil {
+		return nil
+	}
+	digest := *c.stepUp.backupCode
+	return &digest
+}
+
+// recordStepUpBackupCodeUsed audits the step-up backup code a committed
+// change used up.
+func (s *MFAService) recordStepUpBackupCodeUsed(ctx context.Context, subjectID uuid.UUID, change mfaChange) error {
+	if change.backupCode() == nil {
+		return nil
+	}
+	return s.recordMFAEvent(ctx, SecurityEvent{
+		Kind:      SecurityMFABackupCodeUsed,
+		Outcome:   SecurityOutcomeSucceeded,
+		ActorID:   subjectID,
+		SubjectID: subjectID,
+	}, true)
+}
+
+// VerifyMFAStepUp checks a current code of subjectID's active factor for
+// step-up authentication before a factor change: a TOTP code is used up at
+// once (its period is recorded), an unused backup code is only checked. Pass
+// the proof to the change with WithMFAStepUp, which uses the backup code up
+// in the transaction that applies the change, so a change that fails costs no
+// backup code. A wrong, replayed or used code, and an account without a
+// factor, are ErrMFAInvalid. Callers throttle attempts.
+func (s *MFAService) VerifyMFAStepUp(ctx context.Context, subjectID uuid.UUID, code string) (MFAStepUpProof, error) {
+	store, err := s.settingsStore()
+	if err != nil {
+		return MFAStepUpProof{}, err
+	}
+	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
+		return MFAStepUpProof{}, errors.New("MFA subject ID must be a UUIDv7")
+	}
+	if backupDigest, backup := parseMFABackupCode(code); backup {
+		unused, err := store.HasMFABackupCode(ctx, subjectID, backupDigest)
+		if err != nil {
+			return MFAStepUpProof{}, err
+		}
+		if !unused {
+			return MFAStepUpProof{}, ErrMFAInvalid
+		}
+		return MFAStepUpProof{backupCode: &backupDigest}, nil
+	}
+	if err := s.useTOTPCode(ctx, store, subjectID, code); err != nil {
+		return MFAStepUpProof{}, err
+	}
+	return MFAStepUpProof{}, nil
+}
+
 // VerifyMFACode checks a current code of subjectID's active factor outside
 // sign-in, for step-up authentication: a TOTP code of the current period (or
 // one before or after) later than the last accepted one, or an unused backup
 // code. The code is used up either way, so it cannot be replayed for sign-in
 // or another step-up. A wrong, replayed or used code, and an account without
-// a factor, are ErrMFAInvalid. Callers throttle attempts.
+// a factor, are ErrMFAInvalid. Callers throttle attempts. Before a factor
+// change use VerifyMFAStepUp instead, so a change that fails keeps a backup
+// code.
 func (s *MFAService) VerifyMFACode(ctx context.Context, subjectID uuid.UUID, code string) error {
 	store, err := s.settingsStore()
 	if err != nil {
@@ -116,6 +219,11 @@ func (s *MFAService) VerifyMFACode(ctx context.Context, subjectID uuid.UUID, cod
 			SubjectID: subjectID,
 		}, true)
 	}
+	return s.useTOTPCode(ctx, store, subjectID, code)
+}
+
+// useTOTPCode checks a TOTP code of the active factor and records its period.
+func (s *MFAService) useTOTPCode(ctx context.Context, store MFASettingsStore, subjectID uuid.UUID, code string) error {
 	record, found, err := store.LoadActiveTOTP(ctx, subjectID)
 	if err != nil {
 		return err
@@ -147,7 +255,13 @@ func (s *MFAService) VerifyMFACode(ctx context.Context, subjectID uuid.UUID, cod
 // Callers must have re-authenticated the account (password and a current
 // code). Like confirmation, an audit failure after the codes were replaced
 // is returned with the codes as a *SecurityAuditError with OperationApplied.
-func (s *MFAService) RegenerateMFABackupCodes(ctx context.Context, subjectID uuid.UUID) ([]MFABackupCode, error) {
+// With WithMFAStepUp, a backup code given for step-up authentication is used
+// up only with the replacement.
+func (s *MFAService) RegenerateMFABackupCodes(ctx context.Context, subjectID uuid.UUID, options ...MFAChangeOption) ([]MFABackupCode, error) {
+	change, err := newMFAChange(options)
+	if err != nil {
+		return nil, err
+	}
 	store, err := s.settingsStore()
 	if err != nil {
 		return nil, err
@@ -159,19 +273,19 @@ func (s *MFAService) RegenerateMFABackupCodes(ctx context.Context, subjectID uui
 	if err != nil {
 		return nil, err
 	}
-	replaced, err := store.ReplaceMFABackupCodes(ctx, subjectID, digests)
+	replaced, err := store.ReplaceMFABackupCodes(ctx, subjectID, digests, change.backupCode())
 	if err != nil {
 		return nil, err
 	}
 	if !replaced {
 		return nil, ErrMFANotEnabled
 	}
-	return codes, s.recordMFAEvent(ctx, SecurityEvent{
+	return codes, errors.Join(s.recordStepUpBackupCodeUsed(ctx, subjectID, change), s.recordMFAEvent(ctx, SecurityEvent{
 		Kind:      SecurityMFABackupCodesRegenerated,
 		Outcome:   SecurityOutcomeSucceeded,
 		ActorID:   subjectID,
 		SubjectID: subjectID,
-	}, true)
+	}, true))
 }
 
 func (s *MFAService) settingsStore() (MFASettingsStore, error) {

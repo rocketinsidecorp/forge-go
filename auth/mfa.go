@@ -139,6 +139,12 @@ type TOTPSecretRecord struct {
 	SecretCiphertext []byte
 	ExpiresAt        time.Time
 	LastCounter      int64
+	// FactorActive, on a pending record (LoadPendingTOTP), reports whether
+	// the account had an active factor when the record was read, in the same
+	// snapshot: the pending key is then a rotation's, otherwise an
+	// enrollment's. A key of one kind is never confirmed or shown as the
+	// other.
+	FactorActive bool
 }
 
 type MFAChallengeRecord struct {
@@ -168,10 +174,15 @@ type MFAStore interface {
 
 // MFAChallengeIssuer is the narrow LoginService dependency used after a
 // correct password for an account that has MFA enabled.
+//
+// stepUp, when not nil, is the digest of a backup code given for step-up
+// authentication of the change: the store uses it up in the transaction that
+// applies the change and, when it is not an unused code of the account,
+// changes nothing and returns ErrMFAStepUpInvalid.
 type MFALifecycleStore interface {
-	BeginTOTPRotation(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, secretCiphertext []byte, expiresAt time.Time) error
-	ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, counter int64, backupCodeDigests []Digest) (confirmed bool, err error)
-	DisableMFA(ctx context.Context, subjectID uuid.UUID) (disabled bool, err error)
+	BeginTOTPRotation(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, secretCiphertext []byte, expiresAt time.Time, stepUp *Digest) error
+	ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUID, secretDigest Digest, counter int64, backupCodeDigests []Digest, stepUp *Digest) (confirmed bool, err error)
+	DisableMFA(ctx context.Context, subjectID uuid.UUID, stepUp *Digest) (disabled bool, err error)
 }
 
 type MFAChallengeIssuer interface {
@@ -317,14 +328,21 @@ func NewMFAService(store MFAStore, sessions CredentialSessionCreator, secretCiph
 // already-active factor. The caller must be an authenticated account-management
 // flow; this service intentionally does not infer identity from HTTP input.
 func (s *MFAService) BeginTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, issuer, account string) (TOTPEnrollment, error) {
-	return s.beginTOTP(ctx, subjectID, issuer, account, false)
+	return s.beginTOTP(ctx, subjectID, issuer, account, false, mfaChange{})
 }
 
-func (s *MFAService) BeginTOTPRotation(ctx context.Context, subjectID uuid.UUID, issuer, account string) (TOTPEnrollment, error) {
-	return s.beginTOTP(ctx, subjectID, issuer, account, true)
+// BeginTOTPRotation creates a pending replacement seed while the current
+// factor stays active. With WithMFAStepUp, a backup code given for step-up
+// authentication is used up only if the seed is stored.
+func (s *MFAService) BeginTOTPRotation(ctx context.Context, subjectID uuid.UUID, issuer, account string, options ...MFAChangeOption) (TOTPEnrollment, error) {
+	change, err := newMFAChange(options)
+	if err != nil {
+		return TOTPEnrollment{}, err
+	}
+	return s.beginTOTP(ctx, subjectID, issuer, account, true, change)
 }
 
-func (s *MFAService) beginTOTP(ctx context.Context, subjectID uuid.UUID, issuer, account string, rotation bool) (TOTPEnrollment, error) {
+func (s *MFAService) beginTOTP(ctx context.Context, subjectID uuid.UUID, issuer, account string, rotation bool, change mfaChange) (TOTPEnrollment, error) {
 	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
 		return TOTPEnrollment{}, errors.New("MFA subject ID must be a UUIDv7")
 	}
@@ -349,7 +367,7 @@ func (s *MFAService) beginTOTP(ctx context.Context, subjectID uuid.UUID, issuer,
 		if err != nil {
 			return TOTPEnrollment{}, err
 		}
-		if err := store.BeginTOTPRotation(ctx, subjectID, digest, ciphertext, expiresAt); err != nil {
+		if err := store.BeginTOTPRotation(ctx, subjectID, digest, ciphertext, expiresAt, change.backupCode()); err != nil {
 			return TOTPEnrollment{}, err
 		}
 	} else {
@@ -369,7 +387,7 @@ func (s *MFAService) beginTOTP(ctx context.Context, subjectID uuid.UUID, issuer,
 		ActorID:   subjectID,
 		SubjectID: subjectID,
 	}, true)
-	return enrollment, auditErr
+	return enrollment, errors.Join(s.recordStepUpBackupCodeUsed(ctx, subjectID, change), auditErr)
 }
 
 // newTOTPEnrollment is what an authenticator app needs to add seed: the
@@ -390,10 +408,16 @@ func newTOTPEnrollment(secret []byte, issuer, account string, expiresAt time.Tim
 	}
 }
 
+// ConfirmTOTPEnrollment installs the pending enrollment key when code is a
+// live code of it. An account that has a factor is ErrMFAAlreadyEnabled,
+// whatever is pending: the code is never checked against a rotation's key.
 func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.UUID, code string) (TOTPConfirmation, error) {
 	record, found, err := s.store.LoadPendingTOTP(ctx, subjectID)
 	if err != nil {
 		return TOTPConfirmation{}, err
+	}
+	if found && record.FactorActive {
+		return TOTPConfirmation{}, ErrMFAAlreadyEnabled
 	}
 	now := s.now().UTC()
 	if !found || record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) {
@@ -428,10 +452,23 @@ func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.U
 	return confirmation, auditErr
 }
 
-func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUID, code string) (TOTPConfirmation, error) {
+// ConfirmTOTPRotation replaces the factor with the pending rotation key when
+// code is a live code of it. An account without a factor is
+// ErrMFANotEnabled, whatever is pending: the code is never checked against an
+// enrollment's key. With WithMFAStepUp, a backup code given for step-up
+// authentication is used up only if the factor is replaced, so a wrong code
+// or an expired rotation keeps it.
+func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUID, code string, options ...MFAChangeOption) (TOTPConfirmation, error) {
+	change, err := newMFAChange(options)
+	if err != nil {
+		return TOTPConfirmation{}, err
+	}
 	record, found, err := s.store.LoadPendingTOTP(ctx, subjectID)
 	if err != nil {
 		return TOTPConfirmation{}, err
+	}
+	if found && !record.FactorActive {
+		return TOTPConfirmation{}, ErrMFANotEnabled
 	}
 	now := s.now().UTC()
 	if !found || record.ExpiresAt.IsZero() || !now.Before(record.ExpiresAt) {
@@ -453,7 +490,7 @@ func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUI
 	if err != nil {
 		return TOTPConfirmation{}, err
 	}
-	confirmed, err := store.ConfirmTOTPRotation(ctx, subjectID, record.SecretDigest, counter, backupDigests)
+	confirmed, err := store.ConfirmTOTPRotation(ctx, subjectID, record.SecretDigest, counter, backupDigests, change.backupCode())
 	if err != nil {
 		return TOTPConfirmation{}, err
 	}
@@ -467,10 +504,17 @@ func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUI
 		ActorID:   subjectID,
 		SubjectID: subjectID,
 	}, true)
-	return confirmation, auditErr
+	return confirmation, errors.Join(s.recordStepUpBackupCodeUsed(ctx, subjectID, change), auditErr)
 }
 
-func (s *MFAService) DisableMFA(ctx context.Context, subjectID uuid.UUID) error {
+// DisableMFA removes the active factor, pending key and backup codes. With
+// WithMFAStepUp, a backup code given for step-up authentication is used up
+// only with the factor.
+func (s *MFAService) DisableMFA(ctx context.Context, subjectID uuid.UUID, options ...MFAChangeOption) error {
+	change, err := newMFAChange(options)
+	if err != nil {
+		return err
+	}
 	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
 		return errors.New("MFA subject ID must be a UUIDv7")
 	}
@@ -478,19 +522,19 @@ func (s *MFAService) DisableMFA(ctx context.Context, subjectID uuid.UUID) error 
 	if err != nil {
 		return err
 	}
-	disabled, err := store.DisableMFA(ctx, subjectID)
+	disabled, err := store.DisableMFA(ctx, subjectID, change.backupCode())
 	if err != nil {
 		return err
 	}
 	if !disabled {
 		return ErrMFANotEnabled
 	}
-	return s.recordMFAEvent(ctx, SecurityEvent{
+	return errors.Join(s.recordStepUpBackupCodeUsed(ctx, subjectID, change), s.recordMFAEvent(ctx, SecurityEvent{
 		Kind:      SecurityMFADisabled,
 		Outcome:   SecurityOutcomeSucceeded,
 		ActorID:   subjectID,
 		SubjectID: subjectID,
-	}, true)
+	}, true))
 }
 
 func (s *MFAService) recordMFAEvent(ctx context.Context, event SecurityEvent, operationApplied bool) error {
