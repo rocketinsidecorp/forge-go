@@ -203,3 +203,35 @@ func TestNewFileSenderTightensAnExistingOpenDirectory(t *testing.T) {
 		t.Fatalf("mode = %v, logs = %q", info.Mode(), logs.String())
 	}
 }
+
+func TestNewFileSenderDoesNotFollowASymlinkToChangePermissions(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits carry no meaning on Windows")
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	sender, err := forgemail.NewFileSender(link, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sender.Close() })
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 || !strings.Contains(logs.String(), "symbolic link") {
+		t.Fatalf("mode = %v, logs = %q", info.Mode().Perm(), logs.String())
+	}
+}

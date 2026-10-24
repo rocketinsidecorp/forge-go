@@ -85,6 +85,13 @@ that code. Display names may contain any Unicode text.
 The SMTP sender reads the `AUTH` mechanisms from both `250-AUTH PLAIN LOGIN`
 and the legacy `250-AUTH=PLAIN LOGIN` advertisement, prefers `PLAIN` and falls
 back to `LOGIN`; a server offering neither fails with `mail.ErrAuthFailed`.
+`net/smtp` does not list the extensions it saw, so the legacy form is
+recognised when its first mechanism is one of `PLAIN`, `LOGIN`, `CRAM-MD5`,
+`XOAUTH2`, `OAUTHBEARER`, `SCRAM-SHA-1`, `SCRAM-SHA-256`, `GSSAPI`, `NTLM` or
+`DIGEST-MD5` (the rest of the line is read whatever it holds); a legacy line
+starting with any other mechanism is ignored. The extension names are
+matched as the server sends them (`AUTH`, upper case, as every common server
+does): `net/smtp` does not fold their case.
 
 **A delivery can be duplicated.** SMTP has no way to confirm a message that
 was accepted: if the deadline (`FORGE_MAIL_TIMEOUT`) expires, or the
@@ -150,7 +157,14 @@ With `FORGE_MAIL_URL=file:tmp/mails` (or `file:///var/tmp/mails`) every message
 becomes an `.eml` file (mode 0600) and only its path is logged. The directory
 is created 0700; an existing one that is group- or world-accessible is
 tightened to 0700 (with a warning), and one that cannot be tightened is an
-error. A sticky shared directory such as `/tmp` is left alone with a warning.
+error. A sticky shared directory such as `/tmp`, and a symbolic link, are left
+alone with a warning; the check and the change use one open handle, opened
+with `O_NOFOLLOW|O_DIRECTORY` on Linux, macOS, FreeBSD, NetBSD and OpenBSD, so
+the path cannot be swapped in between and a FIFO put in its place fails to
+open (other platforms open it normally and rely on the `Lstat`/`SameFile`
+check). Symbolic links
+in the parent components of the path are still followed, and swapping needs
+write access to the parent: this is a development-only path.
 For a browser
 preview with fixture data, register previews, available only in `development`
 and `test` and only with `FORGE_MAIL_PREVIEW=true` (an unset `FORGE_ENV` means

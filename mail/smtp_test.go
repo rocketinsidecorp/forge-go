@@ -157,7 +157,9 @@ func TestSMTPAuthLoginFallback(t *testing.T) {
 
 func TestSMTPLegacyAuthEqualsAdvertisement(t *testing.T) {
 	t.Parallel()
-	for _, mechanisms := range []string{"PLAIN LOGIN", "LOGIN"} {
+	// Another mechanism first, as `250-AUTH=CRAM-MD5 PLAIN LOGIN` servers
+	// announce; the rest of the line is still read.
+	for _, mechanisms := range []string{"PLAIN LOGIN", "LOGIN", "CRAM-MD5 PLAIN LOGIN", "XOAUTH2 LOGIN", "SCRAM-SHA-256 PLAIN"} {
 		cert, pool := testCert(t)
 		server := newFakeSMTPWithCert(t, cert, func(s *fakeSMTP) { s.authMechanisms = mechanisms; s.legacyAuth = true })
 		if err := newSender(t, server, pool, nil).Send(context.Background(), sendMessage()); err != nil {

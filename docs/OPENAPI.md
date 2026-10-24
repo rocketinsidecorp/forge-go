@@ -127,10 +127,17 @@ the value a string.
 One schema serves requests and responses: the type's schema says what
 `encoding/json` writes, and the same component describes a request body of
 that type. A member without `omitempty` is therefore `required` although
-decoding a request without it succeeds (it keeps its zero value), and
-`web.DecodeJSON` answers `415` for a `Content-Type` other than
-`application/json` and `400` for a member the schema does not list. When
+decoding a request without it succeeds (it keeps its zero value). When
 requests and responses differ, use two types.
+
+`web.DecodeJSON` answers `415` for a `Content-Type` whose media type is not
+`application/json` (any parameters are accepted, and with several
+`Content-Type` headers the first counts; Forge-Rust is stricter and refuses a
+repeated header or a parameter other than a UTF-8 `charset`), and `400` for a
+member the target type has no field for. `encoding/json` matches member names
+case-insensitively, so `{"NAME": ...}` is accepted for a field named `name`:
+the schema's `additionalProperties: false` is enforced only up to that
+matching rule.
 
 Field tags:
 

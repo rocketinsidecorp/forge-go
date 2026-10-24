@@ -25,8 +25,8 @@ var ErrFileSender = fault.New("mail_file_failed", "could not write the developme
 // already exists with group or other permissions is tightened to 0700 (the
 // owner bits are kept) so file names and timing stay private too; one that
 // cannot be tightened is an error. A sticky directory such as /tmp is a
-// shared system location and is left alone with a warning (the files in it
-// are 0600 anyway).
+// shared system location and a symbolic link may point anywhere: both are
+// left alone with a warning (the files in them are 0600 anyway).
 //
 // It exists to read mail without a mail server. Never use it in production:
 // config validation and FromConfig refuse it there.
@@ -65,13 +65,36 @@ func NewFileSender(dir string, logger *slog.Logger) (*FileSender, error) {
 }
 
 // tightenDirectory removes group and other access from an existing directory.
+// It inspects and changes the directory through one open handle (fstat,
+// fchmod), so the path cannot be swapped for another between the check and
+// the change; a symbolic link is detected beforehand with Lstat, the open
+// itself refuses a link or a non-directory (O_NOFOLLOW, O_DIRECTORY where the
+// platform has them), and the handle must be the very directory Lstat saw.
+// Symbolic links in the parent components of dir are still followed. A link, or a sticky shared
+// directory, is left alone with a warning.
 func tightenDirectory(dir string, logger *slog.Logger) error {
 	if runtime.GOOS == "windows" {
 		return nil // permission bits carry no meaning there
 	}
-	info, err := os.Stat(dir)
+	before, err := os.Lstat(dir)
 	if err != nil {
 		return fmt.Errorf("mail: inspect file sender directory: %w", err)
+	}
+	if before.Mode()&os.ModeSymlink != 0 {
+		logger.Warn("development mail directory is a symbolic link and was not tightened", "dir", dir)
+		return nil
+	}
+	handle, err := openDirectory(dir)
+	if err != nil {
+		return fmt.Errorf("mail: inspect file sender directory: %w", err)
+	}
+	defer func() { _ = handle.Close() }()
+	info, err := handle.Stat()
+	if err != nil {
+		return fmt.Errorf("mail: inspect file sender directory: %w", err)
+	}
+	if !info.IsDir() || !os.SameFile(before, info) {
+		return errors.New("mail: the file sender directory changed while it was inspected")
 	}
 	if info.Mode().Perm()&0o077 == 0 {
 		return nil
@@ -80,7 +103,7 @@ func tightenDirectory(dir string, logger *slog.Logger) error {
 		logger.Warn("development mail directory is shared (sticky) and was not tightened", "dir", dir)
 		return nil
 	}
-	if err := os.Chmod(dir, info.Mode()&^0o077); err != nil {
+	if err := handle.Chmod(info.Mode() &^ 0o077); err != nil {
 		return fmt.Errorf("mail: tighten file sender directory: %w", err)
 	}
 	logger.Warn("development mail directory was group- or world-accessible; tightened to 0700", "dir", dir)
