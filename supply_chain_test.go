@@ -39,9 +39,6 @@ func readText(t *testing.T, path string) string {
 }
 
 var (
-	// usesLine matches every spelling of the key: `uses:`, `- uses:`,
-	// `"uses":` and `uses :`; the value is unquoted before it is checked.
-	usesLine   = regexp.MustCompile(`^\s*(?:-\s*)?["']?uses["']?\s*:\s*(\S+)(.*)$`)
 	pinnedUses = regexp.MustCompile(`^[\w.-]+/[\w./-]+@[0-9a-f]{40}$`)
 	versionTag = regexp.MustCompile(`^\s+# v\d+(\.\d+){0,2}$`)
 	digestRef  = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
@@ -51,49 +48,67 @@ var (
 	syftScanner = regexp.MustCompile(`docker\.io/docker/buildkit-syft-scanner:[^\s"\\]+`)
 )
 
-// containerImage returns the image a line names as a service `image:` or as
-// the `container: <image>` shorthand, with its comment and quotes stripped.
-// A bare `container:` opens a mapping whose `image:` line is checked on its
-// own, and a `- image:` matrix entry (release.yml) is not a container.
-func containerImage(line string) (string, bool) {
-	trimmed := strings.TrimSpace(line)
-	value, ok := strings.CutPrefix(trimmed, "image:")
-	if !ok {
-		value, ok = strings.CutPrefix(trimmed, "container:")
+// localActionFiles returns the action.yml of every local `./` action the
+// files reach, directly or through another local action: a local action runs
+// with the workflow's permissions, so the same rules apply to it.
+func localActionFiles(t *testing.T, files []string) []string {
+	t.Helper()
+	var pending []string
+	for _, path := range files {
+		pending = append(pending, localActions(readText(t, path))...)
 	}
-	if !ok {
-		return "", false
+	seen := map[string]bool{}
+	var actions []string
+	for len(pending) > 0 {
+		action := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if seen[action] {
+			continue
+		}
+		seen[action] = true
+		if strings.HasSuffix(action, ".yml") || strings.HasSuffix(action, ".yaml") {
+			// A local reusable workflow: it must be one of the gated workflows.
+			if !strings.HasPrefix(action, ".github/workflows/") {
+				t.Errorf("./%s is not a workflow of .github/workflows", action)
+			}
+			continue
+		}
+		found := ""
+		for _, name := range []string{"action.yml", "action.yaml"} {
+			if _, err := os.Stat(filepath.Join(action, name)); err == nil {
+				found = filepath.Join(action, name)
+				break
+			}
+		}
+		if found == "" {
+			t.Errorf("./%s has no action.yml", action)
+			continue
+		}
+		actions = append(actions, found)
+		pending = append(pending, localActions(readText(t, found))...)
 	}
-	if code, _, found := strings.Cut(value, " #"); found {
-		value = code
-	}
-	value = strings.Trim(strings.TrimSpace(value), `"'`)
-	return value, value != ""
+	return actions
 }
 
 // TestWorkflowsPinThirdPartyCode keeps every action pinned to a commit SHA
-// with its version in a comment, and every container a workflow runs pinned
-// by digest: a moved tag cannot change what CI or a release executes.
+// with its version in a comment, every container a workflow runs pinned by
+// digest, and every checkout free of credentials: a moved tag cannot change
+// what CI or a release executes.
 func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 	t.Parallel()
 	references := map[*regexp.Regexp]map[string]bool{syftImage: {}, syftScanner: {}}
-	files := append(workflowFiles(t), filepath.Join("scripts", "sbom.sh"))
+	workflows := workflowFiles(t)
+	files := append(append(workflows, localActionFiles(t, workflows)...), filepath.Join("scripts", "sbom.sh"))
 	for _, path := range files {
 		text := readText(t, path)
-		checkouts := 0
-		for number, line := range strings.Split(text, "\n") {
-			if match := usesLine.FindStringSubmatch(line); match != nil {
-				reference := strings.Trim(match[1], `"'`)
-				if strings.HasPrefix(reference, "actions/checkout@") {
-					checkouts++
-				}
-				if !strings.HasPrefix(reference, "./") && (!pinnedUses.MatchString(reference) || !versionTag.MatchString(match[2])) {
-					t.Errorf("%s:%d: %q must be owner/repo@<40-hex commit> # vX.Y.Z", path, number+1, strings.TrimSpace(line))
-				}
-			}
-			if image, ok := containerImage(line); ok && !strings.Contains(path, "templates") && !digestRef.MatchString(image) {
-				t.Errorf("%s:%d: service image or container %q must be pinned by digest", path, number+1, image)
-			}
+		violations := append(pinViolations(path, text), checkoutViolations(path, text)...)
+		// Generated templates name their database image through a template
+		// field; internal/scaffold pins those values.
+		if !strings.Contains(path, "templates") {
+			violations = append(violations, containerViolations(path, text)...)
+		}
+		for _, violation := range violations {
+			t.Error(violation)
 		}
 		for pattern, seen := range references {
 			for _, reference := range pattern.FindAllString(text, -1) {
@@ -102,10 +117,6 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 				}
 				seen[reference] = true
 			}
-		}
-		// The token stays out of .git/config, where later steps could read it.
-		if checkouts != strings.Count(text, "persist-credentials: false") {
-			t.Errorf("%s: every checkout must set persist-credentials: false", path)
 		}
 	}
 	for pattern, seen := range references {
@@ -198,6 +209,13 @@ func TestReleaseWorkflowsRunOnlyForVersionTags(t *testing.T) {
 		for _, required := range []string{"cosign sign --yes \"${IMAGE}@${DIGEST}\"", "provenance: mode=max", "sbom: generator=", "git merge-base --is-ancestor"} {
 			if !strings.Contains(text, required) {
 				t.Errorf("%s: missing %q", path, required)
+			}
+		}
+		// The framework's tag is its module version: the major version must
+		// match the module path (a generated application is no module).
+		if !strings.Contains(path, "templates") {
+			for _, violation := range releaseViolations(path, text) {
+				t.Error(violation)
 			}
 		}
 	}

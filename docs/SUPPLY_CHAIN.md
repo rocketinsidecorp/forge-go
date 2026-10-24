@@ -20,8 +20,9 @@ applications `forge new` generates
 
 Nothing publishes outside a tag push: no pull request, branch, schedule or
 manual run can reach `release.yml`, and it refuses a tag that is not a
-version (`v1.2.3`, `v1.2.3-rc.1`) or that points at a commit outside the
-default branch.
+version (`v1.2.3`, `v1.2.3-rc.1`), whose major version does not match the
+module path of `go.mod` (from v2 on the path must end in `/vN`, or `go get`
+refuses the tag), or that points at a commit outside the default branch.
 
 ## Fuzzing
 
@@ -162,10 +163,15 @@ tags on the default branch. Its README shows the commands.
   trigger other than `v*` tags. It reads `.yml` and `.yaml` workflows alike
   and refuses:
   - a `uses:` that is not `owner/repo@<40-hex commit> # vX.Y.Z`, in any
-    spelling (`- uses:`, `"uses":`, `uses :`, quoted value);
-  - a `container: <image>` shorthand or service `image:` without a digest
-    (a bare `container:` mapping opener and a `- image:` matrix entry are
-    not images);
+    spelling (`- uses:`, `"uses":`, `uses :`, quoted value, flow style
+    `- { uses: ... }`, an anchor or alias), and a `docker://` action without
+    a digest; a local `./` action's `action.yml` is checked like a workflow;
+  - a checkout step, in any spelling of `actions/checkout`, that does not
+    set `persist-credentials: false` itself (checked per step, not counted);
+  - a `container: <image>` shorthand, a job's `container.image` or a
+    service `image:` without a digest, in block or flow style (an `image:`
+    action input under `with:` and a `- image:` matrix entry are not
+    containers);
   - every `<scope>: write` permission, in block or flow style
     (`permissions: { contents: write }`), except `id-token` and `packages`
     in `release.yml`, and `write-all` everywhere;
