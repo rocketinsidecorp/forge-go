@@ -576,6 +576,36 @@ func TestSanitizedAttachmentHeadersCannotBeBroken(t *testing.T) {
 	}
 }
 
+func TestAttachmentMediaTypeIsCappedSoPartHeadersStayShort(t *testing.T) {
+	t.Parallel()
+	attach := func(contentType, filename string) forgemail.Message {
+		msg := baseMessage()
+		msg.Attachments = []forgemail.Attachment{{Filename: filename, ContentType: contentType, Data: []byte("x")}}
+		return msg
+	}
+	exact := "application/" + strings.Repeat("x", 127-len("application/"))
+	if len(exact) != 127 {
+		t.Fatalf("len = %d", len(exact))
+	}
+	if err := attach(exact, "a.bin").Validate(); err != nil {
+		t.Fatalf("127 bytes must be accepted: %v", err)
+	}
+	if err := attach(exact+"x", "a.bin").Validate(); !errors.Is(err, forgemail.ErrInvalid) {
+		t.Fatalf("128 bytes: err = %v, want ErrInvalid", err)
+	}
+	// The longest accepted type with the longest non-ASCII file name still
+	// fits one header line.
+	encoded, err := forgemail.Encode(attach(exact, strings.Repeat("é", 127)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(encoded.Data), "\r\n") {
+		if len(line) > 998 {
+			t.Fatalf("line of %d bytes", len(line))
+		}
+	}
+}
+
 func TestDeterministicOptions(t *testing.T) {
 	t.Parallel()
 	generator, err := uuid.NewGenerator(func() time.Time { return fixedNow }, rand.Reader)

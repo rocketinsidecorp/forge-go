@@ -69,6 +69,7 @@ type fakeSMTP struct {
 	offerSTARTTLS  bool
 	authOnPlain    bool // advertise and accept AUTH before TLS
 	authMechanisms string
+	legacyAuth     bool // advertise "AUTH=PLAIN LOGIN" instead of "AUTH PLAIN LOGIN"
 	username       string
 	password       string
 	replies        map[string]string // verb -> full reply line(s) replacing the default
@@ -196,7 +197,11 @@ func (s *fakeSMTP) handle(raw net.Conn) {
 				say("250-STARTTLS")
 			}
 			if isTLS(conn) || s.authOnPlain {
-				say("250-AUTH %s", s.authMechanisms)
+				if s.legacyAuth {
+					say("250-AUTH=%s", s.authMechanisms)
+				} else {
+					say("250-AUTH %s", s.authMechanisms)
+				}
 			}
 			say("250 SIZE 10485760")
 		case "STARTTLS":
