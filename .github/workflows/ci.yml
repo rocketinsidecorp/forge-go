@@ -79,7 +79,10 @@ jobs:
       - name: OpenSSH server for the deploy SSH tests
         # The tests start their own unprivileged sshd on 127.0.0.1; the
         # system service the package starts is not used.
-        run: sudo apt-get install -y -q --no-install-recommends openssh-server openssh-client
+        run: |
+          sudo apt-get install -y -q --no-install-recommends openssh-server openssh-client
+          # The tests start their own sshd; the system service is not needed.
+          sudo systemctl disable --now ssh.service ssh.socket || true
       - name: Test (race)
         run: go test -race -count=1 ./...
       - name: Benchmarks
@@ -148,6 +151,8 @@ jobs:
         run: |
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
           sudo apt-get install -y --no-install-recommends postgresql-client-18 openssh-server openssh-client
+          # The tests start their own sshd; the system service is not needed.
+          sudo systemctl disable --now ssh.service ssh.socket || true
           echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
       - name: Coverage
         run: scripts/coverage.sh

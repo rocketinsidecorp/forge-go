@@ -44,7 +44,11 @@ jobs:
             v0 | v1) want="" ;;
             *) want="/$major" ;;
           esac
-          if [ "${module%/v[0-9]*}$want" != "$module" ]; then
+          base="$module"
+          if [[ "${module##*/}" =~ ^v[0-9]+$ ]]; then
+            base="${module%/*}"
+          fi
+          if [ "$base$want" != "$module" ]; then
             echo "::error::$GITHUB_REF_NAME does not match the module path $module of go.mod"
             exit 1
           fi

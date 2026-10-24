@@ -256,7 +256,8 @@ func releaseViolations(path, text string) []string {
 		"provenance: mode=max",
 		"sbom: generator=",
 		"git merge-base --is-ancestor",
-		"if [ \"${module%/v[0-9]*}$want\" != \"$module\" ]; then",
+		"if [[ \"${module##*/}\" =~ ^v[0-9]+$ ]]; then",
+		"if [ \"$base$want\" != \"$module\" ]; then",
 	} {
 		if !strings.Contains(text, required) {
 			violations = append(violations, fmt.Sprintf("%s: missing %q", path, required))

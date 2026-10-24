@@ -68,7 +68,7 @@ func localActionFiles(t *testing.T, files []string) []string {
 		seen[action] = true
 		if strings.HasSuffix(action, ".yml") || strings.HasSuffix(action, ".yaml") {
 			// A local reusable workflow: it must be one of the gated workflows.
-			if !strings.HasPrefix(action, ".github/workflows/") {
+			if _, err := os.Stat(action); err != nil || !strings.HasPrefix(action, ".github/workflows/") {
 				t.Errorf("./%s is not a workflow of .github/workflows", action)
 			}
 			continue

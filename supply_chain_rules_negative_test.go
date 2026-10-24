@@ -121,7 +121,7 @@ func TestReleaseRuleRequiresTheModuleVersionCheck(t *testing.T) {
 	if violations := releaseViolations(path, text); len(violations) != 0 {
 		t.Fatal(violations)
 	}
-	check := `if [ "${module%/v[0-9]*}$want" != "$module" ]; then`
+	check := `if [ "$base$want" != "$module" ]; then`
 	if len(releaseViolations(path, strings.Replace(text, check, "if false; then", 1))) == 0 {
 		t.Error("a release without the module version check was accepted")
 	}
