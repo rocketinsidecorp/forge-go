@@ -159,8 +159,10 @@ is created 0700; an existing one that is group- or world-accessible is
 tightened to 0700 (with a warning), and one that cannot be tightened is an
 error. A sticky shared directory such as `/tmp`, and a symbolic link, are left
 alone with a warning; the check and the change use one open handle, opened
-with `O_NOFOLLOW|O_DIRECTORY` on Linux and the BSDs, so the path cannot be
-swapped in between and a FIFO put in its place fails to open. Symbolic links
+with `O_NOFOLLOW|O_DIRECTORY` on Linux, macOS, FreeBSD, NetBSD and OpenBSD, so
+the path cannot be swapped in between and a FIFO put in its place fails to
+open (other platforms open it normally and rely on the `Lstat`/`SameFile`
+check). Symbolic links
 in the parent components of the path are still followed, and swapping needs
 write access to the parent: this is a development-only path.
 For a browser
