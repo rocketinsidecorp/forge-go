@@ -194,7 +194,7 @@ the printed wiring asks for; its placeholder is deny-all. For local
 experiments only, replace the body of that `protect` function with
 `return next, nil` (every request passes) and pages such as `/posts` work;
 never deploy that.
-Sections 5 (without sign-in), 8, 11 and 14 apply; the rest of this guide was run
+Sections 5 (without sign-in), 8, 11, 12 and 15 apply; the rest of this guide was run
 on PostgreSQL.
 
 ## 5. Scaffold posts
@@ -840,7 +840,7 @@ atomically and wipes the plaintext. Add a secret of your own, for example
 quit:
 
 ```sh
-EDITOR=nano forge credentials edit      # any editor; defaults to $VISUAL, then $EDITOR
+VISUAL=nano forge credentials edit      # any editor; $VISUAL wins over $EDITOR
 forge credentials show
 ```
 
