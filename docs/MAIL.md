@@ -85,6 +85,11 @@ that code. Display names may contain any Unicode text.
 The SMTP sender reads the `AUTH` mechanisms from both `250-AUTH PLAIN LOGIN`
 and the legacy `250-AUTH=PLAIN LOGIN` advertisement, prefers `PLAIN` and falls
 back to `LOGIN`; a server offering neither fails with `mail.ErrAuthFailed`.
+`net/smtp` does not list the extensions it saw, so the legacy form is
+recognised when its first mechanism is one of `PLAIN`, `LOGIN`, `CRAM-MD5`,
+`XOAUTH2`, `OAUTHBEARER`, `SCRAM-SHA-1`, `SCRAM-SHA-256`, `GSSAPI`, `NTLM` or
+`DIGEST-MD5` (the rest of the line is read whatever it holds); a legacy line
+starting with any other mechanism is ignored.
 
 **A delivery can be duplicated.** SMTP has no way to confirm a message that
 was accepted: if the deadline (`FORGE_MAIL_TIMEOUT`) expires, or the

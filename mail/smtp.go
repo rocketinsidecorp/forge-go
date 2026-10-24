@@ -257,18 +257,27 @@ func (s *SMTPSender) authenticate(client *smtp.Client, secure bool) error {
 	}
 }
 
+// legacyAuthFirst are the mechanisms looked for as the first token of a
+// legacy "AUTH=<mechanism> <more...>" advertisement. net/smtp keeps no list of
+// the extensions it saw, only Extension(name), and reports that line as the
+// extension "AUTH=<first mechanism>" with the rest as its parameters, so the
+// first token has to be guessed from the mechanisms servers announce.
+var legacyAuthFirst = []string{
+	"PLAIN", "LOGIN", "CRAM-MD5", "XOAUTH2", "OAUTHBEARER",
+	"SCRAM-SHA-1", "SCRAM-SHA-256", "GSSAPI", "NTLM", "DIGEST-MD5",
+}
+
 // authMechanisms lists what the server offers in its "AUTH PLAIN LOGIN"
-// advertisement and in the legacy "AUTH=PLAIN LOGIN" one, which net/smtp
-// reports as the extension "AUTH=PLAIN" with the rest as its parameters.
-// Only the mechanisms Forge speaks are looked for in the legacy form.
+// advertisement and in the legacy "AUTH=PLAIN LOGIN" one (see
+// legacyAuthFirst). Extension names are matched case-insensitively.
 func authMechanisms(client *smtp.Client) []string {
 	var mechanisms []string
 	if ok, params := client.Extension("AUTH"); ok {
 		mechanisms = append(mechanisms, strings.Fields(strings.ToUpper(params))...)
 	}
-	for _, mechanism := range []string{"PLAIN", "LOGIN"} {
-		if ok, params := client.Extension("AUTH=" + mechanism); ok {
-			mechanisms = append(mechanisms, mechanism)
+	for _, first := range legacyAuthFirst {
+		if ok, params := client.Extension("AUTH=" + first); ok {
+			mechanisms = append(mechanisms, first)
 			mechanisms = append(mechanisms, strings.Fields(strings.ToUpper(params))...)
 		}
 	}
