@@ -231,14 +231,34 @@ the security steps are in `auth.Browser` (`BeginMFAEnrollment`,
 `auth/postgres.Repository`) besides the MFA service.
 
 In code, `MFAService.VerifyMFAStepUp` checks a current code before a factor
-change and returns the proof to pass to it with `auth.WithMFAStepUp(proof)`
-(`BeginTOTPRotation`, `ConfirmTOTPRotation`, `RegenerateMFABackupCodes`,
-`DisableMFA`), which uses a backup code up only with the change;
+change and returns an `auth.MFAStepUpProof` bound to that account, a required
+argument of `BeginTOTPRotation`, `ConfirmTOTPRotation`,
+`RegenerateMFABackupCodes` and `DisableMFA`; they refuse a proof of another
+account (or the zero value) with `ErrMFAStepUpInvalid` and use a backup code
+up only with the change;
 `MFAService.VerifyMFACode` checks and uses up a current code at once, for a
 step-up that changes no factor; `RegenerateMFABackupCodes` replaces the backup codes (event
 `auth.mfa.backup_codes_regenerated`) and `MFAStatus` reports the state; they
 need a store implementing `auth.MFASettingsStore`. `auth.TOTPCodeAt(key,
 time)` computes the code an authenticator app shows, for end-to-end tests.
+
+## Upgrading
+
+Release note (forge-rust#36 parity): the MFA contracts changed.
+
+- `MFAService.BeginTOTPRotation`, `ConfirmTOTPRotation`, `DisableMFA` and
+  `RegenerateMFABackupCodes` take a required `MFAStepUpProof` (from
+  `VerifyMFAStepUp`, bound to the account; the JSON handlers make one once
+  their `MFAChangeAuthorizer` passed). `PendingTOTP` takes `rotation bool`.
+  `auth.Browser` and the generated `/mfa` pages are unchanged.
+- `MFALifecycleStore.BeginTOTPRotation`, `ConfirmTOTPRotation`, `DisableMFA`
+  and `MFASettingsStore.ReplaceMFABackupCodes` take `stepUp *Digest`: use
+  that backup code up in the change's transaction and return
+  `ErrMFAStepUpInvalid` (changing nothing) when it is not unused.
+  `MFASettingsStore.HasMFABackupCode` is new, and `LoadPendingTOTP` must set
+  `TOTPSecretRecord.FactorActive` in the same statement. Custom stores must
+  also lock the user row before any MFA row (see PostgreSQL tables).
+  `auth/postgres.Repository` implements all of it; no migration changes.
 
 ## Remaining MFA work
 

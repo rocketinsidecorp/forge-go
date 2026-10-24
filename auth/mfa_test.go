@@ -475,7 +475,7 @@ func TestMFARotationAndDisableLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	subjectID := uuid.MustNew()
-	enrollment, err := service.BeginTOTPRotation(context.Background(), subjectID, "Forge", "alice@example.com")
+	enrollment, err := service.BeginTOTPRotation(context.Background(), subjectID, "Forge", "alice@example.com", changeAuthorizedBy(subjectID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,14 +488,14 @@ func TestMFARotationAndDisableLifecycle(t *testing.T) {
 	}
 	now := service.now().UTC()
 	code := totpCode(rawSecret, uint64(now.Unix()/totpPeriodSeconds))
-	confirmation, err := service.ConfirmTOTPRotation(context.Background(), subjectID, code)
+	confirmation, err := service.ConfirmTOTPRotation(context.Background(), subjectID, code, changeAuthorizedBy(subjectID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(confirmation.BackupCodes) != DefaultMFABackupCodeCount || len(store.backupDigests) != DefaultMFABackupCodeCount {
 		t.Fatalf("backup codes=%d digests=%d", len(confirmation.BackupCodes), len(store.backupDigests))
 	}
-	if err := service.DisableMFA(context.Background(), subjectID); err != nil {
+	if err := service.DisableMFA(context.Background(), subjectID, changeAuthorizedBy(subjectID)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -510,7 +510,8 @@ func TestMFADisableFailsWhenNotEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.DisableMFA(context.Background(), uuid.MustNew()); !errors.Is(err, ErrMFANotEnabled) {
+	subjectID := uuid.MustNew()
+	if err := service.DisableMFA(context.Background(), subjectID, changeAuthorizedBy(subjectID)); !errors.Is(err, ErrMFANotEnabled) {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -617,7 +618,7 @@ func TestMFAFactorLifecycleAuditsCommittedChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rotation, err := service.BeginTOTPRotation(context.Background(), subjectID, "Forge", "alice@example.com")
+	rotation, err := service.BeginTOTPRotation(context.Background(), subjectID, "Forge", "alice@example.com", changeAuthorizedBy(subjectID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -625,10 +626,10 @@ func TestMFAFactorLifecycleAuditsCommittedChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.ConfirmTOTPRotation(context.Background(), subjectID, totpCode(rawRotation, uint64(now.Unix()/totpPeriodSeconds))); err != nil {
+	if _, err := service.ConfirmTOTPRotation(context.Background(), subjectID, totpCode(rawRotation, uint64(now.Unix()/totpPeriodSeconds)), changeAuthorizedBy(subjectID)); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.DisableMFA(context.Background(), subjectID); err != nil {
+	if err := service.DisableMFA(context.Background(), subjectID, changeAuthorizedBy(subjectID)); err != nil {
 		t.Fatal(err)
 	}
 

@@ -191,6 +191,8 @@ func NewTOTPRotationHandler(service *MFAService, issuer string, authorizer MFACh
 			principal.SubjectID(),
 			issuer,
 			principal.SubjectID().String(),
+			// The authorizer is these handlers' step-up.
+			changeAuthorizedBy(principal.SubjectID()),
 		)
 		if err != nil {
 			_, operationApplied := logSecurityAuditFailure(r, err)
@@ -229,7 +231,7 @@ func NewTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChang
 			web.Error(w, r, err)
 			return
 		}
-		confirmation, err := service.ConfirmTOTPRotation(r.Context(), principal.SubjectID(), request.Code)
+		confirmation, err := service.ConfirmTOTPRotation(r.Context(), principal.SubjectID(), request.Code, changeAuthorizedBy(principal.SubjectID()))
 		if err != nil {
 			_, operationApplied := logSecurityAuditFailure(r, err)
 			if !operationApplied {
@@ -262,7 +264,7 @@ func NewMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer) (
 			web.Error(w, r, err)
 			return
 		}
-		if err := service.DisableMFA(r.Context(), principal.SubjectID()); err != nil {
+		if err := service.DisableMFA(r.Context(), principal.SubjectID(), changeAuthorizedBy(principal.SubjectID())); err != nil {
 			_, operationApplied := logSecurityAuditFailure(r, err)
 			if !operationApplied {
 				web.Error(w, r, err)
@@ -507,6 +509,8 @@ func newTOTPRotationHandler(service *MFAService, issuer string, authorizer MFACh
 			principal.SubjectID(),
 			issuer,
 			principal.SubjectID().String(),
+			// The authorizer is these handlers' step-up.
+			changeAuthorizedBy(principal.SubjectID()),
 		)
 		if err != nil {
 			if auditor != nil {
@@ -576,7 +580,7 @@ func newTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChang
 			web.Error(w, r, err)
 			return
 		}
-		confirmation, err := service.ConfirmTOTPRotation(r.Context(), principal.SubjectID(), request.Code)
+		confirmation, err := service.ConfirmTOTPRotation(r.Context(), principal.SubjectID(), request.Code, changeAuthorizedBy(principal.SubjectID()))
 		if err != nil {
 			if auditor != nil {
 				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
@@ -640,7 +644,7 @@ func newMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer, a
 			web.Error(w, r, err)
 			return
 		}
-		if err := service.DisableMFA(r.Context(), principal.SubjectID()); err != nil {
+		if err := service.DisableMFA(r.Context(), principal.SubjectID(), changeAuthorizedBy(principal.SubjectID())); err != nil {
 			if auditor != nil {
 				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
 					Kind:      SecurityMFADisabled,

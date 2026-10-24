@@ -231,6 +231,11 @@ create a key with
 `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='` and keep it in a secret
 manager ([docs/MFA.md](docs/MFA.md), [ADR 0045](docs/adr/0045-generated-mfa-settings-pages.md)).
 
+Release note: the MFA service and store contracts changed (a step-up proof
+bound to the account is required by every change of an existing factor, and
+a step-up backup code is used up with the change); custom stores and direct
+callers port as [docs/MFA.md](docs/MFA.md#upgrading) describes.
+
 Password-reset emails are off until outgoing mail is configured, and so are
 the reset pages and the "Forgot your password?" link. To try them locally,
 add to `.env.local` (or uncomment the same lines in `.env.development`),
