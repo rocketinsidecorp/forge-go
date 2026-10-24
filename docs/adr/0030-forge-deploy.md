@@ -79,13 +79,17 @@ with; migrations are not reverted.
 Routing by Host to one target per service; targets are swapped with an
 atomic pointer and a per-target in-flight count, so a request never reaches a
 retired target and none is dropped during a switch. Control is a Unix socket
-(directory 0700, socket 0600) inside the container, reached with `docker
-exec`; there is no network control surface. State is persisted atomically to
-a volume so a restarted proxy resumes routing. Request bodies are capped
-(413) and small bodies are buffered with a read deadline before forwarding.
+(directory 0700, restricted at start if it exists, socket 0600) inside the
+container, reached with `docker exec`; there is no network control surface.
+State is persisted atomically (file and directory synced) to a volume so a
+restarted proxy resumes routing. Request bodies are capped (413) and small
+bodies are buffered with a read deadline before forwarding. `-idle-timeout`
+bounds keep-alive waits, each write to a client and silence on an upgraded
+connection, so a client that stops reading cannot hold a target open.
 Maintenance mode serves a static 503 page. Access logs are JSON and omit the
 query string. TLS certificates come from Let's Encrypt through
-`autocert`, only for hosts registered with `tls`.
+`autocert`, only for hosts registered with `tls`; its cache directory is
+kept 0700 and its writes are synced.
 
 **Exit codes** (also in `forge help --json`): 0 success, 1 failure, 3 lock
 held, 4 health check failed and reverted, 5 migration failed, 6 hook failed,

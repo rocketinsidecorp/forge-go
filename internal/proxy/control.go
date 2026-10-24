@@ -39,12 +39,13 @@ type ControlResponse struct {
 }
 
 // ListenControl creates the control socket at path. Its directory is
-// created 0700 and the socket is 0600, so only the proxy's user (and root
-// on the host, through `docker exec`) can connect. A stale socket left by a
+// created 0700 (an existing one is restricted to 0700; a link or file there
+// is refused) and the socket is 0600, so only the proxy's user (and root on
+// the host, through `docker exec`) can connect. A stale socket left by a
 // previous process is replaced; any other file at path is an error.
 func ListenControl(path string) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("create control directory: %w", err)
+	if err := privateDir(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("control directory: %w", err)
 	}
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&fs.ModeSocket == 0 {

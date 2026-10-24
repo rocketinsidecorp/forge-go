@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -24,6 +25,11 @@ import (
 // larger, streamed body may wait for data.
 const bodyReadTimeout = 30 * time.Second
 
+// defaultIdleTimeout is the -idle-timeout default: how long a write to a
+// client may make no progress, and how long an upgraded connection may
+// carry no data in either direction.
+const defaultIdleTimeout = 120 * time.Second
+
 // Server routes requests to the current target of each service. Create it
 // with [New]; it is safe for concurrent use.
 type Server struct {
@@ -32,6 +38,8 @@ type Server struct {
 	health    *http.Client
 	// bodyTimeout is bodyReadTimeout; tests shorten it.
 	bodyTimeout time.Duration
+	// idleTimeout is -idle-timeout (defaultIdleTimeout).
+	idleTimeout time.Duration
 
 	mu       sync.RWMutex
 	services map[string]*service
@@ -73,6 +81,7 @@ func New(logger *slog.Logger, statePath string) (*Server, error) {
 		logger:      logger,
 		statePath:   statePath,
 		bodyTimeout: bodyReadTimeout,
+		idleTimeout: defaultIdleTimeout,
 		services:    make(map[string]*service),
 		hosts:       make(map[string]*service),
 		locks:       make(map[string]*sync.Mutex),
@@ -199,12 +208,18 @@ func (t *target) drain(timeout time.Duration) (bool, int64) {
 	}
 }
 
-// ServeHTTP routes r by its Host header.
+// ServeHTTP routes r by its Host header. Every write to the client must
+// make progress within the idle timeout: a client that stops reading is
+// disconnected, which ends the request and releases its target.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	recorder := &statusRecorder{ResponseWriter: w}
+	recorder := &statusRecorder{ResponseWriter: w, controller: http.NewResponseController(w), idle: s.idleTimeout}
 	svc := s.route(r.Host)
 	targetAddr := s.serve(recorder, r, svc)
+	// The server flushes what is still buffered after ServeHTTP returns,
+	// possibly long after the last write (it clears the deadline once the
+	// response is complete).
+	recorder.extendWriteDeadline()
 	name := ""
 	if svc != nil {
 		name = svc.name
@@ -633,13 +648,20 @@ func sortStatuses(statuses []ServiceStatus) {
 	slices.SortFunc(statuses, func(a, b ServiceStatus) int { return strings.Compare(a.Service, b.Service) })
 }
 
-// statusRecorder captures the status and size for the access log. Unwrap
-// lets http.ResponseController reach Flush and Hijack on the original
-// writer, which the reverse proxy needs for streaming and upgrades.
+// statusRecorder captures the status and size for the access log and
+// gives every write to the client the idle timeout to make progress.
+// Unwrap lets http.ResponseController reach the original writer; Hijack
+// hands upgraded connections over with the idle timeout applied.
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
-	bytes  int64
+	controller *http.ResponseController
+	idle       time.Duration
+	status     int
+	bytes      int64
+}
+
+func (r *statusRecorder) extendWriteDeadline() {
+	_ = r.controller.SetWriteDeadline(time.Now().Add(r.idle))
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -653,15 +675,90 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
 	}
+	r.extendWriteDeadline()
 	n, err := r.ResponseWriter.Write(p)
 	r.bytes += int64(n)
 	return n, err
 }
 
+// Hijack hands over an upgraded (WebSocket) connection that is closed once
+// no data moved in either direction for the idle timeout. Every byte of
+// the tunnel crosses this connection, so its reads and writes see all the
+// traffic.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := r.controller.Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	_ = conn.SetDeadline(time.Time{})
+	return newIdleConn(conn, r.idle), rw, nil
+}
+
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (r *statusRecorder) Flush() {
+	r.extendWriteDeadline()
 	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
+	}
+}
+
+// idleConn is a tunnel's client connection. A read fails once no data
+// moved in either direction for idle (a read that times out while the
+// other direction is busy waits again); a write fails once it made no
+// progress for idle, as every write to a client does.
+type idleConn struct {
+	net.Conn
+	idle time.Duration
+	// last is when data last moved, in Unix nanoseconds.
+	last atomic.Int64
+}
+
+func newIdleConn(conn net.Conn, idle time.Duration) *idleConn {
+	c := &idleConn{Conn: conn, idle: idle}
+	c.touch()
+	return c
+}
+
+func (c *idleConn) touch() { c.last.Store(time.Now().UnixNano()) }
+
+// expired reports whether no data moved for idle, and otherwise when that
+// would be.
+func (c *idleConn) expired() (bool, time.Time) {
+	deadline := time.Unix(0, c.last.Load()).Add(c.idle)
+	return !time.Now().Before(deadline), deadline
+}
+
+func (c *idleConn) Read(p []byte) (int, error) {
+	for {
+		_, deadline := c.expired()
+		_ = c.SetReadDeadline(deadline)
+		n, err := c.Conn.Read(p)
+		if n > 0 {
+			c.touch()
+		}
+		if errors.Is(err, os.ErrDeadlineExceeded) && n == 0 {
+			if idle, _ := c.expired(); !idle {
+				continue
+			}
+		}
+		return n, err
+	}
+}
+
+func (c *idleConn) Write(p []byte) (int, error) {
+	written := 0
+	for {
+		_ = c.SetWriteDeadline(time.Now().Add(c.idle))
+		n, err := c.Conn.Write(p[written:])
+		written += n
+		if n > 0 {
+			c.touch()
+		}
+		if errors.Is(err, os.ErrDeadlineExceeded) && n > 0 && written < len(p) {
+			// Progress was made: the client is reading, slowly.
+			continue
+		}
+		return written, err
 	}
 }

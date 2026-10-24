@@ -712,7 +712,9 @@ restart. It:
 - routes by `Host` (one service per host name; a service without hosts gets
   unmatched requests) and answers unknown hosts with `404`;
 - with `ssl: true`, obtains certificates from Let's Encrypt for exactly the
-  configured hosts (TLS 1.2+) and redirects plain HTTP with `308`;
+  configured hosts (TLS 1.2+) and redirects plain HTTP with `308`. The ACME
+  cache directory is kept `0700` (an existing one is restricted at start, a
+  symbolic link is refused), and its files are synced to disk when written;
 - is the internet edge: it drops any `Forwarded`, `X-Forwarded-*` and
   `X-Real-IP` headers the client sent, sets `X-Forwarded-For` to the
   connecting address only (replacing, never appending), `X-Forwarded-Proto`
@@ -727,10 +729,18 @@ restart. It:
   application, and answers `408` if one does not arrive within 30 s; streams
   larger bodies, answering `408` when no data arrives for 30 s; gives the
   application `response_timeout` to send response headers;
+- disconnects clients that hold connections without using them, after
+  `-idle-timeout` (120 s by default): a keep-alive connection waiting for its
+  next request, a response the client stops reading (each write must
+  complete within it), and an upgraded (WebSocket) connection with no data
+  in either direction. The application connection and the in-flight count
+  are released with it, so a stalled client cannot hold a drain open.
+  WebSocket applications should ping more often than that;
 - writes JSON access logs (service, host, method, path without query,
   status, bytes, duration, client IP, target) to `docker logs forge-proxy`;
-- is controlled only through a Unix socket inside the container
-  (`docker exec forge-proxy /usr/local/bin/forge-proxy status`).
+- is controlled only through a Unix socket inside the container (directory
+  `0700`, restricted at start if it already exists; socket `0600`):
+  `docker exec forge-proxy /usr/local/bin/forge-proxy status`.
 
 To upgrade the proxy, change `proxy.image`, then on each host run
 `docker rm -f forge-proxy` and `forge deploy setup`: requests fail for the

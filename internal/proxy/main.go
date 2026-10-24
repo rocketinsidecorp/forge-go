@@ -67,7 +67,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	acmeEmail := flags.String("acme-email", "", "contact address registered with the ACME CA")
 	acmeDirectory := flags.String("acme-directory", "", "ACME directory URL (default: Let's Encrypt production)")
 	readHeaderTimeout := flags.Duration("read-header-timeout", 10*time.Second, "time allowed to read request headers")
-	idleTimeout := flags.Duration("idle-timeout", 120*time.Second, "keep-alive idle timeout")
+	idleTimeout := flags.Duration("idle-timeout", 120*time.Second, "keep-alive idle timeout; also how long a write to a client may make no progress and an upgraded connection may carry no data")
 	shutdownTimeout := flags.Duration("shutdown-timeout", 30*time.Second, "graceful shutdown budget")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -75,10 +75,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if flags.NArg() != 0 {
 		return errors.New("run accepts flags only")
 	}
+	if *idleTimeout <= 0 {
+		return errors.New("-idle-timeout must be positive")
+	}
 	logger := slog.New(slog.NewJSONHandler(stdout, nil))
 	server, err := New(logger, *statePath)
 	if err != nil {
 		return err
+	}
+	server.idleTimeout = *idleTimeout
+	// Everything that can refuse the configuration runs before the control
+	// socket exists.
+	if *httpsAddr != "" {
+		if err := privateDir(*acmeCache); err != nil {
+			return fmt.Errorf("ACME cache: %w", err)
+		}
 	}
 	controlListener, err := ListenControl(*controlPath)
 	if err != nil {
@@ -94,7 +105,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if *httpsAddr != "" {
 		manager := &autocert.Manager{
 			Prompt: autocert.AcceptTOS,
-			Cache:  autocert.DirCache(*acmeCache),
+			Cache:  durableCache{autocert.DirCache(*acmeCache)},
 			Email:  *acmeEmail,
 			HostPolicy: func(_ context.Context, host string) error {
 				if server.TLSHost(host) {
