@@ -2,7 +2,7 @@
 //
 // Tests use the server in FORGE_TEST_POSTGRES_URL, or FORGE_TEST_DATABASE_URL
 // when it is a postgres:// URL. The user needs permission to create
-// databases. Without a server tests are skipped, unless
+// databases (and roles, for NewRLS). Without a server tests are skipped, unless
 // FORGE_TEST_REQUIRE_DATABASE=true turns the skip into a failure (see dbtest).
 package postgrestest
 
@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -20,6 +21,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/dbtest"
 	"github.com/rocketinsidecorp/forge-go/migrate"
 	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // New creates a fresh database, returns a pool connected to it and drops the
@@ -76,6 +78,21 @@ func Config(t testing.TB) config.Database {
 // NewWithConfig is New that also returns the database's configuration.
 func NewWithConfig(t testing.TB) (*postgres.DB, config.Database) {
 	t.Helper()
+	db, cfg, _ := create(t)
+	return db, cfg
+}
+
+// server is the test server's administration URL and the database created
+// on it.
+type server struct {
+	base string
+	name string
+}
+
+// create makes a fresh database on the test server and opens a pool on it
+// as the server's own user.
+func create(t testing.TB) (*postgres.DB, config.Database, server) {
+	t.Helper()
 	base := dbtest.ServerURL(t, config.AdapterPostgres)
 	serverURL, err := url.Parse(base)
 	if err != nil {
@@ -119,5 +136,121 @@ func NewWithConfig(t testing.TB) (*postgres.DB, config.Database) {
 		t.Fatalf("open test database: %v", err)
 	}
 	t.Cleanup(db.Close)
-	return db, cfg
+	return db, cfg, server{base: base, name: name}
+}
+
+// RLS is a migrated test database with the two roles of a deployment that
+// isolates tenants with row-level security (docs/DATABASE.md, "Database
+// roles"), so tests see the policies exactly as the application does.
+type RLS struct {
+	// Admin is the test server's own user (usually a superuser) on the
+	// database, for setup and inspection; it bypasses row-level security.
+	Admin *postgres.DB
+	// Migrator owns the database and the schema and applied the
+	// migrations, like FORGE_MIGRATION_DATABASE_URL's role.
+	Migrator *postgres.DB
+	// Runtime is the role an application serves with (FORGE_DATABASE_URL):
+	// NOSUPERUSER NOBYPASSRLS, it owns nothing and holds only SELECT,
+	// INSERT, UPDATE and DELETE on the tables and USAGE, SELECT and UPDATE
+	// on the sequences the migrator creates.
+	Runtime *postgres.DB
+	// RuntimeConfig is Runtime's configuration, for code that opens its
+	// own pool (for example the application's Configure).
+	RuntimeConfig config.Database
+	// RuntimeRole is the runtime role's name, quoted as an SQL identifier.
+	RuntimeRole string
+}
+
+// NewRLS creates a fresh database owned by a new migrator role, applies the
+// migrations of sets as that role (one globally ordered history, as
+// NewMigratedSets), and connects a new runtime role whose privileges come
+// from the migrator's default privileges, as in the generated
+// docker/postgres/init.sql. The database and both roles are dropped when the
+// test ends. The test server's user must be able to create roles and
+// databases (a superuser, as in the generated compose service and CI).
+func NewRLS(t testing.TB, sets ...fs.FS) *RLS {
+	t.Helper()
+	admin, adminCfg, srv := create(t)
+	suffix := strings.ReplaceAll(uuid.MustNew().String(), "-", "")
+	migratorRole, runtimeRole := "forge_test_migrator_"+suffix, "forge_test_runtime_"+suffix
+	password := strings.ReplaceAll(uuid.MustNew().String(), "-", "")
+	migrator, runtime := pgx.Identifier{migratorRole}.Sanitize(), pgx.Identifier{runtimeRole}.Sanitize()
+	database := pgx.Identifier{srv.name}.Sanitize()
+
+	// Runs after the pools below close and before create's own cleanup: the
+	// roles can be dropped only once the database that refers to them is.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), dbtest.SetupTimeout)
+		defer cancel()
+		conn, err := pgx.Connect(ctx, srv.base)
+		if err != nil {
+			t.Errorf("drop test roles: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close(ctx) }()
+		for _, statement := range []string{
+			"DROP DATABASE IF EXISTS " + database + " WITH (FORCE)",
+			"DROP ROLE IF EXISTS " + runtime,
+			"DROP ROLE IF EXISTS " + migrator,
+		} {
+			if _, err := conn.Exec(ctx, statement); err != nil {
+				t.Errorf("drop test roles: %v", err)
+			}
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), dbtest.SetupTimeout)
+	defer cancel()
+	// Names and the password are generated above, never input.
+	for _, statement := range []string{
+		"CREATE ROLE " + migrator + " LOGIN PASSWORD '" + password + "' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+		"CREATE ROLE " + runtime + " LOGIN PASSWORD '" + password + "' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+		"ALTER DATABASE " + database + " OWNER TO " + migrator,
+		"REVOKE ALL ON SCHEMA public FROM PUBLIC",
+		"GRANT ALL ON SCHEMA public TO " + migrator,
+		"GRANT USAGE ON SCHEMA public TO " + runtime,
+		"ALTER DEFAULT PRIVILEGES FOR ROLE " + migrator + " IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO " + runtime,
+		"ALTER DEFAULT PRIVILEGES FOR ROLE " + migrator + " IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO " + runtime,
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatalf("create the migrator and runtime roles: %v", err)
+		}
+	}
+
+	as := func(role string) config.Database {
+		roleURL, err := url.Parse(adminCfg.URL.Reveal())
+		if err != nil {
+			t.Fatal("the test database URL is not valid") // not wrapped: may contain a password
+		}
+		roleURL.User = url.UserPassword(role, password)
+		cfg := adminCfg
+		cfg.URL = config.NewSecret(roleURL.String())
+		return cfg
+	}
+	migratorCfg, runtimeCfg := as(migratorRole), as(runtimeRole)
+	loaded, err := migrate.LoadMigrationSets(sets...)
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	m, err := postgres.NewMigrator(migratorCfg, loaded, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("open migrator: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+	if _, err := m.Up(ctx); err != nil {
+		t.Fatalf("apply migrations as the migrator role: %v", err)
+	}
+	rls := &RLS{Admin: admin, RuntimeConfig: runtimeCfg, RuntimeRole: runtime}
+	for _, open := range []struct {
+		cfg config.Database
+		db  **postgres.DB
+	}{{migratorCfg, &rls.Migrator}, {runtimeCfg, &rls.Runtime}} {
+		db, err := postgres.Open(ctx, open.cfg)
+		if err != nil {
+			t.Fatalf("connect as a test role: %v", err)
+		}
+		t.Cleanup(db.Close)
+		*open.db = db
+	}
+	return rls
 }
