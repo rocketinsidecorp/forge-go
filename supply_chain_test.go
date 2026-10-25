@@ -116,11 +116,25 @@ func localActionTree(files []string, read func(string) string, isFile func(strin
 func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 	t.Parallel()
 	references := map[*regexp.Regexp]map[string]bool{syftImage: {}, syftScanner: {}}
+	used := map[string]bool{}
 	workflows := workflowFiles(t)
 	files := append(append(workflows, localActionFiles(t, workflows)...), filepath.Join("scripts", "sbom.sh"))
 	for _, path := range files {
 		text := readText(t, path)
 		violations := append(pinViolations(path, text), checkoutViolations(path, text)...)
+		violations = append(violations, allowlistViolations(path, text)...)
+		if path != filepath.Join("scripts", "sbom.sh") {
+			violations = append(violations, yamlSubsetViolations(path, text)...)
+			violations = append(violations, parserViolations(path, text)...)
+		}
+		for _, line := range strings.Split(text, "\n") {
+			code, _ := splitComment(line)
+			for _, reference := range keyValues(code, "uses") {
+				if repository := actionRepository(reference); repository != "" {
+					used[repository] = true
+				}
+			}
+		}
 		// Generated templates name their database image through a template
 		// field; internal/scaffold pins those values.
 		if !strings.Contains(path, "templates") {
@@ -136,6 +150,12 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 				}
 				seen[reference] = true
 			}
+		}
+	}
+	// The allowlist holds what is in use, nothing more.
+	for _, allowed := range allowedActions {
+		if !used[allowed] {
+			t.Errorf("%s is allowlisted but unused", allowed)
 		}
 	}
 	for pattern, seen := range references {

@@ -166,6 +166,32 @@ tags on the default branch. Its README shows the commands.
     spelling (`- uses:`, `"uses":`, `uses :`, quoted value, flow style
     `- { uses: ... }`, an anchor or alias), and a `docker://` action without
     a digest; a local `./` action's `action.yml` is checked like a workflow;
+  - an action outside the allowlist (`allowedActions` in
+    `supply_chain_rules_test.go`, compared without case: `actions/checkout`,
+    `actions/cache`, `actions/setup-go`, `actions/upload-artifact`,
+    `docker/setup-buildx-action`, `docker/login-action`,
+    `docker/build-push-action`, `golangci/golangci-lint-action`,
+    `ossf/scorecard-action`, `sigstore/cosign-installer`, plus local `./`
+    actions), however it is pinned, and every `docker://` action. To add
+    one, review its code and what it downloads, pin it by SHA with its
+    version comment, and add it to `allowedActions` and to the pins below
+    in the same reviewed change; an allowlisted action that is no longer
+    used fails the test too; a sub-path cannot leave the repository (no
+    empty, `.` or `..` segment);
+  - anything outside the simple YAML subset gated files are written in
+    (workflows, local actions, generated-app templates): a carriage return
+    not followed by a line feed, U+0085, U+2028 or U+2029 (line breaks a
+    parser sees and a line reader does not), a byte-order mark past the
+    start; outside block scalars (`run: |`) and plain scalars continued on
+    deeper lines, an anchor (`&`), alias (`*`), tag (`!`, `!!`), explicit
+    key (`?`) or merge key (`<<`) where any key or value starts
+    (`${{ !cancelled() }}`, quoted strings and `run: |` text stay allowed);
+    a flow collection or quoted scalar that does not close on its line; a
+    double-quoted key with an escape. Write a multi-line expression as a
+    `>-` block scalar. Every gated file is also parsed as YAML
+    (`go.yaml.in/yaml/v3`): the parser and the line scanner must read the
+    same `uses` keys, the same values on the same lines (block-scalar text
+    is not scanned, so a decoy there cannot balance a hidden key);
   - a checkout step, in any spelling of `actions/checkout`, that does not
     set `persist-credentials: false` itself (checked per step, not counted);
   - a `container: <image>` shorthand, a job's `container.image` or a

@@ -203,3 +203,121 @@ func TestLocalActionTreeRefusesTraversalAndDirectories(t *testing.T) {
 		t.Errorf("problems %v", problems)
 	}
 }
+
+func TestAllowlistRejectsUnlistedActionsHoweverPinned(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"      - uses: taiki-e/install-action@SHA # v2.62.1",
+		"      - uses: baptiste0928/cargo-install@SHA # v3.3.2",
+		"      - { uses: some/setup-tool@SHA } # v1",
+		"      - uses: actions/checkout-evil@SHA # v7.0.1",
+		"      - uses: docker://alpine@sha256:DIGEST",
+		"      - uses: checkout@SHA # v7",
+		"      - uses: actions/checkout/../../taiki-e/install-action@SHA # v2",
+		"      - uses: actions/checkout/./x@SHA # v7",
+		"      - uses: actions/checkout//x@SHA # v7",
+		// YAML spellings of the key that a line scanner would not see.
+		"      - \"u\\x73es\": taiki-e/install-action@SHA # v2",
+		"      - \"use\\s\": taiki-e/install-action@SHA # v2",
+		"      - ? uses\n        : taiki-e/install-action@SHA # v2",
+		"    steps: [uses: taiki-e/install-action@SHA] # v2",
+		"      - &k uses: taiki-e/install-action@SHA # v2",
+		"      - *k : taiki-e/install-action@SHA # v2",
+		"      - !!str uses: taiki-e/install-action@SHA # v2",
+		"    steps: [{name: x, !!str uses: taiki-e/install-action@SHA}] # v2",
+	} {
+		text := snippet(rejected)
+		violations := append(allowlistViolations("t.yml", text), yamlSubsetViolations("t.yml", text)...)
+		if len(violations) == 0 {
+			t.Errorf("accepted: %s", text)
+		}
+	}
+	for _, accepted := range []string{
+		"      - uses: actions/checkout@SHA # v7.0.1",
+		"      - uses: Actions/Setup-Go@SHA # v7.0.0",
+		"      - uses: docker/build-push-action/subdir@SHA # v7",
+		"      - uses: ./.github/actions/tool",
+		"    steps: [uses: actions/checkout@SHA] # v7.0.1",
+		// Inside a block scalar, `*`, `&` and `!` are shell, not YAML.
+		"      - run: |\n          case \"$x\" in\n            *) echo \"!\" & wait ;;\n          esac\n      - uses: actions/checkout@SHA # v7.0.1",
+		"    branches: [main]\n    tags: [\"v*\"]",
+	} {
+		text := snippet(accepted)
+		violations := append(allowlistViolations("t.yml", text), yamlSubsetViolations("t.yml", text)...)
+		if len(violations) != 0 {
+			t.Errorf("rejected: %v", violations)
+		}
+	}
+}
+
+func TestParserAndScannerAgreeOnUsesKeys(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"steps:\n  - \"u\\x73es\": a/b@c\n",
+		"steps:\n  - ? uses\n    : a/b@c\n",
+		"steps:\n  - &k uses: a/b@c\n  - *k : d/e@f\n",
+		"steps:\n  - !!str uses: a/b@c\n",
+		"base: &base\n  uses: a/b@c\nsteps:\n  - <<: *base\n",
+		"steps: [\n",
+		// A decoy inside a block scalar cannot balance a hidden key.
+		"steps:\n  - run: |\n      uses: actions/cache@c # v4\n  - \"u\\x73es\": evil/tool@main\n",
+		"steps:\n  - uses: actions/checkout@c\r  - uses: evil/tool@main\n",
+	} {
+		if len(parserViolations("t.yml", rejected)) == 0 {
+			t.Errorf("accepted: %q", rejected)
+		}
+	}
+	for _, accepted := range []string{
+		"steps:\n  - uses: a/b@c\n  - { uses: d/e@f }\n  - run: |\n      echo uses\n",
+		"steps: [uses: a/b@c]\n",
+	} {
+		if violations := parserViolations("t.yml", accepted); len(violations) != 0 {
+			t.Errorf("rejected: %v", violations)
+		}
+	}
+	// A template's directives are not YAML.
+	template := "{{- if .DB}}\n    services:\n      {{.DB.Service}}:\n        image: {{.DB.Image}}\n{{- end}}\n    steps:\n      - uses: a/b@c\n"
+	if violations := parserViolations("ci.yml.tmpl", template); len(violations) != 0 {
+		t.Errorf("rejected: %v", violations)
+	}
+}
+
+func TestYAMLSubsetRefusesWhatALineScannerCouldMisread(t *testing.T) {
+	t.Parallel()
+	decoy := "      - uses: actions/checkout@SHA # v7.0.1"
+	for _, rejected := range []string{
+		decoy + "\r      - uses: evil/tool@main\n",
+		decoy + "\u0085      - uses: evil/tool@main\n",
+		decoy + "\u2028      - uses: evil/tool@main\n",
+		decoy + "\u2029      - uses: evil/tool@main\n",
+		decoy + "\n\uFEFF      - uses: evil/tool@main\n",
+		"    steps: !!seq [ {\"u\\x73es\": evil/tool@main} ]\n",
+		"    steps: &s [ {uses: actions/checkout@SHA} ]\n",
+		"    steps: *s\n",
+		"      - <<: *base\n",
+		"      - name: x\n        with: !!map {a: b}\n",
+		"      - with: {a: &x b}\n",
+		"      - ? uses\n        : evil/tool@main\n",
+		"    steps: [\n      {uses: evil/tool@main} ]\n",
+		"    steps: [ {name: x},\n      uses: evil/tool@main ]\n",
+		"      - name: \"x\n        uses: evil/tool@main\"\n",
+		"      - \"u\\x73es\": evil/tool@main\n",
+	} {
+		if text := snippet(rejected); len(yamlSubsetViolations("t.yml", text)) == 0 {
+			t.Errorf("accepted: %q", text)
+		}
+	}
+	for _, accepted := range []string{
+		"\uFEFFname: CI\non:\n  push:\n    branches: [main]\n    tags: [\"v*\"]\npermissions: {}\n",
+		"jobs:\n  x:\n    if: ${{ !cancelled() }}\n    steps:\n      - run: |\n          case \"$x\" in\n            *) echo \"!\" & wait ;;\n          esac\n          # deeper comment\n      - uses: actions/checkout@SHA # v7.0.1\n",
+		// A plain scalar continued on deeper lines is text, `&&` and `!` too.
+		"    if: github.event_name == 'push'\n      && !cancelled()\n    runs-on: ubuntu-latest\n",
+		"      - run: echo \"a #b\" && echo it's\n      - name: 'it''s'\n        with: {a: b, c: [d, e]}\n",
+		"    if: >-\n      github.event_name == 'push'\n      && !cancelled()\n",
+		"on:\r\n  push:\r\n",
+	} {
+		if violations := yamlSubsetViolations("t.yml", snippet(accepted)); len(violations) != 0 {
+			t.Errorf("rejected: %v", violations)
+		}
+	}
+}
