@@ -1,0 +1,39 @@
+-- Development-only PostgreSQL roles for {{.Name}}. The postgres image runs this
+-- once, as its superuser, when its volume is empty (`docker compose down -v`
+-- starts over). The passwords are development-only: never reuse them.
+--
+-- app_runtime is the role the application serves with (FORGE_DATABASE_URL):
+-- not a superuser, no BYPASSRLS, it owns nothing and has only data
+-- privileges, so the row-level security policies apply to it and it cannot
+-- run DDL. app_migrator owns the database and its schema and applies the
+-- migrations (FORGE_MIGRATION_DATABASE_URL). It may create databases and end
+-- other roles' sessions so that `forge db create`, `drop` and `reset` work
+-- against this container; a production migration role needs neither.
+
+CREATE ROLE app_migrator
+    LOGIN PASSWORD 'app_migrator'
+    NOSUPERUSER CREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+
+CREATE ROLE app_runtime
+    LOGIN PASSWORD 'app_runtime'
+    NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+
+GRANT pg_signal_backend TO app_migrator;
+
+-- Set in template1, so the database below and every database `forge db
+-- create` or `reset` makes later start with the same privileges.
+\connect template1
+
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT ALL ON SCHEMA public TO app_migrator;
+GRANT USAGE ON SCHEMA public TO app_runtime;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_runtime;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA public
+    GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO app_runtime;
+
+\connect postgres
+
+CREATE DATABASE "{{.DBName}}" OWNER app_migrator;

@@ -78,7 +78,7 @@ func (c *mfaClock) code(t *testing.T, key string) string {
 // make: no CSRF token, no or a wrong password, a wrong, used or another
 // account's code. It needs FORGE_TEST_DATABASE_URL and is skipped otherwise.
 func TestMFAPagesAgainstPostgres(t *testing.T) {
-	database := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	database := postgrestest.NewRLS(t, authpostgres.Migrations()).Runtime // as the application serves
 	repository, err := authpostgres.New(database)
 	if err != nil {
 		t.Fatal(err)

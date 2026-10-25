@@ -28,6 +28,23 @@ container, then starts the app. The database is published on
 `127.0.0.1:{{.DBHostPort}}`, a port derived from the application name so it does not
 clash with a locally installed server; change it in both `compose.yaml` and
 `.env.development` if needed.
+{{- if .DevMigrationURL}}
+
+On its first start, `docker/postgres/init.sql` creates the database and two
+development-only roles: `app_migrator`, which owns the schema and applies
+migrations (`FORGE_MIGRATION_DATABASE_URL`, given only to the `migrate`
+container), and `app_runtime`, which the app serves with
+(`FORGE_DATABASE_URL`): no superuser, no `BYPASSRLS`, no ownership, only data
+privileges, so row-level security applies to it and it cannot change the
+schema. `.env.development` uses the same roles; tests connect as the
+`postgres` superuser to create their own databases and roles, and run the
+repositories as a fresh runtime role. To start over (this re-runs
+`init.sql`):
+
+```bash
+docker compose down --volumes
+```
+{{- end}}
 {{- else}}
 
 This applies migrations with a one-off `migrate` container, then starts the
@@ -442,8 +459,23 @@ persistent volume there and run a single application instance.
 Run migrations before rolling out a release with the same image:
 
 ```bash
+{{- if .DevMigrationURL}}
+docker run --rm -e FORGE_ENV=production -e FORGE_DATABASE_URL=... -e FORGE_MIGRATION_DATABASE_URL=... {{.Name}} migrate
+{{- else}}
 docker run --rm -e FORGE_ENV=production -e FORGE_DATABASE_URL=... {{.Name}} migrate
+{{- end}}
 ```
+{{- if .DevMigrationURL}}
+
+`FORGE_MIGRATION_DATABASE_URL` is the role that owns the schema; give it to
+this step only. The serving containers get `FORGE_DATABASE_URL` alone, for a
+role that is `NOSUPERUSER NOBYPASSRLS`, owns no table and holds only
+`SELECT, INSERT, UPDATE, DELETE`: in production the app refuses to start when
+that role is a superuser or has `BYPASSRLS`, because either would bypass the
+tenant isolation of row-level security. Provisioning both roles is described
+in Forge's
+[Database roles](https://github.com/rocketinsidecorp/forge-go/blob/main/docs/DATABASE.md#database-roles-postgresql).
+{{- end}}
 
 Concurrent `migrate` runs are serialized by {{.DB.MigrationLock}}.
 {{- end}}

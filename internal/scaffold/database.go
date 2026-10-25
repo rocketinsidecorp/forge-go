@@ -71,10 +71,14 @@ func profileFor(name, user, database string) *databaseProfile {
 			// The PostgreSQL 18 image keeps its data in a versioned
 			// subdirectory of /var/lib/postgresql.
 			VolumePath: "/var/lib/postgresql",
+			// The image's superuser creates the database and the
+			// app_migrator and app_runtime roles (docker/postgres/init.sql).
 			Env: [][2]string{
-				{"POSTGRES_USER", user}, {"POSTGRES_PASSWORD", "development"}, {"POSTGRES_DB", database},
+				{"POSTGRES_USER", "postgres"}, {"POSTGRES_PASSWORD", "development"}, {"POSTGRES_DB", "postgres"},
 			},
-			Healthcheck: fmt.Sprintf(`["CMD-SHELL", "pg_isready -U %s -d %s"]`, user, database),
+			// TCP: while init.sql runs, the server listens on its socket
+			// only, so the check passes once the roles and database exist.
+			Healthcheck: fmt.Sprintf(`["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d %s"]`, database),
 			CIEnv:       [][2]string{{"POSTGRES_USER", "forge"}, {"POSTGRES_PASSWORD", "forge"}},
 			CIHealthCmd: "pg_isready -U forge",
 			CITestURL:   "postgres://forge:forge@127.0.0.1:5432/postgres?sslmode=disable",
@@ -124,10 +128,11 @@ func profileFor(name, user, database string) *databaseProfile {
 func databaseURLs(profile *databaseProfile, user, database string, hostPort int) (app, development, test string) {
 	switch profile.Adapter {
 	case "postgres":
-		format := "postgres://%s:development@%s/%s?sslmode=disable"
-		development = fmt.Sprintf(format, user, fmt.Sprintf("127.0.0.1:%d", hostPort), database)
-		// The POSTGRES_USER role is a superuser: it can create test databases.
-		return fmt.Sprintf(format, user, "postgres:5432", database), development, development
+		// The application serves as the runtime role. Tests connect as the
+		// image's superuser, which can create their databases and roles.
+		app = postgresURL(runtimeRole, "postgres:5432", database)
+		development = postgresURL(runtimeRole, fmt.Sprintf("127.0.0.1:%d", hostPort), database)
+		return app, development, postgresURL("postgres", fmt.Sprintf("127.0.0.1:%d", hostPort), "postgres")
 	case "mysql":
 		app = fmt.Sprintf("mysql://%s:development@%s:3306/%s", user, profile.Service, database)
 		development = fmt.Sprintf("mysql://%s:development@127.0.0.1:%d/%s", user, hostPort, database)
@@ -137,6 +142,34 @@ func databaseURLs(profile *databaseProfile, user, database string, hostPort int)
 	default: // sqlite: tests use temporary files and need no URL.
 		return "sqlite:///app/storage/development.db", "sqlite:storage/development.db", ""
 	}
+}
+
+// The development PostgreSQL roles docker/postgres/init.sql creates, with
+// their names as passwords, as Forge-Rust's: the migration role owns the
+// schema, the runtime role is what the application serves with.
+const (
+	migratorRole = "app_migrator"
+	runtimeRole  = "app_runtime"
+)
+
+// postgresURL is a development PostgreSQL URL. The image's superuser has
+// the password "development", the roles of init.sql their own names.
+func postgresURL(role, address, database string) string {
+	password := role
+	if role == "postgres" {
+		password = "development"
+	}
+	return fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable", role, password, address, database)
+}
+
+// migrationURLs returns FORGE_MIGRATION_DATABASE_URL inside compose and on
+// the host: the migration role for PostgreSQL, and none for the other
+// databases, which serve and migrate as one user.
+func migrationURLs(profile *databaseProfile, database string, hostPort int) (app, development string) {
+	if profile.Adapter != "postgres" {
+		return "", ""
+	}
+	return postgresURL(migratorRole, "postgres:5432", database), postgresURL(migratorRole, fmt.Sprintf("127.0.0.1:%d", hostPort), database)
 }
 
 // databaseIdentifiers derives the database user and name from the

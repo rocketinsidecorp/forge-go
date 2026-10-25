@@ -71,6 +71,11 @@ type templateData struct {
 	AppDatabaseURL  string
 	DevDatabaseURL  string
 	TestDatabaseURL string
+	// AppMigrationURL and DevMigrationURL are FORGE_MIGRATION_DATABASE_URL
+	// inside compose and on the host: the role that owns the schema, when it
+	// differs from the serving one (PostgreSQL).
+	AppMigrationURL string
+	DevMigrationURL string
 	// MFAEncryptionKey is the base64-encoded 32-byte key for MFA secret encryption.
 	MFAEncryptionKey string
 }
@@ -92,6 +97,8 @@ const (
 	// identity (PostgreSQL): the HTML sign-in, sign-out and password pages.
 	// `forge generate authentication` renders the same files.
 	withIdentity
+	// withPostgres files are generated only for PostgreSQL applications.
+	withPostgres
 )
 
 type asset struct {
@@ -131,6 +138,7 @@ var files = []file{
 	{"Dockerfile.tmpl", fixed("Dockerfile"), everyApplication},
 	{"dockerignore.tmpl", fixed(".dockerignore"), everyApplication},
 	{"compose.yaml.tmpl", fixed("compose.yaml"), everyApplication},
+	{"postgres_init.sql.tmpl", fixed(filepath.Join("docker", "postgres", "init.sql")), withPostgres},
 	{"compose.observability.yaml.tmpl", fixed("compose.observability.yaml"), everyApplication},
 	{"gitignore.tmpl", fixed(".gitignore"), everyApplication},
 	{"ci.yml.tmpl", fixed(filepath.Join(".github", "workflows", "ci.yml")), everyApplication},
@@ -382,6 +390,7 @@ func render(opts Options) (map[string][]byte, error) {
 	data.DBUser, data.DBName = databaseIdentifiers(opts.Name)
 	if data.DB = profileFor(opts.Database, data.DBUser, data.DBName); data.DB != nil {
 		data.AppDatabaseURL, data.DevDatabaseURL, data.TestDatabaseURL = databaseURLs(data.DB, data.DBUser, data.DBName, data.DBHostPort)
+		data.AppMigrationURL, data.DevMigrationURL = migrationURLs(data.DB, data.DBName, data.DBHostPort)
 	}
 	// Keep the generated MFA key in the git-ignored .env.local, not the
 	// committed .env.development defaults.
@@ -427,7 +436,8 @@ func selectedFiles(opts Options) []file {
 	for _, f := range files {
 		switch {
 		case f.scope == withDatabase && opts.Database == "",
-			f.scope == withIdentity && !identity:
+			f.scope == withIdentity && !identity,
+			f.scope == withPostgres && opts.Database != "postgresql":
 			continue
 		}
 		selected = append(selected, f)

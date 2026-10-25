@@ -9,6 +9,9 @@ import (
 	{{- end}}
 	"context"
 	"encoding/json"
+	{{- if and .DB (eq .DB.Adapter "postgres")}}
+	"errors"
+	{{- end}}
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +31,9 @@ import (
 {{- if .DB}}
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}/{{.DB.TestPackage}}"
+{{- if eq .DB.Adapter "postgres"}}
+	"github.com/rocketinsidecorp/forge-go/postgres"
+{{- end}}
 {{- end}}
 )
 
@@ -246,7 +252,13 @@ func TestBrowserPipelineRequiresCSRFToken(t *testing.T) {
 {{- end}}
 func TestConfigureConnectsToDatabase(t *testing.T) {
 	cfg := config.Default()
+{{- if eq .DB.Adapter "postgres"}}
+	// As the runtime role the application serves with (no superuser, no
+	// BYPASSRLS, data privileges only).
+	cfg.Database = postgrestest.NewRLS(t).RuntimeConfig
+{{- else}}
 	cfg.Database = {{.DB.TestPackage}}.Config(t)
+{{- end}}
 {{- if .DB.Identity}}
 	cfg.Auth.MFAKey = config.NewSecret("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 {{- end}}
@@ -315,6 +327,31 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 	}
 {{- end}}
 }
+{{- if eq .DB.Adapter "postgres"}}
+
+// TestConfigureRefusesARowSecurityBypassInProduction: in production the
+// application refuses to serve as a role that bypasses row-level security,
+// here the test server's superuser, so tenant isolation never silently
+// depends on every query's own predicate.
+func TestConfigureRefusesARowSecurityBypassInProduction(t *testing.T) {
+	cfg := config.Default()
+	cfg.Environment = config.Production
+	cfg.HTTP.Transport = config.TransportTrustedProxy
+	cfg.Database = postgrestest.Config(t)
+	cfg.Database.AllowPlaintext = true // the test server has no TLS
+{{- if .DB.Identity}}
+	cfg.Auth.MFAKey = config.NewSecret("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+{{- end}}
+	app, err := forge.New(forge.WithConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.Close(context.Background()) })
+	if err := Configure(context.Background(), app); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+		t.Fatalf("Configure as a superuser in production: err = %v, want postgres.ErrRowSecurityBypass", err)
+	}
+}
+{{- end}}
 {{- if .DB.Identity}}
 
 // TestPasswordResetPagesNeedOutgoingMail configures mail (the development
