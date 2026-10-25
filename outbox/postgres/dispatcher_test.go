@@ -187,26 +187,46 @@ func TestRunDeliversConcurrentEventsAndStopsOnCancellation(t *testing.T) {
 	}
 }
 
+// The handler outlives the lease it was claimed with. It does not sleep for
+// a guessed time: it returns once the database shows both that the initial
+// lease has run out and that the lease was extended past it, so the event
+// can only be delivered if renewals really happened. The lease is five
+// seconds and renewals come every third of it; a scheduling stall would
+// have to last well over three seconds to lose the lease.
 func TestRunRenewsLeaseDuringLongHandler(t *testing.T) {
 	db := postgrestest.NewMigrated(t, Migrations())
 	insertEvents(t, db, 1)
 	var calls atomic.Int32
-	d, err := NewDispatcher(db.Pool(), func(ctx context.Context, _ events.Event) error {
+	var renewed atomic.Bool
+	d, err := NewDispatcher(db.Pool(), func(ctx context.Context, event events.Event) error {
 		calls.Add(1)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-			return nil
+		var initial time.Time
+		if err := db.QueryRow(ctx, `SELECT lease_until FROM forge_outbox_events WHERE id = $1`, event.ID).Scan(&initial); err != nil {
+			return err
 		}
-	}, DispatcherOptions{Workers: 2, PollInterval: time.Millisecond, Lease: time.Second})
+		for {
+			var expired, extended bool
+			if err := db.QueryRow(ctx, `SELECT clock_timestamp() > $1, lease_until > $1 FROM forge_outbox_events WHERE id = $2`, initial, event.ID).Scan(&expired, &extended); err != nil {
+				return err
+			}
+			if expired && extended {
+				renewed.Store(true)
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}, DispatcherOptions{Workers: 2, PollInterval: time.Millisecond, Lease: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { result <- d.Run(ctx) }()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(60 * time.Second)
 	for {
 		var count int
 		if err := db.QueryRow(context.Background(), `SELECT count(*) FROM forge_outbox_events WHERE delivered_at IS NOT NULL`).Scan(&count); err != nil {
@@ -220,12 +240,15 @@ func TestRunRenewsLeaseDuringLongHandler(t *testing.T) {
 		case <-deadline:
 			cancel()
 			t.Fatal("timed out waiting for event acknowledgement")
-		case <-time.After(5 * time.Millisecond):
+		case <-time.After(20 * time.Millisecond):
 		}
 	}
 	cancel()
 	if err := <-result; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() error=%v, want context.Canceled", err)
+	}
+	if !renewed.Load() {
+		t.Error("the event was delivered without the lease being extended past its first expiry")
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("handler calls=%d, want one despite handler exceeding the initial lease", got)

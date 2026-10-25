@@ -163,11 +163,11 @@ func TestInstrumentedConnWithoutOptionalInterfacesBehavesLikeDatabaseSQL(t *test
 	if len(base.prepared) != 1 || stmt.NumInput() != 2 {
 		t.Fatalf("prepared %v, NumInput %d", base.prepared, stmt.NumInput())
 	}
-	result, err := stmt.Exec([]driver.Value{int64(1), "x"})
+	result, err := stmt.Exec([]driver.Value{int64(1), "x"}) //nolint:staticcheck // the legacy method is what the wrapper must forward
 	if n, _ := result.RowsAffected(); err != nil || n != 7 {
 		t.Fatalf("Exec = %v, %v", n, err)
 	}
-	rows, err := stmt.Query([]driver.Value{int64(2)})
+	rows, err := stmt.Query([]driver.Value{int64(2)}) //nolint:staticcheck // the legacy method is what the wrapper must forward
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestInstrumentedConnTransactionsFollowDatabaseSQLRules(t *testing.T) {
 	if _, err := begin.BeginTx(context.Background(), driver.TxOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Begin(); err != nil {
+	if _, err := conn.Begin(); err != nil { //nolint:staticcheck // the legacy method is what the wrapper must forward
 		t.Fatal(err)
 	}
 	if base.begun != 2 {
