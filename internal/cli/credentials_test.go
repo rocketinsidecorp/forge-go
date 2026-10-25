@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -677,6 +679,112 @@ func TestCredentialsRotateKeyKeepOldWithAFullEnvironmentListPrintsNothing(t *tes
 	}
 	if !bytes.Equal(before, fileBytes(t, h.encPath("production"))) {
 		t.Fatal("the file changed")
+	}
+}
+
+// readableAtEveryStep records, after each file rotate-key writes, whether the
+// credentials file on disk opens with the key file on disk.
+func (h *credHarness) readableAtEveryStep(env string) *[]string {
+	var steps []string
+	noEnv := func(string) (string, bool) { return "", false }
+	h.ctx.afterWrite = func(step string) {
+		readable := false
+		if keys, _, err := credentials.LoadKeys(h.ctx.dir, env, noEnv); err == nil {
+			if file, err := credentials.ReadFile(h.ctx.dir, env); err == nil {
+				_, err = credentials.Unseal(env, file, keys)
+				readable = err == nil
+			}
+		}
+		steps = append(steps, fmt.Sprintf("%s: %t", step, readable))
+	}
+	return &steps
+}
+
+func TestCredentialsRotateKeyKeepsThePairOnDiskReadableAtEveryStep(t *testing.T) {
+	for _, keepOld := range []bool{false, true} {
+		h := newCredHarness(t)
+		h.seed(t, "production")
+		// The file is sealed with the last key of the list, not the first.
+		keys := h.fullKeyList(t, "production")
+		args := []string{"rotate-key", "--environment", "production"}
+		want := []string{"key file with the new key: true", "credentials file: true"}
+		if keepOld {
+			keys = keys[len(keys)-3:]
+			args = append(args, "--keep-old")
+		} else {
+			want = append(want, "key file without the old keys: true")
+		}
+		if err := credentials.WriteKeyFile(h.ctx.dir, "production", keys, true); err != nil {
+			t.Fatal(err)
+		}
+		steps := h.readableAtEveryStep("production")
+		if err := h.run(t, args...); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(*steps, want) {
+			t.Fatalf("keep-old %t: steps %q, want %q", keepOld, *steps, want)
+		}
+	}
+}
+
+func TestCredentialsRotateKeyRefusesAWritableDirectoryBeforeShowingAKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits")
+	}
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keys, _, _ := credentials.LoadKeys(h.ctx.dir, "production", h.ctx.lookup)
+	if err := os.Remove(h.keyPath("production")); err != nil {
+		t.Fatal(err)
+	}
+	h.env[credentials.EnvMasterKey] = encryption.EncodeKey(keys[0].Material)
+	before := fileBytes(t, h.encPath("production"))
+	if err := os.Chmod(h.ctx.dir, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	err := h.run(t, "rotate-key", "--environment", "production", "--print-key", "--write-key-file")
+	_ = os.Chmod(h.ctx.dir, 0o700)
+	if !errors.Is(err, credentials.ErrDirectoryPermissions) {
+		t.Fatalf("writable directory: %v", err)
+	}
+	if h.stdout.Len() != 0 {
+		t.Fatalf("a key was printed: %q", h.stdout.String())
+	}
+	if _, err := os.Stat(h.keyPath("production")); err == nil {
+		t.Fatal("a key file appeared")
+	}
+	if !bytes.Equal(before, fileBytes(t, h.encPath("production"))) {
+		t.Fatal("the file changed")
+	}
+}
+
+func TestCredentialsFailedRotationRemovesAKeyFileThatDidNotExist(t *testing.T) {
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keys, _, _ := credentials.LoadKeys(h.ctx.dir, "production", h.ctx.lookup)
+	if err := os.Remove(h.keyPath("production")); err != nil {
+		t.Fatal(err)
+	}
+	h.env[credentials.EnvMasterKey] = encryption.EncodeKey(keys[0].Material)
+	// Once the key file is written, the credentials file cannot be replaced:
+	// a non-empty directory takes its name.
+	encrypted := h.encPath("production")
+	h.ctx.afterWrite = func(step string) {
+		if step != "key file with the new key" {
+			return
+		}
+		if err := os.Remove(encrypted); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(encrypted, "blocker"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.run(t, "rotate-key", "--environment", "production", "--write-key-file"); err == nil {
+		t.Fatal("the credentials file could not be written, yet the rotation succeeded")
+	}
+	if _, err := os.Stat(h.keyPath("production")); err == nil {
+		t.Fatal("the restore left the new key list behind")
 	}
 }
 

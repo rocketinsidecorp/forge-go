@@ -36,7 +36,8 @@ type credentialsContext struct {
 	stdout, stderr io.Writer
 	stdoutIsTTY    func() bool
 	editor         editorRunner
-	afterRead      func() // test hook: runs after rotate-key has read the file
+	afterRead      func()            // test hook: runs after rotate-key has read the file
+	afterWrite     func(step string) // test hook: runs after each file rotate-key writes
 }
 
 func runCredentials(args []string, stdout, stderr io.Writer) error {
@@ -300,6 +301,27 @@ func (c *credentialsContext) rotate(env string, keepOld, printKey, writeKeyFile 
 	if err != nil || !bytes.Equal(current, file) {
 		return errors.New("the credentials file changed during rotation; nothing was re-encrypted, run the command again")
 	}
+	// The key file's directory must accept a key, and what a failed rotation
+	// restores is known, before the new key is shown: the key list it
+	// replaces, or no key file at all.
+	var previous []encryption.Key
+	if toFile {
+		if err := credentials.PrepareKeyDir(c.dir); err != nil {
+			return err
+		}
+		previous = keys
+		if source.Environment {
+			existing, _, err := credentials.LoadKeys(c.dir, env, func(string) (string, bool) { return "", false })
+			switch {
+			case errors.Is(err, credentials.ErrKeyMissing):
+				previous = nil
+			case err != nil:
+				return err
+			default:
+				previous = existing
+			}
+		}
+	}
 	if printKey {
 		// Before any file changes: if this fails, nothing was modified.
 		if _, err := fmt.Fprintln(c.stdout, joinKeys(final)); err != nil {
@@ -314,20 +336,30 @@ func (c *credentialsContext) rotate(env string, keepOld, printKey, writeKeyFile 
 		if err := credentials.WriteKeyFile(c.dir, env, withOld, true); err != nil {
 			return err
 		}
+		c.wrote("key file with the new key")
 	}
 	if err := credentials.WriteFile(c.dir, env, sealed, true); err != nil {
 		if toFile {
-			// The file is unchanged: put the previous key list back.
-			if restoreErr := credentials.WriteKeyFile(c.dir, env, keys, true); restoreErr != nil {
+			// The file is unchanged: put the previous key list back, or
+			// remove the key file when there was none.
+			var restoreErr error
+			if previous != nil {
+				restoreErr = credentials.WriteKeyFile(c.dir, env, previous, true)
+			} else {
+				restoreErr = os.Remove(filepath.Join(c.dir, credentials.KeyFileName(env)))
+			}
+			if restoreErr != nil {
 				err = errors.Join(err, fmt.Errorf("could not restore the previous key file: %w", restoreErr))
 			}
 		}
 		return err
 	}
+	c.wrote("credentials file")
 	if toFile && !keepOld {
 		if err := credentials.WriteKeyFile(c.dir, env, final, true); err != nil {
 			return fmt.Errorf("re-encrypted, but could not drop the old keys from the key file: %w", err)
 		}
+		c.wrote("key file without the old keys")
 	}
 	retained := "the previous key is no longer accepted"
 	if keepOld {
@@ -336,6 +368,12 @@ func (c *credentialsContext) rotate(env string, keepOld, printKey, writeKeyFile 
 	_, err = fmt.Fprintf(c.stderr, "re-encrypted %s with key %s; %s\nupdate FORGE_MASTER_KEY wherever it is stored (docs/CREDENTIALS.md, \"Rotating the key\")\n",
 		filepath.Join(c.dir, credentials.FileName(env)), fresh.ID, retained)
 	return err
+}
+
+func (c *credentialsContext) wrote(step string) {
+	if c.afterWrite != nil {
+		c.afterWrite(step)
+	}
 }
 
 func joinKeys(keys []encryption.Key) string {

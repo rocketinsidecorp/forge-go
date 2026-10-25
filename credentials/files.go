@@ -219,21 +219,11 @@ func WriteKeyFile(dir, env string, keys []encryption.Key, replace bool) error {
 	if len(keys) == 0 || len(keys) > MaxKeys {
 		return fmt.Errorf("credentials: between 1 and %d keys are required", MaxKeys)
 	}
-	if dir == "" {
-		dir = DefaultDir
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	root, err := os.OpenRoot(dir)
+	root, dir, err := keyDir(dir)
 	if err != nil {
 		return err
 	}
-	err = checkPrivateDir(root, dir)
-	_ = root.Close()
-	if err != nil {
-		return err
-	}
+	defer func() { _ = root.Close() }()
 	var text strings.Builder
 	for _, key := range keys {
 		text.WriteString(encryption.EncodeKey(key.Material))
@@ -241,10 +231,42 @@ func WriteKeyFile(dir, env string, keys []encryption.Key, replace bool) error {
 	}
 	data := []byte(text.String())
 	defer clear(data)
-	return writeAtomic(dir, KeyFileName(env), data, replace)
+	return writeAtomicIn(root, dir, KeyFileName(env), data, replace)
 }
 
-func writeAtomic(dir, name string, data []byte, replace bool) (err error) {
+// PrepareKeyDir makes dir ready to hold key files: it creates dir with mode
+// 0700 when missing and refuses an existing directory that group or others
+// can write (ErrDirectoryPermissions). WriteKeyFile does the same; call this
+// first to fail before showing a new key to anyone.
+func PrepareKeyDir(dir string) error {
+	root, _, err := keyDir(dir)
+	if err != nil {
+		return err
+	}
+	return root.Close()
+}
+
+// keyDir creates and opens the key directory and checks it on the opened
+// root, so the directory checked is the one written to.
+func keyDir(dir string) (*os.Root, string, error) {
+	if dir == "" {
+		dir = DefaultDir
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, dir, err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, dir, err
+	}
+	if err := checkPrivateDir(root, dir); err != nil {
+		_ = root.Close()
+		return nil, dir, err
+	}
+	return root, dir, nil
+}
+
+func writeAtomic(dir, name string, data []byte, replace bool) error {
 	if dir == "" {
 		dir = DefaultDir
 	}
@@ -256,6 +278,11 @@ func writeAtomic(dir, name string, data []byte, replace bool) (err error) {
 		return err
 	}
 	defer func() { _ = root.Close() }()
+	return writeAtomicIn(root, dir, name, data, replace)
+}
+
+// writeAtomicIn stores name in root (the directory dir) atomically.
+func writeAtomicIn(root *os.Root, dir, name string, data []byte, replace bool) (err error) {
 	if !replace {
 		if _, statErr := root.Lstat(name); statErr == nil {
 			return fmt.Errorf("%w: %s", fs.ErrExist, filepath.Join(dir, name))
@@ -291,18 +318,18 @@ func writeAtomic(dir, name string, data []byte, replace bool) (err error) {
 			return err
 		}
 		_ = root.Remove(temp)
-		return syncDir(dir)
+		return syncDir(root)
 	}
 	if err = root.Rename(temp, name); err != nil {
 		return err
 	}
-	return syncDir(dir)
+	return syncDir(root)
 }
 
 // syncDir makes the rename durable. It is best effort: some platforms cannot
 // fsync a directory.
-func syncDir(dir string) error {
-	d, err := os.Open(dir) // #nosec G304 -- dir is the credentials directory chosen by the application
+func syncDir(root *os.Root) error {
+	d, err := root.Open(".")
 	if err != nil {
 		return nil
 	}
