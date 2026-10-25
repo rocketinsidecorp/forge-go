@@ -258,7 +258,7 @@ const mfaTestPassword = "correct horse battery staple"
 
 func newMFASettingsFixture(t *testing.T, throttle LoginThrottleConfig) *mfaSettingsFixture {
 	t.Helper()
-	hash, err := HashPassword(mfaTestPassword)
+	hash, err := cheapPasswordHash(mfaTestPassword)
 	if err != nil {
 		t.Fatal(err)
 	}
