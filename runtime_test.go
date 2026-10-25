@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,17 +25,36 @@ func envLookup(values map[string]string) func(string) (string, bool) {
 	}
 }
 
+// handedOut holds every address freeAddress returned in this process.
+var handedOut = struct {
+	sync.Mutex
+	addresses map[string]bool
+}{addresses: map[string]bool{}}
+
+// freeAddress returns a loopback address that was free a moment ago and
+// that no other test of this process was given: the kernel may hand a
+// just-closed port to the next caller, and two parallel tests sharing one
+// would talk to each other's server.
 func freeAddress(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	handedOut.Lock()
+	defer handedOut.Unlock()
+	for range 100 {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		address := listener.Addr().String()
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if !handedOut.addresses[address] {
+			handedOut.addresses[address] = true
+			return address
+		}
 	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return address
+	t.Fatal("no unused loopback port in 100 tries")
+	return ""
 }
 
 func TestExecuteServeHealthcheckAndGracefulShutdown(t *testing.T) {

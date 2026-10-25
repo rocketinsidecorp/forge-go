@@ -254,6 +254,11 @@ func TestServedDocumentIncludesRoutesAddedBeforeTheFirstRequest(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	select {
+	case err := <-done:
+		t.Fatalf("the application stopped before the request: %v", err)
+	default:
+	}
 	late := openapi.Typed(http.StatusOK, openapi.Operation{}, func(*http.Request, openapi.NoBody) (greeting, error) { return greeting{}, nil })
 	if err := app.Handle("GET /v1/late", late); err != nil {
 		t.Fatal(err)
