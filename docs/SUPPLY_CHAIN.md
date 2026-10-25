@@ -187,11 +187,51 @@ tags on the default branch. Its README shows the commands.
     key (`?`) or merge key (`<<`) where any key or value starts
     (`${{ !cancelled() }}`, quoted strings and `run: |` text stay allowed);
     a flow collection or quoted scalar that does not close on its line; a
-    double-quoted key with an escape. Write a multi-line expression as a
+    backslash in any double-quoted scalar, key or value (an escape spells
+    text the rules would not read: `"u\x73es"` is `uses`, `"g\x6f env -w"`
+    is `go env -w`; plain and single-quoted scalars and block text have no
+    escapes, so the text the rules read is the text YAML yields). Write a multi-line expression as a
     `>-` block scalar. Every gated file is also parsed as YAML
     (`go.yaml.in/yaml/v3`): the parser and the line scanner must read the
     same `uses` keys, the same values on the same lines (block-scalar text
-    is not scanned, so a decoy there cannot balance a hidden key);
+    is not scanned, so a decoy there cannot balance a hidden key); the
+    checkout (`with: persist-credentials: false` in the step itself) and
+    `permissions` rules also read the parsed tree, not the text; no mapping
+    may repeat a key, compared without case (`persist-credentials` and
+    `Persist-Credentials`, a second `uses`), since readers that keep the
+    first and the last value would disagree;
+  - a variable that redirects where the go command fetches modules,
+    checksums or toolchains, or what it reads and runs (`GOFLAGS`,
+    `GOPROXY`, `GONOSUMDB`, `GONOSUMCHECK`, `GOSUMDB`, `GOINSECURE`,
+    `GOPRIVATE`, `GONOPROXY`, `GOENV`, `GOCACHEPROG`,
+    `GOMODCACHE`, `GOPATH`, `XDG_CONFIG_HOME` (it moves the go env file),
+    `ACTIONS_ALLOW_UNSECURE_COMMANDS`, and `GOTOOLCHAIN` unless set to
+    `local` or one exact `goX.Y.Z`), in any case, in an `env:` block at any
+    level or in `run` text (a second check under the closed allowlists of
+    the Threat model section); `HOME` and `GOROOT` where they are set (an
+    `env:` key or a `HOME=`/`HOME+=` assignment: HOME moves
+    `~/.config/go/env`), reading `$HOME` or `go env GOROOT` stays allowed; any `$GITHUB_ENV` write, whatever it sets (a variable for later
+    steps goes in an `env:` block, where the gate reads its name); and the
+    deprecated `::set-env` and `::add-path` workflow commands. No go env
+    file (`go.env`, or `env` in a directory named `go`) exists anywhere in
+    the repository or in a generated application
+    (`TestNoGoEnvFileExistsInTheRepository`);
+  - in a gated template (`internal/scaffold/templates/ci.yml.tmpl`), any
+    directive but `{{.Field}}`, `{{index . N}}` and `if`/`else`/`range`/`end`
+    over fields (`and`, `or`, `not`): no string literals, variables,
+    `print*`, `with`, `template` or other functions, so a directive cannot
+    render a step the gate never reads. The files `forge new` writes under
+    `.github` are also generated for every database (and none), two names
+    and every locale with the real template data; every file found there is
+    gated as written (the workflow rules on `.github/workflows/*`), and the
+    set of files must equal the expected list, so a new generated workflow
+    cannot ship ungated; their database service images are pinned by digest to the
+    framework CI's pins (`internal/scaffold/database.go`). The file
+    templates (`internal/scaffold/templates/*.tmpl`) share one template
+    set, where a later file's `{{define "ci.yml.tmpl"}}` would replace the
+    gated template, so `Generate` refuses `{{define}}` and `{{block}}` in
+    them and a test checks that each name in the set holds the tree its file
+    parses to on its own;
   - a checkout step, in any spelling of `actions/checkout`, that does not
     set `persist-credentials: false` itself (checked per step, not counted);
   - a `container: <image>` shorthand, a job's `container.image` or a
@@ -223,6 +263,77 @@ Dependabot proposes new SHAs for actions and digests for Dockerfile base
 images. It does not update the digests inside workflow `run:` steps (Syft),
 `sbom: generator=` (BuildKit's scanner) or CI service images; refresh those
 by hand, all copies at once (the test requires them to agree).
+The service images of the generated application's CI are pinned to the same
+digests as its compose file and the framework's CI
+(`internal/scaffold/database.go`), and Dependabot does not update CI service
+images: bump them together, by hand, in one change.
+
+## Threat model and residual risk
+
+Engineering decisions D6 and D8 (2026-10-25). The supply-chain gate is
+defense in depth against unreviewed drift and casual injection in the
+workflows, local actions and generated-app files. It is not a shell sandbox:
+review of every change is the primary control. Since D8 the gate's core is a
+set of closed allowlists in `supply_chain_allowlist_test.go`, so it converges
+instead of chasing new redirects; growing a list is a reviewed change to that
+file.
+
+- Variables (`allowedVariables`): a gated file sets only listed names, in an
+  `env:` key at any level (workflow, job, step, container, service; plain,
+  quoted or flow) or in `run` text (`NAME=`, `NAME+=`, `NAME[i]=`, `export`,
+  `env`, `sudo`, `declare`, `typeset`, `readonly`, `local`, `read`,
+  `mapfile`, `getopts`, `let`, `printf -v`, `for`/`select`/`coproc NAME`,
+  `${NAME:=...}`, `{NAME}>`, arithmetic). `run` text is read in every
+  reading bash could give it (`shellLines`): physical lines, lines joined
+  as bash joins a backslash-newline continuation, joined with a space, each
+  with and without comments, so a target split from its `=` by a
+  continuation is still read. Names a tool reads
+  (`GOARCH`, `SYFT_CHECK_FOR_APP_UPDATE`, `FORGE_TEST_REQUIRE_*`) take one
+  exact value. `HOME`, `PATH`, `BASH_ENV`, `LD_PRELOAD`, `CC`, `CXX`,
+  `CGO_*`, `GOWORK`, `GOFLAGS`, `GOROOT` and every other unlisted name are
+  refused as assignment targets; reading `$HOME` or `go env GOROOT` stays
+  allowed. An `env:` or `with:` that is a whole expression is refused, and
+  `shell:` is bash only.
+- Runner files (`runnerFileLines`): `$GITHUB_ENV`, `$GITHUB_PATH` and
+  `$GITHUB_OUTPUT` are written only on the listed lines (the PostgreSQL
+  client tools on `PATH`, the fuzz matrix and corpus outputs, the release
+  image names), each a complete logical line: a listed line continued from
+  or into another is refused, and so is every other line that names a
+  runner file, in any reading, a heredoc or a `$( )` included; `::set-env`, `::add-path` and
+  `ACTIONS_ALLOW_UNSECURE_COMMANDS` are refused.
+- Expressions (`expressionLines`): `format`, `fromJSON`, `join` and `toJSON`
+  appear only on the listed line (the fuzz matrix).
+- The go command: no `go env -w`, no `-toolexec`, `-exec`, `-modfile` or
+  `-overlay`, and no `-gcflags`/`-ldflags`/`-asmflags` value that passes an
+  option outside `allowedGoFlags` (empty today).
+- Action inputs: allowlisted actions get exact versions (`go-version`
+  X.Y.Z or `go-version-file: go.mod`, which every workflow and the generated
+  CI now use; golangci-lint `version` vX.Y.Z; `cosign-release` and
+  setup-buildx `version` vX.Y.Z when set), no `check-latest`, `driver-opts`
+  images by digest, and no `latest` anywhere.
+- Job containers and services (`containerKeys`,
+  `allowedContainerOptions`): only `image`, `env` (under
+  `allowedVariables`), numeric `ports` and `options`; no `volumes`,
+  `credentials`, `entrypoint` or `command`. `options:` is exactly one of the
+  listed database health checks (framework and generated CI), and `-e`,
+  `--env`, `--env-file`, `-v`, `--volume`, `--mount`, `--entrypoint`,
+  `--privileged`, `--network` and `--cap-add` are refused in it.
+- Tool configuration files (`toolConfigurationFiles`): none anywhere in the
+  repository (templates included) or in any generated application, for
+  every database, name and locale: `go.work`, `go.work.sum`, `go.env`,
+  `go/env`, `.cargo/config`, `.cargo/config.toml`, a `rust-toolchain` file
+  with a `path` (Forge-Rust lists its rust-toolchain files' exact content
+  instead; a Go project has none, so this backstop stays), `.bashrc`, `.profile`, `.bash_profile`, `.envrc`.
+- The YAML-level rules still apply underneath: the simple subset (no
+  escapes, anchors, tags, hidden line breaks), the parser cross-check,
+  duplicate keys, template directives, the rendered gate, and the denylist
+  of redirecting variables as a second, independent check.
+
+Accepted residual risk, left to review: names the shell builds at run time
+(`eval`, a `printf`-built or `$(...)`-built name), the content of the scripts
+the workflows call (`scripts/*.sh`), and what an allowlisted action does
+internally with its pinned inputs. Reviews of the gate judge it against this
+model: a bypass inside the lists' scope is a defect to fix in the gate.
 
 ## Residual risks
 

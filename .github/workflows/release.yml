@@ -141,7 +141,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.27.x"
+          go-version-file: go.mod
           # A release builds from a clean module and build cache.
           cache: false
       - name: Build the forge and forge-proxy binaries and their SBOMs

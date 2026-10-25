@@ -2,11 +2,16 @@ package forge_test
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
 // workflowFiles are the GitHub Actions workflows of the framework and the
@@ -126,6 +131,17 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 		if path != filepath.Join("scripts", "sbom.sh") {
 			violations = append(violations, yamlSubsetViolations(path, text)...)
 			violations = append(violations, parserViolations(path, text)...)
+			violations = append(violations, treeViolations(path, text, filepath.Base(path) == "release.yml")...)
+		}
+		violations = append(violations, environmentViolations(path, text)...)
+		// D8: the closed allowlists read workflows and local actions as
+		// written; a template is read as rendered
+		// (TestGeneratedWorkflowsPassTheGate).
+		if path != filepath.Join("scripts", "sbom.sh") && !strings.HasSuffix(path, ".tmpl") {
+			violations = append(violations, closedListViolations(filepath.ToSlash(path), text)...)
+		}
+		if strings.HasSuffix(path, ".tmpl") {
+			violations = append(violations, templateDirectiveViolations(path, text)...)
 		}
 		for _, line := range strings.Split(text, "\n") {
 			code, _ := splitComment(line)
@@ -136,7 +152,8 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 			}
 		}
 		// Generated templates name their database image through a template
-		// field; internal/scaffold pins those values.
+		// field: the rendered workflows are gated (pinned by digest, the
+		// framework CI's pins) by TestGeneratedWorkflowsPassTheGate.
 		if !strings.Contains(path, "templates") {
 			violations = append(violations, containerViolations(path, text)...)
 		}
@@ -257,5 +274,170 @@ func TestReleaseWorkflowsRunOnlyForVersionTags(t *testing.T) {
 				t.Error(violation)
 			}
 		}
+	}
+}
+
+// TestGeneratedWorkflowsPassTheGate renders the generated application for
+// every database (and none) with the real template data and gates the
+// workflows it writes, so a template cannot produce a step the gate on the
+// template text never sees.
+func TestGeneratedWorkflowsPassTheGate(t *testing.T) {
+	t.Parallel()
+	frameworkCI := readText(t, filepath.Join(".github", "workflows", "ci.yml"))
+	// What `forge new` writes under .github. Every file there is gated
+	// whatever its name; a new one also fails here until it is listed.
+	expected := []string{"dependabot.yml", "workflows/ci.yml", "workflows/release.yml"}
+	// Every database (and none), two names and every locale: a template field
+	// that renders differently for another option cannot pass unread.
+	for _, database := range append([]string{""}, scaffold.Databases...) {
+		for _, name := range []string{"gateapp", "shop"} {
+			for _, locale := range scaffold.Locales {
+				dir := filepath.Join(t.TempDir(), name)
+				if _, err := scaffold.Generate(scaffold.Options{Name: name, Dir: dir, Database: database, Locale: locale}); err != nil {
+					t.Fatalf("%s %s %s: %v", database, name, locale, err)
+				}
+				if found := toolConfigurationFiles(dir, nil); len(found) != 0 {
+					t.Errorf("generated (%s, %s, %s): tool configuration files %v", database, name, locale, found)
+				}
+				files := generatedGitHubFiles(t, filepath.Join(dir, ".github"))
+				if !slices.Equal(files, expected) {
+					t.Errorf("generated (%s, %s, %s) .github holds %v, want %v", database, name, locale, files, expected)
+				}
+				for _, file := range files {
+					text := readText(t, filepath.Join(dir, ".github", filepath.FromSlash(file)))
+					shown := fmt.Sprintf("generated (%s, %s, %s) .github/%s", database, name, locale, file)
+					violations := generatedFileViolations(shown, file, text)
+					// The database service runs the image the framework's CI
+					// tests with, pinned to the same digest.
+					for _, container := range containerImages(text) {
+						if !strings.Contains(frameworkCI, "image: "+container.image+"\n") {
+							violations = append(violations, fmt.Sprintf("%s:%d: %q is not the image .github/workflows/ci.yml pins", shown, container.line, container.image))
+						}
+					}
+					for _, violation := range violations {
+						t.Error(violation)
+					}
+				}
+			}
+		}
+	}
+}
+
+// generatedGitHubFiles lists every file below root (a generated
+// application's .github), as sorted slash-separated relative paths.
+func generatedGitHubFiles(t *testing.T, root string) []string {
+	t.Helper()
+	var files []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		files = append(files, filepath.ToSlash(relative))
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(files)
+	return files
+}
+
+// generatedFileViolations runs every rule on a generated .github file: the
+// YAML, parser, pin, allowlist and environment rules on all of them, and the
+// workflow rules (checkouts, containers, the parsed tree) on workflows.
+func generatedFileViolations(shown, file, text string) []string {
+	violations := append(pinViolations(shown, text), allowlistViolations(shown, text)...)
+	violations = append(violations, yamlSubsetViolations(shown, text)...)
+	violations = append(violations, parserViolations(shown, text)...)
+	violations = append(violations, environmentViolations(shown, text)...)
+	// The closed allowlists list generated files without the variant.
+	for _, violation := range closedListViolations("generated .github/"+file, text) {
+		violations = append(violations, shown+": "+violation)
+	}
+	if strings.HasPrefix(file, "workflows/") {
+		violations = append(violations, checkoutViolations(shown, text)...)
+		violations = append(violations, containerViolations(shown, text)...)
+		violations = append(violations, treeViolations(shown, text, path.Base(file) == "release.yml")...)
+	}
+	return violations
+}
+
+// goEnvFiles returns every go env file in root or below it: a file named
+// `go.env`, or `env` in a directory named `go` (the go command reads
+// $XDG_CONFIG_HOME/go/env, or $HOME/.config/go/env, and GOENV may name a
+// go.env). A linked `go` directory counts. The walk does not enter skipped
+// directories nor follow links to directories.
+func goEnvFiles(root string, skipped []string) []string {
+	var found []string
+	for _, path := range toolConfigurationFiles(root, skipped) {
+		base := strings.TrimSuffix(filepath.Base(path), ".tmpl")
+		if base == "go.env" || base == "env" {
+			found = append(found, path)
+		}
+	}
+	return found
+}
+
+// TestNoGoEnvFileExistsInTheRepository: a committed go env file, reached by
+// pointing HOME or XDG_CONFIG_HOME at the checkout, would set GOPROXY,
+// GOSUMDB or GOFLAGS without naming them in a gated file. A future need goes
+// through review and changes this test.
+func TestNoGoEnvFileExistsInTheRepository(t *testing.T) {
+	t.Parallel()
+	if found := goEnvFiles(".", []string{".git"}); len(found) != 0 {
+		t.Errorf("go env files found: %v", found)
+	}
+	scratch := t.TempDir()
+	write := func(relative string) {
+		target := filepath.Join(scratch, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte("GOPROXY=https://evil.example\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a/go.env")
+	write(".ci/go/env")
+	write("b/.config/go/env")
+	write("elsewhere/env")
+	write("skipped/go.env")
+	if err := os.MkdirAll(filepath.Join(scratch, "c"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(scratch, "elsewhere"), filepath.Join(scratch, "c", "go")); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.Join(scratch, ".ci", "go", "env"),
+		filepath.Join(scratch, "a", "go.env"),
+		filepath.Join(scratch, "b", ".config", "go", "env"),
+		filepath.Join(scratch, "c", "go", "env"),
+	}
+	slices.Sort(want)
+	if found := goEnvFiles(scratch, []string{filepath.Join(scratch, "skipped")}); !slices.Equal(found, want) {
+		t.Errorf("found %v, want %v", found, want)
+	}
+}
+
+// A workflow a new template adds under .github is listed by the walk and
+// gated like the others, whatever its name.
+func TestGeneratedGitHubWalkGatesEveryFile(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), ".github")
+	if err := os.MkdirAll(filepath.Join(root, "workflows"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	lint := "name: lint\non: [push]\npermissions:\n  contents: read\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/act@main\n"
+	if err := os.WriteFile(filepath.Join(root, "workflows", "lint.yml"), []byte(lint), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	files := generatedGitHubFiles(t, root)
+	if !slices.Equal(files, []string{"workflows/lint.yml"}) {
+		t.Fatalf("walked %v", files)
+	}
+	if violations := generatedFileViolations("lint.yml", files[0], lint); len(violations) == 0 {
+		t.Error("an unpinned, unlisted action in a new generated workflow was accepted")
 	}
 }

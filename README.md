@@ -104,7 +104,7 @@ into applications, [ADR 0030](docs/adr/0030-forge-deploy.md)).
 
 ## Quickstart
 
-Requires Go 1.27.1+ and Docker with BuildKit and Compose.
+Requires Go 1.27.3+ and Docker with BuildKit and Compose.
 
 ```sh
 go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest
