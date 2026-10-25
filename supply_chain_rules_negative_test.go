@@ -126,3 +126,45 @@ func TestReleaseRuleRequiresTheModuleVersionCheck(t *testing.T) {
 		t.Error("a release without the module version check was accepted")
 	}
 }
+
+func TestLocalActionTreeRefusesMissingTargets(t *testing.T) {
+	t.Parallel()
+	files := map[string]string{
+		"ci.yml": "      - uses: ./.github/actions/tool\n" +
+			"  call:\n    uses: ./.github/workflows/reuse.yml\n" +
+			"  gone:\n    uses: ./.github/workflows/missing.yml\n" +
+			"  outside:\n    uses: ./elsewhere/flow.yml\n" +
+			"      - uses: ./.github/actions/absent\n",
+		".github/actions/tool/action.yml":    "    - uses: ./.github/actions/nested\n",
+		".github/actions/nested/action.yaml": "    - run: true\n",
+		".github/workflows/reuse.yml":        "on: workflow_call\n",
+		// A directory named like a workflow is not one.
+		".github/workflows/missing.yml/": "",
+	}
+	read := func(path string) string { return files[path] }
+	isFile := func(path string) bool {
+		_, ok := files[filepath.ToSlash(path)]
+		return ok
+	}
+	actions, problems := localActionTree([]string{"ci.yml"}, read, isFile)
+	got := map[string]bool{}
+	for _, action := range actions {
+		got[filepath.ToSlash(action)] = true
+	}
+	if len(actions) != 2 || !got[".github/actions/tool/action.yml"] || !got[".github/actions/nested/action.yaml"] {
+		t.Errorf("actions %v", actions)
+	}
+	want := []string{
+		"./.github/actions/absent has no action.yml",
+		"./.github/workflows/missing.yml is not a workflow of .github/workflows",
+		"./elsewhere/flow.yml is not a workflow of .github/workflows",
+	}
+	for _, problem := range want {
+		if !strings.Contains(strings.Join(problems, "\n"), problem) {
+			t.Errorf("missing problem %q in %v", problem, problems)
+		}
+	}
+	if len(problems) != len(want) {
+		t.Errorf("problems %v", problems)
+	}
+}

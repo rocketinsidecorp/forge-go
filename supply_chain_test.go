@@ -1,6 +1,7 @@
 package forge_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -53,12 +54,29 @@ var (
 // with the workflow's permissions, so the same rules apply to it.
 func localActionFiles(t *testing.T, files []string) []string {
 	t.Helper()
+	isFile := func(path string) bool {
+		info, err := os.Stat(path)
+		return err == nil && info.Mode().IsRegular()
+	}
+	read := func(path string) string { return readText(t, path) }
+	actions, problems := localActionTree(files, read, isFile)
+	for _, problem := range problems {
+		t.Error(problem)
+	}
+	return actions
+}
+
+// localActionTree follows the `uses: ./...` references of files: a local
+// reusable workflow must be an existing file of .github/workflows, and a
+// local action must have an action.yml (or action.yaml), whose own local
+// references are followed in turn.
+func localActionTree(files []string, read func(string) string, isFile func(string) bool) ([]string, []string) {
 	var pending []string
 	for _, path := range files {
-		pending = append(pending, localActions(readText(t, path))...)
+		pending = append(pending, localActions(read(path))...)
 	}
 	seen := map[string]bool{}
-	var actions []string
+	var actions, problems []string
 	for len(pending) > 0 {
 		action := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
@@ -67,27 +85,26 @@ func localActionFiles(t *testing.T, files []string) []string {
 		}
 		seen[action] = true
 		if strings.HasSuffix(action, ".yml") || strings.HasSuffix(action, ".yaml") {
-			// A local reusable workflow: it must be one of the gated workflows.
-			if _, err := os.Stat(action); err != nil || !strings.HasPrefix(action, ".github/workflows/") {
-				t.Errorf("./%s is not a workflow of .github/workflows", action)
+			if !strings.HasPrefix(action, ".github/workflows/") || !isFile(action) {
+				problems = append(problems, fmt.Sprintf("./%s is not a workflow of .github/workflows", action))
 			}
 			continue
 		}
 		found := ""
 		for _, name := range []string{"action.yml", "action.yaml"} {
-			if _, err := os.Stat(filepath.Join(action, name)); err == nil {
+			if isFile(filepath.Join(action, name)) {
 				found = filepath.Join(action, name)
 				break
 			}
 		}
 		if found == "" {
-			t.Errorf("./%s has no action.yml", action)
+			problems = append(problems, fmt.Sprintf("./%s has no action.yml", action))
 			continue
 		}
 		actions = append(actions, found)
-		pending = append(pending, localActions(readText(t, found))...)
+		pending = append(pending, localActions(read(found))...)
 	}
-	return actions
+	return actions, problems
 }
 
 // TestWorkflowsPinThirdPartyCode keeps every action pinned to a commit SHA
