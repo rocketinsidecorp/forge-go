@@ -93,10 +93,15 @@ func (s *MFAService) PendingTOTP(ctx context.Context, subjectID uuid.UUID, issue
 	return newTOTPEnrollment(secret, issuer, account, record.ExpiresAt.UTC()), true, nil
 }
 
-// MFAStepUpProof is a current code VerifyMFAStepUp accepted. Pass it to the
-// change it authorizes with WithMFAStepUp: a backup code is used up only by
-// that change, in the transaction that applies it.
+// MFAStepUpProof is a current code VerifyMFAStepUp accepted for one account.
+// The changes of an existing factor (BeginTOTPRotation, ConfirmTOTPRotation,
+// RegenerateMFABackupCodes, DisableMFA) require one and refuse a proof of
+// another account, or the zero value, with ErrMFAStepUpInvalid. A backup code
+// is used up only by the change, in the transaction that applies it. Only
+// this package creates proofs: VerifyMFAStepUp, and the JSON handlers once
+// their MFAChangeAuthorizer passed.
 type MFAStepUpProof struct {
+	subjectID  uuid.UUID
 	backupCode *Digest
 }
 
@@ -104,35 +109,26 @@ type MFAStepUpProof struct {
 // the change it authorizes succeeds).
 func (p MFAStepUpProof) BackupCode() bool { return p.backupCode != nil }
 
-// MFAChangeOption configures one factor change (BeginTOTPRotation,
-// ConfirmTOTPRotation, DisableMFA, RegenerateMFABackupCodes).
-type MFAChangeOption func(*mfaChange) error
+// Subject is the account the proof was given for.
+func (p MFAStepUpProof) Subject() uuid.UUID { return p.subjectID }
+
+// authorize binds a change of subjectID's factor to the proof:
+// ErrMFAStepUpInvalid for the zero value or a proof of another account.
+func (p MFAStepUpProof) authorize(subjectID uuid.UUID) (mfaChange, error) {
+	if p.subjectID == (uuid.UUID{}) || p.subjectID != subjectID {
+		return mfaChange{}, ErrMFAStepUpInvalid
+	}
+	return mfaChange{stepUp: &p}, nil
+}
+
+// changeAuthorizedBy is the proof of a change an MFAChangeAuthorizer allowed
+// (the JSON handlers' step-up): it carries no backup code.
+func changeAuthorizedBy(subjectID uuid.UUID) MFAStepUpProof {
+	return MFAStepUpProof{subjectID: subjectID}
+}
 
 type mfaChange struct {
 	stepUp *MFAStepUpProof
-}
-
-// WithMFAStepUp passes the step-up proof of the change: a backup code is used
-// up in the change's own transaction, so a change that fails keeps it, and a
-// code used meanwhile refuses the change with ErrMFAStepUpInvalid.
-func WithMFAStepUp(proof MFAStepUpProof) MFAChangeOption {
-	return func(change *mfaChange) error {
-		change.stepUp = &proof
-		return nil
-	}
-}
-
-func newMFAChange(options []MFAChangeOption) (mfaChange, error) {
-	var change mfaChange
-	for _, option := range options {
-		if option == nil {
-			return mfaChange{}, errors.New("nil MFA change option")
-		}
-		if err := option(&change); err != nil {
-			return mfaChange{}, err
-		}
-	}
-	return change, nil
 }
 
 func (c mfaChange) backupCode() *Digest {
@@ -160,7 +156,7 @@ func (s *MFAService) recordStepUpBackupCodeUsed(ctx context.Context, subjectID u
 // VerifyMFAStepUp checks a current code of subjectID's active factor for
 // step-up authentication before a factor change: a TOTP code is used up at
 // once (its period is recorded), an unused backup code is only checked. Pass
-// the proof to the change with WithMFAStepUp, which uses the backup code up
+// the proof to the change, which uses the backup code up
 // in the transaction that applies the change, so a change that fails costs no
 // backup code. A wrong, replayed or used code, and an account without a
 // factor, are ErrMFAInvalid. Callers throttle attempts.
@@ -180,12 +176,12 @@ func (s *MFAService) VerifyMFAStepUp(ctx context.Context, subjectID uuid.UUID, c
 		if !unused {
 			return MFAStepUpProof{}, ErrMFAInvalid
 		}
-		return MFAStepUpProof{backupCode: &backupDigest}, nil
+		return MFAStepUpProof{subjectID: subjectID, backupCode: &backupDigest}, nil
 	}
 	if err := s.useTOTPCode(ctx, store, subjectID, code); err != nil {
 		return MFAStepUpProof{}, err
 	}
-	return MFAStepUpProof{}, nil
+	return MFAStepUpProof{subjectID: subjectID}, nil
 }
 
 // VerifyMFACode checks a current code of subjectID's active factor outside
@@ -255,10 +251,10 @@ func (s *MFAService) useTOTPCode(ctx context.Context, store MFASettingsStore, su
 // Callers must have re-authenticated the account (password and a current
 // code). Like confirmation, an audit failure after the codes were replaced
 // is returned with the codes as a *SecurityAuditError with OperationApplied.
-// With WithMFAStepUp, a backup code given for step-up authentication is used
-// up only with the replacement.
-func (s *MFAService) RegenerateMFABackupCodes(ctx context.Context, subjectID uuid.UUID, options ...MFAChangeOption) ([]MFABackupCode, error) {
-	change, err := newMFAChange(options)
+// proof is the step-up of subjectID; its backup code is used up only with
+// the replacement. A proof of another account is ErrMFAStepUpInvalid.
+func (s *MFAService) RegenerateMFABackupCodes(ctx context.Context, subjectID uuid.UUID, proof MFAStepUpProof) ([]MFABackupCode, error) {
+	change, err := proof.authorize(subjectID)
 	if err != nil {
 		return nil, err
 	}

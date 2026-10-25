@@ -332,10 +332,11 @@ func (s *MFAService) BeginTOTPEnrollment(ctx context.Context, subjectID uuid.UUI
 }
 
 // BeginTOTPRotation creates a pending replacement seed while the current
-// factor stays active. With WithMFAStepUp, a backup code given for step-up
-// authentication is used up only if the seed is stored.
-func (s *MFAService) BeginTOTPRotation(ctx context.Context, subjectID uuid.UUID, issuer, account string, options ...MFAChangeOption) (TOTPEnrollment, error) {
-	change, err := newMFAChange(options)
+// factor stays active. proof is the step-up of subjectID (VerifyMFAStepUp);
+// its backup code is used up only if the seed is stored. A proof of another
+// account is ErrMFAStepUpInvalid.
+func (s *MFAService) BeginTOTPRotation(ctx context.Context, subjectID uuid.UUID, issuer, account string, proof MFAStepUpProof) (TOTPEnrollment, error) {
+	change, err := proof.authorize(subjectID)
 	if err != nil {
 		return TOTPEnrollment{}, err
 	}
@@ -455,11 +456,11 @@ func (s *MFAService) ConfirmTOTPEnrollment(ctx context.Context, subjectID uuid.U
 // ConfirmTOTPRotation replaces the factor with the pending rotation key when
 // code is a live code of it. An account without a factor is
 // ErrMFANotEnabled, whatever is pending: the code is never checked against an
-// enrollment's key. With WithMFAStepUp, a backup code given for step-up
-// authentication is used up only if the factor is replaced, so a wrong code
-// or an expired rotation keeps it.
-func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUID, code string, options ...MFAChangeOption) (TOTPConfirmation, error) {
-	change, err := newMFAChange(options)
+// enrollment's key. proof is the step-up of subjectID; its backup code is
+// used up only if the factor is replaced, so a wrong code or an expired
+// rotation keeps it. A proof of another account is ErrMFAStepUpInvalid.
+func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUID, code string, proof MFAStepUpProof) (TOTPConfirmation, error) {
+	change, err := proof.authorize(subjectID)
 	if err != nil {
 		return TOTPConfirmation{}, err
 	}
@@ -507,11 +508,11 @@ func (s *MFAService) ConfirmTOTPRotation(ctx context.Context, subjectID uuid.UUI
 	return confirmation, errors.Join(s.recordStepUpBackupCodeUsed(ctx, subjectID, change), auditErr)
 }
 
-// DisableMFA removes the active factor, pending key and backup codes. With
-// WithMFAStepUp, a backup code given for step-up authentication is used up
-// only with the factor.
-func (s *MFAService) DisableMFA(ctx context.Context, subjectID uuid.UUID, options ...MFAChangeOption) error {
-	change, err := newMFAChange(options)
+// DisableMFA removes the active factor, pending key and backup codes. proof
+// is the step-up of subjectID; its backup code is used up only with the
+// factor. A proof of another account is ErrMFAStepUpInvalid.
+func (s *MFAService) DisableMFA(ctx context.Context, subjectID uuid.UUID, proof MFAStepUpProof) error {
+	change, err := proof.authorize(subjectID)
 	if err != nil {
 		return err
 	}

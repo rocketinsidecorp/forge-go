@@ -99,7 +99,7 @@ func (b *Browser) beginMFAChange(w http.ResponseWriter, r *http.Request, issuer 
 	}
 	var enrollment TOTPEnrollment
 	if rotation {
-		enrollment, err = b.mfa.BeginTOTPRotation(r.Context(), step.subject, issuer, step.login, step.change())
+		enrollment, err = b.mfa.BeginTOTPRotation(r.Context(), step.subject, issuer, step.login, step.proof)
 	} else {
 		enrollment, err = b.mfa.BeginTOTPEnrollment(r.Context(), step.subject, issuer, step.login)
 	}
@@ -150,7 +150,7 @@ func (b *Browser) confirmMFAChange(w http.ResponseWriter, r *http.Request, issue
 	if rotation {
 		// A backup code given as the current code is used up only if the
 		// new key is installed: a wrong code of it keeps the backup code.
-		confirmation, err = b.mfa.ConfirmTOTPRotation(ctx, step.subject, code, step.change())
+		confirmation, err = b.mfa.ConfirmTOTPRotation(ctx, step.subject, code, step.proof)
 	} else {
 		confirmation, err = b.mfa.ConfirmTOTPEnrollment(ctx, step.subject, code)
 	}
@@ -190,7 +190,7 @@ func (b *Browser) RegenerateMFABackupCodes(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		return nil, err
 	}
-	codes, err := b.mfa.RegenerateMFABackupCodes(r.Context(), step.subject, step.change())
+	codes, err := b.mfa.RegenerateMFABackupCodes(r.Context(), step.subject, step.proof)
 	if err != nil {
 		if _, applied := logSecurityAuditFailure(r, err); !applied {
 			return nil, b.stepUpCodeSpent(r, SecurityMFABackupCodesRegenerated, step, err)
@@ -210,7 +210,7 @@ func (b *Browser) DisableMFA(w http.ResponseWriter, r *http.Request, proof MFASt
 	if err != nil {
 		return err
 	}
-	if err := b.mfa.DisableMFA(r.Context(), step.subject, step.change()); err != nil {
+	if err := b.mfa.DisableMFA(r.Context(), step.subject, step.proof); err != nil {
 		if _, applied := logSecurityAuditFailure(r, err); !applied {
 			return b.stepUpCodeSpent(r, SecurityMFADisabled, step, err)
 		}
@@ -232,9 +232,6 @@ type verifiedStepUp struct {
 	// proof is the current code's: a backup code is used up by the change.
 	proof MFAStepUpProof
 }
-
-// change passes the step-up proof to the change it authorizes.
-func (v verifiedStepUp) change() MFAChangeOption { return WithMFAStepUp(v.proof) }
 
 // stepUpCodeSpent turns err, a refused change, into ErrMFAStepUpInvalid
 // (audited as action denied) when the step-up backup code was used up

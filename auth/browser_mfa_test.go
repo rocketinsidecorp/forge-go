@@ -865,7 +865,7 @@ func TestMFAStepUpBackupCodeUsedMeanwhileRefusesTheChange(t *testing.T) {
 	f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
 	ctx := context.Background()
 	key, backup := f.enable(f.ada)
-	rotation, err := f.mfa.BeginTOTPRotation(ctx, f.ada, "Forge", "ada@example.com")
+	rotation, err := f.mfa.BeginTOTPRotation(ctx, f.ada, "Forge", "ada@example.com", changeAuthorizedBy(f.ada))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -879,13 +879,13 @@ func TestMFAStepUpBackupCodeUsedMeanwhileRefusesTheChange(t *testing.T) {
 	if consumed, err := f.accounts.ConsumeMFABackupCode(ctx, f.ada, mustBackupDigest(t, backup[0])); err != nil || !consumed {
 		t.Fatalf("consumed=%v err=%v", consumed, err)
 	}
-	if _, err := f.mfa.ConfirmTOTPRotation(ctx, f.ada, f.code(rotation.Secret.Reveal()), WithMFAStepUp(proof)); !errors.Is(err, ErrMFAStepUpInvalid) {
+	if _, err := f.mfa.ConfirmTOTPRotation(ctx, f.ada, f.code(rotation.Secret.Reveal()), proof); !errors.Is(err, ErrMFAStepUpInvalid) {
 		t.Fatalf("confirm rotation err=%v", err)
 	}
-	if _, err := f.mfa.RegenerateMFABackupCodes(ctx, f.ada, WithMFAStepUp(proof)); !errors.Is(err, ErrMFAStepUpInvalid) {
+	if _, err := f.mfa.RegenerateMFABackupCodes(ctx, f.ada, proof); !errors.Is(err, ErrMFAStepUpInvalid) {
 		t.Fatalf("regenerate err=%v", err)
 	}
-	if err := f.mfa.DisableMFA(ctx, f.ada, WithMFAStepUp(proof)); !errors.Is(err, ErrMFAStepUpInvalid) {
+	if err := f.mfa.DisableMFA(ctx, f.ada, proof); !errors.Is(err, ErrMFAStepUpInvalid) {
 		t.Fatalf("disable err=%v", err)
 	}
 	account := f.accounts.account(f.ada)
@@ -913,7 +913,7 @@ func TestPendingTOTPIsNeverReadAsTheOtherKind(t *testing.T) {
 	f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
 	ctx := context.Background()
 	f.enable(f.ada)
-	rotation, err := f.mfa.BeginTOTPRotation(ctx, f.ada, "Forge", "ada@example.com")
+	rotation, err := f.mfa.BeginTOTPRotation(ctx, f.ada, "Forge", "ada@example.com", changeAuthorizedBy(f.ada))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -934,11 +934,56 @@ func TestPendingTOTPIsNeverReadAsTheOtherKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, code := range []string{"000000", f.code(enrollment.Secret.Reveal())} {
-		if _, err := f.mfa.ConfirmTOTPRotation(ctx, f.bob, code); !errors.Is(err, ErrMFANotEnabled) {
+		if _, err := f.mfa.ConfirmTOTPRotation(ctx, f.bob, code, changeAuthorizedBy(f.bob)); !errors.Is(err, ErrMFANotEnabled) {
 			t.Fatalf("rotation confirmation of a pending enrollment: %v", err)
 		}
 	}
 	if _, found, err := f.mfa.PendingTOTP(ctx, f.bob, "Forge", "bob@example.com", true); err != nil || found {
 		t.Fatalf("an enrollment's key shown as a rotation's: found=%v err=%v", found, err)
+	}
+}
+
+// TestMFAStepUpProofIsBoundToItsAccount: every change of an existing factor
+// requires a proof, refuses one of another account and the zero value, and
+// then changes and uses up nothing.
+func TestMFAStepUpProofIsBoundToItsAccount(t *testing.T) {
+	t.Parallel()
+	f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
+	ctx := context.Background()
+	adaKey, adaBackup := f.enable(f.ada)
+	bobKey, _ := f.enable(f.bob)
+	backupProof, err := f.mfa.VerifyMFAStepUp(ctx, f.ada, adaBackup[0])
+	if err != nil || backupProof.Subject() != f.ada {
+		t.Fatalf("proof=%+v err=%v", backupProof, err)
+	}
+	totpProof, err := f.mfa.VerifyMFAStepUp(ctx, f.ada, f.code(adaKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, proof := range map[string]MFAStepUpProof{"backup code": backupProof, "TOTP": totpProof, "zero": {}} {
+		if _, err := f.mfa.BeginTOTPRotation(ctx, f.bob, "Forge", "bob@example.com", proof); !errors.Is(err, ErrMFAStepUpInvalid) {
+			t.Fatalf("%s: begin rotation of another account: %v", name, err)
+		}
+		if _, err := f.mfa.ConfirmTOTPRotation(ctx, f.bob, f.code(bobKey), proof); !errors.Is(err, ErrMFAStepUpInvalid) {
+			t.Fatalf("%s: confirm rotation of another account: %v", name, err)
+		}
+		if _, err := f.mfa.RegenerateMFABackupCodes(ctx, f.bob, proof); !errors.Is(err, ErrMFAStepUpInvalid) {
+			t.Fatalf("%s: regenerate another account's codes: %v", name, err)
+		}
+		if err := f.mfa.DisableMFA(ctx, f.bob, proof); !errors.Is(err, ErrMFAStepUpInvalid) {
+			t.Fatalf("%s: disable another account: %v", name, err)
+		}
+	}
+	if err := f.mfa.DisableMFA(ctx, f.ada, MFAStepUpProof{}); !errors.Is(err, ErrMFAStepUpInvalid) {
+		t.Fatalf("the zero proof: %v", err)
+	}
+	for _, subject := range []uuid.UUID{f.ada, f.bob} {
+		status := f.status(subject)
+		if !status.Enabled || status.BackupCodesRemaining != DefaultMFABackupCodeCount || f.accounts.account(subject).pending != nil {
+			t.Fatalf("a refused change changed %v: %+v", subject, status)
+		}
+	}
+	if err := f.mfa.DisableMFA(ctx, f.ada, backupProof); err != nil {
+		t.Fatalf("ada's own proof: %v", err)
 	}
 }
