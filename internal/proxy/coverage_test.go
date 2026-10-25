@@ -428,7 +428,7 @@ func TestRunRejectsBadStartups(t *testing.T) {
 		"unknown flag":       {[]string{"run", "-bogus"}, "flag provided but not defined"},
 		"positional":         {[]string{"run", "extra"}, "run accepts flags only"},
 		"corrupt state":      {[]string{"run", "-state", corrupt, "-control", filepath.Join(dir, "a.sock")}, "decode proxy state"},
-		"control path":       {[]string{"run", "-state", "", "-control", filepath.Join(file, "a.sock")}, "control directory: create"},
+		"control path":       {[]string{"run", "-state", "", "-control", filepath.Join(file, "a.sock"), "-acme-cache", dir}, "control directory: create"},
 		"http address taken": {[]string{"run", "-state", "", "-https-addr", "", "-http-addr", taken.Addr().String(), "-control", filepath.Join(dir, "b.sock")}, "address already in use"},
 		"https address":      {[]string{"run", "-state", "", "-https-addr", taken.Addr().String(), "-http-addr", "127.0.0.1:0", "-control", filepath.Join(dir, "c.sock"), "-acme-cache", dir}, "address already in use"},
 	} {
