@@ -147,7 +147,10 @@ func (t *Target) pgDump(ctx context.Context) ([]byte, error) {
 }
 
 func (t *Target) mysqlDump(ctx context.Context) ([]byte, error) {
-	file, cleanup, err := t.mysqlOptions("mysqldump", t.Name)
+	// No database in the option file: its [client] group is read by
+	// mysqldump too, and Oracle's mysqldump refuses a `database` option
+	// (unknown variable). The database is the positional argument below.
+	file, cleanup, err := t.mysqlOptions("mysqldump", "")
 	if err != nil {
 		return nil, err
 	}

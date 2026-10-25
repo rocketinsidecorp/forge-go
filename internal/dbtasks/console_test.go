@@ -185,10 +185,15 @@ func TestMySQLDumpReadsOnlyForgesOptionFile(t *testing.T) {
 			t.Errorf("an argument carries credentials: %q", line)
 		}
 	}
-	for _, want := range []string{`user="alice"`, `password="s3cret"`, `host="127.0.0.1"`, `port="1"`, `database="shop"`, "protocol=tcp", "ssl-mode=REQUIRED"} {
+	for _, want := range []string{`user="alice"`, `password="s3cret"`, `host="127.0.0.1"`, `port="1"`, "protocol=tcp", "ssl-mode=REQUIRED"} {
 		if !strings.Contains(options, want) {
 			t.Errorf("option file lacks %s:\n%s", want, options)
 		}
+	}
+	// Oracle's mysqldump refuses a database option in [client] (unknown
+	// variable); the database is the last argument instead.
+	if strings.Contains(options, "database=") {
+		t.Errorf("the dump's option file names the database:\n%s", options)
 	}
 	login = strings.TrimSpace(login)
 	if filepath.Dir(login) != filepath.Dir(strings.TrimPrefix(lines[0], "--defaults-file=")) || strings.Contains(login, "exists") || strings.Contains(login, "someone") {
