@@ -321,3 +321,56 @@ func TestYAMLSubsetRefusesWhatALineScannerCouldMisread(t *testing.T) {
 		}
 	}
 }
+
+func TestTreeRulesReadCheckoutsAndPermissionsAsYAMLDoes(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		// A name that spells the setting.
+		"steps:\n  - name: \"x, persist-credentials: false\"\n    uses: actions/checkout@SHA # v7.0.1\n",
+		// The setting in block-scalar text.
+		"steps:\n  - uses: actions/checkout@SHA # v7.0.1\n    with:\n      fetch-depth: 0\n  - run: |\n      persist-credentials: false\n",
+		// One flow line, two steps, one setting.
+		"steps: [{uses: actions/checkout@SHA, with: {persist-credentials: false}}, {uses: Actions/Checkout@SHA}]\n",
+		"steps:\n  - uses: actions/checkout@SHA # v7.0.1\n    with:\n      persist-credentials: \"true\"\n",
+		// A quoted `#` hiding a write scope.
+		"permissions: {a: '#', contents: write}\n",
+		"permissions: write-all\n",
+		"jobs:\n  a:\n    permissions:\n      checks: write\n",
+	} {
+		if text := snippet(rejected); len(treeViolations("t.yml", text, false)) == 0 {
+			t.Errorf("accepted: %s", text)
+		}
+	}
+	release := "permissions: {}\njobs:\n  a:\n    permissions:\n      contents: read\n      packages: write\n      id-token: write\n"
+	if violations := treeViolations("release.yml", release, true); len(violations) != 0 {
+		t.Errorf("rejected: %v", violations)
+	}
+	if len(treeViolations("ci.yml", release, false)) == 0 {
+		t.Error("a write scope outside the release workflow was accepted")
+	}
+}
+
+func TestGatedTemplatesUseOnlySimpleDirectives(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		// A directive that renders a step the template text does not show.
+		"steps:\n{{\"      - \\x75ses: evil/act@main\"}}\n",
+		"steps:\n{{printf \"%s\" .Name}}\n",
+		"{{print .Name}}\n",
+		"{{template \"x\"}}\n",
+		"{{define \"x\"}}a{{end}}\n",
+		"{{with .DB}}{{.Image}}{{end}}\n",
+		"{{$x := .Name}}{{$x}}\n",
+		"{{if eq .Name \"x\"}}a{{end}}\n",
+		"{{index .DB.CIEnv 0}}\n",
+		"{{.Name | html}}\n",
+	} {
+		if len(templateDirectiveViolations("t.yml.tmpl", rejected)) == 0 {
+			t.Errorf("accepted: %q", rejected)
+		}
+	}
+	accepted := "{{- if and .DB .DB.Server}}\n  {{.DB.Service}}:\n{{- range .DB.CIEnv}}\n    {{index . 0}}: {{index . 1}}\n{{- end}}\n{{- else}}\n{{- end}}\n{{if not .DB}}x{{end}}\n"
+	if violations := templateDirectiveViolations("t.yml.tmpl", accepted); len(violations) != 0 {
+		t.Errorf("rejected: %v", violations)
+	}
+}

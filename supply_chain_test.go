@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
 // workflowFiles are the GitHub Actions workflows of the framework and the
@@ -126,6 +128,10 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 		if path != filepath.Join("scripts", "sbom.sh") {
 			violations = append(violations, yamlSubsetViolations(path, text)...)
 			violations = append(violations, parserViolations(path, text)...)
+			violations = append(violations, treeViolations(path, text, filepath.Base(path) == "release.yml")...)
+		}
+		if strings.HasSuffix(path, ".tmpl") {
+			violations = append(violations, templateDirectiveViolations(path, text)...)
 		}
 		for _, line := range strings.Split(text, "\n") {
 			code, _ := splitComment(line)
@@ -136,7 +142,8 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 			}
 		}
 		// Generated templates name their database image through a template
-		// field; internal/scaffold pins those values.
+		// field: the rendered workflows are gated (pinned by digest, the
+		// framework CI's pins) by TestGeneratedWorkflowsPassTheGate.
 		if !strings.Contains(path, "templates") {
 			violations = append(violations, containerViolations(path, text)...)
 		}
@@ -254,6 +261,42 @@ func TestReleaseWorkflowsRunOnlyForVersionTags(t *testing.T) {
 		// match the module path (a generated application is no module).
 		if !strings.Contains(path, "templates") {
 			for _, violation := range releaseViolations(path, text) {
+				t.Error(violation)
+			}
+		}
+	}
+}
+
+// TestGeneratedWorkflowsPassTheGate renders the generated application for
+// every database (and none) with the real template data and gates the
+// workflows it writes, so a template cannot produce a step the gate on the
+// template text never sees.
+func TestGeneratedWorkflowsPassTheGate(t *testing.T) {
+	t.Parallel()
+	frameworkCI := readText(t, filepath.Join(".github", "workflows", "ci.yml"))
+	for _, database := range append([]string{""}, scaffold.Databases...) {
+		dir := filepath.Join(t.TempDir(), "app")
+		if _, err := scaffold.Generate(scaffold.Options{Name: "gateapp", Dir: dir, Database: database}); err != nil {
+			t.Fatalf("%s: %v", database, err)
+		}
+		for _, name := range []string{"ci.yml", "release.yml"} {
+			path := filepath.Join(dir, ".github", "workflows", name)
+			text := readText(t, path)
+			shown := fmt.Sprintf("generated (%s) %s", database, name)
+			violations := append(pinViolations(shown, text), checkoutViolations(shown, text)...)
+			violations = append(violations, allowlistViolations(shown, text)...)
+			violations = append(violations, containerViolations(shown, text)...)
+			violations = append(violations, yamlSubsetViolations(shown, text)...)
+			violations = append(violations, parserViolations(shown, text)...)
+			violations = append(violations, treeViolations(shown, text, name == "release.yml")...)
+			// The database service runs the image the framework's CI tests
+			// with, pinned to the same digest.
+			for _, container := range containerImages(text) {
+				if !strings.Contains(frameworkCI, "image: "+container.image+"\n") {
+					violations = append(violations, fmt.Sprintf("%s:%d: %q is not the image .github/workflows/ci.yml pins", shown, container.line, container.image))
+				}
+			}
+			for _, violation := range violations {
 				t.Error(violation)
 			}
 		}

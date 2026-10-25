@@ -46,7 +46,7 @@ type databaseProfile struct {
 
 	// Server databases only.
 	Service       string      // compose service and host name
-	Image         string      // shared by compose and CI
+	Image         string      // shared by compose and CI; pinned by digest, the framework CI's pin
 	ContainerPort int         // port inside the container
 	VolumePath    string      // data directory inside the container
 	Env           [][2]string // compose environment of the server
@@ -67,7 +67,7 @@ func profileFor(name, user, database string) *databaseProfile {
 			Name: name, Title: "PostgreSQL 18", Adapter: "postgres", TestPackage: "postgrestest", Server: true, Identity: true, Jobs: true,
 			ProductionTLS: "`sslmode=verify-full` or `verify-ca` (`sslrootcert` for a private CA)",
 			MigrationLock: "a PostgreSQL advisory lock",
-			Service:       "postgres", Image: "postgres:18-alpine", ContainerPort: 5432,
+			Service:       "postgres", Image: "postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873", ContainerPort: 5432,
 			// The PostgreSQL 18 image keeps its data in a versioned
 			// subdirectory of /var/lib/postgresql.
 			VolumePath: "/var/lib/postgresql",
@@ -83,7 +83,7 @@ func profileFor(name, user, database string) *databaseProfile {
 		return &databaseProfile{ // #nosec G101 -- throwaway container credentials, see above
 			Name: name, Title: "MySQL 8.4", Adapter: "mysql", TestPackage: "mysqltest", Server: true, Jobs: true,
 			ProductionTLS: "`tls=true`", MigrationLock: "a MySQL named lock (GET_LOCK)",
-			Service: "mysql", Image: "mysql:8.4", ContainerPort: 3306, VolumePath: "/var/lib/mysql",
+			Service: "mysql", Image: "mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364", ContainerPort: 3306, VolumePath: "/var/lib/mysql",
 			Env: [][2]string{
 				{"MYSQL_ROOT_PASSWORD", "development"}, {"MYSQL_DATABASE", database},
 				{"MYSQL_USER", user}, {"MYSQL_PASSWORD", "development"},
@@ -99,7 +99,7 @@ func profileFor(name, user, database string) *databaseProfile {
 		return &databaseProfile{ // #nosec G101 -- throwaway container credentials, see above
 			Name: name, Title: "MariaDB 11.8", Adapter: "mysql", TestPackage: "mysqltest", Server: true, Jobs: true,
 			ProductionTLS: "`tls=true`", MigrationLock: "a MariaDB named lock (GET_LOCK)",
-			Service: "mariadb", Image: "mariadb:11.8", ContainerPort: 3306, VolumePath: "/var/lib/mysql",
+			Service: "mariadb", Image: "mariadb:11.8@sha256:f16d7a344413e519dff518f27bdb221388f84b0d274c97c4fb5f2cb0dc1b34fa", ContainerPort: 3306, VolumePath: "/var/lib/mysql",
 			Env: [][2]string{
 				{"MARIADB_ROOT_PASSWORD", "development"}, {"MARIADB_DATABASE", database},
 				{"MARIADB_USER", user}, {"MARIADB_PASSWORD", "development"},

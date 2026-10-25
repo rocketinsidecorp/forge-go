@@ -191,7 +191,17 @@ tags on the default branch. Its README shows the commands.
     `>-` block scalar. Every gated file is also parsed as YAML
     (`go.yaml.in/yaml/v3`): the parser and the line scanner must read the
     same `uses` keys, the same values on the same lines (block-scalar text
-    is not scanned, so a decoy there cannot balance a hidden key);
+    is not scanned, so a decoy there cannot balance a hidden key); the
+    checkout (`with: persist-credentials: false` in the step itself) and
+    `permissions` rules also read the parsed tree, not the text;
+  - in a gated template (`internal/scaffold/templates/ci.yml.tmpl`), any
+    directive but `{{.Field}}`, `{{index . N}}` and `if`/`else`/`range`/`end`
+    over fields (`and`, `or`, `not`): no string literals, variables,
+    `print*`, `with`, `template` or other functions, so a directive cannot
+    render a step the gate never reads. The workflows `forge new` writes are
+    also generated for every database (and none) with the real template data
+    and gated as written; their database service images are pinned by digest
+    to the framework CI's pins (`internal/scaffold/database.go`);
   - a checkout step, in any spelling of `actions/checkout`, that does not
     set `persist-credentials: false` itself (checked per step, not counted);
   - a `container: <image>` shorthand, a job's `container.image` or a

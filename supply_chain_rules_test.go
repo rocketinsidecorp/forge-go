@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"text/template/parse"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -335,11 +336,11 @@ func yamlSubsetViolations(path, text string) []string {
 // templateField is a text/template action in a generated-app template.
 var templateField = regexp.MustCompile(`\{\{-?[^}]*-?\}\}`)
 
-// parsedUses returns every `uses` key a YAML parser reads in text, as
-// "line:value" (each document, aliases resolved), and refuses merge keys.
-// In a template, a line holding only directives becomes blank (line numbers
-// stay) and any other directive a plain word.
-func parsedUses(text string, template bool) ([]string, error) {
+// yamlDocuments parses text with yaml/v3 into its documents. In a
+// template, a line holding only directives becomes blank (line numbers stay)
+// and any other directive a plain word; the rendered outputs are gated on
+// their own (TestGeneratedWorkflowsPassTheGate).
+func yamlDocuments(text string, template bool) ([]*yaml.Node, error) {
 	if template {
 		lines := strings.Split(text, "\n")
 		for index, line := range lines {
@@ -352,43 +353,220 @@ func parsedUses(text string, template bool) ([]string, error) {
 		text = strings.Join(lines, "\n")
 	}
 	decoder := yaml.NewDecoder(strings.NewReader(text))
-	var found []string
+	var documents []*yaml.Node
 	for {
 		var document yaml.Node
 		err := decoder.Decode(&document)
 		if errors.Is(err, io.EOF) {
-			return found, nil
+			return documents, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		var walk func(*yaml.Node) error
-		walk = func(node *yaml.Node) error {
-			if node.Kind == yaml.MappingNode {
-				for index := 0; index+1 < len(node.Content); index += 2 {
-					key, value := node.Content[index], node.Content[index+1]
-					if key.Kind == yaml.AliasNode && key.Alias != nil {
-						key = key.Alias
-					}
-					if key.Tag == "!!merge" || key.Value == "<<" {
-						return fmt.Errorf("line %d: a merge key", key.Line)
-					}
-					if key.Kind == yaml.ScalarNode && key.Value == "uses" {
-						found = append(found, fmt.Sprintf("%d:%s", key.Line, value.Value))
-					}
-				}
-			}
-			for _, child := range node.Content {
-				if err := walk(child); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		if err := walk(&document); err != nil {
-			return nil, err
+		documents = append(documents, &document)
+	}
+}
+
+// yamlNodes returns every node of the documents, depth first.
+func yamlNodes(documents []*yaml.Node) []*yaml.Node {
+	var found []*yaml.Node
+	var walk func(*yaml.Node)
+	walk = func(node *yaml.Node) {
+		found = append(found, node)
+		for _, child := range node.Content {
+			walk(child)
 		}
 	}
+	for _, document := range documents {
+		walk(document)
+	}
+	return found
+}
+
+// yamlGet returns the value of key in a mapping node, or nil.
+func yamlGet(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if node.Content[index].Kind == yaml.ScalarNode && node.Content[index].Value == key {
+			return node.Content[index+1]
+		}
+	}
+	return nil
+}
+
+// parsedUses returns every `uses` key a YAML parser reads in text, as
+// "line:value" (aliases resolved), and refuses merge keys.
+func parsedUses(text string, template bool) ([]string, error) {
+	documents, err := yamlDocuments(text, template)
+	if err != nil {
+		return nil, err
+	}
+	var found []string
+	for _, node := range yamlNodes(documents) {
+		if node.Kind != yaml.MappingNode {
+			continue
+		}
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			key, value := node.Content[index], node.Content[index+1]
+			if key.Kind == yaml.AliasNode && key.Alias != nil {
+				key = key.Alias
+			}
+			if key.Tag == "!!merge" || key.Value == "<<" {
+				return nil, fmt.Errorf("line %d: a merge key", key.Line)
+			}
+			if key.Kind == yaml.ScalarNode && key.Value == "uses" {
+				found = append(found, fmt.Sprintf("%d:%s", key.Line, value.Value))
+			}
+		}
+	}
+	return found, nil
+}
+
+// treeViolations reads the parsed tree: every step that uses
+// actions/checkout (any case) sets `with: persist-credentials: false`
+// itself, and no `permissions` grants `write` beyond the release job's
+// `id-token` and `packages` (or `write-all`).
+func treeViolations(path, text string, release bool) []string {
+	documents, err := yamlDocuments(text, strings.HasSuffix(path, ".tmpl"))
+	if err != nil {
+		return []string{fmt.Sprintf("%s: %v", path, err)}
+	}
+	var violations []string
+	for _, node := range yamlNodes(documents) {
+		if node.Kind != yaml.MappingNode {
+			continue
+		}
+		if uses := yamlGet(node, "uses"); uses != nil && uses.Kind == yaml.ScalarNode {
+			action, _, _ := strings.Cut(uses.Value, "@")
+			kept := yamlGet(yamlGet(node, "with"), "persist-credentials")
+			if strings.EqualFold(action, "actions/checkout") && (kept == nil || kept.Kind != yaml.ScalarNode || kept.Value != "false") {
+				violations = append(violations, fmt.Sprintf("%s:%d: this checkout step must set with: persist-credentials: false", path, uses.Line))
+			}
+		}
+		permissions := yamlGet(node, "permissions")
+		if permissions == nil {
+			continue
+		}
+		switch permissions.Kind {
+		case yaml.ScalarNode:
+			if permissions.Value != "read-all" && permissions.Value != "" {
+				violations = append(violations, fmt.Sprintf("%s:%d: permissions: %s is not allowed", path, permissions.Line, permissions.Value))
+			}
+		case yaml.MappingNode:
+			for index := 0; index+1 < len(permissions.Content); index += 2 {
+				scope, access := permissions.Content[index], permissions.Content[index+1]
+				allowed := access.Kind == yaml.ScalarNode && (access.Value == "read" || access.Value == "none" ||
+					(access.Value == "write" && release && (scope.Value == "id-token" || scope.Value == "packages")))
+				if !allowed {
+					violations = append(violations, fmt.Sprintf("%s:%d: %s: %s is not allowed", path, scope.Line, scope.Value, access.Value))
+				}
+			}
+		default:
+			violations = append(violations, fmt.Sprintf("%s:%d: permissions must be a mapping", path, permissions.Line))
+		}
+	}
+	return violations
+}
+
+// templateDirectiveViolations allows only the directive forms a gated
+// template needs, so a template cannot render text the gate never sees:
+// `{{.Field}}`, `{{index . N}}`, and `if`/`else`/`range`/`end` over fields
+// (`and`, `or`, `not` of fields). String literals, variables, `print*`,
+// `with`, `template` and every other function are refused.
+func templateDirectiveViolations(path, text string) []string {
+	functions := map[string]any{"and": true, "or": true, "not": true, "index": true}
+	trees, err := parse.Parse(path, text, "{{", "}}", functions)
+	if err != nil {
+		return []string{fmt.Sprintf("%s: %v", path, err)}
+	}
+	var violations []string
+	refuse := func(node parse.Node) {
+		violations = append(violations, fmt.Sprintf("%s: %q is not a gated directive form (.Field, index . N, if/else/range/end over fields)", path, node.String()))
+	}
+	isField := func(node parse.Node) bool {
+		switch node.(type) {
+		case *parse.FieldNode, *parse.DotNode:
+			return true
+		}
+		return false
+	}
+	condition := func(pipe *parse.PipeNode) bool {
+		if pipe == nil || len(pipe.Decl) != 0 || len(pipe.Cmds) != 1 {
+			return false
+		}
+		args := pipe.Cmds[0].Args
+		if len(args) == 1 {
+			return isField(args[0])
+		}
+		identifier, ok := args[0].(*parse.IdentifierNode)
+		if !ok || (identifier.Ident != "and" && identifier.Ident != "or" && identifier.Ident != "not") {
+			return false
+		}
+		for _, arg := range args[1:] {
+			if !isField(arg) {
+				return false
+			}
+		}
+		return true
+	}
+	output := func(pipe *parse.PipeNode) bool {
+		if pipe == nil || len(pipe.Decl) != 0 || len(pipe.Cmds) != 1 {
+			return false
+		}
+		args := pipe.Cmds[0].Args
+		if len(args) == 1 {
+			_, field := args[0].(*parse.FieldNode)
+			return field
+		}
+		identifier, ok := args[0].(*parse.IdentifierNode)
+		if !ok || identifier.Ident != "index" || len(args) != 3 {
+			return false
+		}
+		_, dot := args[1].(*parse.DotNode)
+		_, number := args[2].(*parse.NumberNode)
+		return dot && number
+	}
+	var walk func(parse.Node)
+	walk = func(node parse.Node) {
+		switch typed := node.(type) {
+		case nil:
+		case *parse.ListNode:
+			if typed == nil {
+				return
+			}
+			for _, child := range typed.Nodes {
+				walk(child)
+			}
+		case *parse.TextNode:
+		case *parse.ActionNode:
+			if !output(typed.Pipe) {
+				refuse(typed)
+			}
+		case *parse.IfNode:
+			if !condition(typed.Pipe) {
+				refuse(typed)
+			}
+			walk(typed.List)
+			walk(typed.ElseList)
+		case *parse.RangeNode:
+			if !condition(typed.Pipe) {
+				refuse(typed)
+			}
+			walk(typed.List)
+			walk(typed.ElseList)
+		default:
+			refuse(typed)
+		}
+	}
+	for name, tree := range trees {
+		if name != path {
+			violations = append(violations, fmt.Sprintf("%s: a define block %q", path, name))
+		}
+		walk(tree.Root)
+	}
+	return violations
 }
 
 // scannedUses returns every `uses` the line scanner reads on node lines, as
