@@ -23,7 +23,10 @@ cipher, err := encryption.NewCipher(ring)
 Without credentials, build a ring yourself (`encryption.GenerateKey`,
 `encryption.NewKeyRing`, `encryption.ParseKeyRing`). Keys are 32 bytes; their
 identifiers are 1-32 letters, digits, `_` or `-` and are stored in every
-ciphertext. Use names you can read in a year: `2026-10`, not `1`.
+ciphertext. Use names you can read in a year: `2026-10`, not `1`. Identifiers
+in one ring must differ in more than letter case: a ring with `K1` and `k1` is
+refused, because MySQL and MariaDB compare text ignoring case by default and
+could not tell their values apart.
 
 ## Encrypting a column
 
@@ -154,7 +157,11 @@ alone identifies the values). There is no deterministic encryption mode.
    security (a superuser, a `BYPASSRLS` role, or the owner of a table without
    `FORCE`) may rotate the whole table unscoped. A tenant scope only narrows
    what the policies narrow: on a table without row-level security it visits
-   every row. The rotation refuses views: point it at the table that stores
+   every row. The scope sets `forge.tenant_id` and nothing else, and a scoped
+   run skips the catalog check: on a table whose policies read another setting
+   (your own `app.tenant`, say) it sees no row and reports `Scanned == 0` as a
+   success. Rotate such a table as a role that bypasses its row-level
+   security; the completion count below catches the mistake. The rotation refuses views: point it at the table that stores
    the column.
 
    MySQL, MariaDB and SQLite have no row-level security. Their tenant
@@ -191,7 +198,11 @@ alone identifies the values). There is no deterministic encryption mode.
 
    `stale` must be `0` and `total` the number of rows you expect. Compare a
    prefix rather than `NOT LIKE 'fg1.2026_10.%'`: `_` is a `LIKE` wildcard and
-   key ids may contain it.
+   key ids may contain it. MySQL and MariaDB compare with the column's
+   collation, which ignores case by default; the count is still exact because
+   a key ring refuses identifiers that differ only in letter case, so no other
+   key's values share the prefix. (`BINARY` or `COLLATE utf8mb4_bin` on the
+   comparison makes it byte-exact regardless.)
 
    A report never proves completion: `Scanned == 0`, `Rotated == 0` and
    `Conflicts == 0` are exactly what a role that cannot see the rows reports.
@@ -213,5 +224,9 @@ Rotate before about 2^32 values have been encrypted under one key (random
   an updated-at/version column and optimistic locking if that matters.
 - Whoever has both the database and the key reads everything. Keep the key out
   of the database host and its backups.
+- Decrypted values are ordinary Go values and are not wiped: the garbage
+  collector may copy them and strings are immutable. Forge-Rust wipes its own
+  intermediate copies; here that is not attempted (WONTFIX), so core dumps and
+  swap can hold plaintexts.
 - `auth.AESGCMSecretCipher` (MFA seeds) keeps its own single-key format
   ([MFA.md](MFA.md)); it uses the same primitives.

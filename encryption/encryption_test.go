@@ -204,10 +204,25 @@ func TestKeyRingValidationAndRedaction(t *testing.T) {
 		"bad id":       {{ID: "bad id", Material: good.Material}},
 		"empty id":     {{ID: "", Material: good.Material}},
 		"duplicate id": {good, good},
+		// A case-insensitive collation (MySQL, MariaDB) could not tell K1's
+		// values from k1's.
+		"ids equal ignoring case": {good, testKey(t, "K1", 2)},
 	}
 	for name, keys := range cases {
 		if _, err := encryption.NewKeyRing(keys[0], keys[1:]...); !errors.Is(err, encryption.ErrInvalidKey) {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if _, err := encryption.NewKeyRing(good, testKey(t, "K1", 2)); err == nil || !strings.Contains(err.Error(), "ignoring letter case") {
+		t.Errorf("case collision message: %v", err)
+	}
+	// ParseKeyRing names positions, never identifiers.
+	encoded := func(fill byte) string { return encryption.EncodeKey(testKey(t, "x", fill).Material) }
+	for _, active := range []string{"K1", "k1"} {
+		_, err := encryption.ParseKeyRing(active, map[string]string{"K1": encoded(1), "a": encoded(2), "b": encoded(3), "c": encoded(4), "k1": encoded(5)})
+		if !errors.Is(err, encryption.ErrInvalidKey) || !strings.Contains(err.Error(), "keys #1 and #5") ||
+			!strings.Contains(err.Error(), "ignoring letter case") || strings.Contains(err.Error(), "K1") || strings.Contains(err.Error(), "k1") {
+			t.Errorf("active %s: %v", active, err)
 		}
 	}
 	material := testKey(t, "k1", 9).Material

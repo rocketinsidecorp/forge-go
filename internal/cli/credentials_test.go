@@ -591,6 +591,95 @@ func TestCredentialsRotateKeyFromEnvironmentKey(t *testing.T) {
 	}
 }
 
+// fullKeyList returns a key list already at credentials.MaxKeys, the key that
+// sealed env's file last.
+func (h *credHarness) fullKeyList(t *testing.T, env string) []encryption.Key {
+	t.Helper()
+	current, _, err := credentials.LoadKeys(h.ctx.dir, env, h.ctx.lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys []encryption.Key
+	for range credentials.MaxKeys - 1 {
+		material, err := encryption.GenerateKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := credentials.NewKey(material)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, key)
+	}
+	return append(keys, current...)
+}
+
+func TestCredentialsRotateKeyWithAFullKeyListRotatesAndKeepOldFailsCleanly(t *testing.T) {
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keys := h.fullKeyList(t, "production")
+	if err := credentials.WriteKeyFile(h.ctx.dir, "production", keys, true); err != nil {
+		t.Fatal(err)
+	}
+	keyBefore, fileBefore := fileBytes(t, h.keyPath("production")), fileBytes(t, h.encPath("production"))
+	// --keep-old would need MaxKeys+1 keys: refused before any output or write.
+	for _, args := range [][]string{{"--keep-old"}, {"--keep-old", "--print-key"}} {
+		err := h.run(t, append([]string{"rotate-key", "--environment", "production"}, args...)...)
+		if err == nil || !strings.Contains(err.Error(), "would keep 9 keys") || !strings.Contains(err.Error(), "at most 8") ||
+			!strings.Contains(err.Error(), "nothing was changed") {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if h.stdout.Len() != 0 {
+			t.Fatalf("%v: printed %q", args, h.stdout.String())
+		}
+		if !bytes.Equal(keyBefore, fileBytes(t, h.keyPath("production"))) || !bytes.Equal(fileBefore, fileBytes(t, h.encPath("production"))) {
+			t.Fatalf("%v: files changed", args)
+		}
+	}
+	// Without --keep-old the full list rotates to the new key alone.
+	if err := h.run(t, "rotate-key", "--environment", "production", "--print-key"); err != nil {
+		t.Fatal(err)
+	}
+	printed, err := credentials.ParseKeys(strings.TrimSpace(h.stdout.String()))
+	if err != nil || len(printed) != 1 {
+		t.Fatalf("printed: %v %v", printed, err)
+	}
+	stored, _, err := credentials.LoadKeys(h.ctx.dir, "production", h.ctx.lookup)
+	if err != nil || len(stored) != 1 || stored[0].ID != printed[0].ID {
+		t.Fatalf("stored keys: %v %v", stored, err)
+	}
+	if got, _ := h.read(t, "production").String("stripe", "api_key"); got != secretValue {
+		t.Fatalf("value after rotation = %q", got)
+	}
+	if _, err := credentials.Unseal("production", fileBytes(t, h.encPath("production")), keys); err == nil {
+		t.Fatal("an old key still opens the file")
+	}
+}
+
+func TestCredentialsRotateKeyKeepOldWithAFullEnvironmentListPrintsNothing(t *testing.T) {
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keys := h.fullKeyList(t, "production")
+	if err := os.Remove(h.keyPath("production")); err != nil {
+		t.Fatal(err)
+	}
+	h.env[credentials.EnvMasterKey] = joinKeys(keys)
+	before := fileBytes(t, h.encPath("production"))
+	err := h.run(t, "rotate-key", "--environment", "production", "--keep-old", "--print-key")
+	if err == nil || !strings.Contains(err.Error(), "at most 8") {
+		t.Fatalf("too many keys: %v", err)
+	}
+	if h.stdout.Len() != 0 {
+		t.Fatalf("printed %q", h.stdout.String())
+	}
+	if _, err := os.Stat(h.keyPath("production")); err == nil {
+		t.Fatal("a key file appeared")
+	}
+	if !bytes.Equal(before, fileBytes(t, h.encPath("production"))) {
+		t.Fatal("the file changed")
+	}
+}
+
 func TestCredentialsCommandValidation(t *testing.T) {
 	h := newCredHarness(t)
 	for _, args := range [][]string{

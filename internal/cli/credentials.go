@@ -254,6 +254,16 @@ func (c *credentialsContext) rotate(env string, keepOld, printKey, writeKeyFile 
 	if !toFile && !printKey {
 		return errors.New("the current key comes from FORGE_MASTER_KEY, so there is no key file to update: pass --print-key (to store the new key in your secret manager) or --write-key-file")
 	}
+	// The key lists are checked before anything is printed or written: a list
+	// longer than MaxKeys could be neither stored nor parsed.
+	if keepOld && len(keys)+1 > credentials.MaxKeys {
+		return fmt.Errorf("--keep-old would keep %d keys, and a key list holds at most %d: drop old keys from the list first, or rotate without --keep-old; nothing was changed",
+			len(keys)+1, credentials.MaxKeys)
+	}
+	fileKey, err := credentials.KeyID(file)
+	if err != nil {
+		return err
+	}
 	material, err := encryption.GenerateKey()
 	if err != nil {
 		return err
@@ -263,7 +273,15 @@ func (c *credentialsContext) rotate(env string, keepOld, printKey, writeKeyFile 
 	if err != nil {
 		return err
 	}
-	withOld := append([]encryption.Key{fresh}, keys...)
+	// During the swap the key file holds the new key and the keys that must
+	// stay readable: every old key with --keep-old, otherwise only the key that
+	// opens the file on disk, so a full list still rotates.
+	withOld := []encryption.Key{fresh}
+	for _, key := range keys {
+		if keepOld || key.ID == fileKey {
+			withOld = append(withOld, key)
+		}
+	}
 	final := withOld
 	if !keepOld {
 		final = []encryption.Key{fresh}
@@ -289,9 +307,9 @@ func (c *credentialsContext) rotate(env string, keepOld, printKey, writeKeyFile 
 		}
 	}
 	// Crash safety: the key file first gains the new key while still holding
-	// the old ones, then the encrypted file changes, and only then are the old
-	// keys dropped. At every instant the file on disk is readable with the key
-	// file on disk.
+	// the key of the file on disk (all old keys with --keep-old), then the
+	// encrypted file changes, and only then are the old keys dropped. At every
+	// instant the file on disk is readable with the key file on disk.
 	if toFile {
 		if err := credentials.WriteKeyFile(c.dir, env, withOld, true); err != nil {
 			return err
