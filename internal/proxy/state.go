@@ -60,7 +60,7 @@ func (s *Server) loadState() error {
 }
 
 // saveState writes the routing table atomically (temporary file, fsync,
-// rename) with 0600 permissions.
+// rename, directory fsync) with 0600 permissions.
 func (s *Server) saveState() error {
 	if s.statePath == "" {
 		return nil
@@ -101,6 +101,9 @@ func (s *Server) saveState() error {
 		return fmt.Errorf("write proxy state: %w", err)
 	}
 	if err := os.Rename(tempName, s.statePath); err != nil {
+		return fmt.Errorf("write proxy state: %w", err)
+	}
+	if err := syncDir(dir); err != nil {
 		return fmt.Errorf("write proxy state: %w", err)
 	}
 	return nil
