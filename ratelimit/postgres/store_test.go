@@ -92,3 +92,23 @@ func TestNewLimiterValidation(t *testing.T) {
 		t.Fatal("nil database accepted")
 	}
 }
+
+func TestLimiterFailsWhenItsTableIsUnavailable(t *testing.T) {
+	limitertest.RunUnavailable(t, func(tb testing.TB) (ratelimit.Limiter, func(testing.TB) func()) {
+		db := postgrestest.NewMigrated(tb, ratelimitpostgres.Migrations())
+		limiter, err := ratelimitpostgres.NewLimiter(db, ratelimit.StoreOptions{PruneInterval: -1})
+		if err != nil {
+			tb.Fatal(err)
+		}
+		rename := func(tb testing.TB, from, to string) {
+			tb.Helper()
+			if _, err := db.Exec(context.Background(), "ALTER TABLE "+from+" RENAME TO "+to); err != nil {
+				tb.Fatal(err)
+			}
+		}
+		return limiter, func(tb testing.TB) func() {
+			rename(tb, "forge_rate_limits", "forge_rate_limits_gone")
+			return func() { rename(tb, "forge_rate_limits_gone", "forge_rate_limits") }
+		}
+	})
+}

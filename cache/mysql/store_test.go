@@ -114,3 +114,23 @@ func TestNewStoreValidation(t *testing.T) {
 		t.Fatal("negative MaxEntries accepted")
 	}
 }
+
+func TestStoreFailsWhenItsTableIsUnavailable(t *testing.T) {
+	cachetest.RunUnavailable(t, func(tb testing.TB) (cache.Cache, func(testing.TB) func()) {
+		db := mysqltest.NewMigrated(tb, cachemysql.Migrations())
+		store, err := cachemysql.NewStore(db, cache.StoreOptions{PruneInterval: -1})
+		if err != nil {
+			tb.Fatal(err)
+		}
+		rename := func(tb testing.TB, from, to string) {
+			tb.Helper()
+			if _, err := db.ExecContext(context.Background(), "RENAME TABLE "+from+" TO "+to); err != nil {
+				tb.Fatal(err)
+			}
+		}
+		return store, func(tb testing.TB) func() {
+			rename(tb, "forge_cache_entries", "forge_cache_entries_gone")
+			return func() { rename(tb, "forge_cache_entries_gone", "forge_cache_entries") }
+		}
+	})
+}

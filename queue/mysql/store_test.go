@@ -197,3 +197,27 @@ func TestStoreRejectsNilDatabase(t *testing.T) {
 		t.Fatal("NewStore(nil) succeeded")
 	}
 }
+
+func TestStoreFailsWhenItsTableIsUnavailable(t *testing.T) {
+	storetest.RunUnavailable(t, func(tb testing.TB) (queue.Store, func(testing.TB) func()) {
+		db := newDB(tb)
+		store, err := queuemysql.NewStore(db)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		rename := func(tb testing.TB, from, to string) {
+			tb.Helper()
+			if _, err := db.ExecContext(context.Background(), "RENAME TABLE "+from+" TO "+to); err != nil {
+				tb.Fatal(err)
+			}
+		}
+		return store, func(tb testing.TB) func() {
+			rename(tb, "forge_jobs", "forge_jobs_gone")
+			return func() { rename(tb, "forge_jobs_gone", "forge_jobs") }
+		}
+	})
+}
+
+func TestStoreRefusesInvalidArguments(t *testing.T) {
+	storetest.RunInvalidArguments(t, newStore)
+}

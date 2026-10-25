@@ -184,3 +184,27 @@ func TestStoreRejectsNilDependencies(t *testing.T) {
 		t.Fatal("NewStoreFromPool(nil) succeeded")
 	}
 }
+
+func TestStoreFailsWhenItsTableIsUnavailable(t *testing.T) {
+	storetest.RunUnavailable(t, func(tb testing.TB) (queue.Store, func(testing.TB) func()) {
+		db := postgrestest.NewMigrated(tb, queuepostgres.Migrations())
+		store, err := queuepostgres.NewStore(db)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		rename := func(tb testing.TB, from, to string) {
+			tb.Helper()
+			if _, err := db.Exec(context.Background(), "ALTER TABLE "+from+" RENAME TO "+to); err != nil {
+				tb.Fatal(err)
+			}
+		}
+		return store, func(tb testing.TB) func() {
+			rename(tb, "forge_jobs", "forge_jobs_gone")
+			return func() { rename(tb, "forge_jobs_gone", "forge_jobs") }
+		}
+	})
+}
+
+func TestStoreRefusesInvalidArguments(t *testing.T) {
+	storetest.RunInvalidArguments(t, newStore)
+}

@@ -263,10 +263,9 @@ func TestCredentialsEditLeavesAnInterruptTypedInTheEditorToTheEditor(t *testing.
 		time.Sleep(10 * time.Millisecond)
 	}
 	// The terminal delivers Ctrl-C to forge and to the editor.
-	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+	if err := signalSelf(syscall.SIGINT); err != nil { // returns once both forge handlers have it
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond) // let both forge handlers receive it before the editor exits
 	if err := os.WriteFile(proceed, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}

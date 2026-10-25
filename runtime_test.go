@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,28 +33,34 @@ var handedOut = struct {
 }{addresses: map[string]bool{}}
 
 // freeAddress returns a loopback address that was free a moment ago and
-// that no other test of this process was given: the kernel may hand a
-// just-closed port to the next caller, and two parallel tests sharing one
-// would talk to each other's server.
+// that no other test of this process was given.
+//
+// The port is drawn from 20000-29999, below the range operating systems hand
+// out to anything that asks for "any port" (32768 and up on Linux, 49152 and
+// up elsewhere). A port the kernel itself chose would be free only until the
+// next httptest server, or the next outgoing connection of any test binary
+// running in parallel, was given the same one; that made "address already in
+// use" appear on loaded machines.
 func freeAddress(t *testing.T) string {
 	t.Helper()
 	handedOut.Lock()
 	defer handedOut.Unlock()
-	for range 100 {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
+	for range 500 {
+		address := fmt.Sprintf("127.0.0.1:%d", 20000+rand.IntN(10000))
+		if handedOut.addresses[address] {
+			continue
 		}
-		address := listener.Addr().String()
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			continue // taken by another process
+		}
 		if err := listener.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if !handedOut.addresses[address] {
-			handedOut.addresses[address] = true
-			return address
-		}
+		handedOut.addresses[address] = true
+		return address
 	}
-	t.Fatal("no unused loopback port in 100 tries")
+	t.Fatal("no unused loopback port in 500 tries")
 	return ""
 }
 

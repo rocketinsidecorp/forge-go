@@ -141,11 +141,15 @@ func smallReceiveBuffer(_, _ string, raw syscall.RawConn) error {
 	return sockErr
 }
 
-// A client that reads slowly but steadily (4 KiB every 100 ms, far below a
-// 32 KiB write per idle timeout) receives the whole response: the budget
-// covers progress, not whole writes.
+// A client that reads slowly but steadily (2 KiB every 100 ms) receives the
+// whole 64 KiB response, which takes over three seconds: the budget covers
+// progress, not whole writes. A 32 KiB write alone takes 1.6 s at that pace,
+// longer than the one second idle timeout, so only a budget that counts
+// progress lets it through; and the timeout is ten times the pause between
+// reads, so a loaded machine that stretches a pause does not look like a
+// stalled client.
 func TestSlowClientThatKeepsReadingIsNotCutOff(t *testing.T) {
-	const size = 128 << 10
+	const size = 64 << 10
 	app := newBackend(t, "app", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Length", strconv.Itoa(size))
 		_, _ = w.Write(bytes.Repeat([]byte("x"), size))
@@ -154,7 +158,7 @@ func TestSlowClientThatKeepsReadingIsNotCutOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.idleTimeout = 300 * time.Millisecond
+	srv.idleTimeout = time.Second
 	front := httptest.NewUnstartedServer(srv)
 	front.Listener = smallBuffers{front.Listener}
 	front.Start()
@@ -173,7 +177,7 @@ func TestSlowClientThatKeepsReadingIsNotCutOff(t *testing.T) {
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	var received []byte
-	buffer := make([]byte, 4<<10)
+	buffer := make([]byte, 2<<10)
 	for {
 		time.Sleep(100 * time.Millisecond)
 		n, err := io.ReadFull(conn, buffer)
