@@ -374,3 +374,72 @@ func TestGatedTemplatesUseOnlySimpleDirectives(t *testing.T) {
 		t.Errorf("rejected: %v", violations)
 	}
 }
+
+// A reader that takes a key's first value and one that takes its last would
+// disagree, so no mapping repeats a key, in any case.
+func TestTreeRulesRefuseDuplicateKeysInAnyCase(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"steps:\n  - uses: actions/checkout@SHA # v7.0.1\n    with:\n      persist-credentials: false\n      Persist-Credentials: true\n",
+		"steps:\n  - uses: actions/checkout@SHA # v7.0.1\n    USES: evil/act@main\n",
+		"permissions:\n  contents: read\nPermissions:\n  contents: write\n",
+		"jobs:\n  a:\n    env: {A: x, a: y}\n",
+	} {
+		text := snippet(rejected)
+		if _, err := yamlDocuments(text, false); err == nil || !strings.Contains(err.Error(), "appears twice") {
+			t.Errorf("parsed: %s (%v)", text, err)
+		}
+		if len(treeViolations("t.yml", text, false)) == 0 {
+			t.Errorf("the tree rules accepted: %s", text)
+		}
+		if len(parserViolations("t.yml", text)) == 0 {
+			t.Errorf("the parser check accepted: %s", text)
+		}
+	}
+	// The same key in two different mappings is fine.
+	if _, err := yamlDocuments("jobs:\n  a:\n    env: {A: x}\n  b:\n    env: {A: y}\n", false); err != nil {
+		t.Error(err)
+	}
+}
+
+// Every redirecting variable is refused in an env: block at any level, in
+// any case, and in run text; GOTOOLCHAIN passes only pinned; a $GITHUB_ENV
+// write is refused whatever it sets.
+func TestEnvironmentRuleRejectsRedirectingVariables(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"env:\n  GOFLAGS: -mod=mod\n",
+		"jobs:\n  a:\n    env:\n      goproxy: https://evil.example\n",
+		"steps:\n  - run: go build ./...\n    env:\n      GONOSUMDB: '*'\n",
+		"env: {GONOSUMCHECK: \"1\"}\n",
+		"env:\n  GOSUMDB: \"off\"\n",
+		"env:\n  GOINSECURE: '*'\n",
+		"env:\n  GOPRIVATE: evil.example\n",
+		"env:\n  GONOPROXY: '*'\n",
+		"env:\n  GOENV: ./go.env\n",
+		"env:\n  GOTOOLCHAIN: auto\n",
+		"env:\n  GOTOOLCHAIN: go1.25.3+auto\n",
+		"env:\n  GOTOOLCHAIN: go1.25\n",
+		"steps:\n  - run: GOTOOLCHAIN=$V go test ./...\n",
+		"steps:\n  - run: go env -w GOPROXY=https://evil.example\n",
+		"steps:\n  - run: export GOFLAGS=-insecure\n",
+		"steps:\n  - run: echo \"GOPROXY=https://evil.example\" >> \"$GITHUB_ENV\"\n",
+		"steps:\n  - run: echo \"A=b\" >> $GITHUB_ENV\n",
+		"steps:\n  - run: |\n      printf '%s\\n' X=1 >> \"${github_env}\"\n",
+	} {
+		if text := snippet(rejected); len(environmentViolations("t.yml", text)) == 0 {
+			t.Errorf("accepted: %s", text)
+		}
+	}
+	for _, accepted := range []string{
+		"env:\n  GOTOOLCHAIN: local\n  CGO_ENABLED: \"0\"\n",
+		"env:\n  GOTOOLCHAIN: go1.25.3\n",
+		"steps:\n  - run: GOTOOLCHAIN=local go test ./...\n",
+		"env:\n  FORGE_GOPROXYISH: x\n",
+		"steps:\n  - run: echo \"$HOME/bin\" >> \"$GITHUB_PATH\"\n",
+	} {
+		if violations := environmentViolations("t.yml", snippet(accepted)); len(violations) != 0 {
+			t.Errorf("rejected: %v", violations)
+		}
+	}
+}

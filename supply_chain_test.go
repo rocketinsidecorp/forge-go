@@ -130,6 +130,7 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 			violations = append(violations, parserViolations(path, text)...)
 			violations = append(violations, treeViolations(path, text, filepath.Base(path) == "release.yml")...)
 		}
+		violations = append(violations, environmentViolations(path, text)...)
 		if strings.HasSuffix(path, ".tmpl") {
 			violations = append(violations, templateDirectiveViolations(path, text)...)
 		}
@@ -274,30 +275,38 @@ func TestReleaseWorkflowsRunOnlyForVersionTags(t *testing.T) {
 func TestGeneratedWorkflowsPassTheGate(t *testing.T) {
 	t.Parallel()
 	frameworkCI := readText(t, filepath.Join(".github", "workflows", "ci.yml"))
+	// Every database (and none), two names and every locale: a template field
+	// that renders differently for another option cannot pass unread.
 	for _, database := range append([]string{""}, scaffold.Databases...) {
-		dir := filepath.Join(t.TempDir(), "app")
-		if _, err := scaffold.Generate(scaffold.Options{Name: "gateapp", Dir: dir, Database: database}); err != nil {
-			t.Fatalf("%s: %v", database, err)
-		}
-		for _, name := range []string{"ci.yml", "release.yml"} {
-			path := filepath.Join(dir, ".github", "workflows", name)
-			text := readText(t, path)
-			shown := fmt.Sprintf("generated (%s) %s", database, name)
-			violations := append(pinViolations(shown, text), checkoutViolations(shown, text)...)
-			violations = append(violations, allowlistViolations(shown, text)...)
-			violations = append(violations, containerViolations(shown, text)...)
-			violations = append(violations, yamlSubsetViolations(shown, text)...)
-			violations = append(violations, parserViolations(shown, text)...)
-			violations = append(violations, treeViolations(shown, text, name == "release.yml")...)
-			// The database service runs the image the framework's CI tests
-			// with, pinned to the same digest.
-			for _, container := range containerImages(text) {
-				if !strings.Contains(frameworkCI, "image: "+container.image+"\n") {
-					violations = append(violations, fmt.Sprintf("%s:%d: %q is not the image .github/workflows/ci.yml pins", shown, container.line, container.image))
+		for _, name := range []string{"gateapp", "shop"} {
+			for _, locale := range scaffold.Locales {
+				dir := filepath.Join(t.TempDir(), name)
+				if _, err := scaffold.Generate(scaffold.Options{Name: name, Dir: dir, Database: database, Locale: locale}); err != nil {
+					t.Fatalf("%s %s %s: %v", database, name, locale, err)
 				}
-			}
-			for _, violation := range violations {
-				t.Error(violation)
+				for _, file := range []string{filepath.Join("workflows", "ci.yml"), filepath.Join("workflows", "release.yml"), "dependabot.yml"} {
+					text := readText(t, filepath.Join(dir, ".github", file))
+					shown := fmt.Sprintf("generated (%s, %s, %s) .github/%s", database, name, locale, filepath.ToSlash(file))
+					violations := append(pinViolations(shown, text), allowlistViolations(shown, text)...)
+					violations = append(violations, yamlSubsetViolations(shown, text)...)
+					violations = append(violations, parserViolations(shown, text)...)
+					violations = append(violations, environmentViolations(shown, text)...)
+					if file != "dependabot.yml" {
+						violations = append(violations, checkoutViolations(shown, text)...)
+						violations = append(violations, containerViolations(shown, text)...)
+						violations = append(violations, treeViolations(shown, text, filepath.Base(file) == "release.yml")...)
+					}
+					// The database service runs the image the framework's CI
+					// tests with, pinned to the same digest.
+					for _, container := range containerImages(text) {
+						if !strings.Contains(frameworkCI, "image: "+container.image+"\n") {
+							violations = append(violations, fmt.Sprintf("%s:%d: %q is not the image .github/workflows/ci.yml pins", shown, container.line, container.image))
+						}
+					}
+					for _, violation := range violations {
+						t.Error(violation)
+					}
+				}
 			}
 		}
 	}

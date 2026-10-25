@@ -193,15 +193,32 @@ tags on the default branch. Its README shows the commands.
     same `uses` keys, the same values on the same lines (block-scalar text
     is not scanned, so a decoy there cannot balance a hidden key); the
     checkout (`with: persist-credentials: false` in the step itself) and
-    `permissions` rules also read the parsed tree, not the text;
+    `permissions` rules also read the parsed tree, not the text; no mapping
+    may repeat a key, compared without case (`persist-credentials` and
+    `Persist-Credentials`, a second `uses`), since readers that keep the
+    first and the last value would disagree;
+  - a variable that redirects where the go command fetches modules,
+    checksums or toolchains, or the flags and settings it reads (`GOFLAGS`,
+    `GOPROXY`, `GONOSUMDB`, `GONOSUMCHECK`, `GOSUMDB`, `GOINSECURE`,
+    `GOPRIVATE`, `GONOPROXY`, `GOENV`, and `GOTOOLCHAIN` unless set to
+    `local` or one exact `goX.Y.Z`), in any case, in an `env:` block at any
+    level or in `run` text; and any `$GITHUB_ENV` write, whatever it sets (a
+    variable for later steps goes in an `env:` block, where the gate reads
+    its name);
   - in a gated template (`internal/scaffold/templates/ci.yml.tmpl`), any
     directive but `{{.Field}}`, `{{index . N}}` and `if`/`else`/`range`/`end`
     over fields (`and`, `or`, `not`): no string literals, variables,
     `print*`, `with`, `template` or other functions, so a directive cannot
-    render a step the gate never reads. The workflows `forge new` writes are
-    also generated for every database (and none) with the real template data
-    and gated as written; their database service images are pinned by digest
-    to the framework CI's pins (`internal/scaffold/database.go`);
+    render a step the gate never reads. The workflows and Dependabot file
+    `forge new` writes are also generated for every database (and none), two
+    names and every locale with the real template data and gated as
+    written; their database service images are pinned by digest to the
+    framework CI's pins (`internal/scaffold/database.go`). The file
+    templates (`internal/scaffold/templates/*.tmpl`) share one template
+    set, where a later file's `{{define "ci.yml.tmpl"}}` would replace the
+    gated template, so `Generate` refuses `{{define}}` and `{{block}}` in
+    them and a test checks that each name in the set holds the tree its file
+    parses to on its own;
   - a checkout step, in any spelling of `actions/checkout`, that does not
     set `persist-credentials: false` itself (checked per step, not counted);
   - a `container: <image>` shorthand, a job's `container.image` or a
@@ -233,6 +250,10 @@ Dependabot proposes new SHAs for actions and digests for Dockerfile base
 images. It does not update the digests inside workflow `run:` steps (Syft),
 `sbom: generator=` (BuildKit's scanner) or CI service images; refresh those
 by hand, all copies at once (the test requires them to agree).
+The service images of the generated application's CI are pinned to the same
+digests as its compose file and the framework's CI
+(`internal/scaffold/database.go`), and Dependabot does not update CI service
+images: bump them together, by hand, in one change.
 
 ## Residual risks
 

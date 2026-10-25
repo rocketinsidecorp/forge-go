@@ -363,8 +363,35 @@ func yamlDocuments(text string, template bool) ([]*yaml.Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := duplicateKeys(&document); err != nil {
+			return nil, err
+		}
 		documents = append(documents, &document)
 	}
+}
+
+// duplicateKeys refuses a mapping that holds a key twice, compared without
+// case: a reader that takes the first value and one that takes the last
+// (yamlGet takes the first) would disagree.
+func duplicateKeys(document *yaml.Node) error {
+	for _, node := range yamlNodes([]*yaml.Node{document}) {
+		if node.Kind != yaml.MappingNode {
+			continue
+		}
+		seen := map[string]bool{}
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			key := node.Content[index]
+			if key.Kind != yaml.ScalarNode {
+				continue
+			}
+			folded := strings.ToLower(key.Value)
+			if seen[folded] {
+				return fmt.Errorf("line %d: the key %q appears twice", key.Line, key.Value)
+			}
+			seen[folded] = true
+		}
+	}
+	return nil
 }
 
 // yamlNodes returns every node of the documents, depth first.
@@ -767,6 +794,71 @@ func releaseViolations(path, text string) []string {
 	} {
 		if !strings.Contains(text, required) {
 			violations = append(violations, fmt.Sprintf("%s: missing %q", path, required))
+		}
+	}
+	return violations
+}
+
+// redirectingVariables redirect where the go command fetches modules,
+// checksums and toolchains, or which flags and settings it reads
+// (GOENV names another go.env file).
+var redirectingVariables = []string{
+	"GOFLAGS", "GOPROXY", "GONOSUMDB", "GONOSUMCHECK", "GOSUMDB", "GOINSECURE",
+	"GOPRIVATE", "GONOPROXY", "GOENV", "GOTOOLCHAIN",
+}
+
+// pinnedToolchain is a GOTOOLCHAIN setting that downloads nothing it was
+// not pinned to: `local`, or one exact `goX.Y.Z` release.
+var pinnedToolchain = regexp.MustCompile(`^\s*[:=]\s*["']?(?:local|go\d+\.\d+\.\d+)["']?(?:\s|$)`)
+
+// isWordByte reports whether b continues a variable name.
+func isWordByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+}
+
+// environmentViolations refuses every redirecting variable anywhere in a
+// gated file, in any case: in an `env:` block (workflow, job or step) or in
+// `run` text. GOTOOLCHAIN passes only set to a fixed pinned value. No gated
+// file writes `$GITHUB_ENV` either: a write there sets variables for every
+// later step under a name the shell may build at run time, where no text
+// rule can read it.
+func environmentViolations(path, text string) []string {
+	// ASCII case folding keeps every byte offset of text.
+	upper := []byte(text)
+	for index, b := range upper {
+		if b >= 'a' && b <= 'z' {
+			upper[index] = b - 'a' + 'A'
+		}
+	}
+	return redirectingViolations(path, text, string(upper))
+}
+
+func redirectingViolations(path, text, upper string) []string {
+	var violations []string
+	line := func(offset int) int { return strings.Count(upper[:offset], "\n") + 1 }
+	for offset := 0; ; {
+		found := strings.Index(upper[offset:], "GITHUB_ENV")
+		if found < 0 {
+			break
+		}
+		violations = append(violations, fmt.Sprintf("%s:%d: gated files do not write $GITHUB_ENV; set variables in an env: block", path, line(offset+found)))
+		offset += found + len("GITHUB_ENV")
+	}
+	for _, variable := range redirectingVariables {
+		for offset := 0; ; {
+			found := strings.Index(upper[offset:], variable)
+			if found < 0 {
+				break
+			}
+			start, end := offset+found, offset+found+len(variable)
+			offset = end
+			if start > 0 && isWordByte(upper[start-1]) || end < len(upper) && isWordByte(upper[end]) {
+				continue
+			}
+			if variable == "GOTOOLCHAIN" && pinnedToolchain.MatchString(strings.SplitN(text[end:], "\n", 2)[0]) {
+				continue
+			}
+			violations = append(violations, fmt.Sprintf("%s:%d: %s redirects where the go command fetches from", path, line(start), variable))
 		}
 	}
 	return violations

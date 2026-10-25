@@ -13,6 +13,7 @@ import (
 	"go/format"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -329,11 +330,43 @@ func parseTemplates(views bool) (*template.Template, error) {
 		}
 		return parsed, nil
 	}
-	parsed, err := template.New("").Option("missingkey=error").ParseFS(templateFS, "templates/*.tmpl")
+	parsed, err := parseFileTemplates(templateFS, fileTemplates)
 	if err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
 	return parsed, nil
+}
+
+// fileTemplates are the templates of generated files, one per file.
+const fileTemplates = "templates/*.tmpl"
+
+// parseFileTemplates parses every file matching pattern into one set, each
+// under its base name, and refuses {{define}} and {{block}}: in a shared set
+// a later file's {{define "ci.yml.tmpl"}} silently replaces ci.yml.tmpl, so
+// Generate would write text the supply-chain gate never read. Each file is
+// parsed alone first and must define nothing but its own name.
+func parseFileTemplates(fsys fs.FS, pattern string) (*template.Template, error) {
+	names, err := fs.Glob(fsys, pattern)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range names {
+		content, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			return nil, err
+		}
+		base := path.Base(name)
+		alone, err := template.New(base).Parse(string(content))
+		if err != nil {
+			return nil, err
+		}
+		for _, defined := range alone.Templates() {
+			if defined.Name() != base {
+				return nil, fmt.Errorf("%s: {{define}} and {{block}} are not allowed in a file template (it defines %q)", name, defined.Name())
+			}
+		}
+	}
+	return template.New("").Option("missingkey=error").ParseFS(fsys, pattern)
 }
 
 func render(opts Options) (map[string][]byte, error) {
