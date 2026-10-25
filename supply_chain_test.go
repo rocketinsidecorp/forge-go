@@ -85,7 +85,9 @@ func localActionTree(files []string, read func(string) string, isFile func(strin
 		}
 		seen[action] = true
 		if strings.HasSuffix(action, ".yml") || strings.HasSuffix(action, ".yaml") {
-			if !strings.HasPrefix(action, ".github/workflows/") || !isFile(action) {
+			// Directly in .github/workflows: `../` cannot lead elsewhere.
+			file, ok := strings.CutPrefix(action, ".github/workflows/")
+			if !ok || strings.Contains(file, "/") || !isFile(action) {
 				problems = append(problems, fmt.Sprintf("./%s is not a workflow of .github/workflows", action))
 			}
 			continue

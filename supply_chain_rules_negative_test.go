@@ -1,6 +1,7 @@
 package forge_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -165,6 +166,40 @@ func TestLocalActionTreeRefusesMissingTargets(t *testing.T) {
 		}
 	}
 	if len(problems) != len(want) {
+		t.Errorf("problems %v", problems)
+	}
+}
+
+func TestLocalActionTreeRefusesTraversalAndDirectories(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	workflows := filepath.Join(root, ".github", "workflows")
+	if err := os.MkdirAll(filepath.Join(workflows, "dir.yml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workflows, "real.yml"), []byte("on: workflow_call\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "outside.yml"), []byte("on: workflow_call\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{"ci.yml": "" +
+		"  a:\n    uses: ./.github/workflows/real.yml\n" +
+		"  b:\n    uses: ./.github/workflows/dir.yml\n" +
+		"  c:\n    uses: ./.github/workflows/../../outside.yml\n"}
+	read := func(path string) string { return files[path] }
+	isFile := func(path string) bool {
+		info, err := os.Stat(filepath.Join(root, path))
+		return err == nil && info.Mode().IsRegular()
+	}
+	_, problems := localActionTree([]string{"ci.yml"}, read, isFile)
+	joined := strings.Join(problems, "\n")
+	for _, want := range []string{"./.github/workflows/dir.yml", "./.github/workflows/../../outside.yml"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("%s was accepted: %v", want, problems)
+		}
+	}
+	if len(problems) != 2 {
 		t.Errorf("problems %v", problems)
 	}
 }
