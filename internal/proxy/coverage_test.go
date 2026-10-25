@@ -180,7 +180,7 @@ func TestListenControlReplacesAStaleSocketAndRefusesBadPaths(t *testing.T) {
 	if err := os.WriteFile(notADir, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ListenControl(filepath.Join(notADir, "c.sock")); err == nil || !strings.Contains(err.Error(), "create control directory") {
+	if _, err := ListenControl(filepath.Join(notADir, "c.sock")); err == nil || !strings.Contains(err.Error(), "control directory: create") {
 		t.Errorf("a directory that cannot be created: %v", err)
 	}
 	tooLong := filepath.Join(dir, strings.Repeat("d", 120), "c.sock")
@@ -428,7 +428,7 @@ func TestRunRejectsBadStartups(t *testing.T) {
 		"unknown flag":       {[]string{"run", "-bogus"}, "flag provided but not defined"},
 		"positional":         {[]string{"run", "extra"}, "run accepts flags only"},
 		"corrupt state":      {[]string{"run", "-state", corrupt, "-control", filepath.Join(dir, "a.sock")}, "decode proxy state"},
-		"control path":       {[]string{"run", "-state", "", "-control", filepath.Join(file, "a.sock")}, "create control directory"},
+		"control path":       {[]string{"run", "-state", "", "-control", filepath.Join(file, "a.sock")}, "control directory: create"},
 		"http address taken": {[]string{"run", "-state", "", "-https-addr", "", "-http-addr", taken.Addr().String(), "-control", filepath.Join(dir, "b.sock")}, "address already in use"},
 		"https address":      {[]string{"run", "-state", "", "-https-addr", taken.Addr().String(), "-http-addr", "127.0.0.1:0", "-control", filepath.Join(dir, "c.sock"), "-acme-cache", dir}, "address already in use"},
 	} {
@@ -649,30 +649,69 @@ func TestChunkedBodyBeyondTheLimitIsRejectedWhileBuffering(t *testing.T) {
 	}
 }
 
-func TestStalledStreamedBodyWithADeclaredLengthGets408(t *testing.T) {
-	t.Parallel()
-	app := newBackend(t, "app", func(w http.ResponseWriter, r *http.Request) { _, _ = io.Copy(io.Discard, r.Body) })
-	srv, front := newTestServer(t, "")
-	srv.bodyTimeout = 100 * time.Millisecond
-	req := fastRequest(app.addr())
-	req.BufferBytes = 16 // a declared length above this streams
-	if _, err := srv.Deploy(t.Context(), req); err != nil {
-		t.Fatal(err)
-	}
-	conn, err := net.Dial("tcp", strings.TrimPrefix(front.URL, "http://"))
+// stalledUpload announces contentLength bytes, sends sent of them and stalls.
+// It returns the status line, how long the answer took and whether the
+// proxy then closed the connection.
+func stalledUpload(t *testing.T, front string, contentLength, sent int) (status string, took time.Duration, closed bool) {
+	t.Helper()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(front, "http://"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close() }()
-	// 5000 bytes are announced, 10 arrive.
-	_, _ = fmt.Fprintf(conn, "POST /upload HTTP/1.1\r\nHost: %s\r\nContent-Length: 5000\r\n\r\n0123456789", testHost)
+	start := time.Now()
+	_, _ = fmt.Fprintf(conn, "POST /upload HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n\r\n%s", testHost, contentLength, strings.Repeat("x", sent))
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	status, err := bufio.NewReader(conn).ReadString('\n')
-	if err != nil || !strings.HasPrefix(status, "HTTP/1.1 408") {
-		t.Fatalf("status line %q, err %v", status, err)
+	reader := bufio.NewReader(conn)
+	status, err = reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("no answer after %s: %v", time.Since(start), err)
 	}
-	if app.hits.Load() > 1 {
-		t.Errorf("the application was contacted %d times", app.hits.Load())
+	took = time.Since(start)
+	// Drain the rest of the answer: the connection must then end.
+	_, err = io.Copy(io.Discard, reader)
+	closed = err == nil
+	return status, took, closed
+}
+
+func TestStalledBodyWithADeclaredLengthGets408PromptlyAndTheConnectionCloses(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		bufferBytes int64
+		length      int
+	}{
+		// Above the buffer the body streams; at or below it is read before
+		// the application is contacted.
+		"streamed": {16, 5000},
+		"buffered": {1024, 500},
+		"at limit": {500, 500},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			app := newBackend(t, "app", func(w http.ResponseWriter, r *http.Request) { _, _ = io.Copy(io.Discard, r.Body) })
+			srv, front := newTestServer(t, "")
+			srv.bodyTimeout = 400 * time.Millisecond
+			req := fastRequest(app.addr())
+			req.BufferBytes = tc.bufferBytes
+			if _, err := srv.Deploy(t.Context(), req); err != nil {
+				t.Fatal(err)
+			}
+			status, took, closed := stalledUpload(t, front.URL, tc.length, 10)
+			if !strings.HasPrefix(status, "HTTP/1.1 408") {
+				t.Fatalf("status line %q", status)
+			}
+			// One body timeout plus slack; a drain with a fresh timeout would
+			// take two (800ms), one with none at all would never end.
+			if took > 700*time.Millisecond {
+				t.Errorf("the 408 took %s with a 400ms body timeout", took)
+			}
+			if !closed {
+				t.Error("the connection stayed open after the 408")
+			}
+			if tc.bufferBytes >= int64(tc.length) && app.hits.Load() != 0 {
+				t.Errorf("the application was contacted %d times for a body that never arrived", app.hits.Load())
+			}
+		})
 	}
 }
 
@@ -696,7 +735,7 @@ func TestAccessLogUsesTheRemoteAddressWithoutAPort(t *testing.T) {
 func TestStatusRecorderDefaultsToOKAndForwardsFlush(t *testing.T) {
 	t.Parallel()
 	inner := httptest.NewRecorder()
-	recorder := &statusRecorder{ResponseWriter: inner}
+	recorder := &statusRecorder{ResponseWriter: inner, controller: http.NewResponseController(inner), idle: time.Second}
 	recorder.Flush()
 	if !inner.Flushed {
 		t.Error("Flush did not reach the response writer")
@@ -705,7 +744,8 @@ func TestStatusRecorderDefaultsToOKAndForwardsFlush(t *testing.T) {
 		t.Errorf("status %d bytes %d err %v", recorder.status, recorder.bytes, err)
 	}
 	// A writer that cannot flush is not an error.
-	(&statusRecorder{ResponseWriter: noFlushWriter{http.Header{}}}).Flush()
+	plain := noFlushWriter{http.Header{}}
+	(&statusRecorder{ResponseWriter: plain, controller: http.NewResponseController(plain), idle: time.Second}).Flush()
 }
 
 type noFlushWriter struct{ header http.Header }
@@ -883,5 +923,62 @@ func TestSaveStateFailuresAreReportedNotFatal(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), ".state-") {
 			t.Errorf("temporary file %s left behind", entry.Name())
 		}
+	}
+}
+
+// deadlineRecorder is a ResponseWriter that records the read deadlines set
+// through http.ResponseController.
+type deadlineRecorder struct {
+	http.ResponseWriter
+	mu    sync.Mutex
+	calls []time.Time
+}
+
+func (d *deadlineRecorder) SetReadDeadline(t time.Time) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls = append(d.calls, t)
+	return nil
+}
+
+func (d *deadlineRecorder) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.calls)
+}
+
+// Once the handler has returned the connection belongs to the server's next
+// read: a body the transport still reads or closes must not set or clear its
+// deadline.
+func TestStreamedBodyIsInertOnceTheHandlerReturned(t *testing.T) {
+	t.Parallel()
+	writer := &deadlineRecorder{ResponseWriter: httptest.NewRecorder()}
+	recorder := &statusRecorder{ResponseWriter: writer, controller: http.NewResponseController(writer), idle: time.Second}
+	srv, _ := newTestServer(t, "")
+	request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(strings.Repeat("x", 100)))
+	request.ContentLength = 100
+	if !srv.prepareBody(recorder, request, 10) {
+		t.Fatal("prepareBody refused a streamed body")
+	}
+	body, ok := request.Body.(*deadlineBody)
+	if !ok {
+		t.Fatalf("body is %T", request.Body)
+	}
+	buffer := make([]byte, 10)
+	if _, err := body.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	if writer.count() != 1 {
+		t.Fatalf("a read during the request sets its deadline: %d calls", writer.count())
+	}
+	recorder.finished.Store(true)
+	if _, err := body.Read(buffer); err != nil {
+		t.Fatal(err)
+	}
+	if err := body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if writer.count() != 1 {
+		t.Errorf("a body read or closed after the handler returned touched the deadline: %d calls", writer.count())
 	}
 }

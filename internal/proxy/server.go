@@ -224,6 +224,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	recorder.extendWriteDeadline()
 	svc := s.route(r.Host)
 	targetAddr := s.serve(recorder, r, svc)
+	// A streamed body may still be read or closed by the transport after
+	// this point; it must not touch the connection's deadlines, which now
+	// belong to the server's next read.
+	recorder.finished.Store(true)
 	// The server flushes what is still buffered after ServeHTTP returns,
 	// possibly long after the last write (it clears the deadline once the
 	// response is complete).
@@ -310,8 +314,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, svc *service) str
 // data within the body timeout; a stalled upload gets 408.
 func (s *Server) prepareBody(w http.ResponseWriter, r *http.Request, limit int64) bool {
 	controller := http.NewResponseController(w)
+	finished := new(atomic.Bool)
+	if recorder, ok := w.(*statusRecorder); ok {
+		finished = &recorder.finished
+	}
 	if r.ContentLength > limit {
-		r.Body = &deadlineBody{body: r.Body, controller: controller, timeout: s.bodyTimeout}
+		r.Body = &deadlineBody{body: r.Body, controller: controller, timeout: s.bodyTimeout, finished: finished}
 		return true
 	}
 	_ = controller.SetReadDeadline(time.Now().Add(s.bodyTimeout))
@@ -321,13 +329,19 @@ func (s *Server) prepareBody(w http.ResponseWriter, r *http.Request, limit int64
 		if maxBytes := (*http.MaxBytesError)(nil); errors.As(err, &maxBytes) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		} else {
+			// When the handler returns, net/http reads and discards what the
+			// client still owes of the body, with no deadline of its own: a
+			// stalled client would hold the connection open after the 408.
+			// Expire the read now and close the connection after the answer.
+			_ = controller.SetReadDeadline(time.Now())
+			w.Header().Set("Connection", "close")
 			http.Error(w, "request body not received in time", http.StatusRequestTimeout)
 		}
 		return false
 	}
 	if int64(len(body)) > limit {
 		// Unknown length beyond the buffer: stream the rest.
-		rest := &deadlineBody{body: r.Body, controller: controller, timeout: s.bodyTimeout}
+		rest := &deadlineBody{body: r.Body, controller: controller, timeout: s.bodyTimeout, finished: finished}
 		r.Body = &prefixedBody{reader: io.MultiReader(bytes.NewReader(body), rest), rest: rest}
 		return true
 	}
@@ -346,9 +360,15 @@ type deadlineBody struct {
 	controller *http.ResponseController
 	timeout    time.Duration
 	expired    atomic.Bool
+	// finished is set when the request's handler has returned: from then on
+	// the body only passes reads and closes through.
+	finished *atomic.Bool
 }
 
 func (b *deadlineBody) Read(p []byte) (int, error) {
+	if b.finished.Load() {
+		return b.body.Read(p)
+	}
 	_ = b.controller.SetReadDeadline(time.Now().Add(b.timeout))
 	n, err := b.body.Read(p)
 	if err != nil {
@@ -381,12 +401,20 @@ func bodyTimedOut(r *http.Request) bool {
 }
 
 func (b *deadlineBody) Close() error {
+	if b.finished.Load() {
+		return b.body.Close()
+	}
 	// Closing a request body that was not read to its end makes net/http
 	// read, and discard, what the client still owes of it. That read gets
 	// its own deadline: a client that announced a Content-Length and stalled
 	// would otherwise hold the request, and the target's connection, open
-	// until it chose to send the rest or hang up.
-	_ = b.controller.SetReadDeadline(time.Now().Add(b.timeout))
+	// until it chose to send the rest or hang up. After a read already timed
+	// out the client has had its time: the drain fails at once.
+	deadline := time.Now().Add(b.timeout)
+	if b.expired.Load() {
+		deadline = time.Now()
+	}
+	_ = b.controller.SetReadDeadline(deadline)
 	err := b.body.Close()
 	_ = b.controller.SetReadDeadline(time.Time{})
 	return err
@@ -671,8 +699,10 @@ type statusRecorder struct {
 	http.ResponseWriter
 	controller *http.ResponseController
 	idle       time.Duration
-	status     int
-	bytes      int64
+	// finished is set when the handler returned (see deadlineBody).
+	finished atomic.Bool
+	status   int
+	bytes    int64
 }
 
 func (r *statusRecorder) extendWriteDeadline() {
