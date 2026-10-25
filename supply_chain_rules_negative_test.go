@@ -426,6 +426,22 @@ func TestEnvironmentRuleRejectsRedirectingVariables(t *testing.T) {
 		"steps:\n  - run: echo \"GOPROXY=https://evil.example\" >> \"$GITHUB_ENV\"\n",
 		"steps:\n  - run: echo \"A=b\" >> $GITHUB_ENV\n",
 		"steps:\n  - run: |\n      printf '%s\\n' X=1 >> \"${github_env}\"\n",
+		// Round 6: the go env file moved through XDG_CONFIG_HOME or HOME,
+		// the toolchain, module cache and cache program, and the deprecated
+		// workflow commands with their switch.
+		"steps:\n  - run: XDG_CONFIG_HOME=\"$PWD/.ci\" go mod download\n",
+		"env:\n  XDG_CONFIG_HOME: ${{ github.workspace }}/.ci\n",
+		"env:\n  HOME: ${{ github.workspace }}\n",
+		"env: {\"HOME\": /tmp/ci}\n",
+		"steps:\n  - run: HOME=\"$PWD\" go mod download\n",
+		"steps:\n  - run: env HOME=/tmp/ci go build ./...\n",
+		"env:\n  GOCACHEPROG: /tmp/prog\n",
+		"env:\n  GOROOT: /tmp/go\n",
+		"env:\n  GOMODCACHE: /tmp/mods\n",
+		"env:\n  GOPATH: /tmp/gopath\n",
+		"env:\n  ACTIONS_ALLOW_UNSECURE_COMMANDS: \"true\"\n",
+		"steps:\n  - run: echo \"::set-env name=GOFLAGS::-mod=mod\"\n",
+		"steps:\n  - run: echo '::add-path::/tmp/bin'\n",
 	} {
 		if text := snippet(rejected); len(environmentViolations("t.yml", text)) == 0 {
 			t.Errorf("accepted: %s", text)
@@ -437,8 +453,38 @@ func TestEnvironmentRuleRejectsRedirectingVariables(t *testing.T) {
 		"steps:\n  - run: GOTOOLCHAIN=local go test ./...\n",
 		"env:\n  FORGE_GOPROXYISH: x\n",
 		"steps:\n  - run: echo \"$HOME/bin\" >> \"$GITHUB_PATH\"\n",
+		"steps:\n  - run: ls \"${HOME}/.cache\" ~/.config\n",
 	} {
 		if violations := environmentViolations("t.yml", snippet(accepted)); len(violations) != 0 {
+			t.Errorf("rejected: %v", violations)
+		}
+	}
+}
+
+// A YAML escape in a double-quoted scalar spells text the rules never read
+// (`"g\x6f env -w"` is `go env -w`), so no double-quoted scalar, key or
+// value, holds a backslash.
+func TestYAMLSubsetRefusesEscapesInDoubleQuotedValues(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"steps:\n  - run: \"g\\x6f env -w GOPR\\x4fXY=https://evil.example\"\n",
+		"steps:\n  - run: \"echo GOFL\\x41GS=-mod=mod >> $GITHUB_\\x45NV\"\n",
+		"steps: [{run: \"g\\u006f install evil@latest\"}]\n",
+		"env:\n  A: \"\\\"quoted\\\"\"\n",
+		"\"u\\x73es\": evil/act@main\n",
+	} {
+		if len(yamlSubsetViolations("t.yml", rejected)) == 0 {
+			t.Errorf("accepted: %s", rejected)
+		}
+	}
+	for _, accepted := range []string{
+		// Plain and single-quoted scalars and block text have no escapes.
+		"steps:\n  - run: grep -r \"^v\\d\" .\n",
+		"steps:\n  - run: 'echo \\x61'\n",
+		"steps:\n  - run: |\n      printf \"a\\n\"\n",
+		"env:\n  A: \"no escape\"\n",
+	} {
+		if violations := yamlSubsetViolations("t.yml", accepted); len(violations) != 0 {
 			t.Errorf("rejected: %v", violations)
 		}
 	}

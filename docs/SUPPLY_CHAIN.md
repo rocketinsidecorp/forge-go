@@ -187,7 +187,10 @@ tags on the default branch. Its README shows the commands.
     key (`?`) or merge key (`<<`) where any key or value starts
     (`${{ !cancelled() }}`, quoted strings and `run: |` text stay allowed);
     a flow collection or quoted scalar that does not close on its line; a
-    double-quoted key with an escape. Write a multi-line expression as a
+    backslash in any double-quoted scalar, key or value (an escape spells
+    text the rules would not read: `"u\x73es"` is `uses`, `"g\x6f env -w"`
+    is `go env -w`; plain and single-quoted scalars and block text have no
+    escapes, so the text the rules read is the text YAML yields). Write a multi-line expression as a
     `>-` block scalar. Every gated file is also parsed as YAML
     (`go.yaml.in/yaml/v3`): the parser and the line scanner must read the
     same `uses` keys, the same values on the same lines (block-scalar text
@@ -198,21 +201,30 @@ tags on the default branch. Its README shows the commands.
     `Persist-Credentials`, a second `uses`), since readers that keep the
     first and the last value would disagree;
   - a variable that redirects where the go command fetches modules,
-    checksums or toolchains, or the flags and settings it reads (`GOFLAGS`,
+    checksums or toolchains, or what it reads and runs (`GOFLAGS`,
     `GOPROXY`, `GONOSUMDB`, `GONOSUMCHECK`, `GOSUMDB`, `GOINSECURE`,
-    `GOPRIVATE`, `GONOPROXY`, `GOENV`, and `GOTOOLCHAIN` unless set to
+    `GOPRIVATE`, `GONOPROXY`, `GOENV`, `GOCACHEPROG`, `GOROOT`,
+    `GOMODCACHE`, `GOPATH`, `XDG_CONFIG_HOME` (it moves the go env file),
+    `ACTIONS_ALLOW_UNSECURE_COMMANDS`, and `GOTOOLCHAIN` unless set to
     `local` or one exact `goX.Y.Z`), in any case, in an `env:` block at any
-    level or in `run` text; and any `$GITHUB_ENV` write, whatever it sets (a
-    variable for later steps goes in an `env:` block, where the gate reads
-    its name);
+    level or in `run` text; `HOME` where it is set (an `env:` key or a
+    `HOME=` assignment: it moves `~/.config/go/env`), reading `$HOME` stays
+    allowed; any `$GITHUB_ENV` write, whatever it sets (a variable for later
+    steps goes in an `env:` block, where the gate reads its name); and the
+    deprecated `::set-env` and `::add-path` workflow commands. No go env
+    file (`go.env`, or `env` in a directory named `go`) exists anywhere in
+    the repository or in a generated application
+    (`TestNoGoEnvFileExistsInTheRepository`);
   - in a gated template (`internal/scaffold/templates/ci.yml.tmpl`), any
     directive but `{{.Field}}`, `{{index . N}}` and `if`/`else`/`range`/`end`
     over fields (`and`, `or`, `not`): no string literals, variables,
     `print*`, `with`, `template` or other functions, so a directive cannot
-    render a step the gate never reads. The workflows and Dependabot file
-    `forge new` writes are also generated for every database (and none), two
-    names and every locale with the real template data and gated as
-    written; their database service images are pinned by digest to the
+    render a step the gate never reads. The files `forge new` writes under
+    `.github` are also generated for every database (and none), two names
+    and every locale with the real template data; every file found there is
+    gated as written (the workflow rules on `.github/workflows/*`), and the
+    set of files must equal the expected list, so a new generated workflow
+    cannot ship ungated; their database service images are pinned by digest to the
     framework CI's pins (`internal/scaffold/database.go`). The file
     templates (`internal/scaffold/templates/*.tmpl`) share one template
     set, where a later file's `{{define "ci.yml.tmpl"}}` would replace the
@@ -254,6 +266,30 @@ The service images of the generated application's CI are pinned to the same
 digests as its compose file and the framework's CI
 (`internal/scaffold/database.go`), and Dependabot does not update CI service
 images: bump them together, by hand, in one change.
+
+## Threat model and residual risk
+
+Engineering decision D6 (2026-10-25). The supply-chain gate is defense in
+depth against unreviewed drift and casual injection in the workflows, local
+actions and generated-app workflows. It is not a shell sandbox, and review is
+the primary control.
+
+- In scope, refused by the gate: every YAML-level and plain-text spelling of
+  a refused action, permission, secret, variable or configuration file (YAML
+  escapes, quoting, case, flow style, anchors, aliases, tags, merge and
+  duplicate keys, hidden line breaks, template directives and branches, and
+  every rendered variant of the generated application's `.github` files),
+  and every documented tool or configuration redirect (the go command's
+  environment and go env files, `HOME` and `XDG_CONFIG_HOME`, the runner's
+  `$GITHUB_ENV`, `::set-env` and `::add-path`).
+- Accepted residual risk, left to mandatory review of every change to a
+  workflow, action, script or template: names and commands the shell
+  assembles at run time (`GO""PROXY=...`, `eval`, a name built with
+  `printf`, a script the workflow calls), and what an allowlisted action or a
+  reviewed script downloads.
+- Reviews of the gate judge it against this model: a bypass inside the scope
+  above is a defect to fix in the gate; a run-time-assembled name is the
+  accepted residual risk.
 
 ## Residual risks
 

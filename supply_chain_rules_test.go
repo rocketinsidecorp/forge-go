@@ -184,7 +184,7 @@ type yamlProblem struct {
 //     key or value starts (after the indentation, `- `, `: `, or a flow
 //     collection's `[`, `{`, `,`);
 //   - a flow collection or quoted scalar that does not close on its line,
-//     and a double-quoted key with an escape.
+//     and a double-quoted scalar (key or value) with an escape.
 func yamlSubset(text string) ([]bool, []yamlProblem) {
 	var problems []yamlProblem
 	line := 0
@@ -270,9 +270,11 @@ func yamlSubset(text string) ([]bool, []yamlProblem) {
 						break scan
 					}
 					quoted := string(characters[index:end])
-					isKey := strings.HasPrefix(strings.TrimLeft(string(characters[end+1:]), " \t"), ":")
-					if character == '"' && strings.Contains(quoted, `\`) && isKey {
-						problems = append(problems, yamlProblem{number, "a double-quoted key with an escape"})
+					// An escape spells any text (`"c\x61rgo"`, `"u\x73es"`)
+					// where the text rules would not read it: no
+					// double-quoted scalar, key or value, holds a backslash.
+					if character == '"' && strings.Contains(quoted, `\`) {
+						problems = append(problems, yamlProblem{number, "a double-quoted scalar with an escape"})
 					}
 					index = end
 				case '[', '{':
@@ -800,11 +802,28 @@ func releaseViolations(path, text string) []string {
 }
 
 // redirectingVariables redirect where the go command fetches modules,
-// checksums and toolchains, or which flags and settings it reads
-// (GOENV names another go.env file).
+// checksums and toolchains, which flags and settings it reads (GOENV and
+// XDG_CONFIG_HOME move the go env file), which toolchain, module cache and
+// cache program it uses, and the runner switch that re-enables the
+// deprecated `::set-env` and `::add-path` commands.
 var redirectingVariables = []string{
 	"GOFLAGS", "GOPROXY", "GONOSUMDB", "GONOSUMCHECK", "GOSUMDB", "GOINSECURE",
-	"GOPRIVATE", "GONOPROXY", "GOENV", "GOTOOLCHAIN",
+	"GOPRIVATE", "GONOPROXY", "GOENV", "GOTOOLCHAIN", "GOCACHEPROG", "GOROOT",
+	"GOMODCACHE", "GOPATH", "XDG_CONFIG_HOME", "ACTIONS_ALLOW_UNSECURE_COMMANDS",
+}
+
+// assignedOnlyVariables may be read (`$HOME`) but never set: HOME moves
+// ~/.config/go/env, the go env file.
+var assignedOnlyVariables = []string{"HOME"}
+
+// refusedText is refused anywhere in a gated file, without case: a
+// `$GITHUB_ENV` write (it sets variables for every later step under a name
+// the shell may build at run time) and the deprecated `::set-env` and
+// `::add-path` workflow commands.
+var refusedText = [][2]string{
+	{"GITHUB_ENV", "gated files do not write $GITHUB_ENV; set variables in an env: block"},
+	{"::SET-ENV", "the ::set-env workflow command is refused"},
+	{"::ADD-PATH", "the ::add-path workflow command is refused"},
 }
 
 // pinnedToolchain is a GOTOOLCHAIN setting that downloads nothing it was
@@ -818,10 +837,13 @@ func isWordByte(b byte) bool {
 
 // environmentViolations refuses every redirecting variable anywhere in a
 // gated file, in any case: in an `env:` block (workflow, job or step) or in
-// `run` text. GOTOOLCHAIN passes only set to a fixed pinned value. No gated
-// file writes `$GITHUB_ENV` either: a write there sets variables for every
-// later step under a name the shell may build at run time, where no text
-// rule can read it.
+// `run` text. GOTOOLCHAIN passes only set to a fixed pinned value. HOME is
+// refused where it is set: an `env:` key (`HOME:`, `"HOME":`) or a shell
+// assignment (`HOME=`), not where it is read (`$HOME`, `${HOME}`).
+// refusedText is refused anywhere. The subset refuses escapes in
+// double-quoted scalars, so the text read here is the text YAML yields; a
+// name the shell assembles at run time is the accepted residual risk
+// (docs/SUPPLY_CHAIN.md, "Threat model and residual risk").
 func environmentViolations(path, text string) []string {
 	// ASCII case folding keeps every byte offset of text.
 	upper := []byte(text)
@@ -833,32 +855,55 @@ func environmentViolations(path, text string) []string {
 	return redirectingViolations(path, text, string(upper))
 }
 
+// wordOffsets returns the offsets of name in upper where it is a whole
+// word.
+func wordOffsets(upper, name string) []int {
+	var found []int
+	for offset := 0; ; {
+		at := strings.Index(upper[offset:], name)
+		if at < 0 {
+			return found
+		}
+		start, end := offset+at, offset+at+len(name)
+		offset = end
+		if start > 0 && isWordByte(upper[start-1]) || end < len(upper) && isWordByte(upper[end]) {
+			continue
+		}
+		found = append(found, start)
+	}
+}
+
 func redirectingViolations(path, text, upper string) []string {
 	var violations []string
 	line := func(offset int) int { return strings.Count(upper[:offset], "\n") + 1 }
-	for offset := 0; ; {
-		found := strings.Index(upper[offset:], "GITHUB_ENV")
-		if found < 0 {
-			break
-		}
-		violations = append(violations, fmt.Sprintf("%s:%d: gated files do not write $GITHUB_ENV; set variables in an env: block", path, line(offset+found)))
-		offset += found + len("GITHUB_ENV")
-	}
-	for _, variable := range redirectingVariables {
+	for _, refused := range refusedText {
 		for offset := 0; ; {
-			found := strings.Index(upper[offset:], variable)
+			found := strings.Index(upper[offset:], refused[0])
 			if found < 0 {
 				break
 			}
-			start, end := offset+found, offset+found+len(variable)
-			offset = end
-			if start > 0 && isWordByte(upper[start-1]) || end < len(upper) && isWordByte(upper[end]) {
-				continue
-			}
+			violations = append(violations, fmt.Sprintf("%s:%d: %s", path, line(offset+found), refused[1]))
+			offset += found + len(refused[0])
+		}
+	}
+	for _, variable := range redirectingVariables {
+		for _, start := range wordOffsets(upper, variable) {
+			end := start + len(variable)
 			if variable == "GOTOOLCHAIN" && pinnedToolchain.MatchString(strings.SplitN(text[end:], "\n", 2)[0]) {
 				continue
 			}
-			violations = append(violations, fmt.Sprintf("%s:%d: %s redirects where the go command fetches from", path, line(start), variable))
+			violations = append(violations, fmt.Sprintf("%s:%d: %s redirects where the go command fetches from or what it runs", path, line(start), variable))
+		}
+	}
+	for _, variable := range assignedOnlyVariables {
+		for _, start := range wordOffsets(upper, variable) {
+			if start > 0 && (upper[start-1] == '$' || upper[start-1] == '{') {
+				continue
+			}
+			rest := strings.TrimLeft(upper[start+len(variable):], "\"' \t")
+			if strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "=") {
+				violations = append(violations, fmt.Sprintf("%s:%d: gated files do not set %s", path, line(start), variable))
+			}
 		}
 	}
 	return violations
