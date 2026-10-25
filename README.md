@@ -1085,8 +1085,9 @@ Set `FORGE_TEST_REQUIRE_DATABASE=true` to make a missing server a failure.
 
 Coverage: `scripts/coverage.sh` measures statement coverage (`go test
 -coverpkg=./...`, with the database tests when the servers above are set),
-prints a per-package table and fails below `.coverage-floor`
-([docs/TESTING.md](docs/TESTING.md#coverage)).
+prints the gross total and the gated total (production code, without the
+contract test kits) with a per-package table, and fails when the gated total is
+below `.coverage-floor` ([docs/TESTING.md](docs/TESTING.md#coverage)).
 
 CI (`.github/workflows/ci.yml`):
 

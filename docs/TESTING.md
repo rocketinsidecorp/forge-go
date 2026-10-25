@@ -34,7 +34,12 @@ COVERAGE_PROFILE=cover.out scripts/coverage.sh     # report and gate an existing
   script merges the profile so a block is covered when any test binary ran
   it, then reads the total with `go tool cover -func`. The job writes the
   total and a per-package table to the run's summary and uploads
-  `dist/coverage` (the raw and the merged profile).
+  `dist/coverage` (the raw profile, the gross merged profile
+  `coverage-gross.out` and the gated one `coverage.out`).
+- **Two totals.** The script prints both. The *gross* total counts every
+  package except the four exclusions below. The *gated* total, the one the
+  floor checks, also leaves out the contract and test kits listed under
+  "Contract and test kits".
 - **The floor only rises.** It starts at the measured baseline rounded down
   (84.0%; 84.2% was measured on 2026-10-24 against PostgreSQL 16 and 18 and
   MariaDB) and is raised, never lowered, as tests are added, toward the
@@ -49,6 +54,27 @@ COVERAGE_PROFILE=cover.out scripts/coverage.sh     # report and gate an existing
   | `examples/**` | Example applications that show the framework in use; they are not framework code (their packages still build and test in CI). |
   | `internal/version` | Three variables the linker sets with `-ldflags -X`; there are no statements to run. |
   | `internal/deploy/internal/fakedocker` | The docker stand-in the deploy tests execute as a separate process over SSH; coverage of another process is not recorded in the test binary's profile. It is test code, not shipped behaviour. |
+
+### Contract and test kits (decision D7)
+
+Coverage measures production code. These packages are harnesses other
+packages' tests call; their only code that does not run is the failure branch
+of an assertion (`t.Fatalf` when a backend breaks the contract), which cannot
+run while every backend passes. They stay verified by being run against every
+real backend (PostgreSQL 18 and 16, MariaDB/MySQL, SQLite) in CI, where a
+broken kit or a broken backend fails the suite. They are excluded from the
+gated total only, and still appear in the gross one:
+
+`cache/cachetest`, `queue/storetest`, `storage/storagetest`,
+`migrate/migratetest`, `ratelimit/limitertest`, `mail/mailtest`,
+`telemetry/telemetrytest`, `mysql/mysqltest`, `postgres/postgrestest`,
+`sqlite/sqlitetest`, `dbtest`.
+
+The list is explicit in `scripts/coverage.sh` (`kits`), never a pattern, so
+production code cannot be hidden by a naming accident. The script also fails
+when a listed kit does not exist, is not named `*test`, or is imported by a
+file that is neither a `_test.go` file nor another kit: such a package is
+production code and has to be covered.
 
 The Forge-Rust twin (`scripts/coverage.sh`, `.coverage-floor`, the same job
 name) measures line coverage with cargo-llvm-cov; see its
