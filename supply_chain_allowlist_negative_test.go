@@ -99,6 +99,40 @@ func TestClosedAllowlistsRefuseEveryRedirect(t *testing.T) {
 		"steps:\n  - uses: sigstore/cosign-installer@SHA # v4.1.2\n    with:\n      cosign-release: latest\n",
 		"steps:\n  - uses: docker/setup-buildx-action@SHA # v4.4.1\n    with:\n      version: latest\n",
 		"steps:\n  - uses: docker/setup-buildx-action@SHA # v4.4.1\n    with:\n      driver-opts: image=moby/buildkit:master\n",
+		// Round 8, lead 1: continuations. An assignment target split from
+		// its `=`, a runner-file write split across lines, a listed line
+		// continued from or into more.
+		"steps:\n  - run: |\n      HOME\\\n      =/tmp/h go build\n",
+		"steps:\n  - run: |\n      export HO\\\n      ME=/tmp/h\n",
+		"steps:\n  - run: |\n      echo /tmp/evil >> \"$GITHUB_\\\n      PATH\"\n",
+		"steps:\n  - run: |\n      echo /usr/lib/postgresql/18/bin >> \"$GITHUB_PATH\" \\\n        && export HOME=/tmp/h\n",
+		"steps:\n  - run: |\n      true \\\n      echo /usr/lib/postgresql/18/bin >> \"$GITHUB_PATH\"\n",
+		// Lead 2: runner files named in a heredoc or a `$( )`.
+		"steps:\n  - run: |\n      cat <<EOF >> \"$GITHUB_ENV\"\n      A=1\n      EOF\n",
+		"steps:\n  - run: |\n      cat <<EOF\n      $GITHUB_OUTPUT\n      EOF\n",
+		"steps:\n  - run: |\n      f=\"$(\n      echo $GITHUB_PATH)\"\n",
+		// Lead 3: container and service options, keys and ports.
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        options: -e GOPROXY=https://evil.example\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        options: --env=A=1\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        options: --env-file /tmp/e\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        options: -v /:/host\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        options: --volume=/:/host\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        options: --mount type=bind,src=/,dst=/h\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        options: --entrypoint /bin/sh\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        options: --privileged\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        options: --network host\n",
+		"jobs:\n  a:\n    container:\n      image: x@sha256:DIGEST\n      options: --cap-add SYS_ADMIN\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        options: --health-cmd \"true\"\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        volumes:\n          - /:/host\n",
+		"jobs:\n  a:\n    container:\n      image: x@sha256:DIGEST\n      credentials:\n        username: u\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        entrypoint: /bin/sh\n",
+		"jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:DIGEST\n        ports:\n          - 0.0.0.0:5432:5432\n",
+		"jobs:\n  a:\n    container:\n      image: x@sha256:DIGEST\n      env:\n        HOME: /tmp/h\n",
+		// Git configuration from the environment.
+		"env:\n  GIT_CONFIG_COUNT: \"1\"\n",
+		"env:\n  GIT_CONFIG_KEY_0: url.https://evil.example/.insteadOf\n",
+		"env:\n  GIT_CONFIG_VALUE_0: https://github.com/\n",
+		"steps:\n  - run: GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.sshCommand GIT_CONFIG_VALUE_0=/tmp/evil git fetch\n",
 	} {
 		text := snippet(rejected)
 		if _, err := yamlDocuments(text, false); err != nil {
@@ -107,6 +141,27 @@ func TestClosedAllowlistsRefuseEveryRedirect(t *testing.T) {
 		}
 		if len(closedListViolations("t.yml", text)) == 0 {
 			t.Errorf("accepted: %s", text)
+		}
+	}
+}
+
+// Round 8: a listed runner-file line passes only as a complete logical
+// line, and the listed container options pass.
+func TestListedLinesAndOptionsPassOnlyWhole(t *testing.T) {
+	t.Parallel()
+	ci := ".github/workflows/ci.yml"
+	listed := "steps:\n  - name: x\n    run: |\n      sudo true\n      echo /usr/lib/postgresql/18/bin >> \"$GITHUB_PATH\"\n"
+	if violations := closedListViolations(ci, listed); len(violations) != 0 {
+		t.Errorf("rejected: %v", violations)
+	}
+	continued := "steps:\n  - name: x\n    run: |\n      sudo true \\\n      echo /usr/lib/postgresql/18/bin >> \"$GITHUB_PATH\"\n"
+	if len(closedListViolations(ci, continued)) == 0 {
+		t.Error("a listed line continued from another was accepted")
+	}
+	for _, options := range allowedContainerOptions {
+		text := "jobs:\n  a:\n    services:\n      db:\n        image: x@sha256:" + testDigest + "\n        env:\n          POSTGRES_PASSWORD: forge\n        ports:\n          - 5432:5432\n        options: >-\n          " + options + "\n"
+		if violations := closedListViolations("ci.yml", text); len(violations) != 0 {
+			t.Errorf("rejected: %v", violations)
 		}
 	}
 }

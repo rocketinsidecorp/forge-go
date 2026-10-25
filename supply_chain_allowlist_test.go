@@ -125,22 +125,66 @@ func shellComment(line string) string {
 	return line
 }
 
-// logicalLines joins backslash-continued lines of a script, comments
-// stripped.
-func logicalLines(script string) []string {
-	var lines []string
-	continued := false
-	for _, line := range strings.Split(script, "\n") {
-		code := strings.TrimRight(shellComment(line), " \t\r")
-		code, continues := strings.CutSuffix(code, `\`)
-		if continued && len(lines) > 0 {
-			lines[len(lines)-1] += " " + code
-		} else {
-			lines = append(lines, code)
+// shellLine is one reading of a logical line of a script, and whether it
+// spans more than one physical line.
+type shellLine struct {
+	text      string
+	continued bool
+}
+
+// shellLines returns every reading of a script's lines the gate analyses:
+// the physical lines, the lines joined as bash joins them (backslash-newline
+// removed), and joined with a space, each with and without comments
+// stripped. A continuation or a comment the gate would misread cannot hide
+// text from every reading.
+func shellLines(script string) []shellLine {
+	seen := map[shellLine]bool{}
+	var found []shellLine
+	add := func(line shellLine) {
+		if !seen[line] {
+			seen[line] = true
+			found = append(found, line)
 		}
-		continued = continues
 	}
-	return lines
+	for _, strip := range []bool{true, false} {
+		for _, glue := range []string{"none", "", " "} {
+			var current *shellLine
+			previousContinues := false
+			for _, line := range strings.Split(script, "\n") {
+				if strip {
+					line = shellComment(line)
+				}
+				code, continues := strings.CutSuffix(strings.TrimRight(line, " \t\r"), `\`)
+				if !continues {
+					code = line
+				}
+				switch {
+				case glue == "none":
+					add(shellLine{code, continues || previousContinues})
+				case current != nil && previousContinues:
+					current.text += glue + code
+					current.continued = true
+				default:
+					if current != nil {
+						add(*current)
+					}
+					current = &shellLine{text: code}
+				}
+				previousContinues = continues
+			}
+			if current != nil {
+				add(*current)
+			}
+		}
+	}
+	return found
+}
+
+// namesRunnerFile reports whether a line names one of the runner's files, in
+// any case.
+func namesRunnerFile(line string) bool {
+	upper := strings.ToUpper(line)
+	return strings.Contains(upper, "GITHUB_ENV") || strings.Contains(upper, "GITHUB_PATH") || strings.Contains(upper, "GITHUB_OUTPUT")
 }
 
 var shellSeparators = []string{"&&", "||", "$(", ";", "|", "(", ")", "`"}
@@ -195,7 +239,8 @@ type assignment struct {
 func assignments(script string) []assignment {
 	var found []assignment
 	add := func(name string) { found = append(found, assignment{name: name}) }
-	for _, line := range logicalLines(script) {
+	for _, reading := range shellLines(script) {
+		line := reading.text
 		for position := strings.Index(line, "{"); position >= 0; {
 			rest := line[position+1:]
 			if name := leadingIdentifier(rest); name != "" {
@@ -298,8 +343,8 @@ func assignments(script string) []assignment {
 // option outside allowedGoFlags.
 func goCommandProblems(script string) []string {
 	var problems []string
-	for _, line := range logicalLines(script) {
-		words := shellWords(line)
+	for _, reading := range shellLines(script) {
+		words := shellWords(reading.text)
 		for index, word := range words {
 			if word != "go" && !strings.HasSuffix(word, "/go") {
 				continue
@@ -395,11 +440,20 @@ func closedListViolations(path, text string) []string {
 				if value.Kind != yaml.ScalarNode {
 					continue
 				}
+				// A listed runner-file line is reviewed as a whole: it must be
+				// a complete logical line, and every other line that names a
+				// runner file is refused, in every reading (continued, in a
+				// heredoc or a `$( )`).
+				listed := func(line string) bool {
+					return listedLine(runnerFileLines, path, line) || listedLine(runnerFileLines, path, "run: "+strings.TrimSpace(line))
+				}
 				var kept []string
-				for _, line := range strings.Split(value.Value, "\n") {
-					// A listed runner-file line is reviewed as a whole.
-					if !listedLine(runnerFileLines, path, line) && !listedLine(runnerFileLines, path, "run: "+line) {
-						kept = append(kept, line)
+				for _, reading := range shellLines(value.Value) {
+					if namesRunnerFile(reading.text) && (reading.continued || !listed(reading.text)) {
+						refuse(value.Line, "a runner file (GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT) is written only on a complete listed line (runnerFileLines): %q", strings.TrimSpace(reading.text))
+					}
+					if reading.continued || !listed(reading.text) {
+						kept = append(kept, reading.text)
 					}
 				}
 				script := strings.Join(kept, "\n")
@@ -415,6 +469,7 @@ func closedListViolations(path, text string) []string {
 		}
 	}
 	violations = append(violations, actionInputViolations(path, documents)...)
+	violations = append(violations, containerServiceViolations(path, documents)...)
 	for number, line := range strings.Split(text, "\n") {
 		upper := strings.ToUpper(line)
 		if (strings.Contains(upper, "GITHUB_ENV") || strings.Contains(upper, "GITHUB_PATH") || strings.Contains(upper, "GITHUB_OUTPUT")) &&
@@ -423,6 +478,90 @@ func closedListViolations(path, text string) []string {
 		}
 		if buildingFunction.MatchString(line) && !listedLine(expressionLines, path, line) {
 			refuse(number+1, "an expression function that builds names or structure (format, fromJSON, join, toJSON) outside a listed line (expressionLines)")
+		}
+	}
+	slices.Sort(violations)
+	return slices.Compact(violations)
+}
+
+// allowedContainerOptions are the `options:` a job container or service may
+// take, exactly (a folded `>-` value, as the parser reads it): the database
+// health checks of the framework's CI and of the generated CI.
+var allowedContainerOptions = []string{
+	`--health-cmd "pg_isready -U forge" --health-interval 2s --health-timeout 3s --health-retries 15`,
+	`--health-cmd "pg_isready -U forge" --health-interval 2s --health-timeout 3s --health-retries 30`,
+	`--health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pforge" --health-interval 2s --health-timeout 3s --health-retries 30`,
+	`--health-cmd "healthcheck.sh --connect --innodb_initialized" --health-interval 2s --health-timeout 3s --health-retries 30`,
+}
+
+// containerKeys are the keys a job container or service may use: no
+// volumes, credentials, entrypoint or command.
+var containerKeys = []string{"image", "env", "ports", "options"}
+
+// refusedContainerFlags are docker options refused in any container or
+// service `options:`, even a listed one.
+var refusedContainerFlags = []string{"-e", "--env", "--env-file", "-v", "--volume", "--mount", "--entrypoint", "--privileged", "--network", "--cap-add"}
+
+var numericPort = regexp.MustCompile(`^\d+(?::\d+)?$`)
+
+// containerServiceViolations reads job containers and services: only
+// containerKeys, `options:` exactly one of allowedContainerOptions and
+// without refusedContainerFlags, and numeric `ports:`. Their `env:` falls
+// under allowedVariables.
+func containerServiceViolations(path string, documents []*yaml.Node) []string {
+	var containers []*yaml.Node
+	for _, node := range yamlNodes(documents) {
+		if node.Kind != yaml.MappingNode {
+			continue
+		}
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			key, value := node.Content[index], node.Content[index+1]
+			switch {
+			case key.Value == "container" && value.Kind == yaml.MappingNode:
+				containers = append(containers, value)
+			case key.Value == "services" && value.Kind == yaml.MappingNode:
+				for service := 1; service < len(value.Content); service += 2 {
+					containers = append(containers, value.Content[service])
+				}
+			}
+		}
+	}
+	var violations []string
+	refuse := func(line int, format string, arguments ...any) {
+		violations = append(violations, fmt.Sprintf("%s:%d: ", path, line)+fmt.Sprintf(format, arguments...))
+	}
+	for _, container := range containers {
+		if container.Kind != yaml.MappingNode {
+			refuse(container.Line, "a service must be a mapping")
+			continue
+		}
+		for index := 0; index+1 < len(container.Content); index += 2 {
+			key, value := container.Content[index], container.Content[index+1]
+			if !slices.Contains(containerKeys, key.Value) {
+				refuse(key.Line, "the container or service key %q is not allowed (containerKeys)", key.Value)
+			}
+			switch key.Value {
+			case "options":
+				for _, word := range strings.Fields(value.Value) {
+					word = strings.Trim(word, `"'`)
+					for _, flag := range refusedContainerFlags {
+						if word == flag || strings.HasPrefix(word, flag+"=") || len(flag) == 2 && strings.HasPrefix(word, flag) {
+							refuse(key.Line, "the container option %q is refused", word)
+						}
+					}
+				}
+				if value.Kind != yaml.ScalarNode || !slices.Contains(allowedContainerOptions, value.Value) {
+					refuse(key.Line, "container options must be one of allowedContainerOptions exactly")
+				}
+			case "ports":
+				fine := value.Kind == yaml.SequenceNode
+				for _, port := range value.Content {
+					fine = fine && port.Kind == yaml.ScalarNode && numericPort.MatchString(port.Value)
+				}
+				if !fine {
+					refuse(key.Line, "ports must be a list of PORT or PORT:PORT")
+				}
+			}
 		}
 	}
 	return violations
@@ -505,7 +644,10 @@ func actionInputViolations(path string, documents []*yaml.Node) []string {
 // (go.work, go.work.sum), a go env file (go.env, go/env), a cargo
 // configuration (.cargo/config, .cargo/config.toml), a rust-toolchain file
 // naming a path, and shell startup files (.bashrc, .profile, .bash_profile,
-// .envrc). A linked `go` or `.cargo` directory counts; the walk does not
+// .envrc). Parity note: Forge-Rust refuses every rust-toolchain file whose
+// content is not exactly listed, since rustup reads more spellings than a
+// line rule follows; Go projects have no rust-toolchain file, so this scan
+// keeps the `path =` rule as a backstop. A linked `go` or `.cargo` directory counts; the walk does not
 // enter skipped directories nor follow links to directories.
 func toolConfigurationFiles(root string, skipped []string) []string {
 	var found []string

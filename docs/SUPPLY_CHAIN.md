@@ -283,7 +283,11 @@ file.
   quoted or flow) or in `run` text (`NAME=`, `NAME+=`, `NAME[i]=`, `export`,
   `env`, `sudo`, `declare`, `typeset`, `readonly`, `local`, `read`,
   `mapfile`, `getopts`, `let`, `printf -v`, `for`/`select`/`coproc NAME`,
-  `${NAME:=...}`, `{NAME}>`, arithmetic). Names a tool reads
+  `${NAME:=...}`, `{NAME}>`, arithmetic). `run` text is read in every
+  reading bash could give it (`shellLines`): physical lines, lines joined
+  as bash joins a backslash-newline continuation, joined with a space, each
+  with and without comments, so a target split from its `=` by a
+  continuation is still read. Names a tool reads
   (`GOARCH`, `SYFT_CHECK_FOR_APP_UPDATE`, `FORGE_TEST_REQUIRE_*`) take one
   exact value. `HOME`, `PATH`, `BASH_ENV`, `LD_PRELOAD`, `CC`, `CXX`,
   `CGO_*`, `GOWORK`, `GOFLAGS`, `GOROOT` and every other unlisted name are
@@ -293,7 +297,9 @@ file.
 - Runner files (`runnerFileLines`): `$GITHUB_ENV`, `$GITHUB_PATH` and
   `$GITHUB_OUTPUT` are written only on the listed lines (the PostgreSQL
   client tools on `PATH`, the fuzz matrix and corpus outputs, the release
-  image names); `::set-env`, `::add-path` and
+  image names), each a complete logical line: a listed line continued from
+  or into another is refused, and so is every other line that names a
+  runner file, in any reading, a heredoc or a `$( )` included; `::set-env`, `::add-path` and
   `ACTIONS_ALLOW_UNSECURE_COMMANDS` are refused.
 - Expressions (`expressionLines`): `format`, `fromJSON`, `join` and `toJSON`
   appear only on the listed line (the fuzz matrix).
@@ -305,11 +311,19 @@ file.
   CI now use; golangci-lint `version` vX.Y.Z; `cosign-release` and
   setup-buildx `version` vX.Y.Z when set), no `check-latest`, `driver-opts`
   images by digest, and no `latest` anywhere.
+- Job containers and services (`containerKeys`,
+  `allowedContainerOptions`): only `image`, `env` (under
+  `allowedVariables`), numeric `ports` and `options`; no `volumes`,
+  `credentials`, `entrypoint` or `command`. `options:` is exactly one of the
+  listed database health checks (framework and generated CI), and `-e`,
+  `--env`, `--env-file`, `-v`, `--volume`, `--mount`, `--entrypoint`,
+  `--privileged`, `--network` and `--cap-add` are refused in it.
 - Tool configuration files (`toolConfigurationFiles`): none anywhere in the
   repository (templates included) or in any generated application, for
   every database, name and locale: `go.work`, `go.work.sum`, `go.env`,
   `go/env`, `.cargo/config`, `.cargo/config.toml`, a `rust-toolchain` file
-  with a `path`, `.bashrc`, `.profile`, `.bash_profile`, `.envrc`.
+  with a `path` (Forge-Rust lists its rust-toolchain files' exact content
+  instead; a Go project has none, so this backstop stays), `.bashrc`, `.profile`, `.bash_profile`, `.envrc`.
 - The YAML-level rules still apply underneath: the simple subset (no
   escapes, anchors, tags, hidden line breaks), the parser cross-check,
   duplicate keys, template directives, the rendered gate, and the denylist
