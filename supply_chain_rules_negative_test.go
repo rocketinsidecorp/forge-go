@@ -203,3 +203,29 @@ func TestLocalActionTreeRefusesTraversalAndDirectories(t *testing.T) {
 		t.Errorf("problems %v", problems)
 	}
 }
+
+func TestAllowlistRejectsUnlistedActionsHoweverPinned(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"      - uses: taiki-e/install-action@SHA # v2.62.1",
+		"      - uses: baptiste0928/cargo-install@SHA # v3.3.2",
+		"      - { uses: some/setup-tool@SHA } # v1",
+		"      - uses: actions/checkout-evil@SHA # v7.0.1",
+		"      - uses: docker://alpine@sha256:DIGEST",
+		"      - uses: checkout@SHA # v7",
+	} {
+		if text := snippet(rejected); len(allowlistViolations("t.yml", text)) == 0 {
+			t.Errorf("accepted: %s", text)
+		}
+	}
+	for _, accepted := range []string{
+		"      - uses: actions/checkout@SHA # v7.0.1",
+		"      - uses: Actions/Setup-Go@SHA # v7.0.0",
+		"      - uses: docker/build-push-action/subdir@SHA # v7",
+		"      - uses: ./.github/actions/tool",
+	} {
+		if violations := allowlistViolations("t.yml", snippet(accepted)); len(violations) != 0 {
+			t.Errorf("rejected: %v", violations)
+		}
+	}
+}

@@ -166,6 +166,17 @@ tags on the default branch. Its README shows the commands.
     spelling (`- uses:`, `"uses":`, `uses :`, quoted value, flow style
     `- { uses: ... }`, an anchor or alias), and a `docker://` action without
     a digest; a local `./` action's `action.yml` is checked like a workflow;
+  - an action outside the allowlist (`allowedActions` in
+    `supply_chain_rules_test.go`, compared without case: `actions/checkout`,
+    `actions/cache`, `actions/setup-go`, `actions/upload-artifact`,
+    `docker/setup-buildx-action`, `docker/login-action`,
+    `docker/build-push-action`, `golangci/golangci-lint-action`,
+    `ossf/scorecard-action`, `sigstore/cosign-installer`, plus local `./`
+    actions), however it is pinned, and every `docker://` action. To add
+    one, review its code and what it downloads, pin it by SHA with its
+    version comment, and add it to `allowedActions` and to the pins below
+    in the same reviewed change; an allowlisted action that is no longer
+    used fails the test too;
   - a checkout step, in any spelling of `actions/checkout`, that does not
     set `persist-credentials: false` itself (checked per step, not counted);
   - a `container: <image>` shorthand, a job's `container.image` or a

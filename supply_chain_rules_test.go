@@ -97,6 +97,60 @@ func pinViolations(path, text string) []string {
 	return violations
 }
 
+// allowedActions are the action repositories a workflow may use, compared
+// without case (GitHub resolves owner and name case-insensitively). Adding
+// one is a supply-chain decision: review the action's code, pin it by SHA,
+// and add it here and to docs/SUPPLY_CHAIN.md in the same change. Local `./`
+// actions are checked as files of their own; `docker://` actions are not
+// allowed.
+var allowedActions = []string{
+	"actions/cache",
+	"actions/checkout",
+	"actions/setup-go",
+	"actions/upload-artifact",
+	"docker/build-push-action",
+	"docker/login-action",
+	"docker/setup-buildx-action",
+	"golangci/golangci-lint-action",
+	"ossf/scorecard-action",
+	"sigstore/cosign-installer",
+}
+
+// actionRepository returns the owner/repo of a `uses:` reference, lower
+// case, or "" when it names none.
+func actionRepository(reference string) string {
+	action, _, _ := strings.Cut(reference, "@")
+	parts := strings.SplitN(action, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return strings.ToLower(parts[0] + "/" + parts[1])
+}
+
+// allowlistViolations requires every `uses:` to name an allowlisted
+// repository (or a local `./` action), whatever its pin: an installer action
+// would otherwise put any tool on PATH, pinned or not.
+func allowlistViolations(path, text string) []string {
+	var violations []string
+	for number, line := range strings.Split(text, "\n") {
+		code, _ := splitComment(line)
+		for _, reference := range keyValues(code, "uses") {
+			if strings.HasPrefix(reference, "./") {
+				continue
+			}
+			repository := actionRepository(reference)
+			allowed := false
+			for _, candidate := range allowedActions {
+				allowed = allowed || (repository != "" && !strings.HasPrefix(reference, "docker://") && candidate == repository)
+			}
+			if !allowed {
+				violations = append(violations, fmt.Sprintf("%s:%d: %q is not an allowlisted action (allowedActions, docs/SUPPLY_CHAIN.md)", path, number+1, reference))
+			}
+		}
+	}
+	return violations
+}
+
 // stepLines returns the lines of the step (list item) that line index
 // belongs to: from its `- ` to the next line indented no deeper than that
 // dash.
