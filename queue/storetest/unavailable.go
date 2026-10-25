@@ -128,3 +128,45 @@ func RunUnavailable(t *testing.T, newStore NewSabotagedStore) {
 		t.Errorf("the lease did not survive the outage: %v", err)
 	}
 }
+
+// RunInvalidArguments checks that a store refuses nonsensical requests
+// before touching a job: a claim without a queue, kinds or a lease, and a
+// prune with a negative retention or no limit. A refused claim leases
+// nothing and a refused prune deletes nothing.
+func RunInvalidArguments(t *testing.T, newStore func(testing.TB) queue.Store) {
+	t.Helper()
+	ctx := context.Background()
+	store := newStore(t)
+	id := uuid.MustNew()
+	if _, err := store.Insert(ctx, queue.NewJob{ID: id, Kind: "k", Queue: queue.DefaultQueue, Payload: json.RawMessage(`{}`), MaxAttempts: 1}); err != nil {
+		t.Fatal(err)
+	}
+	valid := queue.ClaimRequest{Queue: queue.DefaultQueue, Kinds: []string{"k"}, WorkerID: "w", Lease: time.Minute}
+	for name, request := range map[string]queue.ClaimRequest{
+		"no queue": {Kinds: valid.Kinds, WorkerID: "w", Lease: valid.Lease},
+		"no kinds": {Queue: valid.Queue, WorkerID: "w", Lease: valid.Lease},
+		"no lease": {Queue: valid.Queue, Kinds: valid.Kinds, WorkerID: "w"},
+		"negative": {Queue: valid.Queue, Kinds: valid.Kinds, WorkerID: "w", Lease: -time.Second},
+	} {
+		if _, ok, err := store.Claim(ctx, request); err == nil || ok {
+			t.Errorf("claim with %s: ok=%v err=%v, want a refusal", name, ok, err)
+		}
+	}
+	for name, args := range map[string]struct {
+		retention time.Duration
+		limit     int
+	}{
+		"negative retention": {-time.Second, 10},
+		"zero limit":         {time.Hour, 0},
+		"negative limit":     {time.Hour, -5},
+	} {
+		if n, err := store.Prune(ctx, args.retention, args.limit); err == nil || n != 0 {
+			t.Errorf("prune with %s = %d, %v; want a refusal", name, n, err)
+		}
+	}
+	// Nothing was leased or deleted: the valid claim still gets the job.
+	claimed, ok, err := store.Claim(ctx, valid)
+	if err != nil || !ok || claimed.Job.ID != id {
+		t.Fatalf("claim after the refusals = %+v, %v, %v", claimed.Job.ID, ok, err)
+	}
+}

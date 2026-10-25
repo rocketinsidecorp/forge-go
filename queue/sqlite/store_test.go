@@ -253,3 +253,7 @@ func TestStoreFailsWhenItsTableIsUnavailable(t *testing.T) {
 		}
 	})
 }
+
+func TestStoreRefusesInvalidArguments(t *testing.T) {
+	storetest.RunInvalidArguments(t, newStore)
+}

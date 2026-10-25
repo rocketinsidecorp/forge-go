@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	forge "github.com/rocketinsidecorp/forge-go"
@@ -138,5 +140,116 @@ func TestHealthcheckProbesATLSServer(t *testing.T) {
 	}
 	if got, _ := path.Load().(string); got != "/health/live" {
 		t.Errorf("probed %q, want /health/live", got)
+	}
+}
+
+func TestOpenAPIDocumentIsBuiltOnceAndAnUnbuildableOneIsAServerError(t *testing.T) {
+	t.Parallel()
+	app, err := forge.New(forge.WithConfig(testConfig(t)), forge.WithTelemetry(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	greet := openapi.Typed(http.StatusOK, openapi.Operation{ID: "greet"}, func(*http.Request, openapi.NoBody) (struct{ Hello string }, error) {
+		return struct{ Hello string }{"world"}, nil
+	})
+	if err := app.Handle("GET /v1/greet", greet); err != nil {
+		t.Fatal(err)
+	}
+	get := func() *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, forge.OpenAPIPath, nil))
+		return recorder
+	}
+	first, second := get(), get()
+	if first.Code != http.StatusOK || second.Code != http.StatusOK || first.Body.String() != second.Body.String() {
+		t.Fatalf("the cached document differs: %d %d", first.Code, second.Code)
+	}
+	if !strings.Contains(first.Body.String(), "/v1/greet") {
+		t.Errorf("document lacks the route: %s", first.Body.String())
+	}
+
+	// A route whose description cannot be built fails the document with a
+	// server error, never a half-document.
+	broken, err := forge.New(forge.WithConfig(testConfig(t)), forge.WithTelemetry(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broken.Handle("GET /a", openapi.Describe(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), openapi.Operation{ID: "noResponse"})); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	broken.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, forge.OpenAPIPath, nil))
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "noResponse") || strings.Contains(recorder.Body.String(), "cannot describe") {
+		t.Errorf("the build failure leaked to the client: %s", recorder.Body.String())
+	}
+}
+
+// runLogging runs app until the log shows want, then stops it.
+func runLogging(t *testing.T, app *forge.App, logs *safeBuffer, want string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- app.Run(ctx) }()
+	waitFor(t, func() bool { return strings.Contains(logs.String(), want) })
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run = %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Run did not stop")
+	}
+}
+
+func TestRunSaysWhenTheApplicationServesItsOwnOpenAPIDocument(t *testing.T) {
+	t.Parallel()
+	logs := &safeBuffer{}
+	app, err := forge.New(forge.WithConfig(testConfig(t)), forge.WithTelemetry(nil), forge.WithLogger(slog.New(slog.NewTextHandler(logs, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.HandleFunc("GET "+forge.OpenAPIPath, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("{}")) }); err != nil {
+		t.Fatal(err)
+	}
+	runLogging(t, app, logs, "Forge's OpenAPI document is not mounted there")
+}
+
+func TestRunWarnsWhenProductionServesTheOpenAPIDocument(t *testing.T) {
+	t.Parallel()
+	logs := &safeBuffer{}
+	cfg := testConfig(t)
+	cfg.Environment = config.Production
+	cfg.HTTP.Transport = config.TransportTrustedProxy
+	enabled := true
+	cfg.OpenAPI.Enabled = &enabled
+	app, err := forge.New(forge.WithConfig(cfg), forge.WithTelemetry(nil), forge.WithLogger(slog.New(slog.NewTextHandler(logs, nil))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLogging(t, app, logs, "FORGE_OPENAPI_ENABLED=true enabled it")
+}
+
+func TestNewViewRendererParsesTemplatesAndRefusesBrokenOnes(t *testing.T) {
+	t.Parallel()
+	renderer, err := forge.NewViewRenderer(fstest.MapFS{"hello.gohtml": {Data: []byte(`<p>{{.}}</p>`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	if err := renderer.Render(recorder, "hello.gohtml", http.StatusOK, "<b>x</b>"); err != nil {
+		t.Fatal(err)
+	}
+	if got := recorder.Body.String(); got != "<p>&lt;b&gt;x&lt;/b&gt;</p>" {
+		t.Errorf("rendered %q, want the value escaped", got)
+	}
+	if _, err := forge.NewViewRenderer(nil); err == nil {
+		t.Error("a nil filesystem was accepted")
+	}
+	if _, err := forge.NewViewRenderer(fstest.MapFS{"broken.gohtml": {Data: []byte(`{{.Missing`)}}); err == nil {
+		t.Error("a template that does not parse was accepted")
 	}
 }
