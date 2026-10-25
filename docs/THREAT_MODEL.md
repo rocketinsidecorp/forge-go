@@ -282,7 +282,8 @@ See [ADR 0030](adr/0030-forge-deploy.md) and
 | Stale or forged role claims | S, E | Tokens carry no claims. The resolver contract requires current user, membership, expiration and permissions on every request. Bearer and cookie transports are explicit and do not fall back to one another; query and tenant headers are not authentication fallbacks. |
 | Missing authorization check | E | `auth.Require` denies without a principal and denies a principal without the exact permission. Permissions have no wildcard semantics. Application route coverage remains the application's responsibility. |
 | Tenant omitted or forged | E, I | `tenancy.Require` has no default. Authentication installs the tenant returned by the server-side resolver; client tenant headers are ignored. |
-| Tenant leaks through a pooled PostgreSQL connection | I, E | `InTenantTx` sets `forge.tenant_id` transaction-locally on every retry. Integration tests prove RLS read/write isolation and that the setting is cleared. The serving role must not be superuser or `BYPASSRLS`. |
+| Tenant leaks through a pooled PostgreSQL connection | I, E | `InTenantTx` sets `forge.tenant_id` transaction-locally on every retry. Integration tests prove RLS read/write isolation and that the setting is cleared. |
+| Serving role bypasses row-level security, or can switch it off | E, I, T | Generated PostgreSQL applications serve as a runtime role (`NOSUPERUSER NOBYPASSRLS`, owns nothing, data privileges only) and migrate as a separate owner role (`FORGE_MIGRATION_DATABASE_URL`; the development roles come from `docker/postgres/init.sql`). In production `postgres.RequireRowSecurity`, passed by the generated bootstrap, refuses to start when the serving role is a superuser, has `BYPASSRLS` or is a member of such a role (`ErrRowSecurityBypass`). The generated repository, sign-in and bootstrap tests run as the runtime role (`postgrestest.NewRLS`) and prove it sees only the transaction's tenant, nothing without one, cannot insert for another tenant, and cannot run `CREATE`, `ALTER`, `TRUNCATE` or `DROP` (`TestRuntimeRoleIsConfinedByRowLevelSecurity`, `TestRequireRowSecurityRefusesBypassingRolesInProduction`, the generated `Test<Resource>RowLevelSecurity` and `Test<Resource>RuntimeRoleCannotChangeTheSchema`). **Residual:** the check does not refuse a serving role that owns tables (`FORCE` still applies to it, but an owner can turn it off); it runs only in `production`, at startup; applications that leave `FORGE_MIGRATION_DATABASE_URL` unset migrate and serve as one role; `forge deploy` has no migrate-only credential yet. |
 | False database-isolation assurance | I, E | Forge explicitly makes no RLS-equivalent claim for MySQL, MariaDB or SQLite; their repositories must filter every operation by tenant. |
 | Secrets accidentally persisted in audit records | I | `auth.SecurityEvent` has a closed field set with identifiers and SHA-256 digests only; there is no arbitrary metadata/payload map for passwords, bearer tokens, reset links, TOTP seeds, challenges, or backup codes. |
 | Audit history lost when identities are deleted | R | PostgreSQL audit actor/subject/membership identifiers intentionally have no foreign keys, so history survives identity cleanup. |
@@ -423,10 +424,12 @@ See [I18N.md](I18N.md) and [ADR 0042](adr/0042-internationalization.md).
   context deadlines.
 - SQLite: whoever can read the volume can read the database; there is no
   database-level authentication.
-- The same `FORGE_DATABASE_URL` is used for serving and migrating by default,
-  so the application role usually holds DDL privileges. Run `migrate` with a
-  separate, more privileged URL and give the serving role only the
-  privileges it needs.
+- Without `FORGE_MIGRATION_DATABASE_URL` the same `FORGE_DATABASE_URL` serves
+  and migrates, so that role holds DDL privileges. Generated PostgreSQL
+  applications set both in development; in production, provision the two
+  roles ([Database roles](DATABASE.md#database-roles-postgresql)) and give
+  the serving processes only `FORGE_DATABASE_URL`. MySQL, MariaDB and SQLite
+  applications are generated with one user.
 - Handler code that ignores the body limit's error, logs secrets, builds SQL
   from input, or builds responses from untrusted input.
 - Long-running or lock-heavy migrations, and partial state from

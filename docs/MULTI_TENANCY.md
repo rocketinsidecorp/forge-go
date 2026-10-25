@@ -33,15 +33,27 @@ WITH CHECK (tenant_id::text = current_setting('forge.tenant_id', true));
 ```
 
 The serving database role must not be a superuser or have `BYPASSRLS`, because
-those roles bypass policies. Migration roles commonly own tables and should be
-separate from the less-privileged serving role. Repository methods for
+those roles bypass policies. This is enforced, not only advised: the generated
+bootstrap opens its pool with `postgres.RequireRowSecurity`, and in
+`production` the application refuses to start when the role is a superuser,
+has `BYPASSRLS` or is a member of such a role. Generated applications serve as
+a runtime role (`FORGE_DATABASE_URL`, `app_runtime` in development) that owns
+nothing and holds only data privileges, and migrate as a separate role that
+owns the schema (`FORGE_MIGRATION_DATABASE_URL`, `app_migrator`); see
+[Database roles](DATABASE.md#database-roles-postgresql). Repository methods for
 tenant-owned data run inside `InTenantTx`; direct pool queries do not receive a
 tenant setting and RLS denies them when policies are written fail-closed.
 
 The PostgreSQL integration test creates a non-superuser role and proves that
 two tenant contexts see only their rows, cross-tenant inserts fail, a missing
 tenant fails before a transaction, and the setting does not remain in the
-pool.
+pool. `postgrestest.NewRLS` gives tests the deployment's two roles; the
+framework's tests and every generated tenant-scoped resource use it to prove,
+as the runtime role, that a statement without a tenant predicate sees only
+the transaction's tenant, a session without a tenant sees nothing, a row
+cannot be written for another tenant, and the role cannot change the schema
+(`CREATE`, `ALTER ... DISABLE ROW LEVEL SECURITY`, `TRUNCATE`, `DROP` all fail
+with `42501`).
 
 ## MySQL, MariaDB, and SQLite
 
