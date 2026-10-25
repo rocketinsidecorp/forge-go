@@ -381,8 +381,15 @@ func bodyTimedOut(r *http.Request) bool {
 }
 
 func (b *deadlineBody) Close() error {
+	// Closing a request body that was not read to its end makes net/http
+	// read, and discard, what the client still owes of it. That read gets
+	// its own deadline: a client that announced a Content-Length and stalled
+	// would otherwise hold the request, and the target's connection, open
+	// until it chose to send the rest or hang up.
+	_ = b.controller.SetReadDeadline(time.Now().Add(b.timeout))
+	err := b.body.Close()
 	_ = b.controller.SetReadDeadline(time.Time{})
-	return b.body.Close()
+	return err
 }
 
 const maintenancePage = `<!doctype html>
