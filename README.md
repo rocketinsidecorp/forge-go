@@ -1083,10 +1083,17 @@ export FORGE_TEST_MYSQL_URL='mysql://root:forge@127.0.0.1:3306/mysql'   # MySQL 
 
 Set `FORGE_TEST_REQUIRE_DATABASE=true` to make a missing server a failure.
 
+Coverage: `scripts/coverage.sh` measures statement coverage (`go test
+-coverpkg=./...`, with the database tests when the servers above are set),
+prints a per-package table and fails below `.coverage-floor`
+([docs/TESTING.md](docs/TESTING.md#coverage)).
+
 CI (`.github/workflows/ci.yml`):
 
 - `quality`: gofmt, vet, golangci-lint, race tests against PostgreSQL 18
-  and MySQL 8.4 services, benchmarks, and govulncheck;
+  and MySQL 8.4 services and a real sshd, benchmarks, and govulncheck;
+- `coverage`: `scripts/coverage.sh` against PostgreSQL 18 and 16 and MariaDB,
+  gated by `.coverage-floor`;
 - `fuzz`: every fuzz target for 10 seconds (`scripts/fuzz.sh`);
 - `sbom`: CycloneDX SBOMs of the `forge` and `forge-proxy` binaries;
 - `mariadb`: the `mysql` adapter's tests against MariaDB 11.8;
@@ -1118,6 +1125,7 @@ signed images for `v*` tags only.
 - [Rails parity (Forge-Go and Forge-Rust)](docs/RAILS_PARITY.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Supply chain: fuzzing, SBOM, signed images](docs/SUPPLY_CHAIN.md)
+- [Testing and coverage](docs/TESTING.md)
 - [Benchmarks](docs/BENCHMARKS.md)
 - [Multi-tenancy](docs/MULTI_TENANCY.md)
 - [Security policy](SECURITY.md)

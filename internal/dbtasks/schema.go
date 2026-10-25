@@ -147,19 +147,28 @@ func (t *Target) pgDump(ctx context.Context) ([]byte, error) {
 }
 
 func (t *Target) mysqlDump(ctx context.Context) ([]byte, error) {
+	flavor := t.mysqlFlavor("mysqldump")
 	// No database in the option file: its [client] group is read by
 	// mysqldump too, and Oracle's mysqldump refuses a `database` option
 	// (unknown variable). The database is the positional argument below.
-	file, cleanup, err := t.mysqlOptions("mysqldump", "")
+	file, cleanup, err := t.mysqlOptionsFor(flavor, "")
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
+	// The option file must come first. --skip-add-drop-table keeps the
+	// schema file from dropping tables when it is loaded.
+	args := []string{mysqlDefaults(file), "--no-data", "--skip-comments", "--skip-dump-date", "--skip-add-drop-table", "--no-tablespaces", "--routines", "--triggers"}
+	if flavor == "mysql" {
+		// Oracle's mysqldump (8.0+) reads histogram statistics from
+		// information_schema.COLUMN_STATISTICS, which MariaDB servers do
+		// not have; a schema dump needs none. MariaDB's mysqldump has no
+		// such option.
+		args = append(args, "--column-statistics=0")
+	}
 	return t.run(ctx, tool{
 		name: "mysqldump",
-		// The option file must come first. --skip-add-drop-table keeps the
-		// schema file from dropping tables when it is loaded.
-		args: []string{mysqlDefaults(file), "--no-data", "--skip-comments", "--skip-dump-date", "--skip-add-drop-table", "--no-tablespaces", "--routines", "--triggers", t.Name},
+		args: append(args, t.Name),
 		env:  mysqlEnvironment(environ(), file),
 		dir:  t.root,
 	})

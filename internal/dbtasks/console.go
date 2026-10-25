@@ -71,7 +71,11 @@ func missingTool(name string, adapter config.Adapter) error {
 // that cleanup removes) for the named client tool. Tools read it through
 // mysqlDefaults and mysqlEnvironment, so it is the only option file they read.
 func (t *Target) mysqlOptions(toolName, database string) (name string, cleanup func(), err error) {
-	flavor := t.mysqlFlavor(toolName)
+	return t.mysqlOptionsFor(t.mysqlFlavor(toolName), database)
+}
+
+// mysqlOptionsFor is mysqlOptions for a client whose flavor is known.
+func (t *Target) mysqlOptionsFor(flavor, database string) (name string, cleanup func(), err error) {
 	content, err := mysqlOptionFile(credentialsOf(t.priv), database, flavor)
 	if err != nil {
 		return "", nil, err

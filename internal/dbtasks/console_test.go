@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -184,6 +185,10 @@ func TestMySQLDumpReadsOnlyForgesOptionFile(t *testing.T) {
 		if strings.Contains(line, "s3cret") || strings.Contains(line, "alice") {
 			t.Errorf("an argument carries credentials: %q", line)
 		}
+	}
+	// Oracle's mysqldump must not ask a MariaDB server for histograms.
+	if !slices.Contains(lines, "--column-statistics=0") {
+		t.Errorf("Oracle's mysqldump runs without --column-statistics=0: %q", lines)
 	}
 	for _, want := range []string{`user="alice"`, `password="s3cret"`, `host="127.0.0.1"`, `port="1"`, "protocol=tcp", "ssl-mode=REQUIRED"} {
 		if !strings.Contains(options, want) {
