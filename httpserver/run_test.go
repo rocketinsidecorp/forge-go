@@ -247,7 +247,9 @@ func TestRunClosesConnectionsWhenTheDrainDeadlinePasses(t *testing.T) {
 			select {
 			case <-started:
 				return
-			default:
+			case <-t.Context().Done():
+				return // the test ended early; do not retry forever
+			case <-time.After(5 * time.Millisecond):
 			}
 		}
 	}()

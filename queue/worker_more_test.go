@@ -252,6 +252,14 @@ func TestWorkerLeavesAJobLeasedWhenItsOutcomeCannotBeStored(t *testing.T) {
 	}
 }
 
+// A lease can be lost two ways, and which one a worker sees first depends on
+// scheduling: the store tells a renewal the lease is gone, or the lease
+// deadline passes before the renewal ticker fires and the heartbeat cancels
+// the handler on its own. Either way the handler is canceled, its outcome is
+// never written, and a store that no longer honors the lease token refuses
+// the late acknowledgement. The tests below assert what holds on both paths
+// and wait on channels, never on which log line came first.
+
 func TestWorkerDiscardsTheResultOfAJobWhoseLeaseWasLost(t *testing.T) {
 	t.Parallel()
 	logger, messages := newRecordingLogger()
@@ -261,12 +269,19 @@ func TestWorkerDiscardsTheResultOfAJobWhoseLeaseWasLost(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	store := &fakeStore{claim: oneJob(), renew: func(context.Context, Lease) error { return ErrLeaseLost }}
+	// The store has handed the job to someone else: renewals and every
+	// acknowledgement with the old token are refused.
+	store := &fakeStore{
+		claim:    oneJob(),
+		renew:    func(context.Context, Lease) error { return ErrLeaseLost },
+		complete: func(context.Context, Lease) error { return ErrLeaseLost },
+		fail:     func(context.Context, Lease, Failure) error { return ErrLeaseLost },
+		release:  func(context.Context, Lease) error { return ErrLeaseLost },
+	}
 	finished := make(chan Result, 1)
-	w := newTestWorker(t, store, reg, WorkerOptions{Logger: logger, Lease: 30 * time.Millisecond, Hooks: Hooks{Finished: func(r Result) { finished <- r }}})
+	w := newTestWorker(t, store, reg, WorkerOptions{Logger: logger, Lease: 300 * time.Millisecond, Hooks: Hooks{Finished: func(r Result) { finished <- r }}})
 	defer shutdownQuietly(w)
 	<-started
-	awaitMessage(t, messages, "job lease lost; result discarded")
 	select {
 	case result := <-finished:
 		if result.Outcome != OutcomeLeaseLost {
@@ -275,6 +290,9 @@ func TestWorkerDiscardsTheResultOfAJobWhoseLeaseWasLost(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("no result for the lost lease")
 	}
+	// Both paths log that the result was discarded (before or after the
+	// acknowledgement was refused).
+	awaitMessage(t, messages, "result discarded")
 	if store.completes.Load() != 0 {
 		t.Error("the result of a job without a lease was written")
 	}
@@ -290,10 +308,16 @@ func TestWorkerCancelsAHandlerWhoseLeaseCannotBeRenewedInTime(t *testing.T) {
 		return ctx.Err()
 	})
 	// Renewals fail with an infrastructure error, so the lease runs out.
-	store := &fakeStore{claim: oneJob(), renew: func(context.Context, Lease) error { return errors.New("database unavailable") }}
-	w := newTestWorker(t, store, reg, WorkerOptions{Logger: logger, Lease: 60 * time.Millisecond})
+	renewed := make(chan struct{}, 1)
+	store := &fakeStore{claim: oneJob(), renew: func(context.Context, Lease) error {
+		select {
+		case renewed <- struct{}{}:
+		default:
+		}
+		return errors.New("database unavailable")
+	}}
+	w := newTestWorker(t, store, reg, WorkerOptions{Logger: logger, Lease: 600 * time.Millisecond})
 	defer shutdownQuietly(w)
-	awaitMessage(t, messages, "renew job lease failed")
 	select {
 	case cause := <-canceled:
 		if !errors.Is(cause, ErrLeaseLost) {
@@ -301,5 +325,14 @@ func TestWorkerCancelsAHandlerWhoseLeaseCannotBeRenewedInTime(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("the handler kept running past its lease")
+	}
+	// The renewal ticker usually fires before the deadline, but a stalled
+	// scheduler can let the deadline win without any renewal attempt. When
+	// one was made, its failure was logged (the heartbeat logs before it
+	// looks at the deadline again), so the line is certain to arrive.
+	select {
+	case <-renewed:
+		awaitMessage(t, messages, "renew job lease failed")
+	default:
 	}
 }

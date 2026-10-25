@@ -888,17 +888,11 @@ func TestMFASettingsFailClosed(t *testing.T) {
 		t.Errorf("an unknown backup code: %v", err)
 	}
 	account := f.store.accounts[f.subject]
-	var held Digest
-	for digest := range account.backupCodes {
-		held = digest
-		break
-	}
 	account.backupCodes[mustBackupDigest(t, backup)] = false
 	if err := svc.VerifyMFACode(ctx, f.subject, backup); err != nil {
 		t.Errorf("an unused backup code: %v", err)
 	}
 	f.expectAudit(SecurityMFABackupCodeUsed, SecurityOutcomeSucceeded)
-	_ = held
 
 	// useTOTPCode: no factor, unreadable secret, counter not advanced.
 	f.store.deny["AdvanceTOTPCounter"] = true

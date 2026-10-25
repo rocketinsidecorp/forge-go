@@ -78,7 +78,7 @@ func TestReadSecretOnATerminalHidesAndRestoresEcho(t *testing.T) {
 		select {
 		case r := <-done:
 			t.Fatalf("ReadSecret returned before any input: %q %v", r.secret, r.err)
-		default:
+		case <-time.After(2 * time.Millisecond):
 		}
 	}
 	if _, err := master.WriteString("hunter2 hunter2\n"); err != nil {
