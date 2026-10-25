@@ -40,11 +40,12 @@ COVERAGE_PROFILE=cover.out scripts/coverage.sh     # report and gate an existing
   package except the four exclusions below. The *gated* total, the one the
   floor checks, also leaves out the contract and test kits listed under
   "Contract and test kits".
-- **The floor only rises.** It starts at the measured baseline rounded down
-  (84.0%; 84.2% was measured on 2026-10-24 against PostgreSQL 16 and 18 and
-  MariaDB) and is raised, never lowered, as tests are added, toward the
-  project's target of 95%. A change that lowers coverage below the floor
-  fails CI; raise the floor in the same pull request when coverage grows.
+- **The floor only rises.** It is 95.0%, set on 2026-10-25 against a gated
+  total of 96.0% (94.9% gross, kits included), measured on PostgreSQL 16 and
+  18 and MariaDB; it started at 84.0% and is raised, never lowered, as tests
+  are added, toward the project's target of 95%. A change that lowers
+  coverage below the floor fails CI; raise the floor in the same pull request
+  when coverage grows.
 - **Exclusions.** Only these, each for the reason given; nothing else may be
   excluded, and a new exclusion needs a reason here:
 
