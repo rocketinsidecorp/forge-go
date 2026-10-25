@@ -85,9 +85,9 @@ func matrixApplicationFor(t *testing.T, database, command string, resources [][]
 	// Same requirements as the framework, which already resolve offline from
 	// the module cache.
 	frameworkMod := readFile(t, filepath.Join(frameworkPath, "go.mod"))
-	_, requirements, _ := strings.Cut(frameworkMod, "go 1.27.1")
+	_, requirements, _ := strings.Cut(frameworkMod, "go 1.27.3")
 	requirements = strings.Replace(requirements, "require (\n", "require (\n\t"+"github.com/rocketinsidecorp/forge-go v0.0.0\n", 1)
-	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/mx\n\ngo 1.27.1\n"+requirements+"\nreplace github.com/rocketinsidecorp/forge-go => "+frameworkPath+"\n")
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/mx\n\ngo 1.27.3\n"+requirements+"\nreplace github.com/rocketinsidecorp/forge-go => "+frameworkPath+"\n")
 	writeFile(t, filepath.Join(dir, "go.sum"), readFile(t, filepath.Join(frameworkPath, "go.sum")))
 	writeFile(t, filepath.Join(dir, ".golangci.yml"), readFile(t, filepath.Join(frameworkPath, ".golangci.yml")))
 

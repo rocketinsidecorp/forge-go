@@ -29,7 +29,7 @@ Non-negotiable conventions:
 
 ## Development setup
 
-Requires Go 1.27.1+ and Docker.
+Requires Go 1.27.3+ and Docker.
 
 ```bash
 docker run -d --name forge-test-pg -e POSTGRES_USER=forge -e POSTGRES_PASSWORD=forge \

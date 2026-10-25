@@ -44,7 +44,7 @@ Contents: [1 Prerequisites](#1-prerequisites) ·
 
 ## 1. Prerequisites
 
-- **Go 1.27.1 or newer.** `go version` must say so.
+- **Go 1.27.3 or newer.** `go version` must say so.
 - **A database.** PostgreSQL 18 is the default and the only database with
   sign-in and tenants, so this guide uses it. The easiest way to get one is
   Docker (with Compose): the generated `compose.yaml` starts it. Without
