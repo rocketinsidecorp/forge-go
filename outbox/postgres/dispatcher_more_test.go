@@ -162,7 +162,7 @@ func TestRunStopsWhenTheLeaseIsLostMidHandler(t *testing.T) {
 		close(started)
 		<-ctx.Done() // the renewal failure cancels the handler's context
 		return ctx.Err()
-	}, DispatcherOptions{PollInterval: time.Millisecond, Lease: 60 * time.Millisecond})
+	}, DispatcherOptions{PollInterval: time.Millisecond, Lease: 900 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
