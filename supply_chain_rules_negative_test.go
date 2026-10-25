@@ -213,8 +213,22 @@ func TestAllowlistRejectsUnlistedActionsHoweverPinned(t *testing.T) {
 		"      - uses: actions/checkout-evil@SHA # v7.0.1",
 		"      - uses: docker://alpine@sha256:DIGEST",
 		"      - uses: checkout@SHA # v7",
+		"      - uses: actions/checkout/../../taiki-e/install-action@SHA # v2",
+		"      - uses: actions/checkout/./x@SHA # v7",
+		"      - uses: actions/checkout//x@SHA # v7",
+		// YAML spellings of the key that a line scanner would not see.
+		"      - \"u\\x73es\": taiki-e/install-action@SHA # v2",
+		"      - \"use\\s\": taiki-e/install-action@SHA # v2",
+		"      - ? uses\n        : taiki-e/install-action@SHA # v2",
+		"    steps: [uses: taiki-e/install-action@SHA] # v2",
+		"      - &k uses: taiki-e/install-action@SHA # v2",
+		"      - *k : taiki-e/install-action@SHA # v2",
+		"      - !!str uses: taiki-e/install-action@SHA # v2",
+		"    steps: [{name: x, !!str uses: taiki-e/install-action@SHA}] # v2",
 	} {
-		if text := snippet(rejected); len(allowlistViolations("t.yml", text)) == 0 {
+		text := snippet(rejected)
+		violations := append(allowlistViolations("t.yml", text), keyPositionViolations("t.yml", text)...)
+		if len(violations) == 0 {
 			t.Errorf("accepted: %s", text)
 		}
 	}
@@ -223,9 +237,44 @@ func TestAllowlistRejectsUnlistedActionsHoweverPinned(t *testing.T) {
 		"      - uses: Actions/Setup-Go@SHA # v7.0.0",
 		"      - uses: docker/build-push-action/subdir@SHA # v7",
 		"      - uses: ./.github/actions/tool",
+		"    steps: [uses: actions/checkout@SHA] # v7.0.1",
+		// Inside a block scalar, `*`, `&` and `!` are shell, not YAML.
+		"      - run: |\n          case \"$x\" in\n            *) echo \"!\" & wait ;;\n          esac\n      - uses: actions/checkout@SHA # v7.0.1",
+		"    branches: [main]\n    tags: [\"v*\"]",
 	} {
-		if violations := allowlistViolations("t.yml", snippet(accepted)); len(violations) != 0 {
+		text := snippet(accepted)
+		violations := append(allowlistViolations("t.yml", text), keyPositionViolations("t.yml", text)...)
+		if len(violations) != 0 {
 			t.Errorf("rejected: %v", violations)
 		}
+	}
+}
+
+func TestParserAndScannerAgreeOnUsesKeys(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"steps:\n  - \"u\\x73es\": a/b@c\n",
+		"steps:\n  - ? uses\n    : a/b@c\n",
+		"steps:\n  - &k uses: a/b@c\n  - *k : d/e@f\n",
+		"steps:\n  - !!str uses: a/b@c\n",
+		"base: &base\n  uses: a/b@c\nsteps:\n  - <<: *base\n",
+		"steps: [\n",
+	} {
+		if len(parserViolations("t.yml", rejected)) == 0 {
+			t.Errorf("accepted: %s", rejected)
+		}
+	}
+	for _, accepted := range []string{
+		"steps:\n  - uses: a/b@c\n  - { uses: d/e@f }\n  - run: |\n      echo uses\n",
+		"steps: [uses: a/b@c]\n",
+	} {
+		if violations := parserViolations("t.yml", accepted); len(violations) != 0 {
+			t.Errorf("rejected: %v", violations)
+		}
+	}
+	// A template's directives are not YAML.
+	template := "{{- if .DB}}\n    services:\n      {{.DB.Service}}:\n        image: {{.DB.Image}}\n{{- end}}\n    steps:\n      - uses: a/b@c\n"
+	if violations := parserViolations("ci.yml.tmpl", template); len(violations) != 0 {
+		t.Errorf("rejected: %v", violations)
 	}
 }

@@ -176,7 +176,14 @@ tags on the default branch. Its README shows the commands.
     one, review its code and what it downloads, pin it by SHA with its
     version comment, and add it to `allowedActions` and to the pins below
     in the same reviewed change; an allowlisted action that is no longer
-    used fails the test too;
+    used fails the test too; a sub-path cannot leave the repository (no
+    empty, `.` or `..` segment);
+  - outside block scalars, a key the line scanner could misread: an
+    explicit key (`? uses`), an anchor (`&k uses`), an alias (`*k :`), a
+    tag (`!!str uses`) or a double-quoted key with an escape (`"u\x73es"`);
+    every gated file is also parsed as YAML (`go.yaml.in/yaml/v3`) and the
+    parser must find as many `uses` keys as the scanner, with no merge
+    keys (`<<`);
   - a checkout step, in any spelling of `actions/checkout`, that does not
     set `persist-credentials: false` itself (checked per step, not counted);
   - a `container: <image>` shorthand, a job's `container.image` or a

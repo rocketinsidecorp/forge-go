@@ -7,8 +7,13 @@ package forge_test
 // Forge-Rust's crates/forge/tests/supply_chain.rs.
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"regexp"
 	"strings"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // splitComment splits a YAML line into its code and its comment: a `#` that
@@ -39,9 +44,10 @@ func keyValues(code, key string) []string {
 		start := offset + position
 		offset = start + len(key)
 		// What precedes the key, past an opening quote and blanks: the start
-		// of the line, a list dash, or a flow mapping's `{` or `,`.
+		// of the line, a list dash, or a flow collection's `{`, `[` or `,`.
 		before := strings.TrimRight(strings.TrimRight(code[:start], `"'`), " \t")
-		if before != "" && !strings.HasSuffix(before, "-") && !strings.HasSuffix(before, "{") && !strings.HasSuffix(before, ",") {
+		if before != "" && !strings.HasSuffix(before, "-") && !strings.HasSuffix(before, "{") &&
+			!strings.HasSuffix(before, "[") && !strings.HasSuffix(before, ",") {
 			continue
 		}
 		after := strings.TrimLeft(strings.TrimLeft(code[start+len(key):], `"'`), " \t")
@@ -49,7 +55,7 @@ func keyValues(code, key string) []string {
 		if !ok {
 			continue
 		}
-		if end := strings.IndexAny(value, ",}"); end >= 0 {
+		if end := strings.IndexAny(value, ",}]"); end >= 0 {
 			value = value[:end]
 		}
 		found = append(found, strings.Trim(strings.TrimSpace(value), `"'`))
@@ -139,9 +145,16 @@ func allowlistViolations(path, text string) []string {
 				continue
 			}
 			repository := actionRepository(reference)
+			// owner/repo[/sub/path]: no empty, `.` or `..` segment can walk
+			// from an allowlisted repository into another one.
+			action, _, _ := strings.Cut(reference, "@")
+			plainPath := true
+			for _, segment := range strings.Split(action, "/") {
+				plainPath = plainPath && segment != "" && segment != "." && segment != ".."
+			}
 			allowed := false
 			for _, candidate := range allowedActions {
-				allowed = allowed || (repository != "" && !strings.HasPrefix(reference, "docker://") && candidate == repository)
+				allowed = allowed || (plainPath && repository != "" && !strings.HasPrefix(reference, "docker://") && candidate == repository)
 			}
 			if !allowed {
 				violations = append(violations, fmt.Sprintf("%s:%d: %q is not an allowlisted action (allowedActions, docs/SUPPLY_CHAIN.md)", path, number+1, reference))
@@ -149,6 +162,172 @@ func allowlistViolations(path, text string) []string {
 		}
 	}
 	return violations
+}
+
+// keyPositionViolations refuses, outside block scalars (`run: |`), what a
+// line scanner could misread: a key position (after the indentation, `- `,
+// or the `[`, `{`, `,` of a flow collection) that starts with `?` (explicit
+// key), `&` (anchor), `*` (alias) or `!` (tag), or a double-quoted key with
+// an escape (`"u\x73es"`). Each would let a `uses:` key slip past the pin
+// and allowlist rules.
+func keyPositionViolations(path, text string) []string {
+	var violations []string
+	block := -1 // the column of the key whose block scalar is skipped
+	for number, line := range strings.Split(text, "\n") {
+		code, _ := splitComment(line)
+		if strings.TrimSpace(code) == "" {
+			continue
+		}
+		indent := indentation(code)
+		if block >= 0 {
+			if indent > block {
+				continue
+			}
+			block = -1
+		}
+		content := strings.TrimLeft(code, " \t")
+		for {
+			rest, ok := strings.CutPrefix(content, "-")
+			if !ok || (rest != "" && rest[0] != ' ' && rest[0] != '\t') {
+				break
+			}
+			content = strings.TrimLeft(rest, " \t")
+		}
+		positions := []string{content}
+		_, value, _ := mappingEntry(content)
+		// Inside a flow collection, what follows `[`, `{` or `,` (outside
+		// quotes) is a key position too.
+		for _, flow := range []string{content, value} {
+			if !strings.HasPrefix(flow, "[") && !strings.HasPrefix(flow, "{") {
+				continue
+			}
+			var quote rune
+			for at, character := range flow {
+				switch {
+				case quote != 0 && character == quote:
+					quote = 0
+				case quote != 0:
+				case character == '"' || character == '\'':
+					quote = character
+				case character == '[' || character == '{' || character == ',':
+					positions = append(positions, strings.TrimLeft(flow[at+1:], " \t"))
+				}
+			}
+		}
+		refused := false
+		for _, position := range positions {
+			if strings.HasPrefix(position, "?") || strings.HasPrefix(position, "&") ||
+				strings.HasPrefix(position, "*") || strings.HasPrefix(position, "!") {
+				refused = true
+			}
+			if key, ok := strings.CutPrefix(position, `"`); ok {
+				quoted, _, closed := strings.Cut(key, `"`)
+				refused = refused || !closed || strings.Contains(quoted, `\`)
+			}
+		}
+		if refused {
+			violations = append(violations, fmt.Sprintf("%s:%d: %q: explicit, anchored, aliased, tagged or escaped keys are not read by the gate; write the key plainly", path, number+1, strings.TrimSpace(line)))
+		}
+		if opensBlock(value) {
+			block = len(code) - len(content)
+		}
+	}
+	return violations
+}
+
+// opensBlock reports whether a mapping value starts a block scalar (`|`,
+// `>-`, `|+2`, ...).
+func opensBlock(value string) bool {
+	if !strings.HasPrefix(value, "|") && !strings.HasPrefix(value, ">") {
+		return false
+	}
+	for _, character := range value[1:] {
+		if character != '-' && character != '+' && (character < '0' || character > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// templateField is a text/template action in a generated-app template.
+var templateField = regexp.MustCompile(`\{\{-?[^}]*-?\}\}`)
+
+// yamlUsesKeys counts the mapping keys a YAML parser reads as `uses` in
+// text (each document, aliases resolved), and refuses merge keys, which
+// could bring one in from an anchor. Template directives are replaced first:
+// a line holding only one is dropped, any other becomes a plain word.
+func yamlUsesKeys(text string, template bool) (int, error) {
+	if template {
+		var lines []string
+		for _, line := range strings.Split(text, "\n") {
+			if trimmed := strings.TrimSpace(line); templateField.MatchString(trimmed) && templateField.ReplaceAllString(trimmed, "") == "" {
+				continue
+			}
+			lines = append(lines, templateField.ReplaceAllString(line, "x"))
+		}
+		text = strings.Join(lines, "\n")
+	}
+	decoder := yaml.NewDecoder(strings.NewReader(text))
+	count := 0
+	for {
+		var document yaml.Node
+		err := decoder.Decode(&document)
+		if errors.Is(err, io.EOF) {
+			return count, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		var walk func(*yaml.Node) error
+		walk = func(node *yaml.Node) error {
+			if node.Kind == yaml.MappingNode {
+				for index := 0; index+1 < len(node.Content); index += 2 {
+					key := node.Content[index]
+					if key.Kind == yaml.AliasNode && key.Alias != nil {
+						key = key.Alias
+					}
+					if key.Tag == "!!merge" || key.Value == "<<" {
+						return fmt.Errorf("line %d: a merge key", key.Line)
+					}
+					if key.Kind == yaml.ScalarNode && key.Value == "uses" {
+						count++
+					}
+				}
+			}
+			for _, child := range node.Content {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		if err := walk(&document); err != nil {
+			return 0, err
+		}
+	}
+}
+
+// scannedUsesKeys counts the `uses` keys the line scanner reads in text.
+func scannedUsesKeys(text string) int {
+	count := 0
+	for _, line := range strings.Split(text, "\n") {
+		code, _ := splitComment(line)
+		count += len(keyValues(code, "uses"))
+	}
+	return count
+}
+
+// parserViolations requires the line scanner and a YAML parser to find the
+// same number of `uses` keys: a spelling the scanner misses is refused.
+func parserViolations(path, text string) []string {
+	parsed, err := yamlUsesKeys(text, strings.HasSuffix(path, ".tmpl"))
+	if err != nil {
+		return []string{fmt.Sprintf("%s: %v", path, err)}
+	}
+	if scanned := scannedUsesKeys(text); scanned != parsed {
+		return []string{fmt.Sprintf("%s: the YAML parser reads %d uses keys, the gate %d: write every uses: key plainly", path, parsed, scanned)}
+	}
+	return nil
 }
 
 // stepLines returns the lines of the step (list item) that line index
