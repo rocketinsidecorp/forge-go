@@ -156,3 +156,47 @@ func (d Database) validate(environment Environment) error {
 	}
 	return nil
 }
+
+// EnvMigrationDatabaseURL names the connection URL of the migration role:
+// the role that owns the schema and applies migrations, separate from the
+// less-privileged role FORGE_DATABASE_URL serves with.
+const EnvMigrationDatabaseURL = "FORGE_MIGRATION_DATABASE_URL"
+
+// databaseSelectingParams are query parameters with which a driver picks
+// the database instead of the URL's path (pgx, like libpq, honours dbname
+// and a service file).
+var databaseSelectingParams = []string{"dbname", "database", "service", "servicefile"}
+
+// MigrationDatabase returns the connection the migrate and rollback commands
+// use. When FORGE_MIGRATION_DATABASE_URL is set (read through lookup), it
+// supplies the role: its user, password, host, port and parameters, validated
+// like FORGE_DATABASE_URL (production TLS rules included) and of the same
+// adapter. Its database is ignored: migrations always change the database
+// FORGE_DATABASE_URL names, the one the application serves. Without it, or
+// for SQLite, which has no roles, the result is c.Database unchanged.
+func (c Config) MigrationDatabase(lookup func(string) (string, bool)) (Database, error) {
+	raw, ok := lookup(EnvMigrationDatabaseURL)
+	adapter, served := parseDatabaseURL(c.Database.URL.Reveal())
+	if !ok || raw == "" || served == nil || adapter == AdapterSQLite {
+		return c.Database, nil
+	}
+	migration := c.Database
+	migration.URL = NewSecret(raw)
+	if err := migration.validate(c.Environment); err != nil {
+		return Database{}, fmt.Errorf("%s is invalid: %w", EnvMigrationDatabaseURL, err)
+	}
+	if got := migration.Adapter(); got != adapter {
+		return Database{}, fmt.Errorf("%s selects the %s adapter, but FORGE_DATABASE_URL selects %s", EnvMigrationDatabaseURL, got, adapter)
+	}
+	_, parsed := parseDatabaseURL(raw)
+	for key := range parsed.Query() {
+		for _, param := range databaseSelectingParams {
+			if strings.EqualFold(key, param) {
+				return Database{}, fmt.Errorf("%s sets the %q parameter: migrations always change the database in FORGE_DATABASE_URL", EnvMigrationDatabaseURL, param)
+			}
+		}
+	}
+	parsed.Path, parsed.RawPath = served.Path, served.RawPath
+	migration.URL = NewSecret(parsed.String())
+	return migration, nil
+}
