@@ -808,13 +808,14 @@ func releaseViolations(path, text string) []string {
 // deprecated `::set-env` and `::add-path` commands.
 var redirectingVariables = []string{
 	"GOFLAGS", "GOPROXY", "GONOSUMDB", "GONOSUMCHECK", "GOSUMDB", "GOINSECURE",
-	"GOPRIVATE", "GONOPROXY", "GOENV", "GOTOOLCHAIN", "GOCACHEPROG", "GOROOT",
+	"GOPRIVATE", "GONOPROXY", "GOENV", "GOTOOLCHAIN", "GOCACHEPROG",
 	"GOMODCACHE", "GOPATH", "XDG_CONFIG_HOME", "ACTIONS_ALLOW_UNSECURE_COMMANDS",
 }
 
-// assignedOnlyVariables may be read (`$HOME`) but never set: HOME moves
-// ~/.config/go/env, the go env file.
-var assignedOnlyVariables = []string{"HOME"}
+// assignedOnlyVariables may be read (`$HOME`, `go env GOROOT`) but never
+// set: HOME moves ~/.config/go/env, the go env file, and GOROOT the
+// toolchain.
+var assignedOnlyVariables = []string{"HOME", "GOROOT"}
 
 // refusedText is refused anywhere in a gated file, without case: a
 // `$GITHUB_ENV` write (it sets variables for every later step under a name
@@ -901,7 +902,7 @@ func redirectingViolations(path, text, upper string) []string {
 				continue
 			}
 			rest := strings.TrimLeft(upper[start+len(variable):], "\"' \t")
-			if strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "=") {
+			if strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "=") || strings.HasPrefix(rest, "+=") {
 				violations = append(violations, fmt.Sprintf("%s:%d: gated files do not set %s", path, line(start), variable))
 			}
 		}

@@ -203,13 +203,14 @@ tags on the default branch. Its README shows the commands.
   - a variable that redirects where the go command fetches modules,
     checksums or toolchains, or what it reads and runs (`GOFLAGS`,
     `GOPROXY`, `GONOSUMDB`, `GONOSUMCHECK`, `GOSUMDB`, `GOINSECURE`,
-    `GOPRIVATE`, `GONOPROXY`, `GOENV`, `GOCACHEPROG`, `GOROOT`,
+    `GOPRIVATE`, `GONOPROXY`, `GOENV`, `GOCACHEPROG`,
     `GOMODCACHE`, `GOPATH`, `XDG_CONFIG_HOME` (it moves the go env file),
     `ACTIONS_ALLOW_UNSECURE_COMMANDS`, and `GOTOOLCHAIN` unless set to
     `local` or one exact `goX.Y.Z`), in any case, in an `env:` block at any
-    level or in `run` text; `HOME` where it is set (an `env:` key or a
-    `HOME=` assignment: it moves `~/.config/go/env`), reading `$HOME` stays
-    allowed; any `$GITHUB_ENV` write, whatever it sets (a variable for later
+    level or in `run` text (a second check under the closed allowlists of
+    the Threat model section); `HOME` and `GOROOT` where they are set (an
+    `env:` key or a `HOME=`/`HOME+=` assignment: HOME moves
+    `~/.config/go/env`), reading `$HOME` or `go env GOROOT` stays allowed; any `$GITHUB_ENV` write, whatever it sets (a variable for later
     steps goes in an `env:` block, where the gate reads its name); and the
     deprecated `::set-env` and `::add-path` workflow commands. No go env
     file (`go.env`, or `env` in a directory named `go`) exists anywhere in
@@ -269,27 +270,56 @@ images: bump them together, by hand, in one change.
 
 ## Threat model and residual risk
 
-Engineering decision D6 (2026-10-25). The supply-chain gate is defense in
-depth against unreviewed drift and casual injection in the workflows, local
-actions and generated-app workflows. It is not a shell sandbox, and review is
-the primary control.
+Engineering decisions D6 and D8 (2026-10-25). The supply-chain gate is
+defense in depth against unreviewed drift and casual injection in the
+workflows, local actions and generated-app files. It is not a shell sandbox:
+review of every change is the primary control. Since D8 the gate's core is a
+set of closed allowlists in `supply_chain_allowlist_test.go`, so it converges
+instead of chasing new redirects; growing a list is a reviewed change to that
+file.
 
-- In scope, refused by the gate: every YAML-level and plain-text spelling of
-  a refused action, permission, secret, variable or configuration file (YAML
-  escapes, quoting, case, flow style, anchors, aliases, tags, merge and
-  duplicate keys, hidden line breaks, template directives and branches, and
-  every rendered variant of the generated application's `.github` files),
-  and every documented tool or configuration redirect (the go command's
-  environment and go env files, `HOME` and `XDG_CONFIG_HOME`, the runner's
-  `$GITHUB_ENV`, `::set-env` and `::add-path`).
-- Accepted residual risk, left to mandatory review of every change to a
-  workflow, action, script or template: names and commands the shell
-  assembles at run time (`GO""PROXY=...`, `eval`, a name built with
-  `printf`, a script the workflow calls), and what an allowlisted action or a
-  reviewed script downloads.
-- Reviews of the gate judge it against this model: a bypass inside the scope
-  above is a defect to fix in the gate; a run-time-assembled name is the
-  accepted residual risk.
+- Variables (`allowedVariables`): a gated file sets only listed names, in an
+  `env:` key at any level (workflow, job, step, container, service; plain,
+  quoted or flow) or in `run` text (`NAME=`, `NAME+=`, `NAME[i]=`, `export`,
+  `env`, `sudo`, `declare`, `typeset`, `readonly`, `local`, `read`,
+  `mapfile`, `getopts`, `let`, `printf -v`, `for`/`select`/`coproc NAME`,
+  `${NAME:=...}`, `{NAME}>`, arithmetic). Names a tool reads
+  (`GOARCH`, `SYFT_CHECK_FOR_APP_UPDATE`, `FORGE_TEST_REQUIRE_*`) take one
+  exact value. `HOME`, `PATH`, `BASH_ENV`, `LD_PRELOAD`, `CC`, `CXX`,
+  `CGO_*`, `GOWORK`, `GOFLAGS`, `GOROOT` and every other unlisted name are
+  refused as assignment targets; reading `$HOME` or `go env GOROOT` stays
+  allowed. An `env:` or `with:` that is a whole expression is refused, and
+  `shell:` is bash only.
+- Runner files (`runnerFileLines`): `$GITHUB_ENV`, `$GITHUB_PATH` and
+  `$GITHUB_OUTPUT` are written only on the listed lines (the PostgreSQL
+  client tools on `PATH`, the fuzz matrix and corpus outputs, the release
+  image names); `::set-env`, `::add-path` and
+  `ACTIONS_ALLOW_UNSECURE_COMMANDS` are refused.
+- Expressions (`expressionLines`): `format`, `fromJSON`, `join` and `toJSON`
+  appear only on the listed line (the fuzz matrix).
+- The go command: no `go env -w`, no `-toolexec`, `-exec`, `-modfile` or
+  `-overlay`, and no `-gcflags`/`-ldflags`/`-asmflags` value that passes an
+  option outside `allowedGoFlags` (empty today).
+- Action inputs: allowlisted actions get exact versions (`go-version`
+  X.Y.Z or `go-version-file: go.mod`, which every workflow and the generated
+  CI now use; golangci-lint `version` vX.Y.Z; `cosign-release` and
+  setup-buildx `version` vX.Y.Z when set), no `check-latest`, `driver-opts`
+  images by digest, and no `latest` anywhere.
+- Tool configuration files (`toolConfigurationFiles`): none anywhere in the
+  repository (templates included) or in any generated application, for
+  every database, name and locale: `go.work`, `go.work.sum`, `go.env`,
+  `go/env`, `.cargo/config`, `.cargo/config.toml`, a `rust-toolchain` file
+  with a `path`, `.bashrc`, `.profile`, `.bash_profile`, `.envrc`.
+- The YAML-level rules still apply underneath: the simple subset (no
+  escapes, anchors, tags, hidden line breaks), the parser cross-check,
+  duplicate keys, template directives, the rendered gate, and the denylist
+  of redirecting variables as a second, independent check.
+
+Accepted residual risk, left to review: names the shell builds at run time
+(`eval`, a `printf`-built or `$(...)`-built name), the content of the scripts
+the workflows call (`scripts/*.sh`), and what an allowlisted action does
+internally with its pinned inputs. Reviews of the gate judge it against this
+model: a bypass inside the lists' scope is a defect to fix in the gate.
 
 ## Residual risks
 

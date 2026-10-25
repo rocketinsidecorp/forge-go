@@ -41,8 +41,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Latest patch release, matching GO_VERSION in the Dockerfile.
-          go-version: "1.27.x"
+          # The exact Go release go.mod names.
+          go-version-file: go.mod
       - name: Format
         run: test -z "$(find . -name '*.go' -not -path './vendor/*' -exec gofmt -l {} +)"
       - name: Vet

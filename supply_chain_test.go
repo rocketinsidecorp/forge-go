@@ -134,6 +134,12 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 			violations = append(violations, treeViolations(path, text, filepath.Base(path) == "release.yml")...)
 		}
 		violations = append(violations, environmentViolations(path, text)...)
+		// D8: the closed allowlists read workflows and local actions as
+		// written; a template is read as rendered
+		// (TestGeneratedWorkflowsPassTheGate).
+		if path != filepath.Join("scripts", "sbom.sh") && !strings.HasSuffix(path, ".tmpl") {
+			violations = append(violations, closedListViolations(filepath.ToSlash(path), text)...)
+		}
 		if strings.HasSuffix(path, ".tmpl") {
 			violations = append(violations, templateDirectiveViolations(path, text)...)
 		}
@@ -290,8 +296,8 @@ func TestGeneratedWorkflowsPassTheGate(t *testing.T) {
 				if _, err := scaffold.Generate(scaffold.Options{Name: name, Dir: dir, Database: database, Locale: locale}); err != nil {
 					t.Fatalf("%s %s %s: %v", database, name, locale, err)
 				}
-				if found := goEnvFiles(dir, nil); len(found) != 0 {
-					t.Errorf("generated (%s, %s, %s): go env files %v", database, name, locale, found)
+				if found := toolConfigurationFiles(dir, nil); len(found) != 0 {
+					t.Errorf("generated (%s, %s, %s): tool configuration files %v", database, name, locale, found)
 				}
 				files := generatedGitHubFiles(t, filepath.Join(dir, ".github"))
 				if !slices.Equal(files, expected) {
@@ -345,6 +351,10 @@ func generatedFileViolations(shown, file, text string) []string {
 	violations = append(violations, yamlSubsetViolations(shown, text)...)
 	violations = append(violations, parserViolations(shown, text)...)
 	violations = append(violations, environmentViolations(shown, text)...)
+	// The closed allowlists list generated files without the variant.
+	for _, violation := range closedListViolations("generated .github/"+file, text) {
+		violations = append(violations, shown+": "+violation)
+	}
 	if strings.HasPrefix(file, "workflows/") {
 		violations = append(violations, checkoutViolations(shown, text)...)
 		violations = append(violations, containerViolations(shown, text)...)
@@ -360,25 +370,13 @@ func generatedFileViolations(shown, file, text string) []string {
 // directories nor follow links to directories.
 func goEnvFiles(root string, skipped []string) []string {
 	var found []string
-	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if entry.IsDir() && slices.Contains(skipped, path) {
-			return filepath.SkipDir
-		}
-		if entry.Name() == "go.env" {
+	for _, path := range toolConfigurationFiles(root, skipped) {
+		base := strings.TrimSuffix(filepath.Base(path), ".tmpl")
+		if base == "go.env" || base == "env" {
 			found = append(found, path)
 		}
-		if entry.IsDir() {
-			if _, err := os.Stat(filepath.Join(path, "go", "env")); err == nil {
-				found = append(found, filepath.Join(path, "go", "env"))
-			}
-		}
-		return nil
-	})
-	slices.Sort(found)
-	return slices.Compact(found)
+	}
+	return found
 }
 
 // TestNoGoEnvFileExistsInTheRepository: a committed go env file, reached by
