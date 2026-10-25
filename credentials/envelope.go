@@ -99,13 +99,15 @@ func ParseKeys(text string) ([]encryption.Key, error) {
 	if len(keys) == 0 {
 		return nil, errors.New("credentials: no key found")
 	}
-	if len(keys) > maxKeys {
-		return nil, fmt.Errorf("credentials: at most %d keys are accepted", maxKeys)
+	if len(keys) > MaxKeys {
+		return nil, fmt.Errorf("credentials: at most %d keys are accepted", MaxKeys)
 	}
 	return keys, nil
 }
 
-const maxKeys = 8
+// MaxKeys is the most keys a key list (FORGE_MASTER_KEY or a key file) may
+// hold.
+const MaxKeys = 8
 
 func splitKeys(text string) []string {
 	var out []string

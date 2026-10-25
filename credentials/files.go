@@ -33,6 +33,9 @@ var (
 	ErrKeyMissing = errors.New("credentials: no key available (set " + EnvMasterKey + " or create the environment's .key file)")
 	// ErrKeyPermissions reports a key file readable by group or others.
 	ErrKeyPermissions = errors.New("credentials: key file must not be accessible by group or others (chmod 600)")
+	// ErrDirectoryPermissions reports a credentials directory that group or
+	// others can write, so they could replace the key file.
+	ErrDirectoryPermissions = errors.New("credentials: directory must not be writable by group or others (chmod 700)")
 )
 
 // FileName returns the credentials file name of env, such as production.json.enc.
@@ -58,8 +61,10 @@ func (s KeySource) String() string {
 
 // LoadKeys reads the keys for env: FORGE_MASTER_KEY when set (through lookup,
 // os.LookupEnv when nil), otherwise <dir>/<env>.key. The first key is active;
-// the others only decrypt. Key files that group or others can read are
-// refused. With neither source the error is ErrKeyMissing.
+// the others only decrypt. Key files that group or others can read, key
+// files in a directory that group or others can write, and non-regular files
+// (a FIFO, a device) are refused. With neither source the error is
+// ErrKeyMissing.
 func LoadKeys(dir, env string, lookup func(string) (string, bool)) ([]encryption.Key, KeySource, error) {
 	if err := ValidateEnvironment(env); err != nil {
 		return nil, KeySource{}, err
@@ -86,7 +91,10 @@ func LoadKeys(dir, env string, lookup func(string) (string, bool)) ([]encryption
 		return nil, KeySource{}, err
 	}
 	defer func() { _ = root.Close() }()
-	file, err := root.Open(KeyFileName(env))
+	if err := checkPrivateDir(root, dir); err != nil {
+		return nil, KeySource{}, err
+	}
+	file, err := openNonblocking(root, KeyFileName(env))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, KeySource{}, ErrKeyMissing
 	}
@@ -136,7 +144,32 @@ func ReadFile(dir, env string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	return readLimited(root.Open(FileName(env)))
+	return readLimited(openNonblocking(root, FileName(env)))
+}
+
+// openNonblocking opens name in root for reading without blocking: opening a
+// FIFO for reading waits for a writer unless O_NONBLOCK is set, which would
+// hang before the regular-file check could refuse it. Reads of a regular file
+// ignore the flag.
+func openNonblocking(root *os.Root, name string) (*os.File, error) {
+	return root.OpenFile(name, os.O_RDONLY|openNonblock, 0)
+}
+
+// checkPrivateDir refuses a credentials directory that group or others can
+// write: they could replace the key file (and the encrypted file with one
+// sealed under their key) even though the key file itself is 0600.
+func checkPrivateDir(root *os.Root, dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	info, err := root.Stat(".")
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%w: %s is %04o", ErrDirectoryPermissions, dir, info.Mode().Perm())
+	}
+	return nil
 }
 
 func readLimited(file *os.File, err error) ([]byte, error) {
@@ -147,6 +180,13 @@ func readLimited(file *os.File, err error) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("credentials: open %s: not a regular file", file.Name())
+	}
 	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
 	if err != nil {
 		return nil, err
@@ -169,15 +209,21 @@ func WriteFile(dir, env string, data []byte, replace bool) error {
 }
 
 // WriteKeyFile stores keys (active first) as <dir>/<env>.key with mode 0600.
-// Without replace it fails if the file exists, so a key is never overwritten
-// by accident.
+// dir is created with mode 0700 when missing; an existing directory that group
+// or others can write is refused (ErrDirectoryPermissions). Without replace it
+// fails if the file exists, so a key is never overwritten by accident.
 func WriteKeyFile(dir, env string, keys []encryption.Key, replace bool) error {
 	if err := ValidateEnvironment(env); err != nil {
 		return err
 	}
-	if len(keys) == 0 || len(keys) > maxKeys {
-		return errors.New("credentials: between 1 and 8 keys are required")
+	if len(keys) == 0 || len(keys) > MaxKeys {
+		return fmt.Errorf("credentials: between 1 and %d keys are required", MaxKeys)
 	}
+	root, dir, err := keyDir(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
 	var text strings.Builder
 	for _, key := range keys {
 		text.WriteString(encryption.EncodeKey(key.Material))
@@ -185,10 +231,42 @@ func WriteKeyFile(dir, env string, keys []encryption.Key, replace bool) error {
 	}
 	data := []byte(text.String())
 	defer clear(data)
-	return writeAtomic(dir, KeyFileName(env), data, replace)
+	return writeAtomicIn(root, dir, KeyFileName(env), data, replace)
 }
 
-func writeAtomic(dir, name string, data []byte, replace bool) (err error) {
+// PrepareKeyDir makes dir ready to hold key files: it creates dir with mode
+// 0700 when missing and refuses an existing directory that group or others
+// can write (ErrDirectoryPermissions). WriteKeyFile does the same; call this
+// first to fail before showing a new key to anyone.
+func PrepareKeyDir(dir string) error {
+	root, _, err := keyDir(dir)
+	if err != nil {
+		return err
+	}
+	return root.Close()
+}
+
+// keyDir creates and opens the key directory and checks it on the opened
+// root, so the directory checked is the one written to.
+func keyDir(dir string) (*os.Root, string, error) {
+	if dir == "" {
+		dir = DefaultDir
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, dir, err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, dir, err
+	}
+	if err := checkPrivateDir(root, dir); err != nil {
+		_ = root.Close()
+		return nil, dir, err
+	}
+	return root, dir, nil
+}
+
+func writeAtomic(dir, name string, data []byte, replace bool) error {
 	if dir == "" {
 		dir = DefaultDir
 	}
@@ -200,6 +278,11 @@ func writeAtomic(dir, name string, data []byte, replace bool) (err error) {
 		return err
 	}
 	defer func() { _ = root.Close() }()
+	return writeAtomicIn(root, dir, name, data, replace)
+}
+
+// writeAtomicIn stores name in root (the directory dir) atomically.
+func writeAtomicIn(root *os.Root, dir, name string, data []byte, replace bool) (err error) {
 	if !replace {
 		if _, statErr := root.Lstat(name); statErr == nil {
 			return fmt.Errorf("%w: %s", fs.ErrExist, filepath.Join(dir, name))
@@ -235,18 +318,18 @@ func writeAtomic(dir, name string, data []byte, replace bool) (err error) {
 			return err
 		}
 		_ = root.Remove(temp)
-		return syncDir(dir)
+		return syncDir(root)
 	}
 	if err = root.Rename(temp, name); err != nil {
 		return err
 	}
-	return syncDir(dir)
+	return syncDir(root)
 }
 
 // syncDir makes the rename durable. It is best effort: some platforms cannot
 // fsync a directory.
-func syncDir(dir string) error {
-	d, err := os.Open(dir) // #nosec G304 -- dir is the credentials directory chosen by the application
+func syncDir(root *os.Root) error {
+	d, err := root.Open(".")
 	if err != nil {
 		return nil
 	}

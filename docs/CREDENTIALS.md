@@ -21,7 +21,10 @@ forge credentials init --environment production
 ```
 
 `init` writes a random 256-bit key (`crypto/rand`) to
-`config/credentials/production.key` with mode 0600, an encrypted skeleton, and
+`config/credentials/production.key` with mode 0600 (creating
+`config/credentials/` with mode 0700 when it is missing; an existing directory
+keeps its mode, and one that group or others can write is refused), an
+encrypted skeleton, and
 adds `/config/credentials/*.key` to `.gitignore` and `config/credentials/*.key`
 to `.dockerignore` (creating either file when missing). It never overwrites a key or an existing file, and it never prints
 the key.
@@ -61,7 +64,12 @@ The document is one JSON object:
   `vim.basic`, `vim.nox`, `gvim`, `nvim`, `view`, symlinks to them) and started
   without swap, backup, undo and viminfo files. Other editors (a busybox `vi`,
   nano, Emacs, GUI editors) are started unchanged and may keep their own
-  copies, in their own directories; check their backup and history settings;
+  copies, in their own directories; check their backup and history settings.
+  Those copies, and the plaintext file itself after `SIGQUIT` (`Ctrl-\`,
+  also when typed inside the editor; Go's default for it ends the process
+  with a goroutine dump, without any cleanup), are outside Forge's reach:
+  after an abnormal exit look in `/dev/shm` (Linux) or your temporary
+  directory for `forge-credentials-*`, and in the editor's backup directory;
 - termination (`SIGTERM`, `SIGHUP`) is caught from the start of the command, not
   only while the editor runs, and acted on at checkpoints, so the cleanup also
   covers validation and encryption;
@@ -138,7 +146,20 @@ docker run --rm -p 8080:8080 \
 
 `FORGE_MASTER_KEY` is canonical unpadded base64url of 32 bytes, optionally
 several separated by commas (first one active). It wins over a key file. A key
-file must be mode 0600; one readable by group or others is refused.
+file must be a regular file (not a FIFO or device) of mode 0600 or stricter,
+in a directory that group and others cannot write; anything else is refused
+with the fix in the message:
+
+```sh
+chmod 700 config/credentials
+chmod 600 config/credentials/*.key
+```
+
+A fresh clone made with umask 002 has a group-writable `config/credentials/`;
+run the first command once. Kubernetes `secret` and `configMap` volumes are
+refused when mounted as the directory: the mount is a world-writable sticky
+directory whose files are symbolic links into `..data`. Mount the key with
+`subPath` into a private directory, or pass it as `FORGE_MASTER_KEY`.
 
 In CI, store the key as a secret and expose it only to the job that needs it
 (`FORGE_MASTER_KEY: ${{ secrets.FORGE_MASTER_KEY_PRODUCTION }}`). Tests and
@@ -177,6 +198,10 @@ has a destination). A safe sequence without downtime:
    `FORGE_MASTER_KEY` to the new key alone and delete the second line of
    `production.key`.
 
+A key list holds at most 8 keys (`credentials.MaxKeys`). With a full list,
+`--keep-old` is refused before anything is printed or written; drop old keys
+first. Without `--keep-old` a full list rotates normally.
+
 Without `--keep-old` the old key is discarded at once, which is right after a
 leak once the new file is deployed. Rotating the master key does not change the
 values inside; after a leak also rotate the secrets themselves (`edit`).
@@ -197,7 +222,11 @@ data matters.
 ## Not covered
 
 - Secrets are decrypted into process memory at startup and stay there; Go gives
-  no reliable way to wipe them. Core dumps and swap can contain them.
+  no reliable way to wipe them (the garbage collector moves and copies values,
+  and strings are immutable), so Forge-Go does not try beyond clearing a few
+  byte slices it owns; Forge-Rust zeroizes its own copies. Core dumps and swap
+  can contain them, including the memory of `forge credentials edit` while
+  the editor runs.
 - Whoever can run the application with the key can read every credential.
   Credentials separate secrets from the repository and from other environments;
   they are not an access-control system.

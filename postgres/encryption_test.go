@@ -313,6 +313,91 @@ func TestEncryptedColumnRotatesTenantTablesPerTenantAndRefusesUnscopedRuns(t *te
 	}
 }
 
+// TestEncryptedColumnExemptRolesRotateTenantTablesUnscoped: the roles that
+// row-level security does not bind (a superuser, a BYPASSRLS role, the owner
+// of a table without FORCE) rotate a tenant table unscoped and see every row;
+// the same roles without the exemption are refused again.
+func TestEncryptedColumnExemptRolesRotateTenantTablesUnscoped(t *testing.T) {
+	t.Parallel()
+	admin, cfg := postgrestest.NewWithConfig(t) // a superuser
+	ctx := context.Background()
+	suffix := strings.ReplaceAll(uuid.MustNew().String(), "-", "")[:16]
+	owner, ownerDB := loginRole(t, admin, cfg, "forge_enc_xowner_"+suffix)
+	runtime, runtimeDB := loginRole(t, admin, cfg, "forge_enc_xruntime_"+suffix)
+	if _, err := admin.Exec(ctx, `
+		CREATE TABLE people (id uuid PRIMARY KEY, tenant_id uuid NOT NULL, ssn text, ssn_idx text);
+		ALTER TABLE people ENABLE ROW LEVEL SECURITY;
+		ALTER TABLE people FORCE ROW LEVEL SECURITY;
+		CREATE POLICY people_tenant_isolation ON people
+			USING (tenant_id = NULLIF(current_setting('forge.tenant_id', true), '')::uuid);
+		ALTER TABLE people OWNER TO `+owner+`;
+		GRANT SELECT, UPDATE ON people TO `+runtime); err != nil {
+		t.Fatal(err)
+	}
+	const rows = 10
+	old := ringCipher(t, 1)
+	for n := range rows {
+		tenant, _ := tenancy.New(uuid.MustNew())
+		id := uuid.MustNew()
+		ssn := encryption.NewValue[string](old, "people", "ssn").ForRecord(id.String())
+		ssn.Set("ssn-" + string(rune('a'+n)))
+		if _, err := admin.Exec(ctx, `INSERT INTO people (id, tenant_id, ssn) VALUES ($1, $2, $3)`, id, tenant.ID, ssn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unscoped := func(cipher *encryption.Cipher, db *postgres.DB) (encryption.Report, error) {
+		t.Helper()
+		rewriter, err := postgres.EncryptedColumn(db, encryption.SQLColumn{Table: "people", Column: "ssn"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cipher.Reencrypt(ctx, rewriter, encryption.RotateOptions{})
+	}
+	rotated := func(name string, cipher *encryption.Cipher, db *postgres.DB, active string) {
+		t.Helper()
+		report, err := unscoped(cipher, db)
+		if err != nil || report.Scanned != rows || report.Rotated != rows {
+			t.Fatalf("%s: %+v %v", name, report, err)
+		}
+		var stale int
+		if err := admin.QueryRow(ctx, `SELECT count(*) FROM people WHERE ssn IS NOT NULL AND substr(ssn, 1, length($1)) <> $1`,
+			"fg1."+active+".").Scan(&stale); err != nil || stale != 0 {
+			t.Fatalf("%s: %d stale, %v", name, stale, err)
+		}
+	}
+	refused := func(name string, cipher *encryption.Cipher, db *postgres.DB) {
+		t.Helper()
+		report, err := unscoped(cipher, db)
+		if !errors.Is(err, encryption.ErrConfiguration) || !strings.Contains(err.Error(), "row-level security") || report != (encryption.Report{}) {
+			t.Fatalf("%s: %+v %v", name, report, err)
+		}
+	}
+	exec := func(statement string) {
+		t.Helper()
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A superuser.
+	rotated("superuser", ringCipher(t, 2, 1), admin, "k2")
+
+	// A BYPASSRLS role; refused again once the attribute is gone.
+	toThird := ringCipher(t, 3, 1, 2)
+	refused("runtime before BYPASSRLS", toThird, runtimeDB)
+	exec("ALTER ROLE " + runtime + " BYPASSRLS")
+	rotated("BYPASSRLS", toThird, runtimeDB, "k3")
+	exec("ALTER ROLE " + runtime + " NOBYPASSRLS")
+	refused("runtime after NOBYPASSRLS", toThird, runtimeDB)
+
+	// The owner of a table without FORCE; other roles stay bound.
+	toFourth := ringCipher(t, 4, 1, 2, 3)
+	refused("owner with FORCE", toFourth, ownerDB)
+	exec("ALTER TABLE people NO FORCE ROW LEVEL SECURITY")
+	refused("runtime without FORCE", toFourth, runtimeDB)
+	rotated("owner without FORCE", toFourth, ownerDB, "k4")
+}
+
 // loginRole creates a NOSUPERUSER NOBYPASSRLS login role and returns its
 // quoted name and a pool connected as it to cfg's database. The role is
 // dropped when the test ends.

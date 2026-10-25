@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -588,6 +590,297 @@ func TestCredentialsRotateKeyFromEnvironmentKey(t *testing.T) {
 	}
 	if _, err := os.Stat(h.keyPath("production")); err == nil {
 		t.Fatal("a key file appeared")
+	}
+}
+
+// fullKeyList returns a key list already at credentials.MaxKeys, the key that
+// sealed env's file last.
+func (h *credHarness) fullKeyList(t *testing.T, env string) []encryption.Key {
+	t.Helper()
+	current, _, err := credentials.LoadKeys(h.ctx.dir, env, h.ctx.lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys []encryption.Key
+	for range credentials.MaxKeys - 1 {
+		material, err := encryption.GenerateKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := credentials.NewKey(material)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, key)
+	}
+	return append(keys, current...)
+}
+
+func TestCredentialsRotateKeyWithAFullKeyListRotatesAndKeepOldFailsCleanly(t *testing.T) {
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keys := h.fullKeyList(t, "production")
+	if err := credentials.WriteKeyFile(h.ctx.dir, "production", keys, true); err != nil {
+		t.Fatal(err)
+	}
+	keyBefore, fileBefore := fileBytes(t, h.keyPath("production")), fileBytes(t, h.encPath("production"))
+	// --keep-old would need MaxKeys+1 keys: refused before any output or write.
+	for _, args := range [][]string{{"--keep-old"}, {"--keep-old", "--print-key"}} {
+		err := h.run(t, append([]string{"rotate-key", "--environment", "production"}, args...)...)
+		if err == nil || !strings.Contains(err.Error(), "would keep 9 keys") || !strings.Contains(err.Error(), "at most 8") ||
+			!strings.Contains(err.Error(), "nothing was changed") {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if h.stdout.Len() != 0 {
+			t.Fatalf("%v: printed %q", args, h.stdout.String())
+		}
+		if !bytes.Equal(keyBefore, fileBytes(t, h.keyPath("production"))) || !bytes.Equal(fileBefore, fileBytes(t, h.encPath("production"))) {
+			t.Fatalf("%v: files changed", args)
+		}
+	}
+	// Without --keep-old the full list rotates to the new key alone.
+	if err := h.run(t, "rotate-key", "--environment", "production", "--print-key"); err != nil {
+		t.Fatal(err)
+	}
+	printed, err := credentials.ParseKeys(strings.TrimSpace(h.stdout.String()))
+	if err != nil || len(printed) != 1 {
+		t.Fatalf("printed: %v %v", printed, err)
+	}
+	stored, _, err := credentials.LoadKeys(h.ctx.dir, "production", h.ctx.lookup)
+	if err != nil || len(stored) != 1 || stored[0].ID != printed[0].ID {
+		t.Fatalf("stored keys: %v %v", stored, err)
+	}
+	if got, _ := h.read(t, "production").String("stripe", "api_key"); got != secretValue {
+		t.Fatalf("value after rotation = %q", got)
+	}
+	if _, err := credentials.Unseal("production", fileBytes(t, h.encPath("production")), keys); err == nil {
+		t.Fatal("an old key still opens the file")
+	}
+}
+
+func TestCredentialsRotateKeyKeepOldWithAFullEnvironmentListPrintsNothing(t *testing.T) {
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keys := h.fullKeyList(t, "production")
+	if err := os.Remove(h.keyPath("production")); err != nil {
+		t.Fatal(err)
+	}
+	h.env[credentials.EnvMasterKey] = joinKeys(keys)
+	before := fileBytes(t, h.encPath("production"))
+	err := h.run(t, "rotate-key", "--environment", "production", "--keep-old", "--print-key")
+	if err == nil || !strings.Contains(err.Error(), "at most 8") {
+		t.Fatalf("too many keys: %v", err)
+	}
+	if h.stdout.Len() != 0 {
+		t.Fatalf("printed %q", h.stdout.String())
+	}
+	if _, err := os.Stat(h.keyPath("production")); err == nil {
+		t.Fatal("a key file appeared")
+	}
+	if !bytes.Equal(before, fileBytes(t, h.encPath("production"))) {
+		t.Fatal("the file changed")
+	}
+}
+
+// readableAtEveryStep records, after each file rotate-key writes, whether the
+// credentials file on disk opens with the key file on disk.
+func (h *credHarness) readableAtEveryStep(env string) *[]string {
+	var steps []string
+	noEnv := func(string) (string, bool) { return "", false }
+	h.ctx.afterWrite = func(step string) {
+		readable := false
+		if keys, _, err := credentials.LoadKeys(h.ctx.dir, env, noEnv); err == nil {
+			if file, err := credentials.ReadFile(h.ctx.dir, env); err == nil {
+				_, err = credentials.Unseal(env, file, keys)
+				readable = err == nil
+			}
+		}
+		steps = append(steps, fmt.Sprintf("%s: %t", step, readable))
+	}
+	return &steps
+}
+
+func TestCredentialsRotateKeyKeepsThePairOnDiskReadableAtEveryStep(t *testing.T) {
+	for _, keepOld := range []bool{false, true} {
+		h := newCredHarness(t)
+		h.seed(t, "production")
+		// The file is sealed with the last key of the list, not the first.
+		keys := h.fullKeyList(t, "production")
+		args := []string{"rotate-key", "--environment", "production"}
+		want := []string{"key file with the new key: true", "credentials file: true"}
+		if keepOld {
+			keys = keys[len(keys)-3:]
+			args = append(args, "--keep-old")
+		} else {
+			want = append(want, "key file without the old keys: true")
+		}
+		if err := credentials.WriteKeyFile(h.ctx.dir, "production", keys, true); err != nil {
+			t.Fatal(err)
+		}
+		steps := h.readableAtEveryStep("production")
+		if err := h.run(t, args...); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(*steps, want) {
+			t.Fatalf("keep-old %t: steps %q, want %q", keepOld, *steps, want)
+		}
+	}
+}
+
+func TestCredentialsRotateKeyRefusesAWritableDirectoryBeforeShowingAKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits")
+	}
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keys, _, _ := credentials.LoadKeys(h.ctx.dir, "production", h.ctx.lookup)
+	if err := os.Remove(h.keyPath("production")); err != nil {
+		t.Fatal(err)
+	}
+	h.env[credentials.EnvMasterKey] = encryption.EncodeKey(keys[0].Material)
+	before := fileBytes(t, h.encPath("production"))
+	if err := os.Chmod(h.ctx.dir, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	err := h.run(t, "rotate-key", "--environment", "production", "--print-key", "--write-key-file")
+	_ = os.Chmod(h.ctx.dir, 0o700)
+	if !errors.Is(err, credentials.ErrDirectoryPermissions) {
+		t.Fatalf("writable directory: %v", err)
+	}
+	if h.stdout.Len() != 0 {
+		t.Fatalf("a key was printed: %q", h.stdout.String())
+	}
+	if _, err := os.Stat(h.keyPath("production")); err == nil {
+		t.Fatal("a key file appeared")
+	}
+	if !bytes.Equal(before, fileBytes(t, h.encPath("production"))) {
+		t.Fatal("the file changed")
+	}
+}
+
+func TestCredentialsFailedRotationRemovesAKeyFileThatDidNotExist(t *testing.T) {
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keys, _, _ := credentials.LoadKeys(h.ctx.dir, "production", h.ctx.lookup)
+	if err := os.Remove(h.keyPath("production")); err != nil {
+		t.Fatal(err)
+	}
+	h.env[credentials.EnvMasterKey] = encryption.EncodeKey(keys[0].Material)
+	// Once the key file is written, the credentials file cannot be replaced:
+	// a non-empty directory takes its name.
+	encrypted := h.encPath("production")
+	h.ctx.afterWrite = func(step string) {
+		if step != "key file with the new key" {
+			return
+		}
+		if err := os.Remove(encrypted); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(encrypted, "blocker"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.run(t, "rotate-key", "--environment", "production", "--write-key-file"); err == nil {
+		t.Fatal("the credentials file could not be written, yet the rotation succeeded")
+	}
+	if _, err := os.Stat(h.keyPath("production")); err == nil {
+		t.Fatal("the restore left the new key list behind")
+	}
+}
+
+// environmentKeyBesideAKeyFile makes FORGE_MASTER_KEY the key source while a
+// key file holding another, valid key list stays in place, and returns that
+// file's bytes.
+func (h *credHarness) environmentKeyBesideAKeyFile(t *testing.T, env string) []byte {
+	t.Helper()
+	keys, _, err := credentials.LoadKeys(h.ctx.dir, env, h.ctx.lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.env[credentials.EnvMasterKey] = encryption.EncodeKey(keys[0].Material)
+	material, err := encryption.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := credentials.NewKey(material)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.WriteKeyFile(h.ctx.dir, env, []encryption.Key{other}, true); err != nil {
+		t.Fatal(err)
+	}
+	return fileBytes(t, h.keyPath(env))
+}
+
+func TestCredentialsFailedRotationRestoresAKeyFileThatExisted(t *testing.T) {
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keyFile := h.environmentKeyBesideAKeyFile(t, "production")
+	encrypted := h.encPath("production")
+	h.ctx.afterWrite = func(step string) {
+		if step != "key file with the new key" {
+			return
+		}
+		if err := os.Remove(encrypted); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(encrypted, "blocker"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := h.run(t, "rotate-key", "--environment", "production", "--write-key-file"); err == nil {
+		t.Fatal("the credentials file could not be written, yet the rotation succeeded")
+	}
+	if !bytes.Equal(keyFile, fileBytes(t, h.keyPath("production"))) {
+		t.Fatal("the key file that existed was not restored byte for byte")
+	}
+}
+
+func TestCredentialsExposedKeyFileRefusesWriteKeyFileBeforeShowingAKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits")
+	}
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keyFile := h.environmentKeyBesideAKeyFile(t, "production")
+	if err := os.Chmod(h.keyPath("production"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := fileBytes(t, h.encPath("production"))
+	err := h.run(t, "rotate-key", "--environment", "production", "--print-key", "--write-key-file")
+	if !errors.Is(err, credentials.ErrKeyPermissions) {
+		t.Fatalf("exposed key file: %v", err)
+	}
+	if h.stdout.Len() != 0 {
+		t.Fatalf("a key was printed: %q", h.stdout.String())
+	}
+	if !bytes.Equal(keyFile, fileBytes(t, h.keyPath("production"))) || !bytes.Equal(before, fileBytes(t, h.encPath("production"))) {
+		t.Fatal("files changed")
+	}
+}
+
+func TestCredentialsDirectoryMadeWritableDuringRotationRefusesItBeforeShowingAKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits")
+	}
+	h := newCredHarness(t)
+	h.seed(t, "production")
+	keyFile, before := fileBytes(t, h.keyPath("production")), fileBytes(t, h.encPath("production"))
+	h.ctx.afterRead = func() {
+		if err := os.Chmod(h.ctx.dir, 0o775); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := h.run(t, "rotate-key", "--environment", "production", "--print-key")
+	_ = os.Chmod(h.ctx.dir, 0o700)
+	if !errors.Is(err, credentials.ErrDirectoryPermissions) {
+		t.Fatalf("writable directory: %v", err)
+	}
+	if h.stdout.Len() != 0 {
+		t.Fatalf("a key was printed: %q", h.stdout.String())
+	}
+	if !bytes.Equal(keyFile, fileBytes(t, h.keyPath("production"))) || !bytes.Equal(before, fileBytes(t, h.encPath("production"))) {
+		t.Fatal("files changed")
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -91,15 +92,18 @@ func (Key) GoString() string { return "encryption.Key(" + redacted + ")" }
 func (Key) LogValue() slog.Value { return slog.StringValue(redacted) }
 
 // KeyRing holds the active key, used for every new ciphertext, and previous
-// keys, which remain usable for decryption only. It is immutable.
+// keys, which remain usable for decryption only. It is immutable. Identifiers
+// are unique ignoring ASCII letter case (K1 and k1 cannot share a ring), so a
+// count of values by key id prefix means the same under a case-insensitive
+// database collation (MySQL and MariaDB defaults) as under a binary one.
 type KeyRing struct {
 	active Key
 	keys   map[string]Key
 	ids    []string
 }
 
-// NewKeyRing builds a ring. Identifiers must be valid and unique, and every
-// key must be 32 bytes. Key material is copied.
+// NewKeyRing builds a ring. Identifiers must be valid and unique ignoring
+// letter case, and every key must be 32 bytes. Key material is copied.
 func NewKeyRing(active Key, previous ...Key) (*KeyRing, error) {
 	ring := &KeyRing{keys: make(map[string]Key, 1+len(previous))}
 	for i, key := range append([]Key{active}, previous...) {
@@ -109,8 +113,10 @@ func NewKeyRing(active Key, previous ...Key) (*KeyRing, error) {
 		if len(key.Material) != KeySize {
 			return nil, fmt.Errorf("%w: key %q must be %d bytes", ErrInvalidKey, key.ID, KeySize)
 		}
-		if _, dup := ring.keys[key.ID]; dup {
-			return nil, fmt.Errorf("%w: duplicate key identifier %q", ErrInvalidKey, key.ID)
+		for _, existing := range ring.ids {
+			if strings.EqualFold(existing, key.ID) {
+				return nil, fmt.Errorf("%w: duplicate key identifier %q (identifiers are compared ignoring letter case)", ErrInvalidKey, key.ID)
+			}
 		}
 		copied := Key{ID: key.ID, Material: append([]byte(nil), key.Material...)}
 		ring.keys[key.ID] = copied
@@ -124,7 +130,8 @@ func NewKeyRing(active Key, previous ...Key) (*KeyRing, error) {
 
 // ParseKeyRing builds a ring from an active identifier and a map of
 // identifier to canonical text keys, the shape stored in credentials.
-// Previous keys are ordered by identifier.
+// Previous keys are ordered by identifier; identifiers equal ignoring letter
+// case are refused.
 //
 // Errors never echo an identifier or the active value: one swapped with a key
 // by mistake would otherwise print the key. They name a key by its position
@@ -149,6 +156,12 @@ func ParseKeyRing(active string, keys map[string]string) (*KeyRing, error) {
 		if !ValidKeyID(id) {
 			return nil, fmt.Errorf("key #%d: %w: identifier must be 1-%d letters, digits, '_' or '-'",
 				position+1, ErrInvalidKey, maxKeyIDLength)
+		}
+		for earlier, other := range ids[:position] {
+			if strings.EqualFold(other, id) {
+				return nil, fmt.Errorf("keys #%d and #%d: %w: duplicate key identifier (identifiers are compared ignoring letter case)",
+					earlier+1, position+1, ErrInvalidKey)
+			}
 		}
 		if id == active {
 			activeKey = Key{ID: id, Material: material}
