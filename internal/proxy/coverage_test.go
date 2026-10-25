@@ -690,7 +690,7 @@ func TestStalledBodyWithADeclaredLengthGets408PromptlyAndTheConnectionCloses(t *
 			t.Parallel()
 			app := newBackend(t, "app", func(w http.ResponseWriter, r *http.Request) { _, _ = io.Copy(io.Discard, r.Body) })
 			srv, front := newTestServer(t, "")
-			srv.bodyTimeout = 400 * time.Millisecond
+			srv.bodyTimeout = time.Second
 			req := fastRequest(app.addr())
 			req.BufferBytes = tc.bufferBytes
 			if _, err := srv.Deploy(t.Context(), req); err != nil {
@@ -700,10 +700,11 @@ func TestStalledBodyWithADeclaredLengthGets408PromptlyAndTheConnectionCloses(t *
 			if !strings.HasPrefix(status, "HTTP/1.1 408") {
 				t.Fatalf("status line %q", status)
 			}
-			// One body timeout plus slack; a drain with a fresh timeout would
-			// take two (800ms), one with none at all would never end.
-			if took > 700*time.Millisecond {
-				t.Errorf("the 408 took %s with a 400ms body timeout", took)
+			// One body timeout plus slack for a loaded runner; a drain with a
+			// fresh timeout would take two (2s), one with none at all would
+			// never end.
+			if took > 1700*time.Millisecond {
+				t.Errorf("the 408 took %s with a 1s body timeout", took)
 			}
 			if !closed {
 				t.Error("the connection stayed open after the 408")
