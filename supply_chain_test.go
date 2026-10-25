@@ -124,7 +124,7 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 		violations := append(pinViolations(path, text), checkoutViolations(path, text)...)
 		violations = append(violations, allowlistViolations(path, text)...)
 		if path != filepath.Join("scripts", "sbom.sh") {
-			violations = append(violations, keyPositionViolations(path, text)...)
+			violations = append(violations, yamlSubsetViolations(path, text)...)
 			violations = append(violations, parserViolations(path, text)...)
 		}
 		for _, line := range strings.Split(text, "\n") {
