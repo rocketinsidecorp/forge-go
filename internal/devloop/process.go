@@ -47,6 +47,10 @@ func StartProcess(binary string, args []string, dir string, env []string, stdout
 	p := &Process{cmd: cmd, done: make(chan struct{})}
 	go func() {
 		p.err = cmd.Wait()
+		// An application that exited by itself (a crash) must not leave its
+		// workers and helpers behind either: they would hold its port when
+		// the next build starts. Done after the wait, before Done is closed.
+		p.reapGroup()
 		close(p.done)
 	}()
 	return p, nil
@@ -85,7 +89,8 @@ func (p *Process) Stop(grace time.Duration) error {
 
 // reapGroup kills what the application left running in its process group
 // once it has exited, so a restart never leaves orphans (workers, helpers)
-// behind.
+// behind. It runs right after the leader was waited for, when the group id
+// (the leader's pid) cannot have been reused yet in practice.
 func (p *Process) reapGroup() { _ = signalGroup(p.cmd.Process, syscall.SIGKILL) }
 
 // IsolateCommand runs cmd in its own process group and makes cancelling its

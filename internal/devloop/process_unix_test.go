@@ -91,3 +91,22 @@ func TestIsolatedCommandCancellationKillsItsChildren(t *testing.T) {
 	_ = cmd.Wait()
 	waitDead(t, child)
 }
+
+func TestAnApplicationThatExitedByItselfLeavesNoChildrenBehind(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	// The application starts a helper and crashes; the helper would live on.
+	script := writeScript(t, "sleep 300 &\necho $! > \"$1\"\nexit 3\n")
+	process, err := StartProcess("/bin/sh", []string{script, pidFile}, dir, os.Environ(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := readPID(t, pidFile)
+	select {
+	case <-process.Done():
+	case <-time.After(testWait):
+		t.Fatal("the application did not exit")
+	}
+	waitDead(t, child)
+}
