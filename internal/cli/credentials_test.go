@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -991,6 +992,33 @@ func TestEditorHardeningCoversTheVimFamilyByResolvedName(t *testing.T) {
 	}
 }
 
+// signalSelf sends sig to this process and returns once the runtime has
+// handed it to every channel registered with signal.Notify, so the code under
+// test has already received it when the caller carries on. Delivery to the
+// process is asynchronous and can take long on a loaded machine; sleeping for
+// a while and hoping is what made the tests that do so flaky. The runtime
+// holds the package's lock while it hands a signal to the channels, and
+// signal.Notify and signal.Stop take the same lock: a signal this function
+// has seen on its own channel is therefore already in all the others once the
+// calls below return.
+func signalSelf(sig syscall.Signal) error {
+	own := make(chan os.Signal, 1)
+	signal.Notify(own, sig)
+	defer signal.Stop(own)
+	if err := syscall.Kill(os.Getpid(), sig); err != nil {
+		return err
+	}
+	select {
+	case <-own:
+	case <-time.After(30 * time.Second):
+		return fmt.Errorf("%v was not delivered", sig)
+	}
+	barrier := make(chan os.Signal, 1)
+	signal.Notify(barrier, syscall.SIGUSR2)
+	signal.Stop(barrier)
+	return nil
+}
+
 // TestCredentialsEditCleansUpOnSIGTERMOutsideTheEditor: a termination signal
 // that arrives after the editor exited (while validating and encrypting) must
 // unwind through the cleanup instead of killing the process.
@@ -1009,11 +1037,7 @@ func TestCredentialsEditCleansUpOnSIGTERMOutsideTheEditor(t *testing.T) {
 			return err
 		}
 		// Delivered after the editor's own signal handling is gone.
-		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-			return err
-		}
-		time.Sleep(200 * time.Millisecond) // signal delivery is asynchronous
-		return nil
+		return signalSelf(syscall.SIGTERM)
 	}
 	err := h.run(t, "edit", "--environment", "production")
 	if err == nil || !strings.Contains(err.Error(), "interrupted") {

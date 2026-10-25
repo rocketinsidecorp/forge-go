@@ -56,7 +56,9 @@ func TestRequestRacingRemoveGets503(t *testing.T) {
 	}
 }
 
-func slowBodyServer(t *testing.T) (*backend, *httptest.Server, chan string) {
+// slowBodyServer is a proxy whose request bodies must make progress within
+// timeout; the application reports what it received on the channel.
+func slowBodyServer(t *testing.T, timeout time.Duration) (*backend, *httptest.Server, chan string) {
 	t.Helper()
 	received := make(chan string, 4)
 	app := newBackend(t, "app", func(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +69,7 @@ func slowBodyServer(t *testing.T) (*backend, *httptest.Server, chan string) {
 		}
 	})
 	srv, front := newTestServer(t, "")
-	srv.bodyTimeout = 200 * time.Millisecond
+	srv.bodyTimeout = timeout
 	req := fastRequest(app.addr())
 	req.BufferBytes = 1024
 	if _, err := srv.Deploy(t.Context(), req); err != nil {
@@ -103,7 +105,7 @@ func postChunked(t *testing.T, front string, chunks [][]byte, pause time.Duratio
 }
 
 func TestSlowChunkedBodyIsCutOffAtDeadline(t *testing.T) {
-	app, front, _ := slowBodyServer(t)
+	app, front, _ := slowBodyServer(t, 200*time.Millisecond)
 	chunks := make([][]byte, 40)
 	for i := range chunks {
 		chunks[i] = []byte("x")
@@ -119,7 +121,13 @@ func TestSlowChunkedBodyIsCutOffAtDeadline(t *testing.T) {
 }
 
 func TestChunkedBodiesAreBufferedOrStreamed(t *testing.T) {
-	app, front, received := slowBodyServer(t)
+	// The deadline is far above the pauses of the bodies that must get
+	// through, so a loaded machine that delays a write by a few hundred
+	// milliseconds does not turn them into timeouts; only the body that
+	// really stalls is cut off, and it stalls for much longer than the
+	// deadline.
+	const timeout = time.Second
+	app, front, received := slowBodyServer(t, timeout)
 	// Small chunked body: buffered and forwarded with a Content-Length.
 	if status, _ := postChunked(t, front.URL, [][]byte{[]byte("hello "), []byte("world")}, time.Millisecond); status != 200 {
 		t.Fatalf("small chunked body: %d", status)
@@ -129,16 +137,17 @@ func TestChunkedBodiesAreBufferedOrStreamed(t *testing.T) {
 	}
 	// Larger than the buffer: streamed while data keeps arriving.
 	big := [][]byte{bytes.Repeat([]byte("a"), 1000), bytes.Repeat([]byte("b"), 1000), bytes.Repeat([]byte("c"), 1000)}
-	if status, _ := postChunked(t, front.URL, big, 50*time.Millisecond); status != 200 {
+	if status, _ := postChunked(t, front.URL, big, 25*time.Millisecond); status != 200 {
 		t.Fatalf("streamed chunked body: %d", status)
 	}
 	if got := <-received; got != "-1/3000" {
 		t.Fatalf("streamed body arrived as %s", got)
 	}
-	// Larger than the buffer, then stalled: cut off by the per-read deadline.
+	// Larger than the buffer, then stalled for five deadlines: cut off by the
+	// per-read deadline, long before the stall would end.
 	stalled := [][]byte{bytes.Repeat([]byte("d"), 2000), []byte("late")}
-	status, elapsed := postChunked(t, front.URL, stalled, 2*time.Second)
-	if status != http.StatusRequestTimeout || elapsed > 1500*time.Millisecond {
+	status, elapsed := postChunked(t, front.URL, stalled, 5*timeout)
+	if status != http.StatusRequestTimeout || elapsed > 4*timeout {
 		t.Fatalf("stalled streamed body: status %d after %s", status, elapsed)
 	}
 	if got := <-received; strings.HasSuffix(got, "/2004") {
