@@ -673,7 +673,7 @@ response against the document. Details, type mapping and tags:
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge check` | Type-check the application: `go build ./...` then `go vet ./...` (Forge-Rust: `cargo check --all-targets`) |
 | `forge format [--check]` | `gofmt -l -w` on the application's Go files (not `vendor/`, `testdata/` or nested modules), listing the files it rewrote; `--check` lists the files that need formatting, writes nothing and exits 1 when there are any (CI) |
-| `forge lint` | `golangci-lint run ./...` with the application's `.golangci.yml`; fails with the install command when `golangci-lint` is not on `PATH` (Forge-Rust: `cargo clippy -D warnings`) |
+| `forge lint` | `golangci-lint run ./...` (with the application's `.golangci.yml` when it has one); fails with the install command when `golangci-lint` is not on `PATH` (Forge-Rust: `cargo clippy -D warnings`) |
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
 | `forge db COMMAND` | Database lifecycle like Rails' `db:*`: `create`, `drop`, `reset`, `setup`, `prepare`, `migrate`, `rollback`, `status`, `seed`, `schema:dump`, `schema:load`, `console`; see [Development loop](#development-loop) |
 | `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command (same as `forge db migrate`) |
@@ -1345,7 +1345,12 @@ below `.coverage-floor` ([docs/TESTING.md](docs/TESTING.md#coverage)).
 CI (`.github/workflows/ci.yml`):
 
 - `quality`: gofmt, vet, golangci-lint, race tests against PostgreSQL 18
-  and MySQL 8.4 services and a real sshd, benchmarks, and govulncheck;
+  and MySQL 8.4 services and a real sshd (every test run with an explicit
+  `-timeout 30m`, `TestGeneratedApplication` skipped), benchmarks, and
+  govulncheck;
+- `generated`: `TestGeneratedApplication`, the applications `forge new`
+  generates for each database, vetted, built and tested against PostgreSQL 18
+  and MySQL 8.4 (a job of its own: these workflows are serial and slow);
 - `coverage`: `scripts/coverage.sh` against PostgreSQL 18 and 16 and MariaDB,
   gated by `.coverage-floor`;
 - `fuzz`: every fuzz target for 10 seconds (`scripts/fuzz.sh`);

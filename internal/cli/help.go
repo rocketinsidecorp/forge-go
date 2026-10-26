@@ -217,7 +217,7 @@ func currentCommandCatalog() commandCatalog {
 		},
 		{
 			Name: "lint", Usage: "forge lint",
-			Summary:     "Run golangci-lint run ./... with the application's .golangci.yml; when golangci-lint is not on PATH the command fails and names how to install it.",
+			Summary:     "Run golangci-lint run ./... (with the application's .golangci.yml when it has one); when golangci-lint is not on PATH the command fails and names how to install it.",
 			SideEffects: []string{"subprocess"},
 			Examples:    []string{"forge lint"},
 			Environment: environmentInfo{Files: []string{".golangci.yml"}, Variables: []string{}, Notes: "golangci-lint is not part of the Go toolchain. Install it with `" + golangciLintInstall + "`. The counterpart of Forge-Rust's cargo clippy."},

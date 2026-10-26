@@ -45,6 +45,27 @@ how fast the machine is:
 - **Sleeps that remain** only wait for a time-based expiry to pass (a lower
   bound that load can only lengthen) or bound a negative check ("nothing
   happened within N ms").
+- **Polling has one home.** A condition another goroutine, process or server
+  makes true is awaited with `internal/waittest` (`waittest.Until(t, timeout,
+  what, cond)`, or `waittest.Poll` when the caller words the failure): it
+  returns the moment the condition holds and fails, naming what it waited for,
+  only after the timeout. Do not write a `for ... time.Sleep` loop.
+- **Every `time.Sleep` in a test is accounted for.** `test_sleeps_test.go`
+  parses the test files and fails on a sleep without a comment on its line (or
+  the line above) that starts with `real-clock:` and gives a reason (a database
+  stamps the expiry, a real HTTP server's timeout must pass, a helper process
+  waits to be killed, a negative check), or `fake-clock:` for a sleep inside a
+  `synctest` bubble, where it costs no real time (the marker is refused
+  anywhere else, and `real-clock:` is refused inside a bubble). The number of
+  real-clock sleeps has a budget in that file that only goes down. The tests of
+  `jobs/` and `cache/` are exempt, and counted, until their own changes convert
+  them.
+- **Timeouts are explicit.** CI and `scripts/coverage.sh` run `go test
+  -timeout 30m`: the default of ten minutes is shorter than the serial
+  generated-application workflows of `internal/cli` on a slow runner, and a
+  timeout is then a failure unrelated to the change. `TestGeneratedApplication`
+  runs in its own CI job (`generated`); the `quality` job skips it with
+  `-skip`.
 
 ## Coverage
 

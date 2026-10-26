@@ -84,11 +84,60 @@ jobs:
           # The tests start their own sshd; the system service is not needed.
           sudo systemctl disable --now ssh.service ssh.socket || true
       - name: Test (race)
-        run: go test -race -count=1 ./...
+        # An explicit timeout: the default is ten minutes, which a slow runner
+        # can exceed with no failing test. TestGeneratedApplication runs in
+        # the generated job below, which names it.
+        run: go test -race -count=1 -timeout 30m -skip '^TestGeneratedApplication$' ./...
       - name: Benchmarks
-        run: go test -run='^$' -bench=. -benchmem ./...
+        run: go test -run='^$' -bench=. -benchmem -timeout 30m ./...
       - name: Vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  generated:
+    # forge new's applications, for every database: generated, vetted, built
+    # and tested, with a generated resource's integration tests and the
+    # migration workflow run through the application binary. These are serial
+    # and slow, so they have a job (and a timeout) of their own; the quality
+    # job skips them. MariaDB is covered by the mariadb job.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+        env:
+          POSTGRES_USER: forge
+          POSTGRES_PASSWORD: forge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U forge"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+      mysql:
+        image: mysql:8.4@sha256:0f51e63e537a1f176423fa03ef559aabe6fa4372a53160a44bc7e75da7d15364
+        env:
+          MYSQL_ROOT_PASSWORD: forge
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pforge"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      FORGE_TEST_POSTGRES_URL: postgres://forge:forge@127.0.0.1:5432/postgres?sslmode=disable
+      FORGE_TEST_MYSQL_URL: mysql://root:forge@127.0.0.1:3306/mysql
+      FORGE_TEST_REQUIRE_DATABASE: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Test generated applications
+        run: go test -count=1 -timeout 30m -run '^TestGeneratedApplication$' ./internal/cli
 
   coverage:
     # Statement coverage of the module with go test -coverpkg=./..., the
@@ -178,7 +227,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Run every benchmark once
-        run: go test -run '^$' -bench . -benchtime=1x ./...
+        run: go test -run '^$' -bench . -benchtime=1x -timeout 30m ./...
 
   fuzz:
     # Every fuzz target, found by scripts/fuzz.sh with go test -list, for a
@@ -252,7 +301,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Test the mysql adapter against MariaDB
-        run: go test -race -count=1 ./mysql/...
+        run: go test -race -count=1 -timeout 30m ./mysql/...
       - name: Test generated applications and resources against MariaDB
         run: go test -count=1 -timeout 30m -run 'TestGeneratedApplication/database_workflow_(mysql|mariadb)$' ./internal/cli
 
