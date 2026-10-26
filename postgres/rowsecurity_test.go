@@ -226,16 +226,68 @@ func TestRequireRowSecurityRefusesBypassingRolesOutsideDevelopmentAndTest(t *tes
 	refused("member of a BYPASSRLS role in production", open(db.RuntimeConfig, config.Production), "can SET ROLE")
 	exec("REVOKE " + bypass + " FROM " + db.RuntimeRole)
 
-	// Two unprivileged roles, but the session acts as another role than the
-	// one it logged in as: only a login as the serving role itself passes.
+	// REPLICATION: logical decoding reads every tenant's changes. Directly,
+	// or through membership in a role that has it (the member can SET ROLE).
+	exec("ALTER ROLE " + db.RuntimeRole + " REPLICATION")
+	refused("REPLICATION in production", open(db.RuntimeConfig, config.Production), "has REPLICATION")
+	if err := open(db.RuntimeConfig, config.Development); err != nil {
+		t.Errorf("REPLICATION in development: %v", err)
+	}
+	exec("ALTER ROLE " + db.RuntimeRole + " NOREPLICATION")
+
+	replication := pgx.Identifier{"forge_test_replication_" + strings.ReplaceAll(uuid.MustNew().String(), "-", "")}.Sanitize()
+	exec("CREATE ROLE " + replication + " NOLOGIN REPLICATION")
+	t.Cleanup(func() { _, _ = db.Admin.Exec(context.Background(), "DROP ROLE IF EXISTS "+replication) })
+	exec("GRANT " + replication + " TO " + db.RuntimeRole)
+	refused("member of a REPLICATION role in production", open(db.RuntimeConfig, config.Production),
+		"can SET ROLE to a superuser, BYPASSRLS or REPLICATION role")
+	exec("REVOKE " + replication + " FROM " + db.RuntimeRole)
+
+	// Predefined roles that reach the server's programs and files: a path to
+	// superuser, or to every tenant's data files.
+	for _, predefined := range []string{"pg_execute_server_program", "pg_write_server_files", "pg_read_server_files"} {
+		exec("GRANT " + predefined + " TO " + db.RuntimeRole)
+		refused("member of "+predefined, open(db.RuntimeConfig, config.Production),
+			"is a member of pg_execute_server_program, pg_write_server_files or pg_read_server_files")
+		exec("REVOKE " + predefined + " FROM " + db.RuntimeRole)
+	}
+
 	var migrator string
 	if err := db.Migrator.QueryRow(ctx, "SELECT current_user").Scan(&migrator); err != nil {
 		t.Fatal(err)
 	}
 	quotedMigrator := pgx.Identifier{migrator}.Sanitize()
+
+	// The owner of a table with row-level security can switch FORCE off
+	// (ALTER TABLE ... NO FORCE ROW LEVEL SECURITY): being it, or able to
+	// SET ROLE to it, is refused. Owning a table without row-level security
+	// is not.
+	const owner = "owns, or can SET ROLE to the owner of, a table with row-level security"
 	exec("GRANT " + quotedMigrator + " TO " + db.RuntimeRole)
-	refused("runtime role acting as another role", open(actingAs(t, db.RuntimeConfig, migrator), config.Production), "acting as")
+	refused("member of the table owner", open(db.RuntimeConfig, config.Production), owner)
 	exec("REVOKE " + quotedMigrator + " FROM " + db.RuntimeRole)
+	exec("ALTER TABLE notes OWNER TO " + db.RuntimeRole)
+	refused("direct owner of an RLS table", open(db.RuntimeConfig, config.Production), owner)
+	if err := open(db.RuntimeConfig, config.Development); err != nil {
+		t.Errorf("owner of an RLS table in development: %v", err)
+	}
+	exec("ALTER TABLE notes OWNER TO " + quotedMigrator)
+	exec("CREATE TABLE plain_owned (id int)")
+	exec("ALTER TABLE plain_owned OWNER TO " + db.RuntimeRole)
+	if err := open(db.RuntimeConfig, config.Production); err != nil {
+		t.Errorf("owner of a table without row-level security in production: %v", err)
+	}
+	exec("DROP TABLE plain_owned")
+
+	// Two unprivileged roles, but the session acts as another role than the
+	// one it logged in as: only a login as the serving role itself passes.
+	plain := "forge_test_plain_" + strings.ReplaceAll(uuid.MustNew().String(), "-", "")
+	quotedPlain := pgx.Identifier{plain}.Sanitize()
+	exec("CREATE ROLE " + quotedPlain + " NOLOGIN")
+	t.Cleanup(func() { _, _ = db.Admin.Exec(context.Background(), "DROP ROLE IF EXISTS "+quotedPlain) })
+	exec("GRANT " + quotedPlain + " TO " + db.RuntimeRole)
+	refused("runtime role acting as another role", open(actingAs(t, db.RuntimeConfig, plain), config.Production), "acting as")
+	exec("REVOKE " + quotedPlain + " FROM " + db.RuntimeRole)
 
 	if err := open(db.RuntimeConfig, config.Production); err != nil {
 		t.Fatalf("the runtime role in production after the revocations: %v", err)

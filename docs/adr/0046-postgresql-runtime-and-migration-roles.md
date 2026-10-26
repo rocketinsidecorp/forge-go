@@ -21,7 +21,8 @@ roles.
 ## Decision
 
 1. **Two roles.** A PostgreSQL application serves as a runtime role
-   (`FORGE_DATABASE_URL`): `NOSUPERUSER NOBYPASSRLS NOCREATEROLE`, owns
+   (`FORGE_DATABASE_URL`): `NOSUPERUSER NOBYPASSRLS NOCREATEROLE
+   NOREPLICATION`, owns
    nothing, holds only `SELECT, INSERT, UPDATE, DELETE` on tables and
    `USAGE, SELECT` on sequences, and may not create temporary tables. It migrates as a migration role
    (`FORGE_MIGRATION_DATABASE_URL`) that owns the database and its schema.
@@ -48,9 +49,22 @@ roles.
    `postgres.RequireRowSecurity(environment)` makes `Open` fail in every
    environment except `development` and `test`, before serving, when the
    login role (`session_user`) or the role in effect (`current_user`) is a
-   superuser, has `BYPASSRLS` or `CREATEROLE` (before PostgreSQL 16 it can
-   grant itself a `BYPASSRLS` membership), or is a member of a superuser or
-   `BYPASSRLS` role (`ErrRowSecurityBypass`). It also fails when the two
+   superuser, has `BYPASSRLS`, `CREATEROLE` (before PostgreSQL 16 it can
+   grant itself a `BYPASSRLS` membership) or `REPLICATION` (with
+   `wal_level=logical`, logical decoding reads every tenant's changes); is a
+   member, directly or through other roles, of a superuser, `BYPASSRLS` or
+   `REPLICATION` role (`pg_has_role(..., 'MEMBER')`, whatever the grant's
+   `INHERIT` and `SET` options); is a member of `pg_execute_server_program`,
+   `pg_write_server_files` or `pg_read_server_files` (paths to superuser, or
+   to every tenant's data files); or owns, or is a member of the owner of, a
+   table of the database with row-level security enabled
+   (`pg_catalog.pg_class.relrowsecurity`), because an owner can run `ALTER
+   TABLE ... NO FORCE ROW LEVEL SECURITY` and then read every tenant
+   (`ErrRowSecurityBypass`; the `REPLICATION`, predefined-role and ownership rules are Forge-Rust's, adopted
+   in [forge-go#63](https://github.com/rocketinsidecorp/forge-go/issues/63)
+   after [forge-rust#76](https://github.com/rocketinsidecorp/forge-rust/pull/76)).
+   A role that owns only tables without row-level security stays accepted.
+   It also fails when the two
    differ: a role setting (`options=-c role=...`, `ALTER ROLE ... SET role`)
    makes the session act as a harmless role while `SET ROLE NONE` restores
    the login role, so the URL must log in as the serving role itself; no
@@ -83,8 +97,10 @@ roles.
 - Operators manage two credentials; [DATABASE.md](../DATABASE.md#database-roles-postgresql)
   has the SQL. An application that set `FORGE_MIGRATION_DATABASE_URL` to an
   administrator only for `forge db create` now migrates as that role.
-- The refusal does not cover a serving role that owns tables (`FORCE` still
-  applies to it), runs at startup only, and not in development or test.
+- A serving role that owns, or can `SET ROLE` to the owner of, a table with
+  row-level security is refused (`FORCE` applies to an owner, but an owner
+  can switch it off). The check runs at startup only, and not in development
+  or test, and reads only the database it is connected to.
 - `forge deploy` gives the owner's credential to the one-off migrate
   container alone: `migrate.env` in `config/deploy.yml` is overlaid on the
   migrate role's environment, written to its own `0600` file on the migrate
@@ -97,6 +113,7 @@ roles.
 - Differences from Forge-Rust, kept deliberately: Forge-Rust requires
   `FORGE_MIGRATION_DATABASE_URL` for migrations and restores `init.sql`'s
   grants after `forge db reset`, where Forge-Go falls back to
-  `FORGE_DATABASE_URL` and relies on `template1`. Forge-Rust adopts the
+  `FORGE_DATABASE_URL` and relies on `template1`. Forge-Rust adopted the
   refusal, the runtime-role repository tests and the DDL test in
-  [forge-rust#70](https://github.com/rocketinsidecorp/forge-rust/issues/70).
+  [forge-rust#70](https://github.com/rocketinsidecorp/forge-rust/issues/70)
+  ([forge-rust#76](https://github.com/rocketinsidecorp/forge-rust/pull/76)).
