@@ -155,7 +155,17 @@ awk -v module="$module/" '
 	}
 ' "$raw" > "$merged"
 
-gross="$(go tool cover -func="$merged" | awk '$1 == "total:" { sub(/%/, "", $NF); print $NF }')"
+# Covered statements and statements of a `mode: set` profile, as "covered all".
+# The totals are compared exactly from these, never through the one-decimal
+# rounding of `go tool cover -func`, which shows 94.95 to 94.99 as "95.0".
+statements() { awk 'NR > 1 { all += $2; if ($3 > 0) hit += $2 } END { printf "%d %d\n", hit, all }' "$1"; }
+# percent <covered> <all>: for display, two decimals; the gates compare exactly.
+percent() { awk -v hit="$1" -v all="$2" 'BEGIN { printf "%.2f", all ? 100 * hit / all : 100 }'; }
+# below <covered> <all> <floor>: succeeds when covered/all is under the floor.
+below() { awk -v hit="$1" -v all="$2" -v floor="$3" 'BEGIN { exit !(hit * 100 < floor * all) }'; }
+
+read -r gross_hit gross_all < <(statements "$merged")
+gross="$(percent "$gross_hit" "$gross_all")"
 
 # The gated profile: the gross one without the kits.
 gated="$out/coverage.out"
@@ -173,7 +183,8 @@ awk -v module="$module/" -v kits="${kits[*]}" '
 		print
 	}
 ' "$merged" > "$gated"
-total="$(go tool cover -func="$gated" | awk '$1 == "total:" { sub(/%/, "", $NF); print $NF }')"
+read -r total_hit total_all < <(statements "$gated")
+total="$(percent "$total_hit" "$total_all")"
 
 # Per package: covered statements, statements, percent.
 report="$(awk -v module="$module/" '
@@ -222,7 +233,7 @@ guarded_report="$(awk -v module="$module/" -v floor="$package_floor" -v list="${
 				continue
 			}
 			status = (hit[package] * 100 >= floor * all[package]) ? "ok" : "FAIL"
-			printf "| `%s` | %d | %d | %.1f%% | %s%% | %s |\n", package, hit[package], all[package], 100 * hit[package] / all[package], floor, status
+			printf "| `%s` | %d | %d | %.2f%% | %s%% | %s |\n", package, hit[package], all[package], 100 * hit[package] / all[package], floor, status
 		}
 	}
 ' "$gated")"
@@ -234,15 +245,15 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 fi
 
 status=0
-if awk -v total="$total" -v floor="$floor" 'BEGIN { exit !(total + 0 < floor + 0) }'; then
-	echo "coverage ${total}% (gross ${gross}%) is below the floor ${floor}% (.coverage-floor)" >&2
+if below "$total_hit" "$total_all" "$floor"; then
+	echo "coverage ${total}% (${total_hit}/${total_all} statements) is below the floor ${floor}% (.coverage-floor)" >&2
 	status=1
 fi
-if awk -v gross="$gross" -v floor="$gross_floor" 'BEGIN { exit !(gross + 0 < floor + 0) }'; then
-	echo "gross coverage ${gross}% (kits included) is below the gross floor ${gross_floor}% (gross_floor in scripts/coverage.sh)" >&2
+if below "$gross_hit" "$gross_all" "$gross_floor"; then
+	echo "gross coverage ${gross}% (${gross_hit}/${gross_all} statements, kits included) is below the gross floor ${gross_floor}% (gross_floor in scripts/coverage.sh)" >&2
 	status=1
 fi
-below="$(awk -F'|' -v floor="$package_floor" '$7 ~ /FAIL/ { gsub(/[ `]/, "", $2); gsub(/ /, "", $5); print "package " $2 " is at " $5 ", below its per-package floor " floor "% (guarded in scripts/coverage.sh)" }' <<< "$guarded_report")"
+below="$(awk -F'|' -v floor="$package_floor" '$7 ~ /FAIL/ { gsub(/[ `]/, "", $2); gsub(/^ +| +$/, "", $5); print "package " $2 " is " ($5 == "not measured" ? "not measured" : "at " $5) ", below its per-package floor " floor "% (guarded in scripts/coverage.sh)" }' <<< "$guarded_report")"
 if [ -n "$below" ]; then
 	printf '%s\n' "$below" >&2
 	status=1

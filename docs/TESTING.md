@@ -95,11 +95,13 @@ COVERAGE_PROFILE=cover.out scripts/coverage.sh     # report and gate an existing
   floor checks, also leaves out the contract and test kits listed under
   "Contract and test kits".
 - **The floor only rises.** It is 96.0%, raised from 95.0% on 2026-10-26
-  (QG12) against a gated total of 96.3% (95.0% gross, kits included),
+  (QG12) against a gated total of 96.26% (95.05% gross, kits included),
   measured on PostgreSQL 16 and 18 and MariaDB; it started at 84.0% and is
-  raised, never lowered, as tests are added, toward the project's target of
-  95%. A change that lowers coverage below the floor fails CI; raise the floor
-  in the same pull request when coverage grows.
+  raised, never lowered, as tests are added. The gates compare covered and
+  total statements exactly, not rounded percentages (the script prints two
+  decimals; `go tool cover` would show 95.96 as 96.0). A change that lowers
+  coverage below the floor fails CI; raise the floor in the same pull request
+  when coverage grows.
 - **The gross floor.** The gross total, which counts the kits, must also be at
   least 95.0% (`gross_floor` in `scripts/coverage.sh`). The gated total leaves
   the kits out by an explicit list; the gross gate keeps that list from
