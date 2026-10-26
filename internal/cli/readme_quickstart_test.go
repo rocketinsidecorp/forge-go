@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -41,32 +39,17 @@ import (
 // unique names, and points .env.local at them, as a developer with their own
 // server does.
 
-var (
-	forgeBinaryOnce sync.Once
-	forgeBinaryPath string
-	errForgeBinary  error
-)
-
-// forgeBinary builds the forge CLI once per test process.
+// forgeBinary builds the forge CLI into the test's temporary directory, which
+// is removed when the test ends.
 func forgeBinary(t *testing.T, frameworkPath string) string {
 	t.Helper()
-	forgeBinaryOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "forge-cli-")
-		if err != nil {
-			errForgeBinary = err
-			return
-		}
-		forgeBinaryPath = filepath.Join(dir, "forge")
-		command := exec.Command("go", "build", "-o", forgeBinaryPath, "./cmd/forge")
-		command.Dir = frameworkPath
-		if output, err := command.CombinedOutput(); err != nil {
-			errForgeBinary = fmt.Errorf("%w\n%s", err, output)
-		}
-	})
-	if errForgeBinary != nil {
-		t.Fatalf("build the forge CLI: %v", errForgeBinary)
+	path := filepath.Join(t.TempDir(), "forge")
+	command := exec.Command("go", "build", "-o", path, "./cmd/forge")
+	command.Dir = frameworkPath
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build the forge CLI: %v\n%s", err, output)
 	}
-	return forgeBinaryPath
+	return path
 }
 
 // quickstartCommands is the first bash block after "## Quickstart".
