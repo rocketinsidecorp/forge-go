@@ -32,7 +32,12 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Done (OpenTelemetry, Prometheus; Forge-Rust ADR 0033) |
 | Preconfigured Prometheus, Grafana, Tempo, Loki | — | Done (`compose.observability.yaml`, [ADR 0038](adr/0038-local-observability-stack.md)) | Done (`compose.observability.yaml`, Forge-Rust ADR 0034) |
 | Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge-proxy`) | Planned |
-| Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | In review (`forge dev`, `forge db create\|drop\|reset\|setup\|prepare\|migrate\|rollback\|status\|seed`, `forge migrate\|rollback\|setup\|seed`, `forge doctor`, `forge version`; `forge routes`, `forge db schema:dump\|schema:load\|console`, browser reload and `.env` files are still open; Forge-Rust ADR 0036) |
+| Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | In review (`forge dev`, `forge db create\|drop\|reset\|setup\|prepare\|migrate\|rollback\|status\|seed`, `forge migrate\|rollback\|setup\|seed`, `forge doctor`, `forge version`; `forge routes` and the `.env.development`/`.env.local` files are In review (forge-rust#81); `forge db schema:dump\|schema:load` and browser reload are still open; Forge-Rust ADR 0036) |
+| One name per setting and command (naming decision D2) | — | Done (`FORGE_HTTP_*`, `FORGE_DATABASE_*`, `FORGE_CACHE_DEFAULT_TTL`, `FORGE_STORAGE_LINK_TTL`; `forge uuid [--count N]`; `forge new --forge-path`, with `--framework-path` a deprecated alias for one minor version) | In review (forge-rust#81: reads the same `FORGE_HTTP_*`, `FORGE_CACHE_DEFAULT_TTL` and `FORGE_STORAGE_LINK_TTL` names and duration formats, `forge uuid [--count N]`; its older spellings are deprecated aliases until the next minor version) |
+| Development environment files | `dotenv` gems, `.env.development` | Done (`.env.development` then `.env.local`, process environment wins, `forge dev\|test\|db\|migrate\|rollback\|doctor`) | In review (forge-rust#81: same files, format, precedence and line-only errors; `forge new` writes `.env.development`) |
+| Catch-all route segment | `get "files/*path"` | Done (`GET /files/{key...}`, `http.ServeMux`) | In review (forge-rust#81: `{name...}` as the last segment; see the `/files` difference under Parity follow-ups) |
+| List the application's routes | `rails routes` | Done (`forge routes`: the routes registered while the application composes, including the `/v1/<plural>` routes of generated resources) | In review (forge-rust#81: same command and columns, also from the composed application) |
+| One page generator | — | Done (`forge generate view [DIR/]NAME`, `forge destroy view`) | In review (forge-rust#81: same command and arguments; refuses `--api` applications instead of adding a views base) |
 | Rollback never reverts framework migrations; disabled framework sets tolerated | (engine migrations copied into the app) | Done (`rollback`, `Migrator.DownFramework`, ADR 0039) | Done (`rollback`, `rollback_framework`, ADR 0030) |
 | Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`; PostgreSQL tenant tables rotate per tenant with `postgres.WithTenant`, unscoped runs under row-level security are refused) | Done (`forge credentials init\|edit\|show\|rotate-key`, `forge::credentials`, `forge::encryption`; PostgreSQL tenant tables rotate per tenant with `EncryptedColumn::tenant`, unscoped runs under row-level security are refused; forge-rust#37, Forge-Rust ADR 0041) |
 | i18n | I18n | Done (`config/locales/*.json`, `t`, CLDR plurals, `forge new --locale`, `forge i18n check`, [ADR 0042](adr/0042-internationalization.md)) | Done (`config/locales/*.json`, `layout.i18n.t`, CLDR plurals, `forge new --locale`, `forge i18n check`, Forge-Rust ADR 0037) |
@@ -220,6 +225,12 @@ the work is finished and waiting for its review; **Planned** means not started.
   (3) the production warning for `MemoryLoginThrottle` in custom wiring.
   `--api-auth` needs nothing in Forge-Rust while it has no JSON login; if it
   gains one, it is opt-in under the same flag name.
+
+- Catch-all segment and the bare prefix (forge-rust#81, documented difference):
+  with only `/files/{key...}` registered, Go's `http.ServeMux` answers a request
+  for `/files` with a redirect to `/files/`, while Forge-Rust's router, once its
+  `{name...}` catch-all lands, answers `404`. This is a documented difference, not a
+  gap: each framework follows its own router.
 
 ## Review gate
 
