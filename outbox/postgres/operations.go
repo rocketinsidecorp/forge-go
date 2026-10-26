@@ -11,6 +11,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
+// MaxDeadLetterPageSize is the largest page ListDeadLetters returns.
 const MaxDeadLetterPageSize = 100
 
 // QueueStats is an exact database snapshot of the dispatch queue at query

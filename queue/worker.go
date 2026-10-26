@@ -68,6 +68,7 @@ type QueueConfig struct {
 type Outcome string
 
 const (
+	// OutcomeSucceeded means the handler returned nil and the job is done.
 	OutcomeSucceeded Outcome = "succeeded"
 	// OutcomeRetry means the attempt failed and another is scheduled.
 	OutcomeRetry Outcome = "retry"
