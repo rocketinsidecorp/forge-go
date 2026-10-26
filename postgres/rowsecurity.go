@@ -21,10 +21,16 @@ var ErrRowSecurityBypass = errors.New("the database role bypasses row-level secu
 // as (session_user) and the role it acts as (current_user) are checked, and
 // Open fails when either
 //
-//   - is a superuser or has BYPASSRLS,
-//   - is a member of such a role (it can SET ROLE to it), or
+//   - is a superuser or has BYPASSRLS or REPLICATION (logical decoding reads
+//     every tenant's changes),
+//   - is a member of such a role (it can SET ROLE to it),
 //   - has CREATEROLE (before PostgreSQL 16 it can grant itself such a
 //     membership),
+//   - is a member of pg_execute_server_program, pg_write_server_files or
+//     pg_read_server_files (paths to superuser or to the data files), or
+//   - owns, or is a member of the owner of, a table of this database with
+//     row-level security enabled (an owner can ALTER TABLE ... NO FORCE ROW
+//     LEVEL SECURITY),
 //
 // or when the two differ: a role setting (`options=-c role=...`, ALTER ROLE
 // ... SET role) makes the session act as another role, and `SET ROLE NONE`
@@ -38,8 +44,8 @@ var ErrRowSecurityBypass = errors.New("the database role bypasses row-level secu
 //
 //	postgres.Open(ctx, app.Config().Database, postgres.RequireRowSecurity(app.Config().Environment))
 //
-// Serve as a NOSUPERUSER NOBYPASSRLS NOCREATEROLE runtime role that owns no
-// table and migrate as a separate role (FORGE_MIGRATION_DATABASE_URL); see
+// Serve as a NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOREPLICATION runtime role
+// that owns no table and migrate as a separate role (FORGE_MIGRATION_DATABASE_URL); see
 // docs/DATABASE.md.
 func RequireRowSecurity(environment config.Environment) Option {
 	return func(o *openOptions) {
@@ -48,18 +54,32 @@ func RequireRowSecurity(environment config.Environment) Option {
 }
 
 // roleEscapeQuery describes the login role (session_user) and the role in
-// effect (current_user), login role first: their own SUPERUSER, BYPASSRLS and
-// CREATEROLE attributes, and membership in a role with SUPERUSER or BYPASSRLS
-// (attributes are not inherited, but a member can SET ROLE). It runs with
+// effect (current_user), login role first: their own SUPERUSER, BYPASSRLS,
+// CREATEROLE and REPLICATION attributes; membership in another role with
+// SUPERUSER, BYPASSRLS or REPLICATION (attributes are not inherited, but a
+// member can SET ROLE); membership in a predefined role that reaches the
+// server's files or programs (pg_execute_server_program, pg_write_server_files,
+// pg_read_server_files: a path to superuser or to every tenant's data); and
+// whether it owns, or is a member of the owner of, a table of this database
+// with row-level security enabled (an owner can switch FORCE off with ALTER
+// TABLE; pg_has_role(u, u) is true, so direct ownership counts too). It runs with
 // search_path pinned to pg_catalog (see refuseRowSecurityBypass), so the
 // operators (=, IN, <>) and catalog names resolve to PostgreSQL's own, never
 // to a function, operator or view a search_path setting would put first;
 // the catalog names are also qualified, as defense in depth.
 const roleEscapeQuery = `
 SELECT u.rolname, u.rolname = session_user, u.rolsuper, u.rolbypassrls, u.rolcreaterole,
+       u.rolreplication,
        EXISTS (SELECT 1 FROM pg_catalog.pg_roles r
-               WHERE (r.rolsuper OR r.rolbypassrls) AND r.oid <> u.oid
-                 AND pg_catalog.pg_has_role(u.oid, r.oid, 'MEMBER'))
+               WHERE (r.rolsuper OR r.rolbypassrls OR r.rolreplication) AND r.oid <> u.oid
+                 AND pg_catalog.pg_has_role(u.oid, r.oid, 'MEMBER')),
+       EXISTS (SELECT 1 FROM pg_catalog.pg_roles r
+               WHERE r.rolname IN ('pg_execute_server_program', 'pg_write_server_files',
+                                   'pg_read_server_files')
+                 AND pg_catalog.pg_has_role(u.oid, r.oid, 'MEMBER')),
+       EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+               WHERE c.relrowsecurity
+                 AND pg_catalog.pg_has_role(u.oid, c.relowner, 'MEMBER'))
 FROM pg_catalog.pg_roles u
 WHERE u.rolname IN (session_user, current_user)
 ORDER BY u.rolname = session_user DESC`
@@ -86,8 +106,9 @@ func refuseRowSecurityBypass(ctx context.Context, pool *pgxpool.Pool) error {
 	refusal := ""
 	for rows.Next() {
 		var role string
-		var isLogin, superuser, bypass, createRole, member bool
-		if err := rows.Scan(&role, &isLogin, &superuser, &bypass, &createRole, &member); err != nil {
+		var isLogin, superuser, bypass, createRole, replication, member, serverFiles, ownsRLS bool
+		if err := rows.Scan(&role, &isLogin, &superuser, &bypass, &createRole, &replication,
+			&member, &serverFiles, &ownsRLS); err != nil {
 			return fmt.Errorf("check the database role's row-level security: %w", err)
 		}
 		if isLogin {
@@ -103,8 +124,14 @@ func refuseRowSecurityBypass(ctx context.Context, pool *pgxpool.Pool) error {
 			reason = "has BYPASSRLS"
 		case createRole:
 			reason = "has CREATEROLE"
+		case replication:
+			reason = "has REPLICATION"
 		case member:
-			reason = "can SET ROLE to a superuser or BYPASSRLS role"
+			reason = "can SET ROLE to a superuser, BYPASSRLS or REPLICATION role"
+		case serverFiles:
+			reason = "is a member of pg_execute_server_program, pg_write_server_files or pg_read_server_files"
+		case ownsRLS:
+			reason = "owns, or can SET ROLE to the owner of, a table with row-level security"
 		}
 		if reason != "" && refusal == "" {
 			refusal = fmt.Sprintf("PostgreSQL role %q, which %s", role, reason)
@@ -128,7 +155,7 @@ func refuseRowSecurityBypass(ctx context.Context, pool *pgxpool.Pool) error {
 		return nil
 	}
 	return fmt.Errorf("%w: refusing to serve outside development and test as %s; "+
-		"set FORGE_DATABASE_URL to log in directly as a NOSUPERUSER NOBYPASSRLS NOCREATEROLE runtime role "+
-		"with only data privileges and migrate with FORGE_MIGRATION_DATABASE_URL (docs/DATABASE.md, \"Database roles\")",
+		"set FORGE_DATABASE_URL to log in directly as a NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOREPLICATION "+
+		"runtime role that owns no table and has only data privileges, and migrate with FORGE_MIGRATION_DATABASE_URL (docs/DATABASE.md, \"Database roles\")",
 		ErrRowSecurityBypass, refusal)
 }
