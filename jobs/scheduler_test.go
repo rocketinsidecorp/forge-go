@@ -29,6 +29,7 @@ func TestSchedulerRunsJobsOnInterval(t *testing.T) {
 		}
 		s.Start()
 		// Ticks at 1.5 s, 3 s and 4.5 s.
+		// fake-clock: advances the synctest bubble's clock past the ticks under test.
 		time.Sleep(4600 * time.Millisecond)
 		synctest.Wait()
 		if err := s.Stop(); err != nil {
@@ -126,6 +127,7 @@ func TestSchedulerConcurrencyBound(t *testing.T) {
 			}
 		}
 		s.Start()
+		// fake-clock: advances the synctest bubble's clock past the ticks under test.
 		time.Sleep(5 * time.Second)
 		if err := s.Stop(); err != nil {
 			t.Fatalf("Stop error: %v", err)
@@ -168,6 +170,7 @@ func TestSchedulerEnforcesGlobalConcurrencyAndCanStartOnlyOnce(t *testing.T) {
 			t.Fatal("registered a job after Start")
 		}
 		// All three are due at 3 s; two take the slots and the third waits.
+		// fake-clock: advances the synctest bubble's clock past the ticks under test.
 		time.Sleep(3 * time.Second)
 		synctest.Wait()
 		if got := started.Load(); got != 2 {
@@ -199,6 +202,7 @@ func TestSchedulerReportsJobErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.Start()
+		// fake-clock: advances the synctest bubble's clock past the ticks under test.
 		time.Sleep(time.Second)
 		synctest.Wait()
 		select {
@@ -266,6 +270,7 @@ func TestSchedulerRunsAtMostOneCatchUpAfterAStall(t *testing.T) {
 			if calls.Add(1) == 1 {
 				// Stalls past its timeout and ten more ticks (2m to 11m),
 				// as a hung call that ignores its context would.
+				// fake-clock: a stalled run, ten intervals long, in the synctest bubble.
 				time.Sleep(10*time.Minute + 30*time.Second)
 			}
 			return nil
@@ -273,6 +278,7 @@ func TestSchedulerRunsAtMostOneCatchUpAfterAStall(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.Start()
+		// fake-clock: advances the synctest bubble's clock past the ticks under test.
 		time.Sleep(13*time.Minute + 10*time.Second)
 		synctest.Wait()
 		if err := s.Stop(); err != nil {
@@ -304,13 +310,15 @@ func TestSchedulerSkipsATickLaterThanMaxLateness(t *testing.T) {
 		if err := s.Register("report", ScheduleSpec{Every: time.Minute}, func(context.Context) error {
 			recorder.ran()
 			if calls.Add(1) == 1 {
-				time.Sleep(90 * time.Second) // until 2m30s: the 2m tick is 30s late
+				// fake-clock: a run that outlasts a tick, until 2m30s: the 2m tick is 30s late.
+				time.Sleep(90 * time.Second)
 			}
 			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
 		s.Start()
+		// fake-clock: advances the synctest bubble's clock past the ticks under test.
 		time.Sleep(3*time.Minute + 10*time.Second)
 		synctest.Wait()
 		if err := s.Stop(); err != nil {
@@ -346,7 +354,8 @@ func TestSchedulerSkipsATickThatWaitedTooLongForASlot(t *testing.T) {
 		if err := s.Register("hog", ScheduleSpec{Every: time.Minute}, func(context.Context) error {
 			hog.ran()
 			if hogCalls.Add(1) == 1 {
-				time.Sleep(50 * time.Second) // holds the only slot from 1m to 1m50s
+				// fake-clock: a run that holds the only slot from 1m to 1m50s.
+				time.Sleep(50 * time.Second)
 			}
 			return nil
 		}); err != nil {
@@ -360,6 +369,7 @@ func TestSchedulerSkipsATickThatWaitedTooLongForASlot(t *testing.T) {
 			t.Fatal(err)
 		}
 		s.Start()
+		// fake-clock: advances the synctest bubble's clock past the ticks under test.
 		time.Sleep(3*time.Minute + 10*time.Second)
 		synctest.Wait()
 		if err := s.Stop(); err != nil {

@@ -287,6 +287,7 @@ func TestFlightPanicReleasesWaiters(t *testing.T) {
 			defer func() { _ = recover() }()
 			_, _ = f.Do(bg, "k", func(context.Context) ([]byte, error) {
 				close(started)
+				// fake-clock: the leader computes for a while in the synctest bubble before it panics.
 				time.Sleep(100 * time.Millisecond)
 				panic("boom")
 			})

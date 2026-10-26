@@ -28,15 +28,13 @@ import (
 //     real-clock marker is invalid there.
 //
 // maxRealClockSleeps is a ratchet: it only goes down.
-const maxRealClockSleeps = 48
+const maxRealClockSleeps = 43
 
 // sleepExemptDirectories hold tests that another change converts to synctest.
 // Their sleeps are counted against the ratchet but need no marker yet. Remove
-// an entry when its package is converted.
-var sleepExemptDirectories = []string{
-	"jobs",  // scheduler and tick tests: converted to synctest by the scheduler change
-	"cache", // the cache store tests, converted with the cache changes
-}
+// an entry when its package is converted. None is left: jobs and cache were
+// converted (QG9).
+var sleepExemptDirectories = []string{}
 
 var (
 	realClockMarker = regexp.MustCompile(`^real-clock: \S+ \S+`)

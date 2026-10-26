@@ -58,9 +58,10 @@ how fast the machine is:
   waits to be killed, a negative check), or `fake-clock:` for a sleep inside a
   `synctest` bubble, where it costs no real time (the marker is refused
   anywhere else, and `real-clock:` is refused inside a bubble). The number of
-  real-clock sleeps has a budget in that file that only goes down. The tests of
-  `jobs/` and `cache/` are exempt, and counted, until their own changes convert
-  them.
+  real-clock sleeps has a budget in that file that only goes down (43; no
+  directory is exempt: the `jobs/` scheduler and tick tests run in `synctest`
+  bubbles, and the only real-clock sleeps left in `cache/` space the writes of
+  the database store tests so the stores' own clocks order them).
 - **Timeouts are explicit.** CI and `scripts/coverage.sh` run `go test
   -timeout 30m`: the default of ten minutes is shorter than the serial
   generated-application workflows of `internal/cli` on a slow runner, and a
