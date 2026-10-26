@@ -763,9 +763,36 @@ the generated `main.go` composes, so `migrate` creates it). Recording a tick is
 one statement; no connection is held while the job runs, and the outcome does
 not depend on the replicas' clocks. A tick that cannot be recorded is skipped
 and reported, and two replicas can run consecutive ticks of one job at the
-same time. An application generated earlier adopts it by adding
-`jobspostgres.Migrations()` (or `jobsmysql.Migrations()`) to its
-`CommandsFromSets` and passing the claimer to `JobsConfigure`:
+same time. An application generated earlier adopts it by composing the
+migration in `cmd/<name>/main.go` and passing the claimer to `JobsConfigure`
+in `app/bootstrap/bootstrap.go`. PostgreSQL:
+
+```go
+// cmd/<name>/main.go: import jobspostgres "github.com/rocketinsidecorp/forge-go/jobs/postgres"
+postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations()),
+
+// app/bootstrap/bootstrap.go, at the end of Configure (same import):
+return JobsConfigure(app, jobspostgres.NewTickClaimer(database))
+
+// JobsConfigure takes the claimer and sets it on the scheduler:
+func JobsConfigure(app *forge.App, ticks jobs.TickClaimer) error {
+	options := jobs.SchedulerOptions{
+		// ... MaxConcurrentJobs, Telemetry and OnError as before ...
+		Ticks: ticks,
+	}
+```
+
+MySQL and MariaDB:
+
+```go
+// cmd/<name>/main.go: import jobsmysql "github.com/rocketinsidecorp/forge-go/jobs/mysql"
+forge.Main(bootstrap.Configure, append(mysql.CommandsFromSets(jobsmysql.Migrations(), db.Migrations()), mysql.SeedCommand(db.Seed))...)
+
+// app/bootstrap/bootstrap.go, at the end of Configure (same import):
+return JobsConfigure(app, jobsmysql.NewTickClaimer(database))
+```
+
+Then create the table and check the application:
 
 ```sh
 forge migrate        # creates forge_job_schedules once main.go composes the jobs migrations
