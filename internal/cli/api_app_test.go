@@ -163,8 +163,8 @@ func TestGeneratorsInAnAPIOnlyApplication(t *testing.T) {
 				if strings.Contains(output.String(), "useBrowserPipeline") || strings.Contains(output.String(), "views.New") {
 					t.Errorf("forge generate %v prints browser wiring:\n%s", args, output.String())
 				}
-				if args[0] == "resource" && !strings.Contains(output.String(), "after the `routes(ctx, app)` call") {
-					t.Errorf("the resource wiring does not point at the API-only Configure:\n%s", output.String())
+				if (args[0] == "resource" || args[0] == "controller") && !strings.Contains(output.String(), "wire  app/bootstrap/routes_gen.go") {
+					t.Errorf("forge generate %v did not wire its routes into the seam:\n%s", args, output.String())
 				}
 			}
 			assertNoBrowserFiles(t, dir)

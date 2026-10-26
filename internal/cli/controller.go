@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"go/format"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
 const controllerUsage = "usage: forge generate controller NAME ACTION... [--api] [--public] [--dry-run]"
@@ -57,6 +60,10 @@ type controllerSpec struct {
 	ViewRenderer bool
 	// AddsViewBase reports that the controller also adds the views base.
 	AddsViewBase bool
+	// Seam reports that bootstrap.go calls the routes seam
+	// (app/bootstrap/routes_gen.go), where the controller is wired.
+	Seam bool
+	seam routesSeam
 	// PermissionOwner is the migration that already registers NAME:read (a
 	// model, resource or scaffold whose plural is NAME): the controller then
 	// reuses that permission and generates no migration of its own.
@@ -135,12 +142,47 @@ func runGenerateController(args []string, stdout io.Writer, root string, env []s
 	if err != nil {
 		return err
 	}
+	if !spec.Seam {
+		if !request.DryRun {
+			if err := applyGeneratedFiles(root, directoriesOf(files), files); err != nil {
+				return err
+			}
+		}
+		return reportFiles(stdout, request.DryRun, files, controllerWiring(spec))
+	}
+	// The seam is planned first, so a refused seam writes nothing.
+	wiring, err := planControllerSeam(root, spec, false)
+	if err != nil {
+		return err
+	}
 	if !request.DryRun {
-		if err := applyGeneratedFiles(root, directoriesOf(files), files); err != nil {
+		if err := applyGeneratedFiles(root, directoriesOf(newFiles(files)), files); err != nil {
 			return err
 		}
+		if wiring.verb == "wire" {
+			if err := writeRoutes(root, wiring.content); err != nil {
+				return err
+			}
+		}
 	}
-	return reportFiles(stdout, request.DryRun, files, controllerWiring(spec))
+	return reportFiles(stdout, request.DryRun, files, reportSeam(wiring, request.DryRun, controllerThen(spec)))
+}
+
+// planControllerSeam plans the seam with the controller's routes added (or,
+// for `forge destroy`, removed).
+func planControllerSeam(root string, spec controllerSpec, remove bool) (seamWiring, error) {
+	projectRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return seamWiring{}, err
+	}
+	defer func() { _ = projectRoot.Close() }()
+	parts := buildControllerWiring(spec)
+	content, verb, err := planRoutes(projectRoot, spec.seam, routesChange{
+		entry:  scaffold.RouteBlock{Kind: "controller", Name: spec.Name, Body: parts.Usage},
+		shared: sharedFromParts(parts),
+		remove: remove,
+	})
+	return seamWiring{content: content, verb: verb, notes: parts.Notes}, err
 }
 
 // controllerView is everything the controller templates read.
@@ -213,8 +255,11 @@ func planController(root string, request controllerRequest, env []string, now ti
 	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot) && !apiOnlyApplication(projectRoot)
 	spec.BearerSignIn = spec.Identity && hasBearerSignIn(projectRoot)
 	spec.NoDatabase = adapter == "none"
+	spec.seam = openRoutesSeam(projectRoot, module, adapter, spec.Identity)
+	spec.Seam = spec.seam.wired
 	if !request.API {
-		spec.ViewRenderer = hasViewRenderer(projectRoot)
+		// The seam builds the pages' renderer itself.
+		spec.ViewRenderer = hasViewRenderer(projectRoot) && !spec.Seam
 	}
 
 	view := newControllerView(spec)
@@ -268,12 +313,15 @@ func planController(root string, request controllerRequest, env []string, now ti
 				return controllerSpec{}, nil, err
 			}
 			if existing != "" {
-				return controllerSpec{}, nil, fmt.Errorf("refusing to generate: %s already registers the permission of the %s controller", existing, request.Name)
+				// The same command run again finds its own migration, unchanged.
+				if migrations = identicalMigrationPair(projectRoot, migrationName, now, up, down); migrations == nil || !allIdentical(projectRoot, append(slices.Clone(migrations), files...)) {
+					return controllerSpec{}, nil, fmt.Errorf("refusing to generate: %s already registers the permission of the %s controller", existing, request.Name)
+				}
 			}
 			files = append(migrations, files...)
 		}
 	}
-	if err := checkPlannedFiles(projectRoot, files, request.Destroy); err != nil {
+	if err := checkRerunnableFiles(projectRoot, files, request.Destroy); err != nil {
 		return controllerSpec{}, nil, err
 	}
 	return spec, files, nil
@@ -314,12 +362,15 @@ DELETE FROM forge_permissions WHERE name = '%[1]s';
 // controllerWiring is what `forge generate controller` prints: how to mount
 // the routes from app/bootstrap/bootstrap.go, which the generator never edits.
 func controllerWiring(spec controllerSpec) string {
-	parts := buildControllerWiring(spec)
-	then := "forge test"
+	return formatWiring("controller", "controller", buildControllerWiring(spec), controllerThen(spec))
+}
+
+// controllerThen is the command to run after generating a controller.
+func controllerThen(spec controllerSpec) string {
 	if spec.Identity && !spec.Public && spec.PermissionOwner == "" {
-		then = "forge migrate && forge test"
+		return "forge migrate && forge test"
 	}
-	return formatWiring("controller", "controller", parts, then)
+	return "forge test"
 }
 
 func buildControllerWiring(spec controllerSpec) resourceWiringParts {
@@ -350,8 +401,8 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 	case spec.Public:
 		parts.Notes = append(parts.Notes, fmt.Sprintf("WARNING: --public mounts the %s routes without a guard: anyone who can reach the server can call them.", spec.Name))
 	case spec.Identity && spec.API && !spec.BearerSignIn:
-		parts.Guard = closedJSONGuard
-		parts.Notes = append(parts.Notes, closedJSONNote)
+		parts.Guard = cookieJSONGuard
+		parts.Notes = append(parts.Notes, cookieJSONNote)
 		arguments += ", protect"
 	case spec.Identity && spec.API:
 		parts.Guard = identityJSONGuard
@@ -363,6 +414,10 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 		parts.Imports = append(parts.Imports, "github.com/rocketinsidecorp/forge-go/fault", "github.com/rocketinsidecorp/forge-go/web")
 		parts.Guard = denyAllGuard(fmt.Sprintf("%q", spec.Name+":read"), "")
 		parts.Notes = append(parts.Notes, "This application has no Forge identity, so the guard is yours to write; the generator never opens the routes to the public (use --public to say that is what you want).")
+		if spec.Seam {
+			parts.Guard = seamDenyAllGuard
+			parts.Notes[len(parts.Notes)-1] = "This application has no Forge identity, so the routes are mounted closed: protect refuses every request until you write it (declare func protect in another file of package bootstrap). Generate the controller with --public to serve it without sign-in."
+		}
 		arguments += ", protect"
 	}
 	switch {

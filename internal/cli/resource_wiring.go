@@ -49,24 +49,35 @@ const identityJSONGuard = `	protect := func(permission string, next http.Handler
 	}
 `
 
-// closedJSONGuard is the guard of JSON routes in an application with
-// Forge identity that issues no bearer tokens (created without --api-auth):
-// it refuses every request, as forge-rust's DenyAll does in the same case,
-// rather than mounting routes behind a credential nobody can obtain.
-const closedJSONGuard = `	// The JSON routes authenticate bearer tokens, and this application issues
-	// none (forge new --api-auth mounts POST /auth/login), so they stay
-	// closed: protect refuses every request until the application signs API
-	// clients in.
-	protect := func(_ string, _ http.Handler) (http.Handler, error) {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			web.Error(w, r, auth.ErrPermissionDenied)
-		}), nil
+// cookieJSONGuard is the guard of JSON routes in an application with Forge
+// identity that issues no bearer tokens (created without --api-auth): the
+// session cookie the sign-in page sets, the CSRF token in the X-CSRF-Token
+// header of every change (the CSRF middleware lets JSON bodies through, so
+// cookie-authenticated JSON routes check it themselves with
+// auth.RequireCSRF), and the permission.
+const cookieJSONGuard = `	// The JSON routes authenticate the session cookie the sign-in page sets:
+	// this application issues no bearer tokens (forge new --api-auth adds
+	// them). Changes must send the CSRF token in the X-CSRF-Token header
+	// (the csrf-token meta tag of a page, or the __Host-forge_csrf cookie).
+	protect := func(permission string, next http.Handler) (http.Handler, error) {
+		required, err := auth.NewPermission(permission)
+		if err != nil {
+			return nil, err
+		}
+		guarded, err := auth.RequireAudited(required, next, repository)
+		if err != nil {
+			return nil, err
+		}
+		checked, err := auth.RequireCSRF(guarded)
+		if err != nil {
+			return nil, err
+		}
+		return middleware.AuthenticateCookie(checked), nil
 	}
 `
 
-// closedJSONNote tells how to open JSON routes wired with
-// closedJSONGuard.
-const closedJSONNote = "This application issues no bearer tokens (it was created without --api-auth), so the JSON routes are mounted closed: protect refuses every request, as forge-rust's DenyAll does. To open them to API clients, run `forge generate authentication --api-auth`, mount the routes it prints, then replace protect with the bearer guard:\n\n" + identityJSONGuard
+// cookieJSONNote explains cookieJSONGuard.
+const cookieJSONNote = "This application issues no bearer tokens (it was created without --api-auth), so the JSON routes authenticate the session cookie of the sign-in page, like the HTML pages: a signed-in browser (or a client holding the cookie) calls them, and every change sends the CSRF token in the X-CSRF-Token header. For API clients with bearer tokens, run `forge generate authentication --api-auth` and mount the routes it prints."
 
 // hasBearerSignIn reports that app/bootstrap/bootstrap.go mounts the
 // bearer-token login, POST /auth/login (forge new --api-auth, or the wiring
@@ -108,6 +119,36 @@ func denyAllGuard(permissions, tenantNote string) string {
 `, permissions, tenantNote)
 }
 
+// seamDenyAllGuard is denyAllGuard as the routes seam defines it, once for
+// every generated resource and controller of the application.
+const seamDenyAllGuard = `	// This application has no Forge identity, so protect refuses every
+	// request: authenticating callers and checking the permission each route
+	// asks for ("products:read", "products:write", ...) are yours to write.
+	// Declare func protect(permission string, next http.Handler)
+	// (http.Handler, error) in another file of package bootstrap and the
+	// generators use yours instead. Tenant-scoped routes also need the
+	// caller's tenant: attach it with tenancy.WithContext.
+	protect := func(_ string, _ http.Handler) (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			web.Error(w, r, fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0))
+		}), nil
+	}
+`
+
+// publicGuard is the guard of the routes generated with --public in an
+// application without Forge identity: it lets every request through.
+const publicGuard = `	// Generated with --public: these routes are served to anyone who can
+	// reach the server, with no sign-in and no permission check. Declare
+	// func public(permission string, next http.Handler) (http.Handler, error)
+	// in another file of package bootstrap to put authentication in front.
+	public := func(_ string, next http.Handler) (http.Handler, error) {
+		return next, nil
+	}
+`
+
+// publicNote is the warning printed for --public routes.
+const publicNote = "WARNING: --public serves these routes to anyone who can reach the server, with no sign-in and no permission check (this application has no Forge identity, whose sign-in pages and `forge setup` are PostgreSQL-only). CSRF protection still applies to the forms."
+
 // buildResourceWiring is what `forge generate resource` and `forge generate
 // scaffold` print: the JSON routes, and for a scaffold the HTML pages too.
 func buildResourceWiring(spec resourceSpec) resourceWiringParts {
@@ -142,11 +183,11 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 		parts.Where = "inside identityRoutes, after the `middleware, err := auth.NewMiddleware(repository)` statement and its error check"
 		parts.Guard = identityJSONGuard
 		parts.Notes = []string{
-			fmt.Sprintf("The migration registers the permissions %s:read and %s:write; grant them to a role before callers can use the routes.", spec.Plural, spec.Plural),
+			fmt.Sprintf("The migration registers the permissions %s:read and %s:write and grants them to the owner role (`forge setup` creates it); grant them to other roles before their users can use the routes.", spec.Plural, spec.Plural),
 		}
 		if !spec.BearerSignIn {
-			parts.Guard = closedJSONGuard
-			parts.Notes = append(parts.Notes, closedJSONNote)
+			parts.Guard = cookieJSONGuard
+			parts.Notes = append(parts.Notes, cookieJSONNote)
 		}
 		if !spec.TenantScoped {
 			// Roles belong to tenants, so a tenant administrator can grant
@@ -191,6 +232,17 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 	parts.Notes = []string{
 		"This application has no Forge identity, so the guard is yours to write; the generator never opens the routes to the public.",
 	}
+	if spec.Seam {
+		parts.Guard = seamDenyAllGuard
+		parts.Notes = []string{
+			"This application has no Forge identity, so the routes are mounted closed: protect refuses every request until you write it (declare func protect in another file of package bootstrap). To serve them without sign-in instead, generate them with --public (global resources only).",
+		}
+		if spec.Public {
+			parts.Guard = publicGuard
+			parts.Usage = strings.Replace(parts.Usage, ", protect); err != nil {", ", public); err != nil {", 1)
+			parts.Notes = []string{publicNote}
+		}
+	}
 	return parts
 }
 
@@ -225,6 +277,9 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 		addBroadcastWiring(spec, parts)
 	}
 	guard := "protect"
+	if spec.Public && spec.Seam {
+		guard = "public"
+	}
 	if spec.Identity {
 		guard = "protectCookie"
 		parts.CookieGuard = identityPagesGuard
@@ -370,7 +425,9 @@ func addBroadcastWiring(spec resourceSpec, parts *resourceWiringParts) {
 		return err
 	}
 `
-		parts.Notes = append(parts.Notes, "Live updates: ctx must be in scope in identityRoutes (forge new passes it: identityRoutes(ctx, app, database)). Define streamSigner and streams once, in this order: streamSigner before the view renderer, streams after `middleware, err := auth.NewMiddleware(repository)`.")
+		if !spec.Seam {
+			parts.Notes = append(parts.Notes, "Live updates: ctx must be in scope in identityRoutes (forge new passes it: identityRoutes(ctx, app, database)). Define streamSigner and streams once, in this order: streamSigner before the view renderer, streams after `middleware, err := auth.NewMiddleware(repository)`.")
+		}
 	} else {
 		parts.Imports = append(parts.Imports, "github.com/rocketinsidecorp/forge-go/fault", "github.com/rocketinsidecorp/forge-go/web")
 		parts.StreamsRegister = `	// This application has no Forge identity, so authenticating the caller
@@ -388,7 +445,11 @@ func addBroadcastWiring(spec resourceSpec, parts *resourceWiringParts) {
 		return err
 	}
 `
-		parts.Notes = append(parts.Notes, "Live updates: define streamSigner and streams once, streamSigner before the view renderer and streams before the pages that publish.")
+		if spec.Seam {
+			parts.Notes = append(parts.Notes, "Live updates stay closed in this application without Forge identity: the event stream refuses everyone until you authenticate its readers (the streams block of app/bootstrap/routes_gen.go shows what to write).")
+		} else {
+			parts.Notes = append(parts.Notes, "Live updates: define streamSigner and streams once, streamSigner before the view renderer and streams before the pages that publish.")
+		}
 	}
 	parts.Notes = append(parts.Notes,
 		"Set FORGE_STREAMS_KEY to `openssl rand -base64 32` (the same value on every replica) before running in staging or production; development and tests fall back to a random per-process key. To rotate it without breaking open pages, redeploy twice: first FORGE_STREAMS_KEY=old with FORGE_STREAMS_PREVIOUS_KEYS=new, then the two swapped (previous keys, comma-separated, at most 3, only verify); unset FORGE_STREAMS_PREVIOUS_KEYS after the token lifetime (24 hours by default), see docs/VIEWS.md. The in-memory broker serves one process: for several replicas, build the broker with forge-go's broadcast/postgres package (docs/VIEWS.md).",

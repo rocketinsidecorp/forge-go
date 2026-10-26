@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
 const destroyUsage = `usage: forge destroy <model|resource|scaffold|controller|mailer|job|view> ARGUMENTS... [--force] [--migrations] [--dry-run]
@@ -56,6 +58,11 @@ type destroyPlan struct {
 	// unwire says what to take out of app/bootstrap/bootstrap.go, which
 	// neither generating nor destroying edits.
 	unwire string
+	// routes is the routes seam without the generator's block, when the
+	// application has the seam and the block is there (routesVerb is then
+	// "unwire"): it is written once the files are removed.
+	routes     []byte
+	routesVerb string
 	// ownedElsewhere, when set, says why the files belong to a bigger
 	// generation (a model inside a resource or scaffold, a view a controller
 	// renders): removing them alone would break the application, so the
@@ -106,7 +113,15 @@ func planDestroy(generator string, args []string, root string, env []string, now
 				return destroyPlan{}, err
 			}
 		}
-		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + generator + " wiring:\n" + buildResourceWiring(spec).Usage, ownedElsewhere: owned}, nil
+		plan := destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + generator + " wiring:\n" + buildResourceWiring(spec).Usage, ownedElsewhere: owned}
+		if spec.Seam {
+			wiring, err := planResourceSeam(root, spec, true)
+			if err != nil {
+				return destroyPlan{}, err
+			}
+			plan.routes, plan.routesVerb, plan.unwire = wiring.content, wiring.verb, ""
+		}
+		return plan, nil
 	case "controller":
 		request, err := parseControllerArgs(args)
 		if err != nil {
@@ -117,7 +132,15 @@ func planDestroy(generator string, args []string, root string, env []string, now
 		if err != nil {
 			return destroyPlan{}, err
 		}
-		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the controller wiring:\n" + buildControllerWiring(spec).Usage}, nil
+		plan := destroyPlan{files: files, dryRun: request.DryRun, unwire: "the controller wiring:\n" + buildControllerWiring(spec).Usage}
+		if spec.Seam {
+			wiring, err := planControllerSeam(root, spec, true)
+			if err != nil {
+				return destroyPlan{}, err
+			}
+			plan.routes, plan.routesVerb, plan.unwire = wiring.content, wiring.verb, ""
+		}
+		return plan, nil
 	case "mailer":
 		request, err := parseMailerArgs(args)
 		if err != nil {
@@ -306,10 +329,11 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 	if len(modified) > 0 && !force {
 		return fmt.Errorf("refusing to destroy: %d file(s) differ from what this generator would write from these arguments (edited since, generated with other arguments, or written by another generator), so nothing was removed:\n  %s\nReview them, or pass --force to remove them anyway", len(modified), strings.Join(modified, "\n  "))
 	}
-	if len(removable) == 0 && len(kept) > 0 {
+	unwire := plan.routesVerb == "unwire"
+	if len(removable) == 0 && len(kept) > 0 && !unwire {
 		return fmt.Errorf("nothing to destroy but the migrations, which are kept:\n  %s\nRevert them with `forge rollback` if they ran, then run this command again with --migrations", strings.Join(kept, "\n  "))
 	}
-	if len(removable) == 0 {
+	if len(removable) == 0 && !unwire {
 		return errors.New("nothing to destroy: none of the files this generator creates exist here (check the arguments: they must be the ones the generator was run with)")
 	}
 	if err := rejectExistingSymlinkPaths(root, removable); err != nil {
@@ -322,6 +346,14 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 			}
 		}
 		removeEmptyParents(root, removable)
+		if unwire {
+			if err := rejectExistingSymlinkPaths(root, []string{scaffold.RoutesFile}); err != nil {
+				return err
+			}
+			if err := root.WriteFile(scaffold.RoutesFile, plan.routes, 0o600); err != nil {
+				return err
+			}
+		}
 	}
 	for _, action := range actions {
 		verb := action.verb
@@ -335,6 +367,21 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 		if _, err := fmt.Fprintln(stdout, line); err != nil {
 			return err
 		}
+	}
+	if plan.unwire == "" {
+		// The application has the routes seam: the generator's block is
+		// taken out of it (or was not there).
+		if unwire {
+			verb := "unwire"
+			if plan.dryRun {
+				verb = "would unwire"
+			}
+			if _, err := fmt.Fprintf(stdout, "  %-14s%s\n", verb, scaffold.RoutesFile); err != nil {
+				return err
+			}
+		}
+		_, err = fmt.Fprintln(stdout, "\nThen: forge test")
+		return err
 	}
 	_, err = fmt.Fprintf(stdout, "\nForge does not edit app/bootstrap/bootstrap.go. Remove %s\n\n  and any import or helper only it used. Then: forge test\n", strings.TrimRight(plan.unwire, "\n"))
 	return err

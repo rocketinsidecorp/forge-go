@@ -71,9 +71,11 @@ the work is finished and waiting for its review; **Planned** means not started.
   generated bootstrap starts its scheduler and recovery queue only when
   serving and opens its pool lazily otherwise (`postgres.Lazy`, `mysql.Lazy`;
   a lazy PostgreSQL pool checks each connection's role); skips stale
-  scheduler ticks (`MaxLateness`); wires generated JSON routes closed in an
-  application without bearer sign-in (Rust's `DenyAll`, adopted from
-  forge-rust#83); pins the generated `Dockerfile` bases by digest; generates
+  scheduler ticks (`MaxLateness`); guards generated JSON routes, in an
+  application without bearer sign-in, with the session cookie, the CSRF token
+  and the permission (it wired them closed like Rust's `DenyAll`, from
+  forge-rust#83, until the end-to-end quickstart, decision D21, needed JSON as
+  the signed-in owner); pins the generated `Dockerfile` bases by digest; generates
   identity IDs in Go with no `DEFAULT uuidv7()`; counts and logs cache values
   that no longer decode (`cache.DecodeFailures`). Forge-Rust adopts: the
   `TRUNCATE`/`REFERENCES`/`TRIGGER` rule (column `REFERENCES` included) and

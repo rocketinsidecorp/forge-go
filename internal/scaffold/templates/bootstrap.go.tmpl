@@ -115,6 +115,12 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := identityRoutes(ctx, app, database, translator); err != nil {
 		return err
 	}
+{{- else}}
+	// The routes `forge generate scaffold`, `resource` and `controller` add
+	// (app/bootstrap/routes_gen.go, which they rewrite; this file is yours).
+	if err := {{.RoutesCall}}; err != nil {
+		return err
+	}
 {{- end}}
 {{- if .DB.Jobs}}
 	// Recurring jobs. Their ticks are recorded in the database
@@ -127,7 +133,12 @@ func Configure(ctx context.Context, app *forge.App) error {
 }
 {{- else if .API}}
 func Configure(ctx context.Context, app *forge.App) error {
-	return routes(ctx, app)
+	if err := routes(ctx, app); err != nil {
+		return err
+	}
+	// The routes `forge generate controller` adds
+	// (app/bootstrap/routes_gen.go, which it rewrites; this file is yours).
+	return {{.RoutesCall}}
 }
 {{- else}}
 func Configure(ctx context.Context, app *forge.App) error {
@@ -137,7 +148,12 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err != nil {
 		return err
 	}
-	return routes(ctx, app, translator)
+	if err := routes(ctx, app, translator); err != nil {
+		return err
+	}
+	// The routes `forge generate controller` adds
+	// (app/bootstrap/routes_gen.go, which it rewrites; this file is yours).
+	return {{.RoutesCall}}
 }
 {{- end}}
 
@@ -449,7 +465,10 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 	//	...
 	//	guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
 
-	return nil
+	// The routes `forge generate scaffold`, `resource` and `controller` add,
+	// behind the same session and permissions (app/bootstrap/routes_gen.go,
+	// which they rewrite; this file is yours).
+	return {{.RoutesCall}}
 }
 {{- if .APIAuth}}
 

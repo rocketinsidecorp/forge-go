@@ -22,6 +22,9 @@ func parseModelArgs(args []string) (resourceRequest, error) {
 	if request.Broadcast {
 		return resourceRequest{}, fmt.Errorf("--broadcast is only for `forge generate scaffold`: a model has no pages to update\n%s", modelUsage)
 	}
+	if request.Public {
+		return resourceRequest{}, fmt.Errorf("--public is only for `forge generate resource` and `forge generate scaffold`: a model has no routes\n%s", modelUsage)
+	}
 	request.Model = true
 	return request, nil
 }
@@ -78,6 +81,10 @@ func reportFiles(stdout io.Writer, dryRun bool, files []generatedFile, after str
 		verb = "would create"
 	}
 	for _, file := range files {
+		verb := verb
+		if file.identical {
+			verb = "identical"
+		}
 		if _, err := fmt.Fprintf(stdout, "  %s  %s\n", verb, file.path); err != nil {
 			return err
 		}

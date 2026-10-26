@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
@@ -660,7 +661,27 @@ func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 	for _, spec := range specs {
 		parts = append(parts, buildResourceWiring(spec))
 	}
-	wireParts(t, dir, parts)
+	wireRoutes(t, dir, parts)
+}
+
+// wireRoutes is wireParts for the generators that wire their routes
+// themselves (resource, scaffold, controller): an application whose
+// bootstrap.go calls the routes seam needs no paste, and the seam must then
+// hold every usage.
+func wireRoutes(t *testing.T, dir string, partsList []resourceWiringParts) {
+	t.Helper()
+	if !strings.Contains(readFile(t, filepath.Join(dir, "app", "bootstrap", "bootstrap.go")), scaffold.RoutesFunction+"(") {
+		wireParts(t, dir, partsList)
+		return
+	}
+	seam := readFile(t, filepath.Join(dir, scaffold.RoutesFile))
+	for _, parts := range partsList {
+		for _, line := range strings.Split(strings.TrimSpace(parts.Usage), "\n") {
+			if line = strings.TrimSpace(line); line != "" && !strings.Contains(seam, line) {
+				t.Fatalf("the generators did not wire %q into %s:\n%s", line, scaffold.RoutesFile, seam)
+			}
+		}
+	}
 }
 
 // declaredName is the variable a printed wiring block declares first

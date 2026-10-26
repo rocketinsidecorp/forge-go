@@ -15,9 +15,11 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
-const resourceUsage = "usage: forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]"
+const resourceUsage = "usage: forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--public] [--dry-run]"
 
 const (
 	maxResourceFields     = 40
@@ -81,6 +83,11 @@ type resourceRequest struct {
 	// pages publish created, updated and deleted rows to open index pages as
 	// Turbo Streams over Server-Sent Events.
 	Broadcast bool
+	// Public (`--public`) serves the routes to anyone, in an application
+	// without Forge identity, where the generated guard otherwise refuses
+	// every request. It needs --global: a tenant-scoped resource needs the
+	// caller's tenant, which an anonymous request does not carry.
+	Public bool
 	// Model is set by `forge generate model`: the resource without its HTTP
 	// layer (migration, domain, application and persistence only).
 	Model bool
@@ -127,6 +134,12 @@ type resourceSpec struct {
 	// AddsStreams reports that the scaffold also adds app/adapters/htmlstreams
 	// (the first --broadcast scaffold of the application).
 	AddsStreams bool
+	// Seam reports that bootstrap.go calls the generated routes seam
+	// (app/bootstrap/routes_gen.go): the generator wires the routes there
+	// instead of printing them.
+	Seam bool
+	// seam is the application's seam when Seam is set.
+	seam routesSeam
 }
 
 func runGenerateResource(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
@@ -141,28 +154,77 @@ func runGenerateResource(args []string, stdout io.Writer, root string, env []str
 	if err != nil {
 		return err
 	}
-	if !request.DryRun {
-		directories := []string{"db/migrations", "app/domain", "app/application", "app/adapters/persistence", "app/adapters/httpapi"}
-		if err := applyGeneratedFiles(root, directories, files); err != nil {
+	return generateResourceFiles(stdout, root, spec, files, []string{"db/migrations", "app/domain", "app/application", "app/adapters/persistence", "app/adapters/httpapi"})
+}
+
+// generateResourceFiles writes the planned files of a resource or scaffold
+// (unless --dry-run), wires the routes into the seam when the application has
+// one, and reports both. The seam is planned before anything is written, so a
+// refused seam writes nothing.
+func generateResourceFiles(stdout io.Writer, root string, spec resourceSpec, files []generatedFile, directories []string) error {
+	var wiring seamWiring
+	if spec.Seam {
+		var err error
+		if wiring, err = planResourceSeam(root, spec, false); err != nil {
 			return err
 		}
 	}
-	return reportGenerated(stdout, spec, files)
+	if !spec.DryRun {
+		if err := applyGeneratedFiles(root, directories, newFiles(files)); err != nil {
+			return err
+		}
+		if spec.Seam && wiring.verb == "wire" {
+			if err := writeRoutes(root, wiring.content); err != nil {
+				return err
+			}
+		}
+	}
+	return reportGenerated(stdout, spec, files, wiring)
 }
 
-// reportGenerated lists the files (planned, for --dry-run) and prints the
-// wiring the application owner adds to bootstrap.go.
-func reportGenerated(stdout io.Writer, spec resourceSpec, files []generatedFile) error {
+// planResourceSeam plans the seam with the resource's routes added (or, for
+// `forge destroy`, removed).
+func planResourceSeam(root string, spec resourceSpec, remove bool) (seamWiring, error) {
+	projectRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return seamWiring{}, err
+	}
+	defer func() { _ = projectRoot.Close() }()
+	parts := buildResourceWiring(spec)
+	kind := "resource"
+	if spec.Scaffold {
+		kind = "scaffold"
+	}
+	content, verb, err := planRoutes(projectRoot, spec.seam, routesChange{
+		entry:  scaffold.RouteBlock{Kind: kind, Name: spec.Plural, Body: parts.Usage},
+		shared: sharedFromParts(parts),
+		remove: remove,
+	})
+	return seamWiring{content: content, verb: verb, notes: parts.Notes}, err
+}
+
+// reportGenerated lists the files (planned, for --dry-run) and the seam, or
+// prints the wiring the application owner adds to bootstrap.go when the
+// application has no seam.
+func reportGenerated(stdout io.Writer, spec resourceSpec, files []generatedFile, wiring seamWiring) error {
 	verb := "create"
 	if spec.DryRun {
 		verb = "would create"
 	}
 	for _, file := range files {
-		if _, err := fmt.Fprintf(stdout, "  %s  %s\n", verb, file.path); err != nil {
+		fileVerb := verb
+		if file.identical {
+			fileVerb = "identical"
+		}
+		if _, err := fmt.Fprintf(stdout, "  %s  %s\n", fileVerb, file.path); err != nil {
 			return err
 		}
 	}
-	_, err := io.WriteString(stdout, resourceWiring(spec))
+	if !spec.Seam {
+		_, err := io.WriteString(stdout, resourceWiring(spec))
+		return err
+	}
+	_, err := io.WriteString(stdout, reportSeam(wiring, spec.DryRun, "forge migrate && forge test"))
 	return err
 }
 
@@ -191,6 +253,11 @@ func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 				return resourceRequest{}, errors.New("--broadcast given more than once")
 			}
 			request.Broadcast = true
+		case arg == "--public":
+			if request.Public {
+				return resourceRequest{}, errors.New("--public given more than once")
+			}
+			request.Public = true
 		case arg == "--tenant-scoped":
 			tenantScoped = true
 		case arg == "--global":
@@ -222,6 +289,9 @@ func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 		return resourceRequest{}, errors.New("choose a scope: --tenant-scoped (rows belong to one tenant) or --global (rows are shared by all tenants)")
 	}
 	request.TenantScoped = tenantScoped
+	if request.Public && tenantScoped {
+		return resourceRequest{}, errors.New("--public serves the routes without sign-in, and a tenant-scoped resource needs the caller's tenant, which an anonymous request does not carry: use --global with --public")
+	}
 	if len(positional) == 0 {
 		return resourceRequest{}, usageError{usage}
 	}
@@ -448,17 +518,31 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 	spec := resourceSpec{resourceRequest: request, Module: module, Database: adapter}
 	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot) && !apiOnlyApplication(projectRoot)
 	spec.BearerSignIn = spec.Identity && hasBearerSignIn(projectRoot)
+	if request.Public && spec.Identity && !request.Model {
+		return resourceSpec{}, nil, errors.New("--public is for applications without Forge identity: this one signs users in, so the routes need sign-in and the " + request.Plural + ":read and " + request.Plural + ":write permissions, which the migration grants to the owner role `forge setup` creates")
+	}
+	if !request.Model {
+		spec.seam = openRoutesSeam(projectRoot, module, adapter, spec.Identity)
+		spec.Seam = spec.seam.wired
+	}
 
 	rendered, err := renderResource(spec)
 	if err != nil {
 		return resourceSpec{}, nil, err
 	}
+	rerun := false
 	migrations, existing, err := planMigrationPair(projectRoot, "create_"+request.Plural, request.Destroy, now, rendered.migrationUp, rendered.migrationDown)
 	if err != nil {
 		return resourceSpec{}, nil, err
 	}
 	if existing != "" {
-		return resourceSpec{}, nil, fmt.Errorf("refusing to generate: %s already creates the table %s; pick another resource name or --plural", existing, request.Plural)
+		// The same command run again finds its own migration pair, unchanged
+		// (and, checked below, every other file too).
+		migrations = identicalMigrationPair(projectRoot, "create_"+request.Plural, now, rendered.migrationUp, rendered.migrationDown)
+		if migrations == nil || request.Model {
+			return resourceSpec{}, nil, fmt.Errorf("refusing to generate: %s already creates the table %s; pick another resource name or --plural", existing, request.Plural)
+		}
+		rerun = true
 	}
 	if spec.Identity && !request.Destroy {
 		owner, permission, err := permissionRegisteredBy(projectRoot, "create_"+request.Plural, request.Plural+":read", request.Plural+":write")
@@ -495,7 +579,14 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 		files = append(files, extra...)
 	}
 
-	if err := checkPlannedFiles(projectRoot, files, request.Destroy); err != nil {
+	if rerun && !allIdentical(projectRoot, files) {
+		return resourceSpec{}, nil, fmt.Errorf("refusing to generate: %s already creates the table %s; pick another resource name or --plural", existing, request.Plural)
+	}
+	check := checkRerunnableFiles
+	if request.Model {
+		check = checkPlannedFiles
+	}
+	if err := check(projectRoot, files, request.Destroy); err != nil {
 		return resourceSpec{}, nil, err
 	}
 	return spec, files, nil
@@ -549,6 +640,23 @@ func planMigrationPair(projectRoot *os.Root, name string, destroy bool, now time
 	}, "", nil
 }
 
+// identicalMigrationPair returns the existing up/down pair named name, marked
+// identical, when both exist with exactly the content up and down; else nil.
+func identicalMigrationPair(projectRoot *os.Root, name string, now time.Time, up, down string) []generatedFile {
+	files, _, err := planMigrationPair(projectRoot, name, true, now, up, down)
+	if err != nil || len(files) != 2 {
+		return nil
+	}
+	for i := range files {
+		current, err := projectRoot.ReadFile(files[i].path)
+		if err != nil || string(current) != files[i].content {
+			return nil
+		}
+		files[i].identical = true
+	}
+	return files
+}
+
 // permissionRegisteredBy finds an up migration in db/migrations, other than
 // the pair named own, that names one of permissions as a SQL string literal
 // ('posts:read'), and returns its path and the permission it names. A
@@ -589,6 +697,19 @@ func permissionRegisteredBy(projectRoot *os.Root, own string, permissions ...str
 // a symlink or declare a Go name a package already declares. A destroy plan
 // names files that exist, so only the symlink check applies to it.
 func checkPlannedFiles(projectRoot *os.Root, files []generatedFile, destroy bool) error {
+	return checkPlanned(projectRoot, files, destroy, false)
+}
+
+// checkRerunnableFiles is checkPlannedFiles for the generators that wire
+// routes (resource, scaffold, controller): a file that already exists with
+// exactly the planned content (the same command run again) is marked
+// identical and kept, so running one twice with the same arguments changes
+// nothing.
+func checkRerunnableFiles(projectRoot *os.Root, files []generatedFile, destroy bool) error {
+	return checkPlanned(projectRoot, files, destroy, true)
+}
+
+func checkPlanned(projectRoot *os.Root, files []generatedFile, destroy, rerunnable bool) error {
 	paths := make([]string, 0, len(files))
 	for _, file := range files {
 		paths = append(paths, file.path)
@@ -599,6 +720,12 @@ func checkPlannedFiles(projectRoot *os.Root, files []generatedFile, destroy bool
 	if destroy {
 		return nil
 	}
+	if rerunnable && allIdentical(projectRoot, files) {
+		for i := range files {
+			files[i].identical = true
+		}
+		return nil
+	}
 	for _, path := range paths {
 		if _, err := projectRoot.Lstat(path); err == nil {
 			return fmt.Errorf("refusing to overwrite %s; nothing was written", path)
@@ -607,6 +734,23 @@ func checkPlannedFiles(projectRoot *os.Root, files []generatedFile, destroy bool
 		}
 	}
 	return rejectDeclarationConflicts(projectRoot, files)
+}
+
+// allIdentical reports whether every planned file already exists, as a
+// regular file, with exactly the planned content: the generator was run
+// before with the same arguments.
+func allIdentical(projectRoot *os.Root, files []generatedFile) bool {
+	for _, file := range files {
+		info, err := projectRoot.Lstat(file.path)
+		if err != nil || !info.Mode().IsRegular() {
+			return false
+		}
+		current, err := projectRoot.ReadFile(file.path)
+		if err != nil || string(current) != file.content {
+			return false
+		}
+	}
+	return len(files) > 0
 }
 
 // hasIdentityMigrations reports whether the application composes the Forge

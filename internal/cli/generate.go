@@ -171,6 +171,10 @@ type generatedFile struct {
 	// differs from what the generator writes, `forge destroy` keeps it
 	// instead of refusing the whole run.
 	translation bool
+	// identical marks a file that already exists with exactly this content
+	// (the generator run again with the same arguments): it is reported and
+	// left alone.
+	identical bool
 }
 
 // generatedView is a page of the application's view tree (app/views): it
@@ -523,6 +527,17 @@ func nextMigrationVersion(projectRoot *os.Root, now time.Time) (dir, version str
 	return dir, stamp.Format("20060102150405"), nil
 }
 
+// newFiles drops the files that already exist with the planned content.
+func newFiles(files []generatedFile) []generatedFile {
+	var result []generatedFile
+	for _, file := range files {
+		if !file.identical {
+			result = append(result, file)
+		}
+	}
+	return result
+}
+
 func applyGeneratedFiles(rootPath string, directories []string, files []generatedFile) error {
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
@@ -551,6 +566,9 @@ func applyGeneratedFiles(rootPath string, directories []string, files []generate
 		}
 	}
 	for _, planned := range files {
+		if planned.identical {
+			continue
+		}
 		file, err := root.OpenFile(planned.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			return rollback(err)

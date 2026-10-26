@@ -224,7 +224,7 @@ func TestGeneratedControllersBuildWireAndPass(t *testing.T) {
 					ViewRenderer: identity && !request.API,
 				}))
 			}
-			wireParts(t, dir, parts)
+			wireRoutes(t, dir, parts)
 			imports, configuration := wiredTestConfig(database.name)
 			writeFile(t, filepath.Join(dir, "app", "bootstrap", "controllers_wired_test.go"), fmt.Sprintf(controllerWiredTest, imports, configuration,
 				quoted("/pages/home", "/pages/about_us", "/pages", "/reports/monthly", "/reports/type", "/v1/status_checks", "/v1/status_checks/detail"),

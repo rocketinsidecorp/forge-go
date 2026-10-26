@@ -15,7 +15,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/i18n"
 )
 
-const scaffoldUsage = "usage: forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--broadcast] [--dry-run]"
+const scaffoldUsage = "usage: forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--broadcast] [--public] [--dry-run]"
 
 // scaffoldReservedPlurals are the first path segments the application or the
 // view tree already owns: /assets and /health are routes Forge registers,
@@ -52,12 +52,7 @@ func runGenerateScaffold(args []string, stdout io.Writer, root string, env []str
 	if err != nil {
 		return err
 	}
-	if !request.DryRun {
-		if err := applyGeneratedFiles(root, directoriesOf(files), files); err != nil {
-			return err
-		}
-	}
-	return reportGenerated(stdout, spec, files)
+	return generateResourceFiles(stdout, root, spec, files, directoriesOf(newFiles(files)))
 }
 
 // planScaffoldFiles renders the HTML adapter, its tests and the templates, and
@@ -65,7 +60,8 @@ func runGenerateScaffold(args []string, stdout io.Writer, root string, env []str
 func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFile, error) {
 	spec.BrowserPipeline = hasBrowserPipeline(projectRoot)
 	spec.I18nMiddleware = hasI18nMiddleware(projectRoot)
-	spec.ViewRenderer = hasViewRenderer(projectRoot)
+	// The seam builds the pages' renderer itself.
+	spec.ViewRenderer = hasViewRenderer(projectRoot) && !spec.Seam
 	view := newScaffoldView(*spec)
 	var files []generatedFile
 	sources := []struct{ path, template string }{

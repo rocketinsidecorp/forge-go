@@ -343,15 +343,15 @@ func TestGenerateControllerInIdentityApplicationsRegistersItsPermission(t *testi
 		t.Errorf("permission migration:\n%s\n%s", up, down)
 	}
 	// This application mounts no bearer login (POST /auth/login), so the
-	// JSON controller is wired closed, as in forge-rust.
+	// JSON controller authenticates the session cookie and the CSRF token.
 	api := mustGenerate(t, root, "controller", "feeds", "latest", "--api")
-	if !strings.Contains(api, "protect refuses every request") || !strings.Contains(api, "httpapi.RegisterFeedsController(app, protect)") ||
+	if !strings.Contains(api, "middleware.AuthenticateCookie(checked)") || !strings.Contains(api, "auth.RequireCSRF(guarded)") || !strings.Contains(api, "httpapi.RegisterFeedsController(app, protect)") ||
 		!strings.Contains(api, "forge generate authentication --api-auth") {
-		t.Errorf("a JSON controller without bearer sign-in is not wired closed:\n%s", api)
+		t.Errorf("a JSON controller without bearer sign-in does not authenticate the session cookie:\n%s", api)
 	}
 	writeFile(t, filepath.Join(root, "app", "bootstrap", "bootstrap.go"), "package bootstrap\n\n// app.Handle(\"POST /auth/login\", loginHandler)\n")
 	bearer := mustGenerate(t, root, "controller", "streams", "latest", "--api")
-	if !strings.Contains(bearer, "middleware.Authenticate(guarded)") || strings.Contains(bearer, "protect refuses every request") {
+	if !strings.Contains(bearer, "middleware.Authenticate(guarded)") || strings.Contains(bearer, "AuthenticateCookie") {
 		t.Errorf("a JSON controller with bearer sign-in does not authenticate the bearer token:\n%s", bearer)
 	}
 	// A public controller registers nothing.

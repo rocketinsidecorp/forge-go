@@ -96,6 +96,9 @@ type templateData struct {
 	DevMigrationURL string
 	// MFAEncryptionKey is the base64-encoded 32-byte key for MFA secret encryption.
 	MFAEncryptionKey string
+	// RoutesCall is how bootstrap.go calls the generators' routes
+	// (routes_gen.go).
+	RoutesCall string
 }
 
 type file struct {
@@ -103,6 +106,10 @@ type file struct {
 	path     func(name string) string
 	scope    fileScope
 }
+
+// routesTemplate names the one generated file that is built by code rather
+// than a template: the routes seam, whose checksum covers its formatted text.
+const routesTemplate = "(routes_gen.go)"
 
 // fileScope selects the applications a file is generated for.
 type fileScope int
@@ -135,6 +142,8 @@ var files = []file{
 	{"main.go.tmpl", func(name string) string { return filepath.Join("cmd", name, "main.go") }, everyApplication},
 	{"bootstrap.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap.go")), everyApplication},
 	{"bootstrap_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap_test.go")), everyApplication},
+	// The routes the generators add (see routes.go); empty at first.
+	{routesTemplate, fixed(RoutesFile), everyApplication},
 	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), everyApplication},
 	{"welcome_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome_test.go")), everyApplication},
 	{"app_assets.go.tmpl", fixed(filepath.Join("app", "assets", "assets.go")), withViews},
@@ -447,6 +456,7 @@ func render(opts Options) (map[string][]byte, error) {
 		data.AppDatabaseURL, data.DevDatabaseURL, data.TestDatabaseURL = databaseURLs(data.DB, data.DBUser, data.DBName, data.DBHostPort)
 		data.AppMigrationURL, data.DevMigrationURL = migrationURLs(data.DB, data.DBName, data.DBHostPort)
 	}
+	data.RoutesCall = RoutesCall(routesAppOf(data))
 	// Keep the generated MFA key in the git-ignored .env.local, not the
 	// committed .env.development defaults.
 	if data.DB != nil && data.DB.Identity {
@@ -458,6 +468,14 @@ func render(opts Options) (map[string][]byte, error) {
 	}
 	output := make(map[string][]byte, len(files))
 	for _, f := range selectedFiles(opts) {
+		if f.template == routesTemplate {
+			content, err := routesFile(data)
+			if err != nil {
+				return nil, err
+			}
+			output[f.path(opts.Name)] = content
+			continue
+		}
 		var buffer bytes.Buffer
 		set := templates
 		if strings.HasSuffix(f.template, viewTemplateSuffix) {
