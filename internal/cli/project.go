@@ -111,6 +111,12 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	return err
 }
 
+// runGoStep runs one go command of resolveDependencies in dir; tests replace
+// it to observe the arguments without running the go tool.
+var runGoStep = func(ctx context.Context, dir string, stdout, stderr io.Writer, args ...string) error {
+	return goCommand(ctx, dir, nil, stdout, stderr, args...).Run()
+}
+
 // resolveDependencies adds the framework requirement. With a local checkout
 // the dependency is replaced and vendored, so the Docker build context stays
 // self-contained; otherwise the matching release is fetched.
@@ -128,7 +134,7 @@ func resolveDependencies(ctx context.Context, dir, localFramework string, stdout
 	}
 	for _, step := range steps {
 		fmt.Fprintf(stdout, "  run     go %s\n", strings.Join(step, " "))
-		if err := goCommand(ctx, dir, nil, stdout, stderr, step...).Run(); err != nil {
+		if err := runGoStep(ctx, dir, stdout, stderr, step...); err != nil {
 			return fmt.Errorf("go %s: %w", step[0], err)
 		}
 	}

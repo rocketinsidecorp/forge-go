@@ -3,10 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -37,19 +39,37 @@ func TestCheckFrameworkPathAcceptsOnlyTheFrameworkModule(t *testing.T) {
 	}
 }
 
+// recordGoSteps replaces runGoStep so no go command runs, and returns what it
+// was asked to run. fail names the first argument of a step that returns an
+// error. Not for parallel tests: runGoStep is a package variable.
+func recordGoSteps(t *testing.T, fail string) *[][]string {
+	t.Helper()
+	previous := runGoStep
+	t.Cleanup(func() { runGoStep = previous })
+	var steps [][]string
+	runGoStep = func(_ context.Context, _ string, _, _ io.Writer, args ...string) error {
+		steps = append(steps, append([]string(nil), args...))
+		if args[0] == fail {
+			return errors.New("simulated failure")
+		}
+		return nil
+	}
+	return &steps
+}
+
 func TestResolveDependenciesNamesTheStepThatFailed(t *testing.T) {
-	t.Parallel()
-	// A directory that is no module: the first step of either flavor fails
-	// without touching the network.
+	// Not parallel: runGoStep is replaced.
+	steps := recordGoSteps(t, "get")
 	var out strings.Builder
 	err := resolveDependencies(context.Background(), t.TempDir(), "", &out, io.Discard)
-	if err == nil || !strings.HasPrefix(err.Error(), "go get: ") || !strings.Contains(out.String(), "run     go get github.com/rocketinsidecorp/forge-go@") {
-		t.Errorf("a release: err %v, output %q", err, out.String())
+	if err == nil || !strings.HasPrefix(err.Error(), "go get: ") || !strings.Contains(out.String(), "run     go get github.com/rocketinsidecorp/forge-go@") || len(*steps) != 1 {
+		t.Errorf("a release: err %v, output %q, steps %v", err, out.String(), *steps)
 	}
+	steps = recordGoSteps(t, "mod")
 	out.Reset()
 	err = resolveDependencies(context.Background(), t.TempDir(), "/checkout/forge-go", &out, io.Discard)
-	if err == nil || !strings.HasPrefix(err.Error(), "go mod: ") || !strings.Contains(out.String(), "-replace=github.com/rocketinsidecorp/forge-go=/checkout/forge-go") {
-		t.Errorf("a local checkout: err %v, output %q", err, out.String())
+	if err == nil || !strings.HasPrefix(err.Error(), "go mod: ") || !strings.Contains(out.String(), "-replace=github.com/rocketinsidecorp/forge-go=/checkout/forge-go") || len(*steps) != 1 {
+		t.Errorf("a local checkout: err %v, output %q, steps %v", err, out.String(), *steps)
 	}
 }
 
@@ -190,20 +210,36 @@ func TestVersionCommandPrintsTheBuildInfoVersion(t *testing.T) {
 }
 
 func TestResolveDependenciesPinsTheBuildInfoVersionButNotALocalCheckout(t *testing.T) {
-	// Not parallel: readBuildInfo is replaced.
+	// Not parallel: readBuildInfo and runGoStep are replaced.
 	previous := readBuildInfo
 	t.Cleanup(func() { readBuildInfo = previous })
-	readBuildInfo = func() (*debug.BuildInfo, bool) {
-		return &debug.BuildInfo{Main: debug.Module{Path: "github.com/rocketinsidecorp/forge-go", Version: "v0.0.0-20261024123456-0123456789ab", Sum: "h1:x="}}, true
+	readBuildInfo = buildInfoOf("github.com/rocketinsidecorp/forge-go", "v0.0.0-20261024123456-0123456789ab", "h1:x=")
+	steps := recordGoSteps(t, "")
+	if err := resolveDependencies(context.Background(), t.TempDir(), "", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
 	}
-	var out strings.Builder
-	_ = resolveDependencies(context.Background(), t.TempDir(), "", &out, io.Discard)
-	if want := "run     go get github.com/rocketinsidecorp/forge-go@v0.0.0-20261024123456-0123456789ab"; !strings.Contains(out.String(), want) {
-		t.Errorf("output %q lacks %q", out.String(), want)
+	want := [][]string{{"get", "github.com/rocketinsidecorp/forge-go@v0.0.0-20261024123456-0123456789ab"}, {"mod", "tidy"}}
+	if !reflect.DeepEqual(*steps, want) {
+		t.Errorf("steps = %v, want %v", *steps, want)
 	}
-	out.Reset()
-	_ = resolveDependencies(context.Background(), t.TempDir(), "/checkout/forge-go", &out, io.Discard)
-	if strings.Contains(out.String(), "go get") || !strings.Contains(out.String(), "-replace=") {
-		t.Errorf("a local checkout must replace, not fetch: %q", out.String())
+	steps = recordGoSteps(t, "")
+	if err := resolveDependencies(context.Background(), t.TempDir(), "/checkout/forge-go", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	want = [][]string{
+		{"mod", "edit", "-require=github.com/rocketinsidecorp/forge-go@v0.0.0", "-replace=github.com/rocketinsidecorp/forge-go=/checkout/forge-go"},
+		{"mod", "tidy"}, {"mod", "vendor"},
+	}
+	if !reflect.DeepEqual(*steps, want) {
+		t.Errorf("a local checkout: steps = %v, want %v (and no go get)", *steps, want)
+	}
+	// A CLI built from a checkout (no Sum) resolves latest.
+	readBuildInfo = buildInfoOf("github.com/rocketinsidecorp/forge-go", "v0.0.0-20261024123456-0123456789ab", "")
+	steps = recordGoSteps(t, "")
+	if err := resolveDependencies(context.Background(), t.TempDir(), "", io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if (*steps)[0][1] != "github.com/rocketinsidecorp/forge-go@latest" {
+		t.Errorf("checkout build: steps = %v, want @latest", *steps)
 	}
 }
