@@ -382,6 +382,46 @@ func TestJSONHelpersTreatUndecodableEntriesAsMisses(t *testing.T) {
 	}
 }
 
+// A value that does not decode is counted every time and logged once per
+// key, at warn level, with a hash of the key and never the key or the value.
+func TestUndecodableEntriesAreCountedAndLoggedOncePerKey(t *testing.T) {
+	m, _ := NewMemory(MemoryOptions{})
+	var logs bytes.Buffer
+	ctx := web.WithLogger(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)))
+	key := "profiles:" + t.Name()
+	_ = m.Set(ctx, key, []byte(`{"name": "secret-value-12345", "age": "old"}`), time.Minute)
+	before := DecodeFailures()
+	for range 3 {
+		if _, ok, err := GetJSON[profile](ctx, m, key); ok || err != nil {
+			t.Fatalf("GetJSON on a stale entry = %v, %v; want a miss", ok, err)
+		}
+	}
+	// FetchJSON reads the entry twice but counts it once, then replaces it.
+	if _, err := FetchJSON(ctx, m, key, time.Minute, func(context.Context) (profile, error) { return profile{"New", 1}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := DecodeFailures() - before; got != 4 {
+		t.Fatalf("DecodeFailures grew by %d, want 4", got)
+	}
+	output := logs.String()
+	if n := strings.Count(output, "cached value does not decode"); n != 1 {
+		t.Fatalf("logged %d times, want once per key:\n%s", n, output)
+	}
+	if !strings.Contains(output, "level=WARN") || !strings.Contains(output, "key_sha256=") {
+		t.Errorf("the log line lacks the level or the key hash:\n%s", output)
+	}
+	if strings.Contains(output, key) || strings.Contains(output, "secret-value-12345") {
+		t.Errorf("the log line leaks the key or the value:\n%s", output)
+	}
+	// The replaced entry decodes again: no new failure.
+	if _, ok, _ := GetJSON[profile](ctx, m, key); !ok {
+		t.Fatal("the replaced entry does not decode")
+	}
+	if got := DecodeFailures() - before; got != 4 {
+		t.Fatalf("DecodeFailures grew by %d after a good read, want 4", got)
+	}
+}
+
 func TestFetchJSONPropagatesComputeErrors(t *testing.T) {
 	m, _ := NewMemory(MemoryOptions{})
 	boom := errors.New("boom")

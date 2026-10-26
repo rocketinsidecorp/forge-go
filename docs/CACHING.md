@@ -29,7 +29,14 @@ price, err := cache.FetchJSON(ctx, c, cache.Key("price", sku), 10*time.Minute,
   write is logged (without key or value) and the computed value is returned.
   Direct `Get`/`Set`/`Delete` report store errors.
 - A cached value that no longer decodes (`GetJSON`/`FetchJSON`; for example the
-  struct changed in a deploy) is a miss and is recomputed.
+  struct changed in a deploy, or an entry written by something else) is a miss
+  and is recomputed. It is not silent: every such value is counted
+  (`cache.DecodeFailures()`, for the process) and the first one of each key is
+  logged at warn level as `cached value does not decode`, with `key_sha256`
+  (a SHA-256 prefix of the key, never the key or the value), through the
+  request's logger or `slog.Default()` outside a request. A growing count
+  after a deploy means a type changed without a new key version: put a
+  version in the key (`cache.Key("price", "v2", sku)`).
 - `ttl == 0` means the store's `DefaultTTL`; a negative or over-a-year ttl is an
   error. Nothing lives forever.
 - Values and keys are copied; `[]byte` values may contain anything. Keys are

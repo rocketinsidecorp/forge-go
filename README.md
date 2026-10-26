@@ -1161,6 +1161,9 @@ Cache (memory, or shared in the database; stampede-protected `Fetch`):
 ```go
 c, _ := cache.NewMemory(cache.MemoryOptionsFromConfig(cfg.Cache))
 price, err := cache.FetchJSON(ctx, c, cache.Key("price", sku), 10*time.Minute, loadPrice)
+// A cached value that no longer decodes is a miss, logged once per key at
+// warn level (key hashed) and counted:
+undecodable := cache.DecodeFailures()
 ```
 
 Shared stores for several replicas (PostgreSQL shown; `mysql` and `sqlite` work
