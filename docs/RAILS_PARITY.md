@@ -50,6 +50,35 @@ the work is finished and waiting for its review; **Planned** means not started.
 
 ## Parity follow-ups
 
+- RLS, environment and lifecycle hardening (forge-go QG9, audit items #14,
+  #15 and #20; Forge-Rust follow-up to be filed). Forge-Go now: refuses a
+  serving role that holds `TRUNCATE`, `REFERENCES` or `TRIGGER` on a table
+  with row-level security, directly, through `PUBLIC` or through any
+  membership (`has_table_privilege`), with the reason "holds TRUNCATE,
+  REFERENCES or TRIGGER"; runs the refusal by default in every
+  `postgres.Open` outside development and test (`config.Database.Environment`),
+  with `postgres.AllowRowSecurityBypass()` as the only opt-out; keeps
+  `PGOPTIONS`, `PGTZ` and `PGAPPNAME` out of the serving pool unless the URL
+  names them (the migrator keeps them); refuses symlinked credential key and
+  `.json.enc` files (`credentials.ErrSymlink`, as Rust's `O_NOFOLLOW`);
+  exposes `App.Serving()` (false under `routes` and `openapi`), and the
+  generated bootstrap starts its scheduler and recovery queue only when
+  serving and opens its pool lazily otherwise (`postgres.Lazy`, `mysql.Lazy`;
+  a lazy PostgreSQL pool checks each connection's role); skips stale
+  scheduler ticks (`MaxLateness`); wires generated JSON routes closed in an
+  application without bearer sign-in (Rust's `DenyAll`, adopted from
+  forge-rust#83); pins the generated `Dockerfile` bases by digest; generates
+  identity IDs in Go with no `DEFAULT uuidv7()`; counts and logs cache values
+  that no longer decode (`cache.DecodeFailures`). Forge-Rust adopts: the
+  `TRUNCATE`/`REFERENCES`/`TRIGGER` rule with the same catalog predicate and
+  reason in `require_row_security`; the refusal on every pool a command
+  opens (it runs for `serve`, `jobs work` and the `jobs` commands, while
+  application commands such as `seed` and `setup` get an unchecked pool),
+  with an opt-out named like `AllowRowSecurityBypass`; ignoring `PGOPTIONS`
+  for the serving pool (SQLx reads it); digest-pinned bases in its generated
+  `Dockerfile`; a counter and one warning per key for undecodable cache
+  values; and agreeing the `max_lateness` default.
+
 - Queue and scheduler throughput (forge-go QG4c, audit PF-1, PF-2, PF-5,
   PF-7; [ADR 0047](adr/0047-batch-claims-notify-and-recorded-ticks.md)).
   Forge-Rust already claims jobs in batches (up to a queue's free slots,
@@ -58,7 +87,11 @@ the work is finished and waiting for its review; **Planned** means not started.
   (`forge_job_schedules.last_tick_at`, advanced by `forge_jobs_fire_tick`),
   which Forge-Go now mirrors with the same table and column names
   (`jobs.TickClaimer`); Go runs the tick in process where Rust enqueues it as
-  a job, and Rust also skips ticks older than `max_lateness`. Rust lacks the
+  a job. Both skip stale ticks instead of replaying them (Rust
+  `Schedule::max_lateness`, Go `SchedulerOptions.MaxLateness` since forge-go
+  QG9: the latest due tick runs once, earlier ones are skipped and reported);
+  the defaults differ (Rust five minutes, at least one; Go one interval of
+  the schedule), to be agreed. Rust lacks the
   wake-up: it adopts `NOTIFY forge_jobs` (payload: the queue name, sent in
   `forge_jobs_enqueue` for due jobs) and a worker `LISTEN` owned by `Jobs::run`
   with the same reconnect backoff (0.5s to 1s, doubling to 15s to 30s) behind
