@@ -49,13 +49,14 @@ func RequireRowSecurity(environment config.Environment) Option {
 // roleEscapeQuery describes the login role (session_user) and the role in
 // effect (current_user), login role first: their own SUPERUSER, BYPASSRLS and
 // CREATEROLE attributes, and membership in a role with SUPERUSER or BYPASSRLS
-// (attributes are not inherited, but a member can SET ROLE).
+// (attributes are not inherited, but a member can SET ROLE). Catalog names
+// are qualified, so a search_path setting cannot substitute a pg_roles view.
 const roleEscapeQuery = `
 SELECT u.rolname, u.rolname = session_user, u.rolsuper, u.rolbypassrls, u.rolcreaterole,
-       EXISTS (SELECT 1 FROM pg_roles r
+       EXISTS (SELECT 1 FROM pg_catalog.pg_roles r
                WHERE (r.rolsuper OR r.rolbypassrls) AND r.oid <> u.oid
-                 AND pg_has_role(u.oid, r.oid, 'MEMBER'))
-FROM pg_roles u
+                 AND pg_catalog.pg_has_role(u.oid, r.oid, 'MEMBER'))
+FROM pg_catalog.pg_roles u
 WHERE u.rolname IN (session_user, current_user)
 ORDER BY u.rolname = session_user DESC`
 
@@ -95,6 +96,13 @@ func refuseRowSecurityBypass(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("check the database role's row-level security: %w", err)
+	}
+	// Fail closed: the query must find the login role. pg_roles always holds
+	// session_user, so an empty result means something is wrong (a catalog
+	// that cannot be read as expected), never that the role is harmless.
+	if login == "" {
+		return fmt.Errorf("%w: refusing to serve outside development and test: "+
+			"the role FORGE_DATABASE_URL logs in as was not found in pg_roles", ErrRowSecurityBypass)
 	}
 	if refusal == "" && acting != "" {
 		refusal = fmt.Sprintf("PostgreSQL role %q acting as %q (a role setting such as options=-c role=), "+

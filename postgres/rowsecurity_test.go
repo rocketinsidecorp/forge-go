@@ -141,12 +141,18 @@ func TestRuntimeRoleIsConfinedByRowLevelSecurity(t *testing.T) {
 // the session logs in as cfg's user and then acts as role.
 func actingAs(t *testing.T, cfg config.Database, role string) config.Database {
 	t.Helper()
+	return withSetting(t, cfg, "role="+role)
+}
+
+// withSetting returns cfg with options=-c <setting> in its URL.
+func withSetting(t *testing.T, cfg config.Database, setting string) config.Database {
+	t.Helper()
 	parsed, err := url.Parse(cfg.URL.Reveal())
 	if err != nil {
 		t.Fatal("invalid test database URL")
 	}
 	query := parsed.Query()
-	query.Set("options", "-c role="+role)
+	query.Set("options", "-c "+setting)
 	parsed.RawQuery = strings.ReplaceAll(query.Encode(), "+", "%20")
 	cfg.URL = config.NewSecret(parsed.String())
 	return cfg
@@ -233,5 +239,29 @@ func TestRequireRowSecurityRefusesBypassingRolesOutsideDevelopmentAndTest(t *tes
 
 	if err := open(db.RuntimeConfig, config.Production); err != nil {
 		t.Fatalf("the runtime role in production after the revocations: %v", err)
+	}
+}
+
+// A pg_roles view earlier on the search_path, showing no role at all, does
+// not hide the superuser: the check reads pg_catalog.pg_roles.
+func TestRequireRowSecurityIgnoresAShadowingPgRolesView(t *testing.T) {
+	admin, cfg := postgrestest.NewWithConfig(t)
+	ctx := context.Background()
+	var superuser bool
+	if err := admin.QueryRow(ctx, "SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user").Scan(&superuser); err != nil {
+		t.Fatal(err)
+	}
+	if !superuser {
+		t.Skip("the test server's user is not a superuser")
+	}
+	if _, err := admin.Exec(ctx, "CREATE VIEW public.pg_roles AS SELECT * FROM pg_catalog.pg_roles WHERE false"); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := postgres.Open(ctx, withSetting(t, cfg, "search_path=public,pg_catalog"), postgres.RequireRowSecurity(config.Production))
+	if err == nil {
+		pool.Close()
+	}
+	if !errors.Is(err, postgres.ErrRowSecurityBypass) || !strings.Contains(err.Error(), "is a superuser") {
+		t.Fatalf("superuser behind a shadowing pg_roles view: err = %v, want it refused as a superuser", err)
 	}
 }

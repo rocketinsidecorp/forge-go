@@ -40,35 +40,44 @@ func uuidv7Migrator(t *testing.T, cfg config.Database, set fstest.MapFS) *migrat
 
 // A migration calling uuidv7() on a server without it fails with the
 // server version and the way out, keeps the PostgreSQL error, and leaves
-// nothing applied. A wrong argument list raises the same SQLSTATE 42883 on
-// every version.
+// nothing applied. On PostgreSQL 18 the same SQLSTATE 42883 from a wrong
+// argument list, and on every version a missing function whose name only
+// contains uuidv7, get no hint.
 func TestMissingUUIDv7FailsWithTheServerVersion(t *testing.T) {
 	db, cfg := postgrestest.NewWithConfig(t)
 	ctx := context.Background()
+	modern := serverVersion(t, db) >= 180000
+	const hint = "uuidv7() needs PostgreSQL 18, or a uuidv7() function defined by an earlier migration"
 	migrator := uuidv7Migrator(t, cfg, fstest.MapFS{
 		"20260101000000_things.up.sql": {Data: []byte("CREATE TABLE things (id uuid PRIMARY KEY);\nSELECT uuidv7('not', 'a', 'signature');")},
 	})
 	_, err := migrator.Up(ctx)
 	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "42883" ||
-		!strings.Contains(err.Error(), "uuidv7() needs PostgreSQL 18, or a uuidv7() function defined by an earlier migration") ||
-		!strings.Contains(err.Error(), "this server is PostgreSQL ") || strings.Contains(err.Error(), "PostgreSQL unknown") {
-		t.Fatalf("err = %v, want the PostgreSQL error explained with the server version", err)
+	if !errors.As(err, &pgErr) || pgErr.Code != "42883" || strings.Contains(err.Error(), hint) == modern ||
+		(!modern && !strings.Contains(err.Error(), "this server is PostgreSQL ")) {
+		t.Fatalf("err = %v, want the PostgreSQL error, explained only before PostgreSQL 18", err)
 	}
 	var exists bool
 	if err := db.QueryRow(ctx, "SELECT to_regclass('things') IS NOT NULL").Scan(&exists); err != nil || exists {
 		t.Fatalf("the failed migration left its table behind: %v, %v", exists, err)
 	}
 
+	unrelated := uuidv7Migrator(t, postgrestest.Config(t), fstest.MapFS{
+		"20260101000000_helper.up.sql": {Data: []byte("SELECT my_uuidv7_helper();")},
+	})
+	if _, err := unrelated.Up(ctx); !errors.As(err, &pgErr) || pgErr.Code != "42883" || strings.Contains(err.Error(), hint) {
+		t.Fatalf("a missing my_uuidv7_helper(): err = %v, want the plain PostgreSQL error", err)
+	}
+
 	plain := uuidv7Migrator(t, postgrestest.Config(t), fstest.MapFS{
 		"20260101000000_things.up.sql": {Data: []byte("CREATE TABLE things (id uuid PRIMARY KEY DEFAULT uuidv7());")},
 	})
 	_, err = plain.Up(ctx)
-	if serverVersion(t, db) >= 180000 {
+	if modern {
 		if err != nil {
 			t.Fatalf("DEFAULT uuidv7() on PostgreSQL 18: %v", err)
 		}
-	} else if err == nil || !strings.Contains(err.Error(), "uuidv7() needs PostgreSQL 18") {
+	} else if err == nil || !strings.Contains(err.Error(), hint) {
 		t.Fatalf("DEFAULT uuidv7() before PostgreSQL 18: err = %v, want the explanation", err)
 	}
 }
