@@ -66,7 +66,8 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	module := flags.String("module", "", "Go module path (default: NAME)")
 	dir := flags.String("dir", "", "target directory (default: NAME)")
-	frameworkPath := flags.String("framework-path", "", "use a local Forge checkout and vendor it (framework development)")
+	forgePath := flags.String("forge-path", "", "use a local Forge checkout and vendor it (framework development)")
+	deprecatedPath := flags.String("framework-path", "", "deprecated alias of --forge-path; removed in the next minor version")
 	skipDeps := flags.Bool("skip-deps", false, "generate files without resolving Go dependencies")
 	database := flags.String("database", "postgresql", "database: "+strings.Join(scaffold.Databases, ", ")+" or none")
 	flags.StringVar(database, "d", "postgresql", "shorthand for --database")
@@ -74,6 +75,10 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	locale := flags.String("locale", "en", "default locale: "+strings.Join(scaffold.Locales, ", ")+" (en.json is always generated)")
 	apiAuth := flags.Bool("api-auth", false, "also mount the JSON authentication APIs (bearer and cookie login, MFA completion, JSON password recovery, GET /v1/auth/session); PostgreSQL only")
 	name, err := parseSinglePositional(flags, args, "NAME")
+	if err != nil {
+		return err
+	}
+	frameworkPath, err := resolveForgePath(flags, *forgePath, *deprecatedPath, stderr)
 	if err != nil {
 		return err
 	}
@@ -90,8 +95,8 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	localFramework := ""
-	if *frameworkPath != "" {
-		if localFramework, err = checkFrameworkPath(*frameworkPath); err != nil {
+	if frameworkPath != "" {
+		if localFramework, err = checkFrameworkPath(frameworkPath); err != nil {
 			return err
 		}
 	}
@@ -110,6 +115,26 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	}
 	_, err = fmt.Fprintf(stdout, "\nNext steps:\n  cd %s\n  docker compose up --build   # or: forge dev\n\n  After it starts, visit http://127.0.0.1:8080/ for the welcome screen.\n\n  Traces, metrics and logs in Grafana (Prometheus, Tempo, Loki): see \"Observability stack\" in README.md.\n", opts.Dir)
 	return err
+}
+
+// resolveForgePath returns the local checkout named by --forge-path or by its
+// deprecated alias --framework-path. The alias still works and prints exactly
+// one deprecation line to stderr; naming both with different values is a usage
+// error.
+func resolveForgePath(flags *flag.FlagSet, forgePath, deprecatedPath string, stderr io.Writer) (string, error) {
+	var canonicalSet, aliasSet bool
+	flags.Visit(func(f *flag.Flag) {
+		canonicalSet = canonicalSet || f.Name == "forge-path"
+		aliasSet = aliasSet || f.Name == "framework-path"
+	})
+	switch {
+	case !aliasSet:
+		return forgePath, nil
+	case canonicalSet && forgePath != deprecatedPath:
+		return "", errors.New("--forge-path and --framework-path name different directories; use only --forge-path")
+	}
+	fmt.Fprintln(stderr, "forge: --framework-path is deprecated and will be removed in the next minor version; use --forge-path")
+	return deprecatedPath, nil
 }
 
 // runGoStep runs one go command of resolveDependencies in dir; tests replace

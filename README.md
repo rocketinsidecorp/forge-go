@@ -668,7 +668,7 @@ response against the document. Details, type mapping and tags:
 
 | Command | Description |
 | ------- | ----------- |
-| `forge new NAME [--database DB] [--locale LOCALE] [--api-auth] [--module PATH] [--dir DIR] [--framework-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
+| `forge new NAME [--database DB] [--locale LOCALE] [--api-auth] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
 | `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
@@ -724,7 +724,7 @@ Flags for `forge new`:
   login and logout, MFA completion, JSON password recovery,
   `GET /v1/auth/session`) beside the HTML sign-in pages; PostgreSQL only.
   Without it the pages are the only way to sign in.
-- `--framework-path DIR` is for framework contributors: it adds a `replace`
+- `--forge-path DIR` is for framework contributors: it adds a `replace`
   directive pointing at a local checkout, then runs `go mod tidy` and
   `go mod vendor` so the Docker build context is self-contained. In such an
   application (any with a `vendor/` directory) every `forge generate ...` that
@@ -739,6 +739,9 @@ Flags for `forge new`:
   it too). A CLI built from a checkout (`go build`, or `go install` run in it)
   resolves `latest`, even when Go stamps a VCS pseudo-version, because that
   commit may not be published.
+- `--framework-path DIR` is the deprecated former name of `--forge-path`. It
+  still works for one more minor version and prints one deprecation line to
+  stderr; passing both flags with different directories is a usage error.
 
 `forge generate migration NAME` requires `NAME` to match
 `^[a-z][a-z0-9_]{0,99}$` and `db/migrations` to exist. If a migration with the
