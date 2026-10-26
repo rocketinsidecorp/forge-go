@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/internal/exectest"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 // The SSH integration tests run the real system ssh client against private
@@ -617,12 +618,8 @@ func TestSSHIntegration(t *testing.T) {
 		var out syncBuffer
 		done := make(chan error, 1)
 		go func() { done <- d.Logs(followCtx, &out, LogsOptions{Follow: true}) }()
-		deadline := time.Now().Add(10 * time.Second)
-		for strings.Count(out.String(), "ERROR something failed") < 2 {
-			if time.Now().After(deadline) {
-				t.Fatalf("no output from both hosts:\n%s", out.String())
-			}
-			time.Sleep(20 * time.Millisecond)
+		if !waittest.Poll(10*time.Second, func() bool { return strings.Count(out.String(), "ERROR something failed") >= 2 }) {
+			t.Fatalf("no output from both hosts:\n%s", out.String())
 		}
 		cancel()
 		select {
@@ -642,14 +639,7 @@ func TestSSHIntegration(t *testing.T) {
 				content, _ := os.ReadFile(pidFile)
 				var pid int
 				_, _ = fmt.Sscan(string(content), &pid)
-				gone := false
-				for range 100 {
-					if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-						gone = true
-						break
-					}
-					time.Sleep(50 * time.Millisecond)
-				}
+				gone := waittest.Poll(5*time.Second, func() bool { return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) })
 				if !gone {
 					_ = syscall.Kill(pid, syscall.SIGKILL)
 					t.Fatalf("%s: remote docker logs (pid %d) still running after cancel", host, pid)

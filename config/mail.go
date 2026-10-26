@@ -116,7 +116,7 @@ func (m Mail) FilePath() string {
 		}
 		return path
 	}
-	return parsed.Path // file:///var/tmp/forge-mail
+	return parsed.Path // the directory of a URL such as file:///var/tmp/forge-mail
 }
 
 // EffectiveTimeout returns Timeout, or the 30 second default when unset.

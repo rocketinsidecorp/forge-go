@@ -210,7 +210,7 @@ func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 				return resourceRequest{}, errors.New("--plural needs a value")
 			}
 		case strings.HasPrefix(arg, "-"):
-			return resourceRequest{}, fmt.Errorf("unknown flag %q\n%s", arg, usage)
+			return resourceRequest{}, usageError{fmt.Sprintf("unknown flag %q\n%s", arg, usage)}
 		default:
 			positional = append(positional, arg)
 		}
@@ -223,7 +223,7 @@ func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 	}
 	request.TenantScoped = tenantScoped
 	if len(positional) == 0 {
-		return resourceRequest{}, errors.New(usage)
+		return resourceRequest{}, usageError{usage}
 	}
 	request.Name = positional[0]
 	if err := validateResourceName(request.Name); err != nil {

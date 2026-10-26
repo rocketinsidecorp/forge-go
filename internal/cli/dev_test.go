@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 func TestParseDevArgs(t *testing.T) {
@@ -67,7 +69,7 @@ func TestStartReloadProxyOnlyInDevelopmentOverPlainHTTP(t *testing.T) {
 		"unsupported env": {"FORGE_ENV=bogus"},
 	} {
 		var log bytes.Buffer
-		proxy, listener, err := startReloadProxy(env, func(format string, args ...any) { log.WriteString(format + "\n") })
+		proxy, listener, err := startReloadProxy(context.Background(), env, func(format string, args ...any) { log.WriteString(format + "\n") })
 		if err != nil || proxy != nil || listener != nil {
 			if listener != nil {
 				_ = listener.Close()
@@ -79,7 +81,7 @@ func TestStartReloadProxyOnlyInDevelopmentOverPlainHTTP(t *testing.T) {
 		}
 	}
 
-	proxy, listener, err := startReloadProxy([]string{"FORGE_ENV=development", "FORGE_HTTP_ADDR=127.0.0.1:0"}, func(string, ...any) {})
+	proxy, listener, err := startReloadProxy(context.Background(), []string{"FORGE_ENV=development", "FORGE_HTTP_ADDR=127.0.0.1:0"}, func(string, ...any) {})
 	if err != nil || proxy == nil || listener == nil {
 		t.Fatalf("development: proxy=%v listener=%v err=%v", proxy, listener, err)
 	}
@@ -158,7 +160,7 @@ func TestDevLoopRebuildsRestartsAndKeepsServingThroughABuildFailure(t *testing.T
 	mainFile := filepath.Join(root, "cmd", "hello", "main.go")
 	writeFile(t, mainFile, devSource("v1"))
 
-	address, err := freeLoopbackPort()
+	address, err := freeLoopbackPort(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,15 +190,14 @@ func TestDevLoopRebuildsRestartsAndKeepsServingThroughABuildFailure(t *testing.T
 	}
 	waitFor := func(what string, condition func(string) bool) string {
 		t.Helper()
-		deadline := time.Now().Add(2 * time.Minute)
-		for time.Now().Before(deadline) {
-			if body := page(); body != "" && condition(body) {
-				return body
-			}
-			time.Sleep(50 * time.Millisecond)
+		var body string
+		if !waittest.Poll(2*time.Minute, func() bool {
+			body = page()
+			return body != "" && condition(body)
+		}) {
+			t.Fatalf("timed out waiting for %s\nforge dev output:\n%s", what, output.String())
 		}
-		t.Fatalf("timed out waiting for %s\nforge dev output:\n%s", what, output.String())
-		return ""
+		return body
 	}
 
 	body := waitFor("the first build", func(b string) bool { return strings.Contains(b, "v1") })

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/broadcast"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
@@ -284,10 +285,7 @@ func TestMemoryConcurrentUseIsRaceFreeAndLeavesNoGoroutines(t *testing.T) {
 	}
 	wg.Wait()
 	memory.Close()
-	deadline := time.Now().Add(5 * time.Second)
-	for runtime.NumGoroutine() > before && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	waittest.Poll(5*time.Second, func() bool { return runtime.NumGoroutine() <= before })
 	if after := runtime.NumGoroutine(); after > before {
 		t.Fatalf("goroutines: %d before, %d after", before, after)
 	}

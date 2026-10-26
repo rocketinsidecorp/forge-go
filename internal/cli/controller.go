@@ -72,7 +72,7 @@ func parseControllerArgs(args []string) (controllerRequest, error) {
 	}
 	request := controllerRequest{API: flags["--api"], Public: flags["--public"], DryRun: flags["--dry-run"]}
 	if len(positional) == 0 {
-		return controllerRequest{}, errors.New(controllerUsage)
+		return controllerRequest{}, usageError{controllerUsage}
 	}
 	request.Name = positional[0]
 	if err := validateControllerName(request.Name); err != nil {

@@ -116,6 +116,10 @@ func TestTelemetryValidation(t *testing.T) {
 			t.Fatalf("loopback metrics address %s rejected: %v", address, err)
 		}
 	}
+	// Port 0 asks the kernel for a free port; the bound address is logged.
+	if _, err := LoadWithLookup(lookupFrom(merge(prodMetrics, map[string]string{"FORGE_TELEMETRY_METRICS_ADDR": "127.0.0.1:0"}))); err != nil {
+		t.Fatalf("metrics port 0 rejected: %v", err)
+	}
 	public := merge(prodMetrics, map[string]string{"FORGE_TELEMETRY_METRICS_ADDR": "0.0.0.0:9464", "FORGE_TELEMETRY_METRICS_PUBLIC": "true"})
 	if _, err := LoadWithLookup(lookupFrom(public)); err != nil {
 		t.Fatalf("explicit public metrics opt-in rejected: %v", err)

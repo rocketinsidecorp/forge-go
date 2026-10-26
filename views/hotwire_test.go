@@ -118,7 +118,7 @@ func TestPolicyAllowsTheImportMapByHashOnly(t *testing.T) {
 	// The hash is exactly what a browser computes over the rendered script body.
 	body := recorder.Body.String()
 	match := regexp.MustCompile(`<script type="importmap">(.*?)</script>`).FindStringSubmatch(body)
-	if match == nil || match[1] != opts.ImportMap.JSON() {
+	if len(match) < 2 || match[1] != opts.ImportMap.JSON() {
 		t.Fatalf("rendered import map = %v", match)
 	}
 	// A policy without the options is the unchanged default.

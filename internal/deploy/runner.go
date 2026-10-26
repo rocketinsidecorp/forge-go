@@ -233,7 +233,7 @@ func (r *SSHRunner) Stream(ctx context.Context, host string, c Command, out io.W
 	}
 	err = cmd.Wait()
 	if ctx.Err() != nil {
-		return nil
+		return nil //nolint:nilerr // the command was cancelled by the caller: that is not a remote failure
 	}
 	return remoteError(host, err, stderr.String())
 }

@@ -540,7 +540,7 @@ func (w *Worker) poll(ctx context.Context, q QueueConfig, wake <-chan struct{}) 
 		}
 		claimStarted := time.Now()
 		lastClaim = claimStarted
-		claimed, err := w.claim(q.Name, want)
+		claimed, err := w.claim(q.Name, want) //nolint:contextcheck // claim deliberately uses the worker job context (cancelled only by a forced shutdown): abandoning a claim mid-commit would strand leased jobs
 		for range want - len(claimed) {
 			<-slots
 		}
@@ -567,7 +567,7 @@ func (w *Worker) poll(ctx context.Context, q QueueConfig, wake <-chan struct{}) 
 		for _, job := range claimed {
 			w.jobs.Add(1)
 			w.handlers.Add(1)
-			go func() {
+			go func() { //nolint:contextcheck // handlers run on the worker job context, not the poll context, so shutdown can drain claimed jobs
 				defer func() { <-slots }()
 				defer w.jobs.Done()
 				w.process(job, claimStarted)
@@ -707,7 +707,7 @@ func (w *Worker) recoverLoop(ctx context.Context) {
 		}
 		for range maxPruneRounds {
 			sweepCtx, cancel := context.WithTimeout(w.jobCtx, claimTimeout)
-			n, err := w.store.Recover(sweepCtx)
+			n, err := w.store.Recover(sweepCtx) //nolint:contextcheck // the lease sweep uses the worker job context so a graceful stop does not abandon it mid-statement
 			cancel()
 			if err != nil {
 				w.logger.Warn("recover expired job leases failed", "error", err)
@@ -733,7 +733,7 @@ func (w *Worker) maintain(ctx context.Context) {
 		}
 		for range maxPruneRounds {
 			pruneCtx, cancel := context.WithTimeout(w.jobCtx, claimTimeout)
-			n, err := w.store.Prune(pruneCtx, w.opts.RetainSucceeded, pruneBatch)
+			n, err := w.store.Prune(pruneCtx, w.opts.RetainSucceeded, pruneBatch) //nolint:contextcheck // pruning uses the worker job context so a graceful stop does not abandon it mid-statement
 			cancel()
 			if err != nil {
 				w.logger.Warn("prune finished jobs failed", "error", err)

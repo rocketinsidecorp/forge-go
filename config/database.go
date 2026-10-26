@@ -51,7 +51,7 @@ func (d Database) SQLitePath() string {
 		}
 		return path
 	}
-	return parsed.Path // sqlite:///var/lib/app/app.db
+	return parsed.Path // the file of a URL such as sqlite:///var/lib/app/app.db
 }
 
 func parseDatabaseURL(raw string) (Adapter, *url.URL) {

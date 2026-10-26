@@ -176,7 +176,7 @@ func connect(path string, params url.Values, obs *sqldb.Observer) (*sql.DB, erro
 func fileURI(path string, params url.Values) string {
 	slashed := filepath.ToSlash(path)
 	if !strings.HasPrefix(slashed, "/") {
-		slashed = "/" + slashed // Windows: file:///C:/dir/app.db
+		slashed = "/" + slashed // on Windows the URI is file:///C:/dir/app.db
 	}
 	uri := url.URL{Scheme: "file", Path: slashed, RawQuery: params.Encode()}
 	return uri.String()

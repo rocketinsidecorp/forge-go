@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -72,44 +73,46 @@ func TestWorkerValidatesBatchSize(t *testing.T) {
 // claimed job starts at once.
 func TestBatchClaimsNeverExceedFreeSlots(t *testing.T) {
 	t.Parallel()
-	release := make(chan struct{})
-	var running, peak atomic.Int32
-	reg := registerK(t, func(context.Context) error {
-		n := running.Add(1)
-		for {
-			p := peak.Load()
-			if n <= p || peak.CompareAndSwap(p, n) {
-				break
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		var running, peak atomic.Int32
+		reg := registerK(t, func(context.Context) error {
+			n := running.Add(1)
+			for {
+				p := peak.Load()
+				if n <= p || peak.CompareAndSwap(p, n) {
+					break
+				}
+			}
+			<-release
+			running.Add(-1)
+			return nil
+		})
+		store := &batchStore{fakeStore: &fakeStore{}, supply: 50}
+		w := newTestWorker(t, store, reg, WorkerOptions{BatchSize: 10, Queues: []QueueConfig{{Name: DefaultQueue, Concurrency: 4}}})
+		waitUntil(t, "four running jobs", 5*time.Second, func() bool { return running.Load() == 4 })
+		synctest.Wait() // a saturated poller must not claim: checked once every goroutine is idle
+		if limits := store.requested(); len(limits) != 1 || limits[0] != 4 {
+			t.Fatalf("claims while saturated asked for %v, want one batch of 4", limits)
+		}
+		close(release)
+		waitUntil(t, "the supply to drain", 5*time.Second, func() bool {
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			return store.supply == 0
+		})
+		if err := w.Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		for _, limit := range store.requested() {
+			if limit < 1 || limit > 4 {
+				t.Fatalf("a batch asked for %d jobs with 4 slots", limit)
 			}
 		}
-		<-release
-		running.Add(-1)
-		return nil
-	})
-	store := &batchStore{fakeStore: &fakeStore{}, supply: 50}
-	w := newTestWorker(t, store, reg, WorkerOptions{BatchSize: 10, Queues: []QueueConfig{{Name: DefaultQueue, Concurrency: 4}}})
-	waitUntil(t, "four running jobs", 5*time.Second, func() bool { return running.Load() == 4 })
-	time.Sleep(50 * time.Millisecond) // a saturated poller must not claim
-	if limits := store.requested(); len(limits) != 1 || limits[0] != 4 {
-		t.Fatalf("claims while saturated asked for %v, want one batch of 4", limits)
-	}
-	close(release)
-	waitUntil(t, "the supply to drain", 5*time.Second, func() bool {
-		store.mu.Lock()
-		defer store.mu.Unlock()
-		return store.supply == 0
-	})
-	if err := w.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	for _, limit := range store.requested() {
-		if limit < 1 || limit > 4 {
-			t.Fatalf("a batch asked for %d jobs with 4 slots", limit)
+		if p := peak.Load(); p > 4 {
+			t.Fatalf("%d jobs ran at once with concurrency 4", p)
 		}
-	}
-	if p := peak.Load(); p > 4 {
-		t.Fatalf("%d jobs ran at once with concurrency 4", p)
-	}
+	})
 }
 
 // BatchSize 1, or a store without ClaimBatch, claims one job per round trip.

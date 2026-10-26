@@ -338,7 +338,7 @@ func TestRouteRecordingIsRaceFreeWithTimeoutHandler(t *testing.T) {
 		routed := make(chan struct{})
 		delayed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer close(routed)
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond) // fake-clock: the handler outlasts the 5ms timeout inside the bubble
 			routes.ServeHTTP(w, r)
 		})
 		middleware, err := tel.ServerMiddleware()

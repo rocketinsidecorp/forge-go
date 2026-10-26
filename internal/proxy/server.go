@@ -292,9 +292,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, svc *service) str
 			return ""
 		}
 		if t.acquire() {
-			defer t.release()
-			t.proxy.ServeHTTP(w, r)
-			return t.addr
+			return serveTarget(t, w, r)
 		}
 		if svc.target.Load() == t {
 			// Retired without a successor: the service was removed
@@ -305,6 +303,14 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, svc *service) str
 		// t was retired after we loaded it; the current target has
 		// already been swapped in, so the next load returns it.
 	}
+}
+
+// serveTarget proxies the request to t, which the caller has acquired, and
+// releases it afterwards, even when the proxy panics.
+func serveTarget(t *target, w http.ResponseWriter, r *http.Request) string {
+	defer t.release()
+	t.proxy.ServeHTTP(w, r)
+	return t.addr
 }
 
 // prepareBody protects the application from slow clients. Bodies of at

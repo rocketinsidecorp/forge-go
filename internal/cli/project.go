@@ -69,6 +69,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	forgePath := flags.String("forge-path", "", "use a local Forge checkout and vendor it (framework development)")
 	deprecatedPath := flags.String("framework-path", "", "deprecated alias of --forge-path; removed in the next minor version")
 	skipDeps := flags.Bool("skip-deps", false, "generate files without resolving Go dependencies")
+	flags.BoolVar(skipDeps, "skip-lockfile", false, "alias of --skip-deps (Forge-Rust's name: go.sum is the lockfile)")
 	database := flags.String("database", "postgresql", "database: "+strings.Join(scaffold.Databases, ", ")+" or none")
 	flags.StringVar(database, "d", "postgresql", "shorthand for --database")
 	skipDatabase := flags.Bool("skip-database", false, "same as --database none")
@@ -211,19 +212,19 @@ func goCommand(ctx context.Context, dir string, env []string, stdout, stderr io.
 // parseSinglePositional accepts the positional argument before or after flags.
 func parseSinglePositional(flags *flag.FlagSet, args []string, label string) (string, error) {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		if err := flags.Parse(args[1:]); err != nil {
+		if err := parseFlags(flags, args[1:]); err != nil {
 			return "", err
 		}
 		if flags.NArg() != 0 {
-			return "", fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+			return "", usageError{fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " "))}
 		}
 		return args[0], nil
 	}
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return "", err
 	}
 	if flags.NArg() != 1 {
-		return "", fmt.Errorf("expected exactly one %s", label)
+		return "", usageError{fmt.Sprintf("expected exactly one %s", label)}
 	}
 	return flags.Arg(0), nil
 }

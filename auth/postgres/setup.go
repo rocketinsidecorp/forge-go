@@ -189,7 +189,7 @@ func runSetup(ctx context.Context, env forge.CommandEnv, args []string) error {
 	passwordStdin := flags.Bool("password-stdin", false, "read the password from the first line of standard input")
 	usage := "usage: setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]"
 	if err := flags.Parse(args); err != nil {
-		return fmt.Errorf("%w: %v; %s", forge.ErrUsage, err, usage)
+		return fmt.Errorf("%w: %w; %s", forge.ErrUsage, err, usage)
 	}
 	if flags.NArg() != 0 || *tenant == "" || *email == "" {
 		return fmt.Errorf("%w: %s", forge.ErrUsage, usage)
@@ -202,7 +202,7 @@ func runSetup(ctx context.Context, env forge.CommandEnv, args []string) error {
 		*organization = normalizedTenant
 	}
 	if err := validOrganizationName(strings.TrimSpace(*organization)); err != nil {
-		return fmt.Errorf("%w: --organization: %v", forge.ErrUsage, err)
+		return fmt.Errorf("%w: --organization: %w", forge.ErrUsage, err)
 	}
 	password, err := setupPassword(env, *passwordStdin, normalizedEmail)
 	if err != nil {

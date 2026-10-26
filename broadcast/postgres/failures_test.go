@@ -13,6 +13,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/broadcast"
 	bcpostgres "github.com/rocketinsidecorp/forge-go/broadcast/postgres"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 )
 
@@ -138,12 +139,8 @@ func TestListenerReportsAnUnreachableDatabaseAndStopsPromptly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(15 * time.Second)
-	for !logs.has("acquire connection") {
-		if time.Now().After(deadline) {
-			t.Fatal("the unreachable database was never reported")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !waittest.Poll(15*time.Second, func() bool { return logs.has("acquire connection") }) {
+		t.Fatal("the unreachable database was never reported")
 	}
 	if broker.Listening() {
 		t.Error("a broker without a connection claims to be listening")

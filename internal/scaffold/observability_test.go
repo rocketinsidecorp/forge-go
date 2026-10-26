@@ -385,7 +385,7 @@ func TestObservabilityConfigurationAgreesAcrossFiles(t *testing.T) {
 
 func TestObservabilityDashboard(t *testing.T) {
 	dir := generateObservability(t, "postgresql")
-	content, err := os.ReadFile(filepath.Join(dir, "observability/grafana/dashboards/forge-application.json"))
+	content, err := os.ReadFile(filepath.Join(dir, "observability", "grafana", "dashboards", "forge-application.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestObservabilityMetricNamesExistInTheDocumentedCatalogue(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := generateObservability(t, "postgresql")
-	content, err := os.ReadFile(filepath.Join(dir, "observability/grafana/dashboards/forge-application.json"))
+	content, err := os.ReadFile(filepath.Join(dir, "observability", "grafana", "dashboards", "forge-application.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

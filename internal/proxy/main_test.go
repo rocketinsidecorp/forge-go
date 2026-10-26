@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 func TestMainClientCommands(t *testing.T) {
@@ -19,7 +21,7 @@ func TestMainClientCommands(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	socket := filepath.Join(dir, "c.sock")
 	srv, front := newTestServer(t, "")
-	listener, err := ListenControl(socket)
+	listener, err := ListenControl(context.Background(), socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,15 +85,11 @@ func TestRunServesAndShutsDown(t *testing.T) {
 			"-control", filepath.Join(dir, "c.sock"), "-state", filepath.Join(dir, "state.json"),
 			"-acme-cache", filepath.Join(dir, "acme")}, &stdout, &stderr)
 	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if response, err := Call(ctx, filepath.Join(dir, "c.sock"), ControlRequest{Op: "status"}); err == nil && response.OK {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("proxy did not start: %s", stderr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !waittest.Poll(5*time.Second, func() bool {
+		response, err := Call(ctx, filepath.Join(dir, "c.sock"), ControlRequest{Op: "status"})
+		return err == nil && response.OK
+	}) {
+		t.Fatalf("proxy did not start: %s", stderr.String())
 	}
 	cancel()
 	if code := <-done; code != ExitOK {

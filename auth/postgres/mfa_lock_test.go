@@ -10,6 +10,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/auth"
 	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -143,20 +144,18 @@ func (f *mfaLockFixture) disableWhileWaiting(t *testing.T, step func() error) er
 // waitForLockWait returns once a statement in the test's database waits for
 // a lock.
 func waitForLockWait(ctx context.Context, db *postgres.DB) error {
-	for range 1000 {
+	var queryErr error
+	if waittest.Poll(10*time.Second, func() bool {
 		var waiting int
-		if err := db.QueryRow(ctx, `
+		queryErr = db.QueryRow(ctx, `
 			SELECT count(*)
 			FROM pg_locks l
 			JOIN pg_stat_activity a ON a.pid = l.pid
 			WHERE NOT l.granted AND a.datname = current_database()
-		`).Scan(&waiting); err != nil {
-			return err
-		}
-		if waiting > 0 {
-			return nil
-		}
-		time.Sleep(10 * time.Millisecond)
+		`).Scan(&waiting)
+		return queryErr != nil || waiting > 0
+	}) {
+		return queryErr
 	}
 	return errors.New("no statement waited for the user lock")
 }

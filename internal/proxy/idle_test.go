@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 // closedWithin reads from conn until the peer closes it; ok is false when
@@ -36,19 +38,15 @@ func closedWithin(conn net.Conn, wait time.Duration) (total int, ok bool) {
 
 func waitInFlight(t *testing.T, srv *Server, want int64, wait time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(wait)
-	for {
-		var got int64
+	var got int64
+	if !waittest.Poll(wait, func() bool {
+		got = 0
 		if statuses := srv.Status(); len(statuses) > 0 {
 			got = statuses[0].InFlight
 		}
-		if got == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("in flight stayed %d, want %d", got, want)
-		}
-		time.Sleep(10 * time.Millisecond)
+		return got == want
+	}) {
+		t.Fatalf("in flight stayed %d, want %d", got, want)
 	}
 }
 
@@ -147,7 +145,7 @@ func TestIdleTunnelIsClosed(t *testing.T) {
 		if err != nil || got != message {
 			t.Fatalf("round %d: %q %v", round, got, err)
 		}
-		time.Sleep(pause)
+		time.Sleep(pause) // real-clock: paces the rounds on a real connection, below the idle timeout under test
 	}
 	if got := srv.Status()[0].InFlight; got != 1 {
 		t.Fatalf("in flight %d during the tunnel", got)
@@ -280,7 +278,7 @@ func TestListenControlRestrictsAnExistingDirectory(t *testing.T) {
 	if err := os.Chmod(run, 0o777); err != nil {
 		t.Fatal(err)
 	}
-	listener, err := ListenControl(filepath.Join(run, "c.sock"))
+	listener, err := ListenControl(context.Background(), filepath.Join(run, "c.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +290,7 @@ func TestListenControlRestrictsAnExistingDirectory(t *testing.T) {
 	if err := os.Symlink(run, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ListenControl(filepath.Join(link, "c.sock")); err == nil || !strings.Contains(err.Error(), "is not a directory") {
+	if _, err := ListenControl(context.Background(), filepath.Join(link, "c.sock")); err == nil || !strings.Contains(err.Error(), "is not a directory") {
 		t.Fatalf("link: %v", err)
 	}
 }
@@ -318,15 +316,11 @@ func TestRunRestrictsAnExistingACMECache(t *testing.T) {
 		done <- Main(ctx, []string{"run", "-http-addr", "127.0.0.1:0", "-https-addr", "127.0.0.1:0",
 			"-control", filepath.Join(dir, "c.sock"), "-state", "", "-acme-cache", cache}, &stdout, &stderr)
 	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if response, err := Call(ctx, filepath.Join(dir, "c.sock"), ControlRequest{Op: "status"}); err == nil && response.OK {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("proxy did not start: %s", stderr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !waittest.Poll(5*time.Second, func() bool {
+		response, err := Call(ctx, filepath.Join(dir, "c.sock"), ControlRequest{Op: "status"})
+		return err == nil && response.OK
+	}) {
+		t.Fatalf("proxy did not start: %s", stderr.String())
 	}
 	if got := mode(t, cache); got != 0o700 {
 		t.Fatalf("ACME cache %o", got)
@@ -394,7 +388,7 @@ func TestPrivateDirRefusesADirectoryOfAnotherUser(t *testing.T) {
 func TestWriteDeadlineDoesNotCarryOverToTheNextRequest(t *testing.T) {
 	app := newBackend(t, "app", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/slow" {
-			time.Sleep(400 * time.Millisecond)
+			time.Sleep(400 * time.Millisecond) // real-clock: a slow handler that outlasts the real server's write deadline
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -425,6 +419,6 @@ func TestWriteDeadlineDoesNotCarryOverToTheNextRequest(t *testing.T) {
 			t.Fatalf("%s: status %d", step.path, resp.StatusCode)
 		}
 		// Let the first request's deadline pass before the next one.
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond) // real-clock: lets the first request's real write deadline pass before the next one
 	}
 }

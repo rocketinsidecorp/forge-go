@@ -284,7 +284,7 @@ func (d *Deployer) switchAll(ctx context.Context, hosts []string, plan map[strin
 		return d.revert(ctx, plan[host])
 	})
 	if revertErr != nil {
-		return withCode(ExitInconsistent, fmt.Errorf("%w; reverting also failed, hosts may run different versions (run forge deploy details): %v", err, revertErr))
+		return withCode(ExitInconsistent, fmt.Errorf("%w; reverting also failed, hosts may run different versions (run forge deploy details): %w", err, revertErr))
 	}
 	return withCode(code, fmt.Errorf("%w; every host serves its previous version", err))
 }

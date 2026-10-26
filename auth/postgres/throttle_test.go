@@ -244,7 +244,7 @@ func TestLoginThrottlerTableStaysBoundedUnderChurn(t *testing.T) {
 			t.Fatal(err)
 		}
 		if i%50 == 0 {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond) // real-clock: paces the hits so the limiter's inline prune sees rows that expire on the database clock
 		}
 	}
 	var rows int

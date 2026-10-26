@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 // alive reports whether pid is a running process; a zombie that nobody has
@@ -28,14 +30,14 @@ func readPID(t *testing.T, name string) int {
 	t.Helper()
 	waitForFile(t, name)
 	var pid int
-	for range 100 {
+	waittest.Poll(time.Second, func() bool {
 		data, _ := os.ReadFile(name)
-		if value, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
+		value, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err == nil {
 			pid = value
-			break
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return err == nil
+	})
 	if pid == 0 {
 		t.Fatal("no pid recorded")
 	}
@@ -44,12 +46,8 @@ func readPID(t *testing.T, name string) int {
 
 func waitDead(t *testing.T, pid int) {
 	t.Helper()
-	deadline := time.Now().Add(testWait)
-	for time.Now().Before(deadline) {
-		if !alive(pid) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if waittest.Poll(testWait, func() bool { return !alive(pid) }) {
+		return
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 	t.Fatalf("process %d is still running: it was orphaned", pid)
@@ -81,7 +79,7 @@ func TestIsolatedCommandCancellationKillsItsChildren(t *testing.T) {
 	pidFile := filepath.Join(dir, "child.pid")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 300 &\necho $! > \"$1\"\nwait", "sh", pidFile) // #nosec G204 -- test
+	cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 300 &\necho $! > \"$1\"\nwait", "sh", pidFile) // #nosec G204 -- a fixed shell script; the pid file is a positional parameter
 	IsolateCommand(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

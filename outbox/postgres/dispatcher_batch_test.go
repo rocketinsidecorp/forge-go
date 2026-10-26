@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/events"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -114,14 +115,10 @@ func TestConcurrentBatchDispatchersDeliverEachEventOnce(t *testing.T) {
 		}
 		go func() { results <- d.Run(ctx) }()
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for delivered.Load() < total {
-		if time.Now().After(deadline) {
-			t.Fatalf("delivered %d of %d events", delivered.Load(), total)
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !waittest.Poll(30*time.Second, func() bool { return delivered.Load() >= total }) {
+		t.Fatalf("delivered %d of %d events", delivered.Load(), total)
 	}
-	time.Sleep(50 * time.Millisecond) // a duplicate would show up now
+	time.Sleep(50 * time.Millisecond) // real-clock: negative check: a duplicate delivery would take real time to show up
 	cancel()
 	for range 4 {
 		if err := <-results; !errors.Is(err, context.Canceled) {
@@ -194,7 +191,7 @@ func TestWaitingEventsKeepTheirLeasesDuringASlowHandler(t *testing.T) {
 	slow, err := NewDispatcher(db.Pool(), func(context.Context, events.Event) error {
 		if calls.Add(1) == 1 {
 			close(started)
-			time.Sleep(4500 * time.Millisecond) // over two leases
+			time.Sleep(4500 * time.Millisecond) // real-clock: the handler outlasts two leases that the database clock stamps
 		}
 		return nil
 	}, DispatcherOptions{BatchSize: 3, Lease: 2 * time.Second})
@@ -212,7 +209,7 @@ func TestWaitingEventsKeepTheirLeasesDuringASlowHandler(t *testing.T) {
 	}
 	<-started // the slow dispatcher holds the batch
 	for range 35 {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // real-clock: polls a lease that the database clock expires; the check repeats across 3.5 seconds
 		batch, _, err := other.claimBatch(context.Background(), 3)
 		if err != nil {
 			t.Fatal(err)
@@ -252,7 +249,7 @@ func TestAnEventReclaimedBeforeItsTurnIsSkipped(t *testing.T) {
 			if _, err := db.Exec(ctx, `UPDATE forge_outbox_events SET lease_token = $2 WHERE id = $1`, reclaimed, uuid.MustNew()); err != nil {
 				t.Error(err)
 			}
-			time.Sleep(2 * time.Second)
+			time.Sleep(2 * time.Second) // real-clock: waits for a lease renewal on the database clock to notice the changed token
 		})
 		return nil
 	}, DispatcherOptions{BatchSize: 3, Lease: 2 * time.Second})

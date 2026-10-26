@@ -102,8 +102,9 @@ func Receive(w http.ResponseWriter, r *http.Request, store Storage, opts UploadO
 
 	result := Received{Fields: url.Values{}}
 	fieldCount, fieldBytes := 0, int64(0)
+	ctx := r.Context()
 	fail := func(err error) (Received, error) {
-		cleanup(store, result.Files)
+		cleanup(ctx, store, result.Files)
 		return Received{}, translateReadError(err)
 	}
 	for {
@@ -319,13 +320,14 @@ func translateReadError(err error) error {
 	}
 }
 
-// cleanup removes files stored by a rejected upload. It uses its own context:
-// the request's may be the reason the upload failed.
-func cleanup(store Storage, files []Info) {
+// cleanup removes files stored by a rejected upload. It keeps the request's
+// values but not its cancellation: the request's context may be the reason the
+// upload failed.
+func cleanup(parent context.Context, store Storage, files []Info) {
 	if len(files) == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 10*time.Second)
 	defer cancel()
 	for _, f := range files {
 		_ = store.Delete(ctx, f.Key)

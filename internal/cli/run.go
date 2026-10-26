@@ -25,7 +25,7 @@ const appShutdownGrace = 35 * time.Second
 // commands, so development and production share one implementation.
 func runMigrate(args []string, stdout, stderr io.Writer) error {
 	if len(args) != 0 && !slices.Equal(args, []string{"status"}) {
-		return errors.New("usage: forge migrate [status]")
+		return usageError{"usage: forge migrate [status]"}
 	}
 	return runAppCommand(nil, append([]string{"migrate"}, args...), stdout, stderr)
 }
@@ -44,17 +44,17 @@ func runOpenAPI(args []string, stdout, stderr io.Writer) error {
 		switch arg := args[i]; {
 		case arg == "--output" || arg == "--check":
 			if i+1 == len(args) {
-				return errors.New(openAPIUsage)
+				return usageError{openAPIUsage}
 			}
 			i++
 		case strings.HasPrefix(arg, "--output=") || strings.HasPrefix(arg, "--check="):
 		default:
-			return errors.New(openAPIUsage)
+			return usageError{openAPIUsage}
 		}
 		flags++
 	}
 	if flags > 1 {
-		return errors.New(openAPIUsage)
+		return usageError{openAPIUsage}
 	}
 	return runAppCommand(nil, append([]string{"openapi"}, args...), stdout, stderr)
 }
@@ -72,7 +72,7 @@ func runSetup(args []string, stdout, stderr io.Writer) error {
 // runSeed delegates to the application's seed command.
 func runSeed(args []string, stdout, stderr io.Writer) error {
 	if len(args) != 0 {
-		return errors.New("usage: forge seed")
+		return usageError{"usage: forge seed"}
 	}
 	return runAppCommand(nil, []string{"seed"}, stdout, stderr)
 }
@@ -194,6 +194,9 @@ func runAppWithInput(ctx context.Context, root, name string, args, env []string,
 // resolveCommand picks the application binary under cmd/: the one named in
 // args, or the only one present.
 func resolveCommand(root string, args []string) (string, error) {
+	if len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		return "", usageError{fmt.Sprintf("unknown flag %q: the argument is the name of a command under cmd/", args[0])}
+	}
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
 		return "", errors.New("no go.mod here: run this inside a Forge application")
 	}

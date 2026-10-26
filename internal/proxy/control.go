@@ -43,7 +43,7 @@ type ControlResponse struct {
 // is refused) and the socket is 0600, so only the proxy's user (and root on
 // the host, through `docker exec`) can connect. A stale socket left by a
 // previous process is replaced; any other file at path is an error.
-func ListenControl(path string) (net.Listener, error) {
+func ListenControl(ctx context.Context, path string) (net.Listener, error) {
 	if err := privateDir(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("control directory: %w", err)
 	}
@@ -55,7 +55,7 @@ func ListenControl(path string) (net.Listener, error) {
 			return nil, fmt.Errorf("remove stale control socket: %w", err)
 		}
 	}
-	listener, err := net.Listen("unix", path)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "unix", path)
 	if err != nil {
 		return nil, fmt.Errorf("listen on control socket: %w", err)
 	}
@@ -77,7 +77,7 @@ func (s *Server) ServeControl(ctx context.Context, listener net.Listener) error 
 		conn, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				return nil //nolint:nilerr // the context ended and closed the listener: the normal way to stop
 			}
 			return err
 		}

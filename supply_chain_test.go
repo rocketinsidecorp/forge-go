@@ -256,7 +256,7 @@ func TestReleaseWorkflowsRunOnlyForVersionTags(t *testing.T) {
 	} {
 		text := readText(t, path)
 		trigger := regexp.MustCompile(`(?s)\non:\n(.*?)\n\S`).FindStringSubmatch(text)
-		if trigger == nil || strings.TrimSpace(trigger[1]) != "push:\n    tags: [\"v*\"]" {
+		if len(trigger) < 2 || strings.TrimSpace(trigger[1]) != "push:\n    tags: [\"v*\"]" {
 			t.Errorf("%s: release must trigger only on push of v* tags, got %q", path, trigger)
 		}
 		if !regexp.MustCompile(`(?m)^permissions: \{\}$`).MatchString(text) {

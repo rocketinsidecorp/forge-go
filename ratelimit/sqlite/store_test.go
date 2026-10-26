@@ -35,7 +35,7 @@ func TestAllowPrunesExpiredBucketsOpportunistically(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond) // real-clock: a bucket expires on the database clock
 	if _, err := l.Allow(ctx, "d", ratelimit.Limit{N: 1, Per: time.Minute}); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestPruneIsBounded(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond) // real-clock: buckets expire on the database clock
 	// One call is bounded work: MaxPruneRounds batches of 2.
 	for i, want := range []int64{ratelimit.MaxPruneRounds * 2, 20, 0} {
 		if removed, err := l.Prune(ctx); err != nil || removed != want {
@@ -75,7 +75,7 @@ func TestSustainedNewKeysDoNotPileUpExpiredBuckets(t *testing.T) {
 			t.Fatal(err)
 		}
 		if i%100 == 99 {
-			time.Sleep(3 * time.Millisecond)
+			time.Sleep(3 * time.Millisecond) // real-clock: paces the hits so buckets expire on the database clock while the test runs
 		}
 	}
 	var rows int

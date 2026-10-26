@@ -54,6 +54,14 @@ scripts/fuzz.sh            # every fuzz target, 10s each, as CI runs it
 ```
 
 - Add tests for every change; a bug fix needs a test that fails without it.
+- A lint suppression says why it is safe: `// #nosec G204 -- the executable is
+  fixed` or `//nolint:noctx // the process lifetime is owned by Stop`, never a
+  bare directive. `lint_directives_test.go` fails on one without a reason, and
+  `.golangci.yml` enables `errorlint`, `nilerr`, `sqlclosecheck`,
+  `rowserrcheck`, `bodyclose`, `noctx`, `contextcheck` and gocritic's
+  diagnostic checks for production code.
+- A test does not sleep to wait for something: use `internal/waittest` or a
+  `testing/synctest` bubble ([docs/TESTING.md](docs/TESTING.md)).
 - Code that parses untrusted input gets a `FuzzXxx` target with a property
   beyond "does not panic"; CI finds and runs it automatically. Commit any
   failing input it finds (`testdata/fuzz/`) with the fix.

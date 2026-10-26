@@ -143,7 +143,7 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | ----------------------------------- | ---------------- | ----- |
 | `FORGE_ENV`                         | `development`    | `development`, `test`, `staging`, `production` |
 | `FORGE_MASTER_KEY`                  | (empty)          | Key that decrypts `config/credentials/<env>.json.enc`; see [CREDENTIALS.md](CREDENTIALS.md). Not read by `config.Load`. |
-| `FORGE_HTTP_ADDR`                   | `127.0.0.1:8080` | Listen address. Use `0.0.0.0:PORT` in containers. |
+| `FORGE_HTTP_ADDR`                   | `127.0.0.1:8080` | Listen address. Use `0.0.0.0:PORT` in containers. Port `0` lets the kernel choose; the `serving HTTP` record carries the address actually bound. |
 | `FORGE_HTTP_TRANSPORT`              | `plain`          | `plain`, `tls`, `trusted-proxy`. `production` rejects `plain`. |
 | `FORGE_HTTP_TLS_CERT_FILE`          | (empty)          | Required when transport is `tls` |
 | `FORGE_HTTP_TLS_KEY_FILE`           | (empty)          | Required when transport is `tls` |

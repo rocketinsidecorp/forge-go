@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
@@ -46,8 +47,9 @@ func TestRunJSONErrors(t *testing.T) {
 	}{
 		{name: "missing command", args: []string{"--error-format=json"}, code: 2, wantCode: "command.required", wantExit: 2, wantJSON: `{"schema_version":1,"error":{"code":"command.required","message":"A command is required.","exit_code":2}}` + "\n"},
 		{name: "unknown command", args: []string{"--error-format=json", "private-secret"}, code: 2, wantCode: "command.unknown", wantExit: 2, wantJSON: `{"schema_version":1,"error":{"code":"command.unknown","message":"Unknown command.","exit_code":2}}` + "\n"},
-		{name: "failed command", args: []string{"--error-format=json", "version", "private-secret"}, code: 1, wantCode: "command.failed", wantExit: 1, command: "version", wantJSON: `{"schema_version":1,"error":{"code":"command.failed","message":"Command failed.","exit_code":1,"command":"version"}}` + "\n"},
-		{name: "invalid flag", args: []string{"--error-format=json", "uuid", "--private-secret"}, code: 1, wantCode: "command.failed", wantExit: 1, command: "uuid", wantJSON: `{"schema_version":1,"error":{"code":"command.failed","message":"Command failed.","exit_code":1,"command":"uuid"}}` + "\n"},
+		{name: "failed command", args: []string{"--error-format=json", "uuid", "--count", "0"}, code: 1, wantCode: "command.failed", wantExit: 1, command: "uuid", wantJSON: `{"schema_version":1,"error":{"code":"command.failed","message":"Command failed.","exit_code":1,"command":"uuid"}}` + "\n"},
+		{name: "invalid argument", args: []string{"--error-format=json", "version", "private-secret"}, code: 2, wantCode: "command.failed", wantExit: 2, command: "version", wantJSON: `{"schema_version":1,"error":{"code":"command.failed","message":"Command failed.","exit_code":2,"command":"version"}}` + "\n"},
+		{name: "invalid flag", args: []string{"--error-format=json", "uuid", "--private-secret"}, code: 2, wantCode: "command.failed", wantExit: 2, command: "uuid", wantJSON: `{"schema_version":1,"error":{"code":"command.failed","message":"Command failed.","exit_code":2,"command":"uuid"}}` + "\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -103,7 +105,8 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 				Variables []string `json:"variables"`
 			} `json:"environment"`
 			ExitCodes []struct {
-				Code int `json:"code"`
+				Code    int    `json:"code"`
+				Meaning string `json:"meaning"`
 			} `json:"exit_codes"`
 			Flags []struct {
 				Name        string `json:"name"`
@@ -114,7 +117,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
 		t.Fatalf("decode command catalog: %v\n%s", err, stdout.String())
 	}
-	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 23 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
+	if catalog.SchemaVersion != 1 || catalog.Name != "forge" || len(catalog.Commands) != 26 || len(catalog.ProcessExitCodes) != 8 || len(catalog.GlobalOptions) != 1 || catalog.GlobalOptions[0].Name != jsonErrorFormatFlag {
 		t.Fatalf("unexpected catalog header: %+v", catalog)
 	}
 	rollbackDeclaredDestructive := false
@@ -126,6 +129,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		"new": true, "dev": true, "test": true, "build": true, "migrate": true, "rollback": true, "setup": true, "seed": true, "db": true,
 		"generate": true, "doctor": true, "inspect": true, "routes": true, "uuid": true, "version": true, "help": true,
 		"credentials": true, "deploy": true, "logs": true, "app": true, "destroy": true, "i18n": true, "openapi": true,
+		"check": true, "format": true, "lint": true,
 	}
 	for _, command := range catalog.Commands {
 		if !expectedCommands[command.Name] || commandsSeen[command.Name] || len(command.Examples) == 0 || command.Environment.Files == nil || command.Environment.Variables == nil || len(command.ExitCodes) < 2 {
@@ -139,9 +143,15 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		}
 		commandExitCodesSeen := make(map[int]bool, len(command.ExitCodes))
 		for _, exitCode := range command.ExitCodes {
+			if commandExitCodesSeen[exitCode.Code] {
+				t.Errorf("command %s documents exit code %d twice", command.Name, exitCode.Code)
+			}
 			commandExitCodesSeen[exitCode.Code] = true
+			if exitCode.Code == 1 && strings.Contains(exitCode.Meaning, "invalid arguments") {
+				t.Errorf("command %s: exit code 1 must not describe usage errors, which exit 2: %q", command.Name, exitCode.Meaning)
+			}
 		}
-		if !commandExitCodesSeen[0] || !commandExitCodesSeen[1] {
+		if !commandExitCodesSeen[0] || !commandExitCodesSeen[1] || !commandExitCodesSeen[2] {
 			t.Errorf("command %s has incomplete exit-code documentation: %v", command.Name, commandExitCodesSeen)
 		}
 		if !strings.HasPrefix(command.Examples[0], "forge ") {
@@ -587,7 +597,7 @@ func wireParts(t *testing.T, dir string, partsList []resourceWiringParts) {
 		if block == "" {
 			return
 		}
-		if match := declaredName.FindStringSubmatch(block); match != nil && regexp.MustCompile(`(?m)^\t`+regexp.QuoteMeta(match[1])+`(, err)? := `).MatchString(guard) {
+		if match := declaredName.FindStringSubmatch(block); len(match) > 1 && regexp.MustCompile(`(?m)^\t`+regexp.QuoteMeta(match[1])+`(, err)? := `).MatchString(guard) {
 			return
 		}
 		guard += "\n" + block
@@ -685,12 +695,8 @@ func main() {
 	done := make(chan error, 1)
 	go func() { done <- runApp(ctx, root, "sig", nil, os.Environ(), output, output) }()
 
-	deadline := time.Now().Add(60 * time.Second)
-	for !strings.Contains(output.String(), "ready") {
-		if time.Now().After(deadline) {
-			t.Fatalf("application never started: %s", output.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !waittest.Poll(60*time.Second, func() bool { return strings.Contains(output.String(), "ready") }) {
+		t.Fatalf("application never started: %s", output.String())
 	}
 	cancel()
 	select {
@@ -727,8 +733,68 @@ func TestRunOpenAPIValidatesArgumentsBeforeBuilding(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{{"--bogus"}, {"--output"}, {"--output", "a", "--check", "b"}, {"--output=a", "--check=b"}, {"extra"}} {
 		var stdout, stderr bytes.Buffer
-		if code := Run(append([]string{"openapi"}, args...), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), openAPIUsage) {
+		if code := Run(append([]string{"openapi"}, args...), &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), openAPIUsage) {
 			t.Errorf("forge openapi %v: code=%d stderr=%s", args, code, stderr.String())
 		}
+	}
+}
+
+// TestInvalidFlagsOfEverySubcommandExitWithStatus2 pins the exit status of a
+// command line that does not parse: 2, like Forge-Rust, never 1 (audit N-D3).
+// forge test, rollback and setup are left out: they forward their arguments to
+// go test and to the application, which report their own failures.
+func TestInvalidFlagsOfEverySubcommandExitWithStatus2(t *testing.T) {
+	forwarding := map[string]bool{"test": true, "rollback": true, "setup": true}
+	t.Chdir(t.TempDir())
+	for _, command := range currentCommandCatalog().Commands {
+		if forwarding[command.Name] {
+			continue
+		}
+		var stdout, stderr bytes.Buffer
+		if code := Run([]string{command.Name, "--bogus"}, &stdout, &stderr); code != 2 {
+			t.Errorf("forge %s --bogus: exit %d, want 2 (stderr %q)", command.Name, code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "forge: ") {
+			t.Errorf("forge %s --bogus: stderr %q does not report the error", command.Name, stderr.String())
+		}
+	}
+	// Subcommands of commands that have them, and a bad flag value.
+	for _, args := range [][]string{
+		{"new", "--bogus"}, {"new", "shop", "--bogus"}, {"new", "--database"}, {"new"}, {"uuid", "--count", "x"},
+		{"db", "migrate", "--bogus"}, {"credentials", "show", "--bogus"}, {"generate", "migration", "x", "--bogus"},
+		{"generate", "resource", "x", "--bogus"}, {"destroy", "model", "x", "--bogus"}, {"dev", "--poll-interval", "soon"},
+		{"deploy", "--bogus"}, {"logs", "--bogus"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(args, &stdout, &stderr); code != 2 {
+			t.Errorf("forge %s: exit %d, want 2 (stderr %q)", strings.Join(args, " "), code, stderr.String())
+		}
+	}
+}
+
+// TestInvalidFlagKeepsExitStatus2WithJSONErrors checks the machine-readable
+// path reports the same status.
+func TestInvalidFlagKeepsExitStatus2WithJSONErrors(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{jsonErrorFormatFlag, "new", "--bogus"}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), `"exit_code":2`) {
+		t.Errorf("exit %d, stderr %q", code, stderr.String())
+	}
+}
+
+// TestNewSkipLockfileIsTheForgeRustNameOfSkipDeps checks that Forge-Rust's
+// --skip-lockfile is accepted with the meaning of --skip-deps: no go tool runs.
+func TestNewSkipLockfileIsTheForgeRustNameOfSkipDeps(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "shop")
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"new", "shop", "--skip-lockfile", "--dir", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "  run     go ") {
+		t.Errorf("--skip-lockfile resolved dependencies: %s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "go.sum")); err == nil {
+		t.Error("--skip-lockfile left a go.sum")
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/queue"
 	queuepostgres "github.com/rocketinsidecorp/forge-go/queue/postgres"
@@ -168,12 +169,8 @@ func startedRegistry(t *testing.T) (*queue.Registry, chan time.Time) {
 
 func waitListening(t *testing.T, worker *queue.Worker, want bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for worker.Listening() != want {
-		if time.Now().After(deadline) {
-			t.Fatalf("worker Listening() never became %v", want)
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !waittest.Poll(10*time.Second, func() bool { return worker.Listening() == want }) {
+		t.Fatalf("worker Listening() never became %v", want)
 	}
 }
 
@@ -192,7 +189,7 @@ func TestNotifyWakesAnIdleWorkerWellUnderItsPollInterval(t *testing.T) {
 	registry, started := startedRegistry(t)
 	worker := slowPollingWorker(t, store, registry, time.Minute)
 	waitListening(t, worker, true)
-	time.Sleep(200 * time.Millisecond) // the catch-up claim after subscribing found nothing
+	time.Sleep(200 * time.Millisecond) // real-clock: the catch-up claim after subscribing runs on the worker's real timers
 
 	for range 3 {
 		enqueued := enqueueK(t, store, registry)
@@ -204,7 +201,7 @@ func TestNotifyWakesAnIdleWorkerWellUnderItsPollInterval(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("an announced job did not wake the idle worker (its poll interval is a minute)")
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // real-clock: lets the worker return to its idle wait between announcements
 	}
 }
 
@@ -277,19 +274,14 @@ func TestShutdownWithAnActiveListenerIsPromptAndClosesIt(t *testing.T) {
 		t.Fatal("still listening after Shutdown")
 	}
 	var listeners int
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	if !waittest.Poll(5*time.Second, func() bool {
 		if err := db.QueryRow(context.Background(), `
 			SELECT count(*) FROM pg_stat_activity
 			WHERE datname = current_database() AND pid <> pg_backend_pid() AND query LIKE 'LISTEN %'`).Scan(&listeners); err != nil {
 			t.Fatal(err)
 		}
-		if listeners == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d listening connection(s) left after Shutdown", listeners)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return listeners == 0
+	}) {
+		t.Fatalf("%d listening connection(s) left after Shutdown", listeners)
 	}
 }

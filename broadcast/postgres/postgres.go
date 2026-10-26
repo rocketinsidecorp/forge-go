@@ -248,7 +248,7 @@ func (b *Broker) listen(ctx context.Context) (connected bool, err error) {
 	}
 	// Hijack so the connection leaves the pool and is closed, rather than
 	// returning to it still LISTENing.
-	defer closeHijacked(pooled)
+	defer closeHijacked(ctx, pooled)
 	conn := pooled.Conn()
 	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{b.channel}.Sanitize()); err != nil {
 		return false, fmt.Errorf("listen: %w", err)
@@ -265,9 +265,11 @@ func (b *Broker) listen(ctx context.Context) (connected bool, err error) {
 	}
 }
 
-func closeHijacked(conn *pgxpool.Conn) {
+func closeHijacked(parent context.Context, conn *pgxpool.Conn) {
 	raw := conn.Hijack()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// The listener's context has ended by now: close with its values but not
+	// its cancellation.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 	defer cancel()
 	_ = raw.Close(ctx)
 }

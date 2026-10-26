@@ -2,7 +2,6 @@ package cli
 
 import (
 	"embed"
-	"errors"
 	"fmt"
 	"go/format"
 	"io"
@@ -34,11 +33,11 @@ func parseQueueJobArgs(args []string) (queueJobRequest, error) {
 		return queueJobRequest{}, err
 	}
 	if !flags["--queue"] {
-		return queueJobRequest{}, errors.New(queueJobUsage)
+		return queueJobRequest{}, usageError{queueJobUsage}
 	}
 	request := queueJobRequest{DryRun: flags["--dry-run"]}
 	if len(positional) == 0 {
-		return queueJobRequest{}, errors.New(queueJobUsage)
+		return queueJobRequest{}, usageError{queueJobUsage}
 	}
 	request.Name = positional[0]
 	if err := validateGeneratorWord("job name", request.Name); err != nil {

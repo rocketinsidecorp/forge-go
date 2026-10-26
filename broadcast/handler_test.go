@@ -13,6 +13,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/broadcast"
 	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
@@ -126,12 +127,8 @@ func expect(t *testing.T, from <-chan string, want string) {
 
 func waitSubscribers(t *testing.T, memory *broadcast.Memory, want int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for memory.Subscribers() != want {
-		if time.Now().After(deadline) {
-			t.Fatalf("subscribers = %d, want %d", memory.Subscribers(), want)
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !waittest.Poll(5*time.Second, func() bool { return memory.Subscribers() == want }) {
+		t.Fatalf("subscribers = %d, want %d", memory.Subscribers(), want)
 	}
 }
 
@@ -150,7 +147,7 @@ func TestHandlerStreamsMessagesAndOutlivesServerTimeouts(t *testing.T) {
 
 	// The server's ReadTimeout and WriteTimeout (150ms) have passed several
 	// times over by now; the stream must still be alive and deliver.
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond) // real-clock: the real HTTP server's 150ms read and write timeouts must pass while the stream stays open
 	if err := f.memory.Publish(context.Background(), channel, broadcast.Message{Data: "<turbo-stream action=\"remove\" target=\"post_1\"></turbo-stream>\n"}); err != nil {
 		t.Fatal(err)
 	}

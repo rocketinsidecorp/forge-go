@@ -308,14 +308,14 @@ func (n *negotiation) RewriteRequest(r *http.Request) *http.Request {
 	r = stripPrefix(r, "/"+segment)
 	// The locale's canonical name, not the request's spelling of it
 	// ("/PT-br" is stored as "/pt-BR").
-	return r.WithContext(context.WithValue(r.Context(), prefixKey{}, "/"+locale))
+	return r.WithContext(context.WithValue(r.Context(), prefixKey{}, "/"+locale)) //nolint:contextcheck // a derived request context: it wraps r.Context() with a value
 }
 
 func (n *negotiation) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// A no-op when the server already applied the rewrite.
 	r = n.RewriteRequest(r)
 	locale := n.translator.Negotiate(r, n.opts)
-	n.next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), n.translator, locale)))
+	n.next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), n.translator, locale))) //nolint:contextcheck // a derived request context: it wraps r.Context() with a value
 }
 
 type (

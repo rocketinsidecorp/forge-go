@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/queue"
 	queuesqlite "github.com/rocketinsidecorp/forge-go/queue/sqlite"
 	"github.com/rocketinsidecorp/forge-go/queue/storetest"
@@ -111,7 +112,7 @@ func TestEnqueueCommitsWithTheTransactionAndStaysInvisibleUntilThen(t *testing.T
 		}
 		// The job exists for this transaction only: a running worker must not
 		// see, claim or run it before commit.
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond) // real-clock: negative check: a running worker must not see the uncommitted job in real time
 		if n := ran.Load(); n != 0 {
 			t.Errorf("handler ran %d time(s) before the transaction committed", n)
 		}
@@ -123,12 +124,8 @@ func TestEnqueueCommitsWithTheTransactionAndStaysInvisibleUntilThen(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for ran.Load() != 1 {
-		if time.Now().After(deadline) {
-			t.Fatal("job did not run after commit")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !waittest.Poll(10*time.Second, func() bool { return ran.Load() == 1 }) {
+		t.Fatal("job did not run after commit")
 	}
 	if jobs, orders := count(t, db, "forge_jobs"), count(t, db, "orders"); jobs != 1 || orders != 1 {
 		t.Fatalf("after commit: %d jobs, %d orders; want one of each", jobs, orders)
@@ -216,12 +213,8 @@ func TestRunDrainsAndReturnsWhenItsContextEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- worker.Run(ctx) }()
-	deadline := time.Now().Add(10 * time.Second)
-	for ran.Load() != 1 {
-		if time.Now().After(deadline) {
-			t.Fatal("job did not run")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !waittest.Poll(10*time.Second, func() bool { return ran.Load() == 1 }) {
+		t.Fatal("job did not run")
 	}
 	cancel()
 	select {

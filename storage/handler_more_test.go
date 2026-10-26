@@ -45,7 +45,7 @@ func TestHandlerServesStoresThatCannotSeekAndDistrustsTheirContentType(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	storage.SetClock(signer, func() time.Time { return time.Now() })
+	storage.SetClock(signer, time.Now)
 	handler, err := storage.NewHandler(streamOnlyStore{Store: local, label: "not a content type"}, signer, storage.HandlerOptions{})
 	if err != nil {
 		t.Fatal(err)
