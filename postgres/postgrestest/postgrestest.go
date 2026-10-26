@@ -5,7 +5,7 @@
 // databases (and roles, for NewRLS). Without a server tests are skipped, unless
 // FORGE_TEST_REQUIRE_DATABASE=true turns the skip into a failure (see dbtest).
 //
-// Forge generates UUIDv7 IDs in Rust, but its identity migrations and many
+// Forge generates UUIDv7 IDs in Go, but its identity migrations and many
 // applications' tables use the uuidv7() function PostgreSQL 18 added. On an
 // older server a test that needs it is skipped with a "requires PostgreSQL 18"
 // reason, or fails with it when FORGE_TEST_REQUIRE_DATABASE=true, instead of
