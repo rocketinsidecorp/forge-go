@@ -699,7 +699,7 @@ response against the document. Details, type mapping and tags:
 | `forge i18n check [--json]` | Read-only: list the translations each locale in `config/locales` lacks (keys of the other locales and literal keys used by `t` and `i18n.T`), missing CLDR plural forms and unused keys; exit 1 when anything is missing. See [Translations](#translations-i18n) |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
-| `forge routes [NAME]` | Table of every route registered while the application composes (HTML and JSON, including the `/v1/<plural>` routes of generated resources) with its resource action and the source line that registered it, plus Forge's built-in routes. Builds `cmd/NAME` and runs its `routes` command without serving HTTP, so it needs what `serve` needs to configure; `NAME` picks `cmd/NAME` when there are several binaries. When the application cannot be built or configured it says why on stderr and lists what a scan of the source finds (literal paths only). Try `forge routes \| grep /v1` |
+| `forge routes [NAME]` | Table of every route registered while the application composes (HTML and JSON, including the `/v1/<plural>` routes of generated resources) with its resource action and the source line that registered it, plus Forge's built-in routes. Builds `cmd/NAME` and runs its `routes` command without serving HTTP: `Configure` sees `app.Serving()` false, so a generated application opens its PostgreSQL or MySQL pool lazily (`postgres.Lazy`, `mysql.Lazy`) and starts no scheduler or worker, and the command works with the database stopped and records no job tick; `NAME` picks `cmd/NAME` when there are several binaries. When the application cannot be built or configured it says why on stderr and lists what a scan of the source finds (literal paths only). Try `forge routes \| grep /v1` |
 | `forge openapi [--output FILE \| --check FILE]` | Build the application and run its `openapi` command with the development environment: print or write the OpenAPI 3.1 document of the described routes, list undescribed ones on stderr; `--check` exits 1 when FILE is out of date. See [OpenAPI](#openapi) |
 | `forge help COMMAND`, `forge COMMAND --help` (or `-h`) | Print one command's usage, flags, examples and notes, and exit 0; for example `forge help new` or `forge generate --help` |
 | `forge help --json` | Emit the versioned command catalog with per-command flags, examples, environment inputs, exit codes and side effects |
@@ -1069,6 +1069,25 @@ Binaries built with `forge.Main` accept:
 | `serve` | Default. Serve HTTP until `SIGINT`/`SIGTERM` |
 | `healthcheck` | Probe `/health/live` on loopback; used by the Docker `HEALTHCHECK` |
 | `openapi [--output FILE \| --check FILE]` | Run `Configure` without listening and print or write the OpenAPI document (what `forge openapi` runs) |
+| `routes` | Run `Configure` without listening and print the route table (what `forge routes` runs) |
+
+While `routes` and `openapi` run `Configure`, `app.Serving()` is false. The
+generated `Configure` then opens its database pool lazily and starts no
+scheduler, job worker or recovery queue, so both work without a reachable
+database and never run or claim a job. A hand-written `Configure` does the
+same:
+
+```go
+database, err := postgres.Open(ctx, app.Config().Database, postgres.Lazy(!app.Serving()))
+// ...
+if app.Serving() {
+	scheduler.Start() // and worker.Start(ctx), with their OnShutdown hooks
+}
+```
+
+```sh
+FORGE_DATABASE_URL=postgres://app:app@127.0.0.1:1/down forge routes   # still lists every route
+```
 | `help` | List the available commands |
 | `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database); `rollback` reverts application migrations only |
 | `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |

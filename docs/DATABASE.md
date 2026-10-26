@@ -197,7 +197,17 @@ roles](#database-roles-postgresql)); no option is needed.
 `Open` fails if `FORGE_DATABASE_URL` is empty or selects another adapter,
 applies the pool and session settings above, and pings the database within
 `FORGE_DATABASE_CONNECT_TIMEOUT`, so a wrong URL or unreachable database stops
-startup instead of failing the first request.
+startup instead of failing the first request. With `postgres.Lazy(true)` (or
+`mysql.Lazy(true)`) it connects on the first query instead, and a lazy
+PostgreSQL pool checks the role of each connection it opens (see [Database
+roles](#database-roles-postgresql)) before its first use. Generated
+applications pass `Lazy(!app.Serving())`, so `routes` and `openapi`, which run
+`Configure` only to describe the application, need no reachable database:
+
+```go
+database, err := postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),
+	postgres.Lazy(!app.Serving()))
+```
 
 `App.OnShutdown` hooks run after the HTTP server has drained, and also when
 `Configure` returns an error. `Shutdown(ctx)` closes the pool but stops

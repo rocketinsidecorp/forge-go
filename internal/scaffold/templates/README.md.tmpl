@@ -79,7 +79,7 @@ forge generate job send_welcome user_id:uuid --queue # a typed handler for the p
 forge generate controller pages home --public # handlers, routes, views and tests for read-only pages
 forge generate mailer user welcome:name  # a mailer with text and HTML templates, previews and tests
 forge destroy controller pages home --public # remove what a generator created, unless you edited it
-forge routes                             # list the routes found in app/ and cmd/
+forge routes                             # every route of the composed app (no database needed)
 {{- if .DB}}
 forge generate model post title:string --tenant-scoped # migration, domain, application and persistence layers
 forge generate migration create_widgets --dry-run # preview exact migration files

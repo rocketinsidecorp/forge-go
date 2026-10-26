@@ -11,6 +11,8 @@ type Option func(*openOptions)
 type openOptions struct {
 	telemetry *telemetry.Telemetry
 	poolName  string
+	// lazy defers connecting to the first query (Lazy).
+	lazy bool
 }
 
 // WithTelemetry instruments the pool: its connection statistics are exported
@@ -33,13 +35,27 @@ func WithPoolName(name string) Option {
 	return func(o *openOptions) { o.poolName = name }
 }
 
-func observer(opts []Option) (*sqldb.Observer, string, error) {
+// Lazy, with true, makes Open return without connecting: the pool connects
+// on its first query, which then reports a wrong URL or an unreachable
+// server instead of Open. Generated applications pass Lazy(!app.Serving()),
+// so `routes` and `openapi`, which compose the application without serving
+// it, need no reachable database. Lazy(false) is Open's default.
+func Lazy(lazy bool) Option {
+	return func(o *openOptions) { o.lazy = lazy }
+}
+
+func collectOptions(opts []Option) openOptions {
 	var settings openOptions
 	for _, option := range opts {
 		if option != nil {
 			option(&settings)
 		}
 	}
+	return settings
+}
+
+func observer(opts []Option) (*sqldb.Observer, string, error) {
+	settings := collectOptions(opts)
 	obs, err := sqldb.NewObserver(settings.telemetry, "mysql", classify)
 	return obs, settings.poolName, err
 }
