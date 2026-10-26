@@ -99,7 +99,10 @@ Rules enforced at startup ([ADR 0005](adr/0005-environment-configuration-fail-fa
   `options`, `timezone` or `application_name`, so a
   `PGOPTIONS='-c forge.tenant_id=...'` cannot give every pooled session a
   default tenant (a query outside `InTenantTx` sees no tenant and RLS returns
-  no rows). The migrator still honours them, so
+  no rows). The same holds for session settings in a service file the URL
+  names (`service=...&servicefile=...`): its `options`, `application_name`
+  and the like are dropped from the serving pool unless the URL repeats
+  them. The migrator still honours them, so
   `PGOPTIONS='-c lock_timeout=5s' forge migrate` works. The other `PG*`
   variables (`PGUSER`, `PGPASSWORD`, ...) still fill what the URL leaves out,
   as for `psql`. Forge does this without editing its own environment: it

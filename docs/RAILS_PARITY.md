@@ -51,11 +51,14 @@ the work is finished and waiting for its review; **Planned** means not started.
 ## Parity follow-ups
 
 - RLS, environment and lifecycle hardening (forge-go QG9, audit items #14,
-  #15 and #20; Forge-Rust follow-up to be filed). Forge-Go now: refuses a
-  serving role that holds `TRUNCATE`, `REFERENCES` or `TRIGGER` on a table
-  with row-level security, directly, through `PUBLIC` or through any
-  membership (`has_table_privilege`), with the reason "holds TRUNCATE,
-  REFERENCES or TRIGGER"; runs the refusal by default in every
+  #15 and #20; tracked for Forge-Rust in
+  [forge-rust#85](https://github.com/rocketinsidecorp/forge-rust/issues/85)). Forge-Go now: refuses a
+  serving role that holds `TRUNCATE`, `REFERENCES` (also per column) or
+  `TRIGGER` on a table with row-level security, directly, through `PUBLIC`
+  or through any membership (`has_table_privilege`,
+  `has_any_column_privilege`), with the reason "holds TRUNCATE, REFERENCES
+  or TRIGGER", and one with any privilege on a partition without row-level
+  security of a partitioned table with it (`pg_partition_ancestors`); runs the refusal by default in every
   `postgres.Open` outside development and test (`config.Database.Environment`),
   with `postgres.AllowRowSecurityBypass()` as the only opt-out; keeps
   `PGOPTIONS`, `PGTZ` and `PGAPPNAME` out of the serving pool unless the URL
@@ -70,8 +73,9 @@ the work is finished and waiting for its review; **Planned** means not started.
   forge-rust#83); pins the generated `Dockerfile` bases by digest; generates
   identity IDs in Go with no `DEFAULT uuidv7()`; counts and logs cache values
   that no longer decode (`cache.DecodeFailures`). Forge-Rust adopts: the
-  `TRUNCATE`/`REFERENCES`/`TRIGGER` rule with the same catalog predicate and
-  reason in `require_row_security`; the refusal on every pool a command
+  `TRUNCATE`/`REFERENCES`/`TRIGGER` rule (column `REFERENCES` included) and
+  the unprotected-partition rule with the same catalog predicates and
+  reasons in `require_row_security`; the refusal on every pool a command
   opens (it runs for `serve`, `jobs work` and the `jobs` commands, while
   application commands such as `seed` and `setup` get an unchecked pool),
   with an opt-out named like `AllowRowSecurityBypass`; ignoring `PGOPTIONS`

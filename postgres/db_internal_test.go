@@ -197,3 +197,31 @@ func TestServingPoolTakesNoSessionSettingFromTheEnvironment(t *testing.T) {
 		t.Error("PGTZ reached a pool whose URL names other settings")
 	}
 }
+
+// A service file the URL names (service=, servicefile=) can set session
+// settings too; the serving pool keeps only those the URL itself names.
+func TestServingPoolTakesNoSessionSettingFromANamedServiceFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "pg_service.conf")
+	content := "[billing]\napplication_name=from-the-service-file\noptions=-c forge.tenant_id=0190d6c5-5f1a-7d0e-8b1a-6a3c1f2e9d4b\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw := "postgres://app:pw@db.internal:5432/app?service=billing&servicefile=" + url.QueryEscape(path)
+	pool, err := parseConfig(databaseAt(raw), stripEnvironmentSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"options", "application_name"} {
+		if value, ok := pool.ConnConfig.RuntimeParams[key]; ok {
+			t.Errorf("the serving pool took %s=%q from the service file", key, value)
+		}
+	}
+	migrator, err := parseConfig(databaseAt(raw), keepEnvironmentSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := migrator.ConnConfig.RuntimeParams["options"]; !strings.Contains(got, "forge.tenant_id") {
+		t.Errorf("the migrator lost the service file's options: %q", got)
+	}
+}
