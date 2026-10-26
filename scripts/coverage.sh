@@ -26,10 +26,18 @@
 # backend in CI. The list is explicit and checked: a kit that no longer
 # exists, is not named *test, or has a consumer outside _test.go files and
 # other kits is production code and fails the script.
+# Three gates, all of which must hold (docs/TESTING.md, "Coverage"):
+#   - the GATED total is at least the floor in .coverage-floor;
+#   - the GROSS total is at least gross_floor, set below (kits included, so a kit
+#     cannot be hidden from the measurement by being added to `kits`);
+#   - each security-relevant package in `guarded` below is at least
+#     package_floor on its own, so a well covered module cannot average away
+#     an untested authentication, credentials, CSRF, encryption or database
+#     package.
 # Writes dist/coverage/{raw,coverage-gross,coverage}.out (coverage.out is the
-# gated profile), prints both totals and a per-package table of the gated
-# packages (also to $GITHUB_STEP_SUMMARY when set), and exits 1 when the gated
-# total is below the floor.
+# gated profile), prints both totals, a per-package table of the gated
+# packages and the table of the guarded packages (also to $GITHUB_STEP_SUMMARY
+# when set), and exits 1 when any gate fails, after reporting all of them.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -55,6 +63,33 @@ kits=(
 	sqlite/sqlitetest
 	dbtest
 )
+
+# Gross total floor: the measurement of every package but the four exclusions,
+# kits included. It only rises.
+gross_floor=95.0
+
+# Security-relevant packages held to package_floor percent of their own
+# statements (docs/TESTING.md, "Coverage"). Paths are relative to the module
+# root; each must exist and be measured. Package encryption is the
+# AES-GCM field encryption (docs/ENCRYPTION.md); internal/pgurl guards the
+# PostgreSQL URL parsing the connection security depends on.
+package_floor=95.0
+guarded=(
+	auth
+	auth/postgres
+	credentials
+	csrf
+	encryption
+	internal/pgurl
+	postgres
+)
+
+for package in "${guarded[@]}"; do
+	if ! ls "$package"/*.go > /dev/null 2>&1; then
+		echo "guarded package $package has no Go files: update guarded in scripts/coverage.sh and docs/TESTING.md" >&2
+		exit 1
+	fi
+done
 
 in_kit() { # in_kit <path relative to the module root>
 	local kit
@@ -120,7 +155,17 @@ awk -v module="$module/" '
 	}
 ' "$raw" > "$merged"
 
-gross="$(go tool cover -func="$merged" | awk '$1 == "total:" { sub(/%/, "", $NF); print $NF }')"
+# Covered statements and statements of a `mode: set` profile, as "covered all".
+# The totals are compared exactly from these, never through the one-decimal
+# rounding of `go tool cover -func`, which shows 94.95 to 94.99 as "95.0".
+statements() { awk 'NR > 1 { all += $2; if ($3 > 0) hit += $2 } END { printf "%d %d\n", hit, all }' "$1"; }
+# percent <covered> <all>: for display, two decimals; the gates compare exactly.
+percent() { awk -v hit="$1" -v all="$2" 'BEGIN { printf "%.2f", all ? 100 * hit / all : 100 }'; }
+# below <covered> <all> <floor>: succeeds when covered/all is under the floor.
+below() { awk -v hit="$1" -v all="$2" -v floor="$3" 'BEGIN { exit !(hit * 100 < floor * all) }'; }
+
+read -r gross_hit gross_all < <(statements "$merged")
+gross="$(percent "$gross_hit" "$gross_all")"
 
 # The gated profile: the gross one without the kits.
 gated="$out/coverage.out"
@@ -138,7 +183,8 @@ awk -v module="$module/" -v kits="${kits[*]}" '
 		print
 	}
 ' "$merged" > "$gated"
-total="$(go tool cover -func="$gated" | awk '$1 == "total:" { sub(/%/, "", $NF); print $NF }')"
+read -r total_hit total_all < <(statements "$gated")
+total="$(percent "$total_hit" "$total_all")"
 
 # Per package: covered statements, statements, percent.
 report="$(awk -v module="$module/" '
@@ -162,14 +208,57 @@ report="$(awk -v module="$module/" '
 	}
 ' "$gated" | sort)"
 
-table="$(printf '### Statement coverage: %s%% gated (floor %s%%), %s%% gross\n\nGated: production code, without the contract kits. Gross: also the kits (%s).\n\n| Package | Covered statements | Statements | Coverage |\n| --- | ---: | ---: | ---: |\n%s\n' "$total" "$floor" "$gross" "${kits[*]}" "$report")"
+# The guarded packages: covered statements, statements and percent of each,
+# compared exactly (not through the one-decimal rounding of the table). A
+# package without statements in the profile is a failure, not a pass.
+guarded_report="$(awk -v module="$module/" -v floor="$package_floor" -v list="${guarded[*]}" '
+	BEGIN { count = split(list, names, " "); for (i = 1; i <= count; i++) wanted[names[i]] = 1 }
+	NR == 1 { next }
+	{
+		file = substr($1, 1, index($1, ":") - 1)
+		package = substr(file, length(module) + 1)
+		sub(/\/[^\/]+$/, "", package)
+		if (package in wanted) {
+			all[package] += $2
+			if ($3 > 0) {
+				hit[package] += $2
+			}
+		}
+	}
+	END {
+		for (i = 1; i <= count; i++) {
+			package = names[i]
+			if (!all[package]) {
+				printf "| `%s` | 0 | 0 | not measured | %s%% | FAIL |\n", package, floor
+				continue
+			}
+			status = (hit[package] * 100 >= floor * all[package]) ? "ok" : "FAIL"
+			printf "| `%s` | %d | %d | %.2f%% | %s%% | %s |\n", package, hit[package], all[package], 100 * hit[package] / all[package], floor, status
+		}
+	}
+' "$gated")"
+
+table="$(printf '### Statement coverage: %s%% gated (floor %s%%), %s%% gross (floor %s%%)\n\nGated: production code, without the contract kits. Gross: also the kits (%s).\n\n| Package | Covered statements | Statements | Coverage |\n| --- | ---: | ---: | ---: |\n%s\n\n### Security-relevant packages (floor %s%% each)\n\n| Package | Covered statements | Statements | Coverage | Floor | |\n| --- | ---: | ---: | ---: | ---: | --- |\n%s\n' "$total" "$floor" "$gross" "$gross_floor" "${kits[*]}" "$report" "$package_floor" "$guarded_report")"
 printf '%s\n' "$table"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 	printf '%s\n' "$table" >> "$GITHUB_STEP_SUMMARY"
 fi
 
-if awk -v total="$total" -v floor="$floor" 'BEGIN { exit !(total + 0 < floor + 0) }'; then
-	echo "coverage ${total}% (gross ${gross}%) is below the floor ${floor}% (.coverage-floor)" >&2
+status=0
+if below "$total_hit" "$total_all" "$floor"; then
+	echo "coverage ${total}% (${total_hit}/${total_all} statements) is below the floor ${floor}% (.coverage-floor)" >&2
+	status=1
+fi
+if below "$gross_hit" "$gross_all" "$gross_floor"; then
+	echo "gross coverage ${gross}% (${gross_hit}/${gross_all} statements, kits included) is below the gross floor ${gross_floor}% (gross_floor in scripts/coverage.sh)" >&2
+	status=1
+fi
+below="$(awk -F'|' -v floor="$package_floor" '$7 ~ /FAIL/ { gsub(/[ `]/, "", $2); gsub(/^ +| +$/, "", $5); print "package " $2 " is " ($5 == "not measured" ? "not measured" : "at " $5) ", below its per-package floor " floor "% (guarded in scripts/coverage.sh)" }' <<< "$guarded_report")"
+if [ -n "$below" ]; then
+	printf '%s\n' "$below" >&2
+	status=1
+fi
+if [ "$status" -ne 0 ]; then
 	exit 1
 fi
-echo "coverage ${total}% (gross ${gross}%) >= floor ${floor}%"
+echo "coverage ${total}% (gross ${gross}%) >= floor ${floor}%; gross >= ${gross_floor}%; ${#guarded[@]} guarded packages >= ${package_floor}%"

@@ -67,10 +67,7 @@ func walkObject(dec *json.Decoder, data []byte) error {
 		if err != nil {
 			return locate(data, err)
 		}
-		key, ok := keyToken.(string)
-		if !ok {
-			return errInvalidJSON
-		}
+		key, _ := keyToken.(string) // the decoder reports a key that is not a string as a syntax error
 		if seen[key] {
 			return fmt.Errorf("credentials: duplicate key at %s", position(data, dec.InputOffset()))
 		}
@@ -92,19 +89,18 @@ func walkValue(dec *json.Decoder, data []byte) error {
 	if !ok {
 		return nil
 	}
-	switch delim {
-	case '{':
+	if delim == '{' {
 		return walkObject(dec, data)
-	case '[':
-		for dec.More() {
-			if err := walkValue(dec, data); err != nil {
-				return err
-			}
-		}
-		_, err := dec.Token()
-		return locate(data, err)
 	}
-	return errInvalidJSON
+	// An array: the decoder reports a stray closing delimiter where a value
+	// is expected as a syntax error, so no other delimiter reaches here.
+	for dec.More() {
+		if err := walkValue(dec, data); err != nil {
+			return err
+		}
+	}
+	_, err = dec.Token()
+	return locate(data, err)
 }
 
 func locate(data []byte, err error) error {
@@ -122,11 +118,8 @@ func locate(data []byte, err error) error {
 }
 
 func position(data []byte, offset int64) string {
-	if offset > int64(len(data)) {
-		offset = int64(len(data))
-	}
 	line, col := 1, 1
-	for _, b := range data[:max(offset, 0)] {
+	for _, b := range data[:min(max(offset, 0), int64(len(data)))] {
 		if b == '\n' {
 			line, col = line+1, 1
 		} else {

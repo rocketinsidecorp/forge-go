@@ -72,7 +72,9 @@ how fast the machine is:
 ## Coverage
 
 CI's `coverage` job measures statement coverage of the module and fails when
-it drops below the committed floor in `.coverage-floor`:
+the gated total drops below the committed floor in `.coverage-floor`, when the
+gross total drops below its floor, or when a security-relevant package drops
+below its own floor (three gates, all in `scripts/coverage.sh`):
 
 ```sh
 scripts/coverage.sh                                # measure, print the table, gate
@@ -92,12 +94,43 @@ COVERAGE_PROFILE=cover.out scripts/coverage.sh     # report and gate an existing
   package except the four exclusions below. The *gated* total, the one the
   floor checks, also leaves out the contract and test kits listed under
   "Contract and test kits".
-- **The floor only rises.** It is 95.0%, set on 2026-10-25 against a gated
-  total of 96.0% (94.9% gross, kits included), measured on PostgreSQL 16 and
-  18 and MariaDB; it started at 84.0% and is raised, never lowered, as tests
-  are added, toward the project's target of 95%. A change that lowers
+- **The floor only rises.** It is 96.0%, raised from 95.0% on 2026-10-26
+  (QG12) against a gated total of 96.26% (95.05% gross, kits included),
+  measured on PostgreSQL 16 and 18 and MariaDB; it started at 84.0% and is
+  raised, never lowered, as tests are added. The gates compare covered and
+  total statements exactly, not rounded percentages (the script prints two
+  decimals; `go tool cover` would show 95.96 as 96.0). A change that lowers
   coverage below the floor fails CI; raise the floor in the same pull request
   when coverage grows.
+- **The gross floor.** The gross total, which counts the kits, must also be at
+  least 95.0% (`gross_floor` in `scripts/coverage.sh`). The gated total leaves
+  the kits out by an explicit list; the gross gate keeps that list from
+  becoming a way to hide code: a package added to `kits` without tests still
+  has to be covered enough for the gross total to hold.
+- **Per-package floors.** Each security-relevant package must reach 95% of its
+  own statements (`package_floor` and `guarded` in `scripts/coverage.sh`), so
+  a well covered module cannot average away an untested one: `auth`,
+  `auth/postgres` (the identity store), `credentials`, `csrf`, `encryption`,
+  `internal/pgurl` (the PostgreSQL URL isolation) and `postgres`. The table in
+  the job summary lists them with their numbers; a listed package that is not
+  measured fails too. The comparison is exact, not the table's one-decimal
+  rounding. A package joins the list in the pull request that brings it to
+  95%, and the list only grows.
+- **What counts as covered there.** Tests assert behaviour: refusals, error
+  paths and edge inputs, each with a failure that would show if the code were
+  wrong (a state left unchanged, a secret absent from the error). Excluding
+  code from the measurement to pass a floor is not allowed (see Exclusions).
+  A few branches in these packages cannot be reached by any test and stay
+  uncovered, each of one kind: the error return after a call that cannot fail
+  (`crypto/rand`, which crashes instead of returning an error; marshalling
+  data that is always valid; `uuid.New` over `crypto/rand`), a guard against a
+  race between two system calls (the symbolic-link check in `credentials`), and
+  a consistency check made after a row lock that the same transaction's
+  earlier statement already guarantees (`auth/postgres`). Tests that need a
+  file system enforcing permissions against the user (an unreadable file, a
+  read-only directory) skip for root and run on CI's non-root runner, so the
+  per-package numbers of a root run, such as a container's, are the lower
+  bound.
 - **Exclusions.** Only these, each for the reason given; nothing else may be
   excluded, and a new exclusion needs a reason here:
 
@@ -131,4 +164,5 @@ production code and has to be covered.
 
 The Forge-Rust twin (`scripts/coverage.sh`, `.coverage-floor`, the same job
 name) measures line coverage with cargo-llvm-cov; see its
-`docs/test-strategy.md`.
+`docs/test-strategy.md`. It has one floor, for the gated total, and neither the
+gross floor nor per-crate floors yet; bringing them to Rust is tracked as QR8.
