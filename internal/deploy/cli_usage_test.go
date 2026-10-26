@@ -54,6 +54,11 @@ func TestDeployCommandsRefuseMalformedCommandLinesBeforeConnecting(t *testing.T)
 		if tc.want != "" && !strings.Contains(err.Error()+stderr.String(), tc.want) {
 			t.Errorf("%s: err = %v / stderr %q, want %q", name, err, stderr.String(), tc.want)
 		}
+		// An invalid command line exits 2, as the README documents, and not
+		// with the 1 of a failed deploy.
+		if tc.want != "" && ExitCodeOf(err) != ExitUsage {
+			t.Errorf("%s: exit code %d, want %d", name, ExitCodeOf(err), ExitUsage)
+		}
 		if stdout.Len() != 0 {
 			t.Errorf("%s: printed %q before failing", name, stdout.String())
 		}

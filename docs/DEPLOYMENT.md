@@ -726,7 +726,8 @@ exact containers that would be stopped or pruned.
 | `forge app shell [--image IMAGE]` | Interactive shell over `ssh -t`. Distroless images have no shell: `--image busybox:1.37` starts a sidecar sharing the container's network and process namespaces, without the application's environment. |
 
 Exit codes: `0` success, `1` failure (invalid configuration, SSH or remote
-command failure), `3` the lock is held (nothing changed), `4` a new container
+command failure), `2` invalid arguments (an unknown flag or subcommand, a
+missing or extra argument; nothing ran), `3` the lock is held (nothing changed), `4` a new container
 failed its health check and every host serves its previous version, `5` the
 migration failed before any switch, `6` a hook failed, `7` a failure could not
 be fully reverted (run `forge deploy details`). With `--json`, the report is
