@@ -146,9 +146,21 @@ docker run --rm -p 8080:8080 \
 
 `FORGE_MASTER_KEY` is canonical unpadded base64url of 32 bytes, optionally
 several separated by commas (first one active). It wins over a key file. A key
-file must be a regular file (not a FIFO or device) of mode 0600 or stricter,
-in a directory that group and others cannot write; anything else is refused
-with the fix in the message:
+file must be a regular file (not a symbolic link, FIFO or device) of mode 0600
+or stricter, in a directory that group and others cannot write; anything else
+is refused with the fix in the message. The same holds for the encrypted
+`<env>.json.enc`: a symbolic link is refused (`credentials.ErrSymlink`) even
+when it points inside the directory, as in forge-rust. Replace a link with the
+file it points to:
+
+```sh
+target="$(readlink -f config/credentials/production.key)" &&
+  rm config/credentials/production.key &&
+  cp "$target" config/credentials/production.key &&
+  chmod 600 config/credentials/production.key
+```
+
+Fix the permissions with:
 
 ```sh
 chmod 700 config/credentials

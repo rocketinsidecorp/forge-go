@@ -298,8 +298,8 @@ func TestSymlinkedKeyFileIsNotFollowedOutsideTheDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	noEnv := func(string) (string, bool) { return "", false }
-	if _, err := credentials.Open("production", credentials.Options{Dir: dir, Lookup: noEnv}); err == nil {
-		t.Fatal("a key file symlinked outside the credentials directory was followed")
+	if _, err := credentials.Open("production", credentials.Options{Dir: dir, Lookup: noEnv}); !errors.Is(err, credentials.ErrSymlink) {
+		t.Fatalf("a key file symlinked outside the credentials directory: %v", err)
 	}
 }
 
