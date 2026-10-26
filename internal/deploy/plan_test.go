@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // recordingLocal records local commands instead of running them.
@@ -240,7 +242,7 @@ func TestDeployAbortsOnFailingHookBeforeRemoteChanges(t *testing.T) {
 	}
 	marker := filepath.Join(d.Root, "hook-env")
 	script := "#!/bin/sh\nenv | grep '^FORGE_' | sort > " + marker + "\nexit 3\n"
-	if err := os.WriteFile(filepath.Join(hooks, "pre-deploy"), []byte(script), 0o700); err != nil { // #nosec G306 -- hook must be executable.
+	if err := exectest.Write(filepath.Join(hooks, "pre-deploy"), script); err != nil {
 		t.Fatal(err)
 	}
 	_, err := d.Deploy(t.Context(), DeployOptions{Version: "v3", SkipBuild: true})

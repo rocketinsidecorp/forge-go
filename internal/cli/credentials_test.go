@@ -17,6 +17,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/credentials"
 	"github.com/rocketinsidecorp/forge-go/encryption"
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 const (
@@ -949,7 +950,7 @@ func TestEditorHardeningCoversTheVimFamilyByResolvedName(t *testing.T) {
 	dir := t.TempDir()
 	script := func(name string) string {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // test executable
+		if err := exectest.Write(path, "#!/bin/sh\n"); err != nil {
 			t.Fatal(err)
 		}
 		return path

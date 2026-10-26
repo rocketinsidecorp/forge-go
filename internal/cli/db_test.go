@@ -16,6 +16,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/dbtest"
 	"github.com/rocketinsidecorp/forge-go/internal/dbtasks"
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // fakeApp stands in for the application binary: it records the commands the
@@ -500,7 +501,7 @@ func TestDBPostgresConsoleRunsPsqlWithoutPasswordArguments(t *testing.T) {
 func fakeClient(t *testing.T, h *dbHarness, script string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "client")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil { // #nosec G306 -- test client must be executable
+	if err := exectest.Write(path, "#!/bin/sh\n"+script); err != nil {
 		t.Fatal(err)
 	}
 	inner := h.target
