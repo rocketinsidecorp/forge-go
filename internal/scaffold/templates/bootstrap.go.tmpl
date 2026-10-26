@@ -105,7 +105,7 @@ func JobsConfigure(app *forge.App) error {
 			app.Logger().Error("scheduled job failed", "job", name, "error", err)
 		},
 	})
-	// Register application jobs here (import "time"), e.g.:
+	// Register application jobs here (they need the time package), e.g.:
 	// if err := scheduler.Register("cleanup", jobs.ScheduleSpec{Every: 24 * time.Hour}, func(ctx context.Context) error {
 	//	// ctx is cancelled on shutdown: return promptly when it is done.
 	//	return nil
