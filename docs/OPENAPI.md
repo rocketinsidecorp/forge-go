@@ -238,7 +238,7 @@ way, and the generated bootstrap test fetches `/openapi.json` and validates
 ## What generated applications describe
 
 - `forge new`: `GET /v1/status` (`openapi.Typed`), the health routes, and
-  with PostgreSQL `GET /v1/auth/session`.
+  with `--api-auth` (PostgreSQL) `GET /v1/auth/session`.
 - `forge generate resource|scaffold`: `createPost`, `listPosts`, `getPost`,
   `updatePost` and `deletePost`, with their permissions, `pagination.Query`,
   the `{id}` and `?version=` parameters, the `Location` header and the
@@ -247,7 +247,8 @@ way, and the generated bootstrap test fetches `/openapi.json` and validates
   optional field.
 - `forge generate controller ... --api`: each action.
 
-- Identity applications (`forge new` with PostgreSQL): the `auth` package's
+- Identity applications with the JSON authentication APIs (`forge new
+  --api-auth`, PostgreSQL): the `auth` package's
   JSON handlers describe themselves, so `POST /auth/login`, `/auth/logout`,
   `/auth/mfa/complete`, `/auth/recovery/request`, `/auth/recovery/reset`,
   `/auth/cookie/login`, `/auth/cookie/mfa/complete` and `/auth/cookie/logout`

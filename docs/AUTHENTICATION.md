@@ -365,6 +365,34 @@ How the flow stays safe:
   prefilled from `?tenant=`: logins always name their tenant and there is no
   default tenant. Forge does not derive the tenant from `Host`.
 
+### JSON authentication APIs (opt-in)
+
+`forge new` generates only the HTML flow above: it is the application's only
+way to enter a password. The JSON authentication APIs are opt-in with
+`forge new NAME --api-auth` (PostgreSQL), because each is another
+credential-entry point to throttle, audit and keep in mind. With the flag the
+generated `bootstrap.apiAuthRoutes` mounts:
+
+| Method | Route | Handler |
+| ------ | ----- | ------- |
+| `POST` | `/auth/login`, `/auth/logout` | `NewLoginHandler`, `NewAuditedLogoutHandler`: bearer sessions for API clients |
+| `POST` | `/auth/mfa/complete` | `NewMFACompletionHandler` (with `FORGE_AUTH_MFA_KEY`) |
+| `POST` | `/auth/recovery/request`, `/auth/recovery/reset` | `NewAuditedPasswordRecoveryRequestHandler`, `NewAuditedPasswordResetHandler` |
+| `POST` | `/auth/cookie/login`, `/auth/cookie/logout` | `NewCookieLoginHandler`, `NewAuditedCookieLogoutHandler`: the page cookies, for browser scripts |
+| `POST` | `/auth/cookie/mfa/complete` | `NewCookieMFACompletionHandler` (with `FORGE_AUTH_MFA_KEY`) |
+| `GET` | `/v1/auth/session` | the bearer session's principal, behind `Middleware.Authenticate` |
+
+```sh
+forge new myapi --api-auth
+forge generate authentication --api-auth   # an application without the pages: also prints the JSON wiring
+```
+
+An application generated before this option mounts all of them;
+`forge generate authentication` lists the ones its `bootstrap.go` still
+mounts. Remove those no API client or script uses. Forge-Rust has no JSON
+login (its applications sign in through the pages only), so the flag is
+Forge-Go's ([RAILS_PARITY.md](RAILS_PARITY.md#parity-follow-ups)).
+
 ### Password-reset emails
 
 Generated applications pass a recovery service to `auth.Browser` only when

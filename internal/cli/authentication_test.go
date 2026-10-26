@@ -124,6 +124,74 @@ func TestGenerateAuthenticationAddsWhatForgeNewGenerates(t *testing.T) {
 	}
 }
 
+// TestGenerateAuthenticationRespectsAPIAuth: like forge new, the generator
+// adds only the HTML flow unless --api-auth asks for the JSON authentication
+// APIs too; without the flag it lists the JSON routes an older bootstrap.go
+// still mounts, with the flag it prints their wiring unless all are there.
+func TestGenerateAuthenticationRespectsAPIAuth(t *testing.T) {
+	t.Parallel()
+	removePages := func(t *testing.T, dir string) {
+		t.Helper()
+		for _, path := range []string{filepath.Join("app", "adapters", "htmlauth"), filepath.Join("app", "views", "sessions"), filepath.Join("app", "views", "passwords"), filepath.Join("app", "views", "mfa"), filepath.Join("config", "locales", "authentication.en.json")} {
+			if err := os.RemoveAll(filepath.Join(dir, path)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	generate := func(t *testing.T, apiAuth bool) string {
+		t.Helper()
+		dir := filepath.Join(t.TempDir(), "shop")
+		if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: "postgresql", APIAuth: apiAuth}); err != nil {
+			t.Fatal(err)
+		}
+		removePages(t, dir)
+		return dir
+	}
+
+	// A default application: no JSON routes, no JSON wiring, no note.
+	output, err := runAuthentication(generate(t, false), "--dry-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output, "auth.NewLoginHandler") || strings.Contains(output, "NOTE:") || strings.Contains(output, "POST /auth/cookie/login") {
+		t.Errorf("the HTML-only wiring mentions the JSON APIs:\n%s", output)
+	}
+
+	// --api-auth on a default application prints the JSON wiring.
+	output, err = runAuthentication(generate(t, false), "--api-auth", "--dry-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"JSON authentication APIs (--api-auth)", "auth.NewLoginHandler(login)", `app.Handle("POST /auth/cookie/login", cookieLoginHandler)`, "auth.NewMFACompletionHandler(mfaService)", "/auth/recovery/request", "forge new NAME --api-auth"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("--api-auth wiring is missing %q:\n%s", want, output)
+		}
+	}
+
+	// An application that already mounts them (from --api-auth, or from
+	// before the flag existed).
+	mounted := generate(t, true)
+	output, err = runAuthentication(mounted, "--dry-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "NOTE: app/bootstrap/bootstrap.go also mounts JSON authentication routes (POST /auth/login, POST /auth/logout, POST /auth/mfa/complete, POST /auth/recovery/request, POST /auth/recovery/reset, POST /auth/cookie/login, POST /auth/cookie/mfa/complete, POST /auth/cookie/logout, GET /v1/auth/session)") {
+		t.Errorf("the mounted JSON routes are not pointed out:\n%s", output)
+	}
+	output, err = runAuthentication(mounted, "--dry-run", "--api-auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "bootstrap.go already mounts them; keep them") || strings.Contains(output, "auth.NewLoginHandler(login)") {
+		t.Errorf("--api-auth with the routes mounted:\n%s", output)
+	}
+	for _, args := range [][]string{{"--api-auth", "--api-auth"}, {"--dry-run", "--dry-run"}, {"--api-auth=true"}} {
+		if _, err := runAuthentication(mounted, args...); err == nil || !strings.Contains(err.Error(), authenticationUsage) {
+			t.Errorf("%v: err = %v", args, err)
+		}
+	}
+}
+
 func TestScaffoldRefusesThePathsOfTheSignInPages(t *testing.T) {
 	t.Parallel()
 	for _, plural := range []string{"session", "sessions", "passwords"} {

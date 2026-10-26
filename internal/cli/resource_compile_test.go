@@ -72,13 +72,19 @@ func matrixApplication(t *testing.T, database string, resources [][]string) stri
 // resource command line: "resource" or "scaffold".
 func matrixApplicationFor(t *testing.T, database, command string, resources [][]string) string {
 	t.Helper()
+	return matrixApplicationWith(t, database, nil, command, resources)
+}
+
+// matrixApplicationWith is matrixApplicationFor with extra `forge new` flags.
+func matrixApplicationWith(t *testing.T, database string, newFlags []string, command string, resources [][]string) string {
+	t.Helper()
 	frameworkPath, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "mx")
 	var stdout, stderr bytes.Buffer
-	args := []string{"new", "mx", "--module", "example.com/mx", "--dir", dir, "--database", database, "--skip-deps"}
+	args := append([]string{"new", "mx", "--module", "example.com/mx", "--dir", dir, "--database", database, "--skip-deps"}, newFlags...)
 	if code := Run(args, &stdout, &stderr); code != 0 {
 		t.Fatalf("forge new: code=%d %s %s", code, stdout.String(), stderr.String())
 	}

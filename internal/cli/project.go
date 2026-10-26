@@ -72,6 +72,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	flags.StringVar(database, "d", "postgresql", "shorthand for --database")
 	skipDatabase := flags.Bool("skip-database", false, "same as --database none")
 	locale := flags.String("locale", "en", "default locale: "+strings.Join(scaffold.Locales, ", ")+" (en.json is always generated)")
+	apiAuth := flags.Bool("api-auth", false, "also mount the JSON authentication APIs (bearer and cookie login, MFA completion, JSON password recovery, GET /v1/auth/session); PostgreSQL only")
 	name, err := parseSinglePositional(flags, args, "NAME")
 	if err != nil {
 		return err
@@ -84,7 +85,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 		}
 		*database = "none"
 	}
-	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale})
+	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale, APIAuth: *apiAuth})
 	if err != nil {
 		return err
 	}

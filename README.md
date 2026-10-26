@@ -339,11 +339,27 @@ printf '%s\n' "$OWNER_PASSWORD" | myapp setup --tenant acme --email you@example.
 myapp seed
 ```
 
+These pages are the only way to sign in to a new application. The JSON
+authentication APIs (bearer `POST /auth/login` and `/auth/logout`, the cookie
+login for browser scripts, MFA completion, JSON password recovery and
+`GET /v1/auth/session`) are opt-in, since each is another place a password is
+entered:
+
+```sh
+forge new myapi --api-auth      # the pages plus the JSON authentication APIs
+curl -s -X POST http://127.0.0.1:8080/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"your password","tenant":"acme"}'
+```
+
+Applications generated earlier mount the JSON routes; remove those no API
+client uses (`forge generate authentication` lists them,
+[docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#json-authentication-apis-opt-in)).
 An application created before the sign-in pages existed gets them with:
 
 ```sh
 forge generate authentication --dry-run   # preview files and the wiring to paste
 forge generate authentication             # app/adapters/htmlauth, app/views/{sessions,passwords}
+forge generate authentication --api-auth  # the same, and the wiring of the JSON authentication APIs
 ```
 
 MySQL, MariaDB and SQLite applications are refused: Forge persists identities
@@ -596,12 +612,12 @@ by construction for `openapi.Typed` handlers, checked by contract tests for
 the rest. Generated applications, resources and `--api` controllers are
 described out of the box, and so are the `auth` package's JSON routes
 (`/auth/login`, logout, MFA completion, password recovery and the cookie
-routes) in an application that registers them.
+routes) in an application that registers them (`forge new --api-auth`).
 
 ```sh
 forge new shop && cd shop && forge dev
 curl http://127.0.0.1:8080/openapi.json             # served in development and test
-curl -s http://127.0.0.1:8080/openapi.json | grep '"/auth/'   # identity apps: the sign-in, recovery and cookie routes
+curl -s http://127.0.0.1:8080/openapi.json | grep '"/auth/'   # --api-auth apps: the sign-in, recovery and cookie routes
 forge openapi                                       # print it (runs Configure, never listens)
 forge openapi --output openapi.json                 # write it to commit and diff
 forge openapi --check openapi.json                  # exit 1 when the committed file is stale
@@ -629,7 +645,7 @@ response against the document. Details, type mapping and tags:
 
 | Command | Description |
 | ------- | ----------- |
-| `forge new NAME [--database DB] [--locale LOCALE] [--module PATH] [--dir DIR] [--framework-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
+| `forge new NAME [--database DB] [--locale LOCALE] [--api-auth] [--module PATH] [--dir DIR] [--framework-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
 | `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
@@ -647,7 +663,7 @@ response against the document. Details, type mapping and tags:
 | `forge generate job NAME [field:type...] --queue [--dry-run]` | Create or preview a typed handler for the persistent job queue, its enqueue function and tests |
 | `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
 | `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--broadcast] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests; `--broadcast` adds live updates over Server-Sent Events. Never public: see below |
-| `forge generate authentication [--dry-run]` | PostgreSQL: add the sign-in, sign-out, two-factor and password-reset pages `forge new` generates to an application that lacks them, and print their wiring; other databases are refused (identity persistence is PostgreSQL-only) |
+| `forge generate authentication [--api-auth] [--dry-run]` | PostgreSQL: add the sign-in, sign-out, two-factor and password-reset pages `forge new` generates to an application that lacks them, and print their wiring (with `--api-auth`, also the JSON authentication APIs'); other databases are refused (identity persistence is PostgreSQL-only) |
 | `forge destroy GENERATOR ARGUMENTS... [--force] [--migrations] [--dry-run]` | Remove what a generator created (`model`, `resource`, `scaffold`, `controller`, `mailer`, `job`, `view`): the same arguments as the generate command; a file that differs from what the generator writes, or that a bigger generation still needs, is never removed without `--force`, migrations are kept without `--migrations` |
 | `forge deploy [init\|setup\|rollback VERSION\|prune\|details\|lock\|maintenance] [--dry-run] [--json]` | Deploy the image to your servers over SSH with zero-downtime switches through forge-proxy, Kamal-style: see [Deploy](#deploy) |
 | `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream container logs from every host, prefixed `host\|` |
@@ -681,6 +697,10 @@ Flags for `forge new`:
 - `--locale LOCALE` sets the default locale of the generated pages: `en`
   (default), `es` or `pt-BR`. `config/locales/en.json` is always generated,
   plus `LOCALE.json`.
+- `--api-auth` also mounts the JSON authentication APIs (bearer and cookie
+  login and logout, MFA completion, JSON password recovery,
+  `GET /v1/auth/session`) beside the HTML sign-in pages; PostgreSQL only.
+  Without it the pages are the only way to sign in.
 - `--framework-path DIR` is for framework contributors: it adds a `replace`
   directive pointing at a local checkout, then runs `go mod tidy` and
   `go mod vendor` so the Docker build context is self-contained. Without it,

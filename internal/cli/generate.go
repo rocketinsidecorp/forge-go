@@ -18,7 +18,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/migrate"
 )
 
-const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate job NAME [field:type...] --queue [--dry-run]\n       forge generate model NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate controller NAME ACTION... [--api] [--public] [--dry-run]\n       forge generate mailer NAME METHOD[:field,field...]... [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate authentication [--dry-run]"
+const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate job NAME [field:type...] --queue [--dry-run]\n       forge generate model NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate controller NAME ACTION... [--api] [--public] [--dry-run]\n       forge generate mailer NAME METHOD[:field,field...]... [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate authentication [--api-auth] [--dry-run]"
 
 var migrationName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,99}$`)
 var viewName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)

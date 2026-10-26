@@ -79,13 +79,14 @@ echo "generating the application" >&2
 # forge new vendors the framework checkout; packages the scaffold adds later are not in vendor/.
 export GOFLAGS=-mod=mod
 app="$work/benchapp"
-"$work/forge" new benchapp --dir "$app" --framework-path "$root" >/dev/null
+# --api-auth: loadgen signs in once through the bearer POST /auth/login.
+"$work/forge" new benchapp --dir "$app" --framework-path "$root" --api-auth >/dev/null
 (cd "$app" && "$work/forge" generate scaffold post title:string body:text --tenant-scoped >/dev/null)
 
 # The generators never edit bootstrap.go; paste what the scaffold prints,
-# once, ahead of the last statement of identityRoutes.
+# once, ahead of the closing comment and return of identityRoutes.
 bootstrap="$app/app/bootstrap/bootstrap.go"
-marker='return app.Handle("GET /v1/auth/session"'
+marker='// Pages behind a permission authenticate the session cookie'
 grep -qF "$marker" "$bootstrap" || { echo "bench.sh: bootstrap.go changed: marker $marker not found" >&2; exit 1; }
 cat >"$work/wiring.go.txt" <<'GO'
 	protect := func(permission string, next http.Handler) (http.Handler, error) {

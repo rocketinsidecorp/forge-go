@@ -50,6 +50,12 @@ type Options struct {
 	// Locale is the default locale, one of Locales; empty means "en". Its
 	// translations are generated next to en.json.
 	Locale string
+	// APIAuth also mounts the JSON authentication APIs (`forge new
+	// --api-auth`): bearer login and logout, cookie login and logout for
+	// scripts, MFA completion, JSON password recovery and GET
+	// /v1/auth/session. Without it the HTML pages are the only way to sign
+	// in. It needs Forge identity (PostgreSQL).
+	APIAuth bool
 }
 
 // Locales are the locales Forge ships translations of the generated pages
@@ -205,6 +211,9 @@ func Normalize(opts Options) (Options, error) {
 		return Options{}, fmt.Errorf("unsupported locale %q: Forge generates translations for %s; add others to config/locales afterwards (docs/I18N.md)", opts.Locale, strings.Join(Locales, ", "))
 	}
 	opts.Locale = locale
+	if opts.APIAuth && !hasIdentity(opts) {
+		return Options{}, errors.New("--api-auth needs Forge identity, which is PostgreSQL-only: use --database postgresql")
+	}
 	return opts, nil
 }
 

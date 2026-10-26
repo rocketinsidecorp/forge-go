@@ -279,7 +279,7 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"database"`) {
 		t.Fatalf("readiness status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-{{- if .DB.Identity}}
+{{- if and .DB.Identity .APIAuth}}
 	// The identity routes describe themselves: Forge's auth handlers carry
 	// their operations, so the routes registered above are documented.
 	assertOpenAPI(t, app, "/v1/status", "/health", "/v1/auth/session",
@@ -290,12 +290,38 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 	assertOpenAPI(t, app, "/v1/status", "/health")
 {{- end}}
 {{- if .DB.Identity}}
+{{- if .APIAuth}}
 
 	authRecorder := httptest.NewRecorder()
 	app.Handler().ServeHTTP(authRecorder, httptest.NewRequest(http.MethodGet, "/v1/auth/session", nil))
 	if authRecorder.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated session status=%d body=%s", authRecorder.Code, authRecorder.Body.String())
 	}
+{{- else}}
+
+	// The HTML pages are the only way to sign in: the JSON authentication
+	// APIs are opt-in (forge new --api-auth), so they are neither routed nor
+	// documented.
+	document := httptest.NewRecorder()
+	app.Handler().ServeHTTP(document, httptest.NewRequest(http.MethodGet, forge.OpenAPIPath, nil))
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/auth/login"}, {http.MethodPost, "/auth/logout"}, {http.MethodPost, "/auth/mfa/complete"},
+		{http.MethodPost, "/auth/recovery/request"}, {http.MethodPost, "/auth/recovery/reset"},
+		{http.MethodPost, "/auth/cookie/login"}, {http.MethodPost, "/auth/cookie/mfa/complete"}, {http.MethodPost, "/auth/cookie/logout"},
+		{http.MethodGet, "/v1/auth/session"},
+	} {
+		request := httptest.NewRequest(route.method, route.path, strings.NewReader("{}"))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		app.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNotFound {
+			t.Errorf("%s %s = %d, want 404 without --api-auth", route.method, route.path, recorder.Code)
+		}
+		if strings.Contains(document.Body.String(), `"`+route.path+`"`) {
+			t.Errorf("the OpenAPI document describes %s without --api-auth", route.path)
+		}
+	}
+{{- end}}
 
 	signIn := httptest.NewRecorder()
 	app.Handler().ServeHTTP(signIn, httptest.NewRequest(http.MethodGet, "/session/new", nil))
@@ -313,6 +339,8 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 		t.Fatalf("password reset page without mail: status=%d", resetRequest.Code)
 	}
 
+{{- if .APIAuth}}
+
 	mfaRequest := httptest.NewRequest(http.MethodPost, "/auth/mfa/complete", strings.NewReader("{}"))
 	mfaRequest.Header.Set("Content-Type", "application/json")
 	mfaRecorder := httptest.NewRecorder()
@@ -328,6 +356,7 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 	if err := spec.ValidateResponse(http.MethodPost, "/auth/mfa/complete", mfaRecorder.Code, mfaRecorder.Header(), mfaRecorder.Body.Bytes()); err != nil {
 		t.Fatal(err)
 	}
+{{- end}}
 {{- end}}
 }
 {{- if eq .DB.Adapter "postgres"}}
