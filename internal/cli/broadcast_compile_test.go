@@ -289,7 +289,7 @@ func TestGeneratedBroadcastScaffoldBuildsWiresAndPasses(t *testing.T) {
 			}
 			golangciLint.Lock()
 			defer golangciLint.Unlock()
-			runGo(t, dir, lint, "run", "./app/...")
+			runGo(t, dir, lint, "run", "--allow-parallel-runners", "./app/...")
 		})
 	}
 }
