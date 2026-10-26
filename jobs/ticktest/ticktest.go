@@ -241,6 +241,17 @@ func twoSchedulers(t *testing.T, newClaimers NewClaimers) {
 // same small pools that work uses.
 func BusyReplicas(t *testing.T, a, b jobs.TickClaimer, work [2]func(context.Context) error) {
 	t.Helper()
+	if failed := BusyReplicaFailures(t, a, b, work); len(failed) > 0 {
+		t.Fatalf("%d problem(s): runs starved of connections, or ticks run more than once: %v", len(failed), failed)
+	}
+}
+
+// BusyReplicaFailures runs the BusyReplicas scenario and returns what went
+// wrong instead of failing the test: failed runs and ticks run more than
+// once. Negative controls use it to show that a claimer which keeps a
+// connection after winning a tick starves the jobs.
+func BusyReplicaFailures(t *testing.T, a, b jobs.TickClaimer, work [2]func(context.Context) error) []error {
+	t.Helper()
 	const jobCount = 4
 	var mu sync.Mutex
 	attempts, won := map[string]int{}, map[string]int{}
@@ -304,11 +315,16 @@ func BusyReplicas(t *testing.T, a, b jobs.TickClaimer, work [2]func(context.Cont
 		return n
 	}
 	deadline := time.Now().Add(90 * time.Second)
-	// Stop only once every won tick's run has returned: Stop cancels runs.
-	for triedByBoth() < 2*jobCount || int(runs.Load()) < wonTicks() {
+	for triedByBoth() < 2*jobCount {
 		if time.Now().After(deadline) {
-			t.Fatalf("after 90s: %d job tick(s) tried by both replicas, %d of %d runs finished", triedByBoth(), runs.Load(), wonTicks())
+			t.Fatalf("after 90s only %d job tick(s) were tried by both replicas", triedByBoth())
 		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Give the runs of the won ticks time to return before Stop cancels
+	// them; a claimer that starves the pool may never get there, and Stop's
+	// cancellations are ignored below.
+	for settle := time.Now().Add(10 * time.Second); int(runs.Load()) < wonTicks() && time.Now().Before(settle); {
 		time.Sleep(5 * time.Millisecond)
 	}
 	stopping.Store(true)
@@ -322,14 +338,13 @@ func BusyReplicas(t *testing.T, a, b jobs.TickClaimer, work [2]func(context.Cont
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(errs) > 0 {
-		t.Fatalf("%d run(s) failed, starved of connections or ticks: %v", len(errs), errs)
-	}
+	failed := append([]error(nil), errs...)
 	for key, tries := range attempts {
 		if won[key] > 1 || (tries == 2 && won[key] != 1) {
-			t.Errorf("%s: %d attempts, won %d times", key, tries, won[key])
+			failed = append(failed, fmt.Errorf("%s: %d attempts, won %d times", key, tries, won[key]))
 		}
 	}
+	return failed
 }
 
 type claimFunc func(ctx context.Context, job string, tick time.Time) (bool, error)

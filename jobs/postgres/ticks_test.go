@@ -74,3 +74,44 @@ func TestTickClaimerRefusesBadInput(t *testing.T) {
 		}
 	}
 }
+
+// holdingClaimer emulates the per-tick lock this package replaced: after
+// winning a tick it keeps one of the replica's connections for 2.5s, longer
+// than a run may last (its job timeout, the 2s interval).
+type holdingClaimer struct {
+	claimer jobs.TickClaimer
+	db      *postgres.DB
+}
+
+func (h holdingClaimer) ClaimTick(ctx context.Context, job string, tick time.Time) (bool, error) {
+	claimed, err := h.claimer.ClaimTick(ctx, job, tick)
+	if err != nil || !claimed {
+		return claimed, err
+	}
+	conn, err := h.db.Pool().Acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	time.AfterFunc(2500*time.Millisecond, conn.Release)
+	return true, nil
+}
+
+// The negative control of TestBusyReplicasWithSmallPools: a claimer that
+// keeps a connection after winning starves the jobs, so the scenario does
+// detect the defect it guards against.
+func TestBusyReplicasDetectAClaimerThatHoldsAConnection(t *testing.T) {
+	cfg := newDatabase(t)
+	a, b := open(t, cfg, 2), open(t, cfg, 2)
+	work := func(db *postgres.DB) func(context.Context) error {
+		return func(ctx context.Context) error {
+			_, err := db.Exec(ctx, "SELECT pg_sleep(0.3)")
+			return err
+		}
+	}
+	failed := ticktest.BusyReplicaFailures(t,
+		holdingClaimer{jobspostgres.NewTickClaimer(a), a}, holdingClaimer{jobspostgres.NewTickClaimer(b), b},
+		[2]func(context.Context) error{work(a), work(b)})
+	if len(failed) == 0 {
+		t.Fatal("jobs ran fine although every won tick kept a connection: the regression scenario cannot detect pool starvation")
+	}
+}
