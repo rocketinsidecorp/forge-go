@@ -649,9 +649,11 @@ func TestMigrationCannotRedirectBookkeeping(t *testing.T) {
 }
 
 // TestPGOptionsCannotGiveSessionsADefaultTenant is the negative test for an
-// environment that sets a tenant for every session: the pool must not take
-// it, so a query outside InTenantTx sees no tenant (and RLS policies return
-// no rows) instead of that tenant's rows.
+// environment that sets a tenant for every session: no pool but the
+// migrator's opens while PGOPTIONS is set (lazy ones included), so a query
+// outside InTenantTx never sees that tenant's rows. The refusal names the
+// variable, not the value; the migrator still reads PGOPTIONS; and PGTZ and
+// PGAPPNAME never reach a pool.
 func TestPGOptionsCannotGiveSessionsADefaultTenant(t *testing.T) {
 	// Created before the variables are set: the test server's own
 	// administration connection reads them too.
@@ -661,6 +663,31 @@ func TestPGOptionsCannotGiveSessionsADefaultTenant(t *testing.T) {
 	t.Setenv("PGTZ", "Pacific/Kiritimati")
 	t.Setenv("PGAPPNAME", "from-the-environment")
 	ctx := context.Background()
+	for _, opts := range [][]postgres.Option{nil, {postgres.Lazy(true)}} {
+		db, err := postgres.Open(ctx, cfg, opts...)
+		if err == nil {
+			var setting string
+			_ = db.QueryRow(ctx, "SELECT coalesce(current_setting('forge.tenant_id', true), '')").Scan(&setting)
+			db.Close()
+			t.Fatalf("the serving pool opened with PGOPTIONS set; its sessions' default tenant: %q", setting)
+		}
+		if !strings.Contains(err.Error(), "PGOPTIONS is set") || strings.Contains(err.Error(), tenant) {
+			t.Fatalf("the refusal must name PGOPTIONS and never its value: %v", err)
+		}
+	}
+
+	// The migrator keeps the driver's behaviour: PGOPTIONS reaches its
+	// session, as for psql (PGOPTIONS='-c lock_timeout=5s' forge migrate).
+	t.Setenv("PGOPTIONS", "-c lock_timeout=5s")
+	fsys := fstest.MapFS{"20260101000000_check.up.sql": {Data: []byte(
+		"DO $$ BEGIN IF current_setting('lock_timeout') <> '5s' THEN RAISE EXCEPTION 'PGOPTIONS did not reach the migrator'; END IF; END $$;")}}
+	if _, err := newMigrator(t, cfg, fsys).Up(ctx); err != nil {
+		t.Fatalf("the migrator did not take PGOPTIONS: %v", err)
+	}
+
+	// Without PGOPTIONS the pool opens, takes its name from the URL (else
+	// "forge") and never PGTZ or PGAPPNAME, and no session has a tenant.
+	t.Setenv("PGOPTIONS", "")
 	db, err := postgres.Open(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -672,7 +699,7 @@ func TestPGOptionsCannotGiveSessionsADefaultTenant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if setting != "" {
-		t.Fatalf("PGOPTIONS gave the session a default tenant: %q", setting)
+		t.Fatalf("a session has a default tenant: %q", setting)
 	}
 	if zone == "Pacific/Kiritimati" || application != "forge" {
 		t.Fatalf("PGTZ or PGAPPNAME reached the session: TimeZone=%q application_name=%q", zone, application)

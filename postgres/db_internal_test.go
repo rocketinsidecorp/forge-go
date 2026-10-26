@@ -161,12 +161,48 @@ func TestParseConfigRefusesURLsGoAndPgxReadDifferently(t *testing.T) {
 	}
 }
 
-// TestServingPoolTakesNoSessionSettingFromTheEnvironment: PGOPTIONS, PGTZ
-// and PGAPPNAME reach the migrator, as for psql, but not the serving pool,
-// where a PGOPTIONS='-c forge.tenant_id=...' would give every session a
-// default tenant. Settings the URL names are kept.
-func TestServingPoolTakesNoSessionSettingFromTheEnvironment(t *testing.T) {
-	t.Setenv("PGOPTIONS", "-c forge.tenant_id=0190d6c5-5f1a-7d0e-8b1a-6a3c1f2e9d4b")
+// TestServingPoolRefusesPGOptions: PGOPTIONS reaches the migrator, as for
+// psql, but a serving pool refuses to be built while it is set, since a
+// PGOPTIONS='-c forge.tenant_id=...' would give every session a default
+// tenant. The error names the variable and never its value. Blank is no
+// setting.
+func TestServingPoolRefusesPGOptions(t *testing.T) {
+	const tenant = "0190d6c5-5f1a-7d0e-8b1a-6a3c1f2e9d4b"
+	t.Setenv("PGOPTIONS", "-c forge.tenant_id="+tenant)
+	raw := "postgres://app:pw@db.internal:5432/app"
+	for _, url := range []string{raw, raw + "?options=-c%20lock_timeout%3D5s"} {
+		_, err := parseConfig(databaseAt(url), stripEnvironmentSession)
+		if err == nil || !strings.Contains(err.Error(), "PGOPTIONS is set") {
+			t.Fatalf("a serving pool opened with PGOPTIONS set: %v", err)
+		}
+		if strings.Contains(err.Error(), tenant) {
+			t.Errorf("the refusal echoes the value: %v", err)
+		}
+	}
+	migrator, err := parseConfig(databaseAt(raw), keepEnvironmentSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := migrator.ConnConfig.RuntimeParams["options"]; !strings.Contains(got, "forge.tenant_id") {
+		t.Errorf("the migrator lost PGOPTIONS: %q", got)
+	}
+	for _, blank := range []string{"", "  "} {
+		t.Setenv("PGOPTIONS", blank)
+		pool, err := parseConfig(databaseAt(raw), stripEnvironmentSession)
+		if err != nil {
+			t.Fatalf("a blank PGOPTIONS %q is no setting: %v", blank, err)
+		}
+		if value, ok := pool.ConnConfig.RuntimeParams["options"]; ok {
+			t.Errorf("a blank PGOPTIONS reached the pool: %q", value)
+		}
+	}
+}
+
+// TestServingPoolIgnoresPGTZAndPGAppName: PGTZ and PGAPPNAME reach the
+// migrator but are ignored by the serving pool, which keeps the settings the
+// URL names.
+func TestServingPoolIgnoresPGTZAndPGAppName(t *testing.T) {
+	t.Setenv("PGOPTIONS", "")
 	t.Setenv("PGTZ", "America/Sao_Paulo")
 	t.Setenv("PGAPPNAME", "from-the-environment")
 	pool, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app"), stripEnvironmentSession)
@@ -182,8 +218,8 @@ func TestServingPoolTakesNoSessionSettingFromTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := migrator.ConnConfig.RuntimeParams["options"]; !strings.Contains(got, "forge.tenant_id") {
-		t.Errorf("the migrator lost PGOPTIONS: %q", got)
+	if got := migrator.ConnConfig.RuntimeParams["timezone"]; got != "America/Sao_Paulo" {
+		t.Errorf("the migrator lost PGTZ: %q", got)
 	}
 	named, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?application_name=billing&options=-c%20lock_timeout%3D5s"), stripEnvironmentSession)
 	if err != nil {
