@@ -41,6 +41,12 @@ func (c commands) lockDir() string  { return c.stateDir() + "/lock" }
 func (c commands) logFile() string  { return c.stateDir() + "/deploys.log" }
 
 func (c commands) envFile(role string) string { return c.envDir() + "/" + role + ".env" }
+
+// migrateEnvFile holds the whole environment of the migrate container when
+// migrate.env is set. The dot cannot occur in a role or accessory name, so
+// the file never collides with a role's env file.
+func (c commands) migrateEnvFile() string { return c.envDir() + "/migrate.step.env" }
+
 func (c commands) accessoryEnvFile(name string) string {
 	return c.envDir() + "/accessory-" + name + ".env"
 }
@@ -129,6 +135,47 @@ func (c commands) uploadRoleEnv(role string, secrets Secrets) Command {
 	return c.upload(c.envFile(role), envContent(clear, secret, secrets), note)
 }
 
+// migrateEnv is the environment of the migrate container: the global and
+// migrate-role environment plus migrate.env. Config validation keeps the
+// names of migrate.env out of every other env block, so the layers never
+// overlap and the merge is a union; it is written as one file because Docker
+// does not define which of two --env-file entries for one name applies.
+func (c commands) migrateEnv() (map[string]string, []string) {
+	clear, secret := c.roleEnv(c.cfg.Migrate.Role)
+	overlay := c.cfg.Migrate.Env
+	if overlay == nil {
+		return clear, secret
+	}
+	for key, value := range overlay.Clear {
+		clear[key] = value
+	}
+	for _, name := range overlay.Secret {
+		if !slices.Contains(secret, name) {
+			secret = append(secret, name)
+		}
+	}
+	slices.Sort(secret)
+	return clear, secret
+}
+
+// hasMigrateEnv reports whether the migrate container has its own env file.
+func (c commands) hasMigrateEnv() bool { return c.cfg.Migrate.Env != nil }
+
+// uploadMigrateEnv writes the migrate container's env file with the same
+// handling as a role's: 0600, atomic, content over stdin only.
+func (c commands) uploadMigrateEnv(secrets Secrets) Command {
+	clear, secret := c.migrateEnv()
+	note := fmt.Sprintf("migrate env file: %d clear, %d secret (%s), values not shown", len(clear), len(secret), strings.Join(secret, ", "))
+	return c.upload(c.migrateEnvFile(), envContent(clear, secret, secrets), note)
+}
+
+// removeMigrateEnv deletes the migrate env file, and the temporary copy an
+// interrupted upload may have left, once the step is over, so the schema
+// owner's credential rests on the host only while it is used.
+func (c commands) removeMigrateEnv() Command {
+	return Command{Script: Join("rm", "-f", c.migrateEnvFile(), c.migrateEnvFile()+".tmp")}
+}
+
 func (c commands) roleVolumes(role string) []string {
 	volumes := slices.Clone(c.cfg.Volumes)
 	return append(volumes, c.cfg.Servers[role].Volumes...)
@@ -144,8 +191,12 @@ func volumeArgs(volumes []string) []string {
 
 func (c commands) migrate(version, suffix string) Command {
 	role := c.cfg.Migrate.Role
+	envFile := c.envFile(role)
+	if c.hasMigrateEnv() {
+		envFile = c.migrateEnvFile()
+	}
 	argv := []string{"docker", "run", "--rm", "--name", c.cfg.Service + "-migrate-" + version + "-" + suffix,
-		"--network", NetworkName, "--env-file", c.envFile(role)}
+		"--network", NetworkName, "--env-file", envFile}
 	argv = append(argv, volumeArgs(c.roleVolumes(role))...)
 	argv = append(argv, c.imageRef(version))
 	argv = append(argv, c.cfg.Migrate.Cmd...)

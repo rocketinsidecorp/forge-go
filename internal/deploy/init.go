@@ -85,6 +85,14 @@ proxy:
 # Runs "<image> migrate" once, on the first web host, before any switch.
 migrate:
   enabled: true
+  # Gives the migrate step alone the schema owner's credential
+  # (FORGE_MIGRATION_DATABASE_URL, a secret from .forge/secrets). It is added
+  # to the web role's environment for that one container; the serving
+  # containers never receive it. Written 0600 on the migrate host and removed
+  # after the step.
+  # env:
+  #   secret:
+  #     - FORGE_MIGRATION_DATABASE_URL
 
 # accessories:
 #   db:
@@ -125,6 +133,9 @@ const SecretsTemplate = `# Secrets for forge deploy. This file is listed in .git
 # Command substitution is not supported.
 REGISTRY_PASSWORD=$REGISTRY_PASSWORD
 FORGE_DATABASE_URL=$FORGE_DATABASE_URL
+# PostgreSQL with separate runtime and migration roles: uncomment this line
+# together with migrate.env in config/deploy.yml.
+# FORGE_MIGRATION_DATABASE_URL=$FORGE_MIGRATION_DATABASE_URL
 `
 
 // Init writes config/deploy.yml and .forge/secrets under root and adds

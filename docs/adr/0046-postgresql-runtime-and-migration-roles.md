@@ -85,11 +85,15 @@ roles.
   administrator only for `forge db create` now migrates as that role.
 - The refusal does not cover a serving role that owns tables (`FORCE` still
   applies to it), runs at startup only, and not in development or test.
-- `forge deploy` runs `migrate` with the serving role's env file; until it
-  has a migrate-only credential
-  ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)),
-  the interim configuration in DEPLOYMENT.md puts the owner's credential in
-  the serving containers.
+- `forge deploy` gives the owner's credential to the one-off migrate
+  container alone: `migrate.env` in `config/deploy.yml` is overlaid on the
+  migrate role's environment, written to its own `0600` file on the migrate
+  host and removed when the step ends
+  ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)).
+  Without it the container gets the serving role's env file and migrating
+  fails closed on a runtime role that cannot run DDL. Forge-Rust has no
+  `migrate.env` yet
+  ([forge-rust#73](https://github.com/rocketinsidecorp/forge-rust/issues/73)).
 - Differences from Forge-Rust, kept deliberately: Forge-Rust requires
   `FORGE_MIGRATION_DATABASE_URL` for migrations and restores `init.sql`'s
   grants after `forge db reset`, where Forge-Go falls back to

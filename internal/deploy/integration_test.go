@@ -274,19 +274,30 @@ stop_timeout: 5s
 
 func (c *sshCluster) deployer(t *testing.T, performer string) (*Deployer, *syncBuffer) {
 	t.Helper()
-	cfg, err := ParseConfig([]byte(integrationConfig))
+	return c.deployerFor(t, performer, integrationConfig, nil)
+}
+
+// deployerFor is deployer for another configuration; extra secrets are
+// added to the fixture's.
+func (c *sshCluster) deployerFor(t *testing.T, performer, config string, extra map[string]string) (*Deployer, *syncBuffer) {
+	t.Helper()
+	cfg, err := ParseConfig([]byte(config))
 	if err != nil {
 		t.Fatal(err)
 	}
 	log := &syncBuffer{}
 	runner := &SSHRunner{ConfigFile: c.sshConfig}
 	t.Cleanup(func() { _ = runner.Close() })
+	secrets := map[string]string{
+		"REGISTRY_PASSWORD": itRegistryPassword, "FORGE_DATABASE_URL": itDatabaseURL, "POSTGRES_PASSWORD": itPostgresPassword,
+	}
+	for name, value := range extra {
+		secrets[name] = value
+	}
 	return &Deployer{
-		Config: cfg,
-		Secrets: NewSecrets(map[string]string{
-			"REGISTRY_PASSWORD": itRegistryPassword, "FORGE_DATABASE_URL": itDatabaseURL, "POSTGRES_PASSWORD": itPostgresPassword,
-		}),
-		Runner: runner, Local: &recordingLocal{}, Root: t.TempDir(), Log: log, Performer: performer,
+		Config:  cfg,
+		Secrets: NewSecrets(secrets),
+		Runner:  runner, Local: &recordingLocal{}, Root: t.TempDir(), Log: log, Performer: performer,
 	}, log
 }
 
@@ -714,4 +725,60 @@ func TestSSHIntegration(t *testing.T) {
 			t.Fatal("secret in progress log")
 		}
 	})
+}
+
+// TestSSHMigrateEnv runs a deploy with migrate.env over real SSH: only the
+// migrate container sees the schema owner's credential, through a 0600 file
+// that is gone afterwards, and no serving container or env file has it.
+func TestSSHMigrateEnv(t *testing.T) {
+	const migrationURL = "postgres://shop_migrator:migration-secret-7654321@db/shop"
+	cluster := startCluster(t, "alpha", "beta")
+	config := integrationConfig + "migrate:\n  env:\n    secret: [FORGE_MIGRATION_DATABASE_URL]\n"
+	d, log := cluster.deployerFor(t, "alice@laptop", config, map[string]string{"FORGE_MIGRATION_DATABASE_URL": migrationURL})
+	ctx := t.Context()
+	if _, err := d.Setup(ctx); err != nil {
+		t.Fatalf("setup: %v\n%s", err, log.String())
+	}
+	if _, err := d.Deploy(ctx, DeployOptions{Version: "v1", SkipBuild: true}); err != nil {
+		t.Fatalf("deploy: %v\n%s", err, log.String())
+	}
+	alpha, beta := cluster.state(t, "alpha"), cluster.state(t, "beta")
+	if len(alpha.OneOffs) != 1 || alpha.OneOffs[0][1] != "migrate" || len(beta.OneOffs) != 0 {
+		t.Fatalf("migrations ran %v / %v", alpha.OneOffs, beta.OneOffs)
+	}
+	var migrateEnv string
+	for name, content := range alpha.EnvSeen {
+		isMigrate := strings.HasPrefix(name, "shop-migrate-")
+		if isMigrate {
+			migrateEnv = content
+		}
+		if has := strings.Contains(content, migrationURL); has != isMigrate {
+			t.Fatalf("%s: holds the migration credential = %v", name, has)
+		}
+	}
+	for name, content := range beta.EnvSeen {
+		if strings.Contains(content, migrationURL) {
+			t.Fatalf("%s holds the migration credential", name)
+		}
+	}
+	want := "FORGE_ENV=production\nFORGE_DATABASE_URL=" + itDatabaseURL + "\nFORGE_MIGRATION_DATABASE_URL=" + migrationURL + "\n"
+	if migrateEnv != want {
+		t.Fatalf("migrate container env = %q, want %q", migrateEnv, want)
+	}
+	for _, host := range []string{"alpha", "beta"} {
+		envDir := filepath.Join(cluster.hosts[host].home, ".forge", "shop", "env")
+		entries, err := os.ReadDir(envDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			content, _ := os.ReadFile(filepath.Join(envDir, entry.Name()))
+			if strings.Contains(entry.Name(), "migrate") || strings.Contains(string(content), migrationURL) {
+				t.Fatalf("%s: %s remains on the host", host, entry.Name())
+			}
+		}
+	}
+	if strings.Contains(log.String(), "migration-secret-7654321") {
+		t.Fatalf("log leaks the credential:\n%s", log.String())
+	}
 }

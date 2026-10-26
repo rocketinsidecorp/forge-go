@@ -137,6 +137,32 @@ type boot struct {
 	switched bool
 }
 
+// migrate runs the one-off migrate container on host. With migrate.env it
+// writes that container's own env file and always removes it afterwards,
+// even when the upload, the migration or the context failed: an upload that
+// was interrupted (Ctrl-C, a dropped connection) may already have left the
+// file or its temporary copy on the host, so the removal is registered
+// first. A failed removal is a warning, since the migration itself already
+// finished.
+func (d *Deployer) migrate(ctx context.Context, report *Report, host, version string) error {
+	if d.cmds.hasMigrateEnv() {
+		defer func() {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			if _, err := d.run(cleanup, host, d.cmds.removeMigrateEnv()); err != nil {
+				report.warn("%s: could not remove %s, delete it by hand: %v", host, d.cmds.migrateEnvFile(), err)
+			}
+		}()
+		if _, err := d.run(ctx, host, d.cmds.uploadMigrateEnv(d.Secrets)); err != nil {
+			return withCode(ExitMigrationFailed, fmt.Errorf("migration env file: %w", err))
+		}
+	}
+	if _, err := d.run(ctx, host, d.cmds.migrate(version, d.Suffix())); err != nil {
+		return withCode(ExitMigrationFailed, fmt.Errorf("migration failed; nothing was switched: %w", err))
+	}
+	return nil
+}
+
 // Deploy builds (unless skipped), distributes and migrates a version, then
 // switches every host to it. The switch is all-or-nothing: previous
 // containers keep running until every host passed its health gate; if any
@@ -191,8 +217,8 @@ func (d *Deployer) Deploy(ctx context.Context, opts DeployOptions) (*Report, err
 	if *d.Config.Migrate.Enabled {
 		host := d.Config.Servers[d.Config.Migrate.Role].Hosts[0]
 		d.logf(host, "migrating with %s", d.cmds.imageRef(version))
-		if _, err := d.run(ctx, host, d.cmds.migrate(version, d.Suffix())); err != nil {
-			return report, withCode(ExitMigrationFailed, fmt.Errorf("migration failed; nothing was switched: %w", err))
+		if err := d.migrate(ctx, report, host, version); err != nil {
+			return report, err
 		}
 	}
 	inventories, err := d.inventories(ctx, hosts)

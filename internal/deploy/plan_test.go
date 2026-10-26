@@ -85,7 +85,14 @@ var planEpoch = time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 // retained, retain is 2.
 func planFixture(t *testing.T, dryRun bool) (*Deployer, *fakeRunner, *bytes.Buffer, *recordingLocal) {
 	t.Helper()
-	cfg, err := ParseConfig([]byte(strings.Replace(validConfig, "retain: 3", "retain: 2", 1)))
+	return planFixtureFor(t, dryRun, validConfig, nil)
+}
+
+// planFixtureFor is planFixture for another configuration; extra secrets
+// are added to the fixture's.
+func planFixtureFor(t *testing.T, dryRun bool, config string, extra map[string]string) (*Deployer, *fakeRunner, *bytes.Buffer, *recordingLocal) {
+	t.Helper()
+	cfg, err := ParseConfig([]byte(strings.Replace(config, "retain: 3", "retain: 2", 1)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,12 +114,16 @@ func planFixture(t *testing.T, dryRun bool) (*Deployer, *fakeRunner, *bytes.Buff
 	counter := 0
 	log := &bytes.Buffer{}
 	local := &recordingLocal{}
+	secrets := map[string]string{
+		"REGISTRY_PASSWORD": "registry-secret-1", "FORGE_DATABASE_URL": "postgres://shop:db-secret-2@db/shop", "POSTGRES_PASSWORD": "pg-secret-3",
+	}
+	for name, value := range extra {
+		secrets[name] = value
+	}
 	d := &Deployer{
-		Config: cfg,
-		Secrets: NewSecrets(map[string]string{
-			"REGISTRY_PASSWORD": "registry-secret-1", "FORGE_DATABASE_URL": "postgres://shop:db-secret-2@db/shop", "POSTGRES_PASSWORD": "pg-secret-3",
-		}),
-		Runner: runner, Local: local, Root: t.TempDir(), Log: log, Performer: "alice@laptop",
+		Config:  cfg,
+		Secrets: NewSecrets(secrets),
+		Runner:  runner, Local: local, Root: t.TempDir(), Log: log, Performer: "alice@laptop",
 		Now:    func() time.Time { return planEpoch },
 		Suffix: func() string { counter++; return fmt.Sprintf("%06d", counter) },
 		DryRun: dryRun,
@@ -138,7 +149,7 @@ func checkGolden(t *testing.T, name, got string) {
 	if got != string(want) {
 		t.Fatalf("%s plan differs from %s (rerun with -update after review):\n%s", name, path, got)
 	}
-	for _, secret := range []string{"registry-secret-1", "db-secret-2", "pg-secret-3"} {
+	for _, secret := range []string{"registry-secret-1", "db-secret-2", "pg-secret-3", migrationSecret} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("%s plan leaks a secret", name)
 		}

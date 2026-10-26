@@ -163,15 +163,32 @@ In production, provision the same two roles once (SQL in
 the migration role and serve with the runtime role only. In staging and
 production the application refuses to start when the role it logs in as, or
 acts as, is a superuser or has `BYPASSRLS` or `CREATEROLE`, or when the URL
-switches it to another role. With `forge deploy`, see the interim migration
-setup in [DEPLOYMENT.md](docs/DEPLOYMENT.md#database-roles)
-([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)):
+switches it to another role.
 
 ```sh
 docker run --rm -e FORGE_ENV=production \
   -e FORGE_DATABASE_URL="$RUNTIME_DATABASE_URL" \
   -e FORGE_MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" myapp migrate
 docker run -e FORGE_ENV=production -e FORGE_DATABASE_URL="$RUNTIME_DATABASE_URL" myapp
+```
+
+With `forge deploy`, name the migration credential under `migrate.env` in
+`config/deploy.yml` and keep it out of `env`: only the one-off migrate
+container receives it ([DEPLOYMENT.md](docs/DEPLOYMENT.md#database-roles)):
+
+```yaml
+env:
+  secret: [FORGE_DATABASE_URL]                    # every container
+migrate:
+  env:
+    secret: [FORGE_MIGRATION_DATABASE_URL]        # the migrate step only
+```
+
+```sh
+# .forge/secrets: FORGE_MIGRATION_DATABASE_URL=$FORGE_MIGRATION_DATABASE_URL
+export FORGE_DATABASE_URL="$RUNTIME_DATABASE_URL" FORGE_MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL"
+forge deploy --dry-run     # prints the upload, run and rm commands for the migrate env file; values stay hidden, nothing runs
+forge deploy
 ```
 
 ### Development loop
@@ -835,6 +852,15 @@ A deploy migrates before any switch, keeps the previous containers running
 until every host passed its health gate, and routes all hosts back if one
 fails. Exit codes: `3` lock held, `4` unhealthy (reverted), `5` migration
 failed, `6` hook failed, `7` not fully reverted.
+
+On PostgreSQL with separate roles, the schema owner's credential goes to the
+migrate step alone (`migrate.env`, see
+[Database roles](docs/DEPLOYMENT.md#database-roles)):
+
+```sh
+$EDITOR config/deploy.yml .forge/secrets   # uncomment migrate.env and the FORGE_MIGRATION_DATABASE_URL line
+forge deploy --dry-run                     # prints the migrate env upload, run and rm commands; no value is printed, nothing runs
+```
 
 Release note: `retain: 1` in `config/deploy.yml` is now refused (`retain`
 counts the running version, so 1 would prune the previous one and leave
