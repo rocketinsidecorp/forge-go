@@ -180,7 +180,7 @@ func TestSlowClientThatKeepsReadingIsNotCutOff(t *testing.T) {
 	var received []byte
 	buffer := make([]byte, 2<<10)
 	for {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // real-clock: a slow reader on a real socket builds the backpressure under test
 		n, err := io.ReadFull(conn, buffer)
 		received = append(received, buffer[:n]...)
 		if err != nil {

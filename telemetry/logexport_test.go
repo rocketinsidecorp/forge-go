@@ -557,8 +557,7 @@ func TestLogExportEncodesValuesLikeTheTextHandler(t *testing.T) {
 			want = unquoted
 		}
 		got := exported[attr.Key]
-		switch attr.Key {
-		case "url":
+		if attr.Key == "url" {
 			// The text handler prints a URL with its password; the
 			// exporter shows what standard output shows, no more.
 			if got != want {

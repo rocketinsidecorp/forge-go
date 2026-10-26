@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -36,86 +37,94 @@ func startSlowPoller(t *testing.T, store Store, reg *Registry) *Worker {
 // names are ignored.
 func TestAnnouncementWakesTheIdlePoller(t *testing.T) {
 	t.Parallel()
-	announce := make(chan string)
-	var jobs atomic.Int32
-	store := &listeningStore{fakeStore: &fakeStore{claim: func(ClaimRequest) (Claimed, bool, error) {
-		if jobs.Load() > 0 {
-			jobs.Add(-1)
-			return newJob(), true, nil
-		}
-		return Claimed{}, false, nil
-	}}}
-	store.listen = func(ctx context.Context, listening func(), wake func(string)) error {
-		listening()
-		for {
-			select {
-			case name := <-announce:
-				wake(name)
-			case <-ctx.Done():
-				return ctx.Err()
+	// A bubble: the poller's wait is an hour of fake time, so "it did not wake"
+	// is checked at the moment every goroutine is idle, not after a pause.
+	synctest.Test(t, func(t *testing.T) {
+		announce := make(chan string)
+		var jobs atomic.Int32
+		store := &listeningStore{fakeStore: &fakeStore{claim: func(ClaimRequest) (Claimed, bool, error) {
+			if jobs.Load() > 0 {
+				jobs.Add(-1)
+				return newJob(), true, nil
+			}
+			return Claimed{}, false, nil
+		}}}
+		store.listen = func(ctx context.Context, listening func(), wake func(string)) error {
+			listening()
+			for {
+				select {
+				case name := <-announce:
+					wake(name)
+				case <-ctx.Done():
+					return ctx.Err()
+				}
 			}
 		}
-	}
-	reg := registerK(t, func(context.Context) error { return nil })
-	w := startSlowPoller(t, store, reg)
-	waitUntil(t, "the subscription", 5*time.Second, w.Listening)
-	waitUntil(t, "the first claims", 5*time.Second, func() bool { return store.claims.Load() >= 1 })
-	time.Sleep(20 * time.Millisecond)
-	before := store.claims.Load()
+		reg := registerK(t, func(context.Context) error { return nil })
+		w := startSlowPoller(t, store, reg)
+		waitUntil(t, "the subscription", 5*time.Second, w.Listening)
+		waitUntil(t, "the first claims", 5*time.Second, func() bool { return store.claims.Load() >= 1 })
+		synctest.Wait()
+		before := store.claims.Load()
 
-	announce <- "some-other-queue"
-	announce <- "not a queue name"
-	time.Sleep(50 * time.Millisecond)
-	if store.claims.Load() != before {
-		t.Fatal("an announcement of another queue woke the poller")
-	}
-	jobs.Store(1)
-	announce <- DefaultQueue
-	waitUntil(t, "the announced job to run", 5*time.Second, func() bool { return store.completes.Load() == 1 })
-	if err := w.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+		announce <- "some-other-queue"
+		announce <- "not a queue name"
+		synctest.Wait()
+		if store.claims.Load() != before {
+			t.Fatal("an announcement of another queue woke the poller")
+		}
+		jobs.Store(1)
+		announce <- DefaultQueue
+		waitUntil(t, "the announced job to run", 5*time.Second, func() bool { return store.completes.Load() == 1 })
+		if err := w.Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 // A listener that keeps failing is retried with backoff while polling goes
 // on; one the store does not support is not retried at all.
 func TestListenerReconnectsWithBackoffAndStopsWhenUnsupported(t *testing.T) {
 	t.Parallel()
-	reg := registerK(t, func(context.Context) error { return nil })
+	// A bubble: the backoff and the 1.5 seconds without a second attempt pass
+	// on the fake clock.
+	synctest.Test(t, func(t *testing.T) {
+		reg := registerK(t, func(context.Context) error { return nil })
 
-	failing := &listeningStore{fakeStore: &fakeStore{}}
-	failing.listen = func(context.Context, func(), func(string)) error { return errors.New("connection refused") }
-	w, err := NewWorker(failing, reg, WorkerOptions{PollInterval: 5 * time.Millisecond, MaxPollInterval: 10 * time.Millisecond, RetainSucceeded: -1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	waitUntil(t, "a reconnect attempt", 5*time.Second, func() bool { return failing.calls.Load() >= 2 })
-	if calls := failing.calls.Load(); calls > 3 {
-		t.Fatalf("%d listen attempts in about a second: no backoff", calls)
-	}
-	if failing.claims.Load() < 10 {
-		t.Fatalf("polling did not go on while the listener failed (%d claims)", failing.claims.Load())
-	}
-	if w.Listening() {
-		t.Fatal("Listening() with a failing listener")
-	}
-	if err := w.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+		failing := &listeningStore{fakeStore: &fakeStore{}}
+		failing.listen = func(context.Context, func(), func(string)) error { return errors.New("connection refused") }
+		w, err := NewWorker(failing, reg, WorkerOptions{PollInterval: 5 * time.Millisecond, MaxPollInterval: 10 * time.Millisecond, RetainSucceeded: -1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Start(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		waitUntil(t, "a reconnect attempt", 5*time.Second, func() bool { return failing.calls.Load() >= 2 })
+		if calls := failing.calls.Load(); calls > 3 {
+			t.Fatalf("%d listen attempts in about a second: no backoff", calls)
+		}
+		if failing.claims.Load() < 10 {
+			t.Fatalf("polling did not go on while the listener failed (%d claims)", failing.claims.Load())
+		}
+		if w.Listening() {
+			t.Fatal("Listening() with a failing listener")
+		}
+		if err := w.Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 
-	unsupported := &listeningStore{fakeStore: &fakeStore{}}
-	unsupported.listen = func(context.Context, func(), func(string)) error { return ErrListenUnsupported }
-	w = newTestWorker(t, unsupported, reg, WorkerOptions{})
-	time.Sleep(1500 * time.Millisecond)
-	if calls := unsupported.calls.Load(); calls != 1 {
-		t.Fatalf("an unsupported listener was called %d times", calls)
-	}
-	if err := w.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+		unsupported := &listeningStore{fakeStore: &fakeStore{}}
+		unsupported.listen = func(context.Context, func(), func(string)) error { return ErrListenUnsupported }
+		w = newTestWorker(t, unsupported, reg, WorkerOptions{})
+		time.Sleep(1500 * time.Millisecond) // fake-clock: longer than the first backoff
+		if calls := unsupported.calls.Load(); calls != 1 {
+			t.Fatalf("an unsupported listener was called %d times", calls)
+		}
+		if err := w.Shutdown(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 // Shutdown cancels the listener and waits for it, promptly.

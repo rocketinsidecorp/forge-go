@@ -187,7 +187,7 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 			web.Error(w, r, err)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(ctx)) //nolint:contextcheck // the context comes from a helper that derives it from r.Context(); the analyzer cannot see through it
 	})
 }
 

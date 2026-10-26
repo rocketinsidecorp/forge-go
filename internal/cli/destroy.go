@@ -27,7 +27,7 @@ func runDestroy(args []string, stdout io.Writer) error {
 
 func runDestroyEnv(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
 	if len(args) == 0 {
-		return errors.New(destroyUsage)
+		return usageError{destroyUsage}
 	}
 	generator := args[0]
 	var force, migrations bool
@@ -136,7 +136,7 @@ func planDestroy(generator string, args []string, root string, env []string, now
 	case "migration":
 		return destroyPlan{}, errors.New("forge destroy does not remove migrations: one that ran is part of the database's history. Revert it with `forge rollback` and delete db/migrations/<version>_NAME.{up,down}.sql yourself")
 	default:
-		return destroyPlan{}, fmt.Errorf("unknown generator %q\n%s", generator, destroyUsage)
+		return destroyPlan{}, usageError{fmt.Sprintf("unknown generator %q\n%s", generator, destroyUsage)}
 	}
 }
 
@@ -187,7 +187,7 @@ func planDestroyJob(args []string, root string) (destroyPlan, error) {
 		return destroyPlan{}, err
 	}
 	if len(positional) != 1 {
-		return destroyPlan{}, errors.New(destroyUsage)
+		return destroyPlan{}, usageError{destroyUsage}
 	}
 	name := positional[0]
 	if len(name) > 64 || !jobName.MatchString(name) {
@@ -206,7 +206,7 @@ func planDestroyView(args []string, root string) (destroyPlan, error) {
 		return destroyPlan{}, err
 	}
 	if len(positional) != 1 {
-		return destroyPlan{}, errors.New(destroyUsage)
+		return destroyPlan{}, usageError{destroyUsage}
 	}
 	dir, base, err := splitViewName(positional[0])
 	if err != nil {

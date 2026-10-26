@@ -309,7 +309,7 @@ func TestDo(t *testing.T) {
 func TestRequestBuildClonesHeadersAndBody(t *testing.T) {
 	t.Parallel()
 	r := request{method: http.MethodPost, path: "/x", body: "a=b", header: http.Header{"Cookie": {"c=1"}}}
-	built, err := r.build("http://host")
+	built, err := r.build(context.Background(), "http://host")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestRequestBuildClonesHeadersAndBody(t *testing.T) {
 	if built.URL.String() != "http://host/x" || built.Body == nil {
 		t.Errorf("built %v body %v", built.URL, built.Body)
 	}
-	empty, err := request{method: http.MethodGet, path: "/y"}.build("http://host")
+	empty, err := request{method: http.MethodGet, path: "/y"}.build(context.Background(), "http://host")
 	if err != nil || empty.Body != nil {
 		t.Errorf("a request without a body has none: %v %v", empty.Body, err)
 	}

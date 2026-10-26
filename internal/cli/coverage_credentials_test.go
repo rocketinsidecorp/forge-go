@@ -11,6 +11,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/credentials"
 	"github.com/rocketinsidecorp/forge-go/internal/exectest"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 // sealPlaintext replaces the credentials of env with plaintext, sealed with
@@ -210,7 +211,7 @@ func TestCredentialsEditRefusesDocumentsItCannotHandle(t *testing.T) {
 		h := newCredHarness(t)
 		h.seed(t, "production")
 		before := fileBytes(t, h.encPath("production"))
-		h.fakeEditor(func(path string) error { return os.Remove(path) })
+		h.fakeEditor(os.Remove)
 		if err := h.run(t, "edit", "-e", "production"); err == nil {
 			t.Error("edit with a deleted file succeeded")
 		}
@@ -253,16 +254,7 @@ func TestCredentialsEditLeavesAnInterruptTypedInTheEditorToTheEditor(t *testing.
 	h.env["EDITOR"] = script
 	done := make(chan error, 1)
 	go func() { done <- h.ctx.run([]string{"edit", "-e", "production"}) }()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(started); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the editor never started")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waittest.Until(t, 10*time.Second, "the editor to start", func() bool { _, err := os.Stat(started); return err == nil })
 	// The terminal delivers Ctrl-C to forge and to the editor.
 	if err := signalSelf(syscall.SIGINT); err != nil { // returns once both forge handlers have it
 		t.Fatal(err)

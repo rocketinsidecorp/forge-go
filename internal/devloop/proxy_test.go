@@ -307,7 +307,7 @@ func TestProxyShowsAWaitPageWithoutAnApplication(t *testing.T) {
 	}
 	nonce := regexp.MustCompile(`nonce="([^"]+)"`).FindStringSubmatch(body)
 	csp := response.Header.Get("Content-Security-Policy")
-	if nonce == nil || !strings.Contains(csp, "'nonce-"+nonce[1]+"'") || strings.Contains(csp, "unsafe") {
+	if len(nonce) < 2 || !strings.Contains(csp, "'nonce-"+nonce[1]+"'") || strings.Contains(csp, "unsafe") {
 		t.Errorf("wait page CSP %q does not match its nonce %v", csp, nonce)
 	}
 

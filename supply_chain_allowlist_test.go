@@ -364,7 +364,7 @@ func goCommandProblems(script string) []string {
 				name, value, hasValue := strings.Cut(flag, "=")
 				for _, refused := range refusedGoFlags {
 					if name == refused {
-						problems = append(problems, fmt.Sprintf("the go flag `%s`", argument))
+						problems = append(problems, fmt.Sprintf("the go flag %#q", argument))
 					}
 				}
 				if name == "-gcflags" || name == "-ldflags" || name == "-asmflags" {
@@ -372,7 +372,7 @@ func goCommandProblems(script string) []string {
 						value = command[position+1]
 					}
 					if strings.Contains(value, "-") && !slices.Contains(allowedGoFlags, name+"="+value) {
-						problems = append(problems, fmt.Sprintf("the go flag `%s` passes options (allowedGoFlags)", name))
+						problems = append(problems, fmt.Sprintf("the go flag %#q passes options (allowedGoFlags)", name))
 					}
 				}
 			}

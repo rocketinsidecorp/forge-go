@@ -104,7 +104,7 @@ type routeRow struct {
 // An optional NAME picks the cmd/NAME binary when the application has several.
 func runRoutesAt(args []string, output, stderr io.Writer, rootPath string) error {
 	if len(args) > 1 || (len(args) == 1 && strings.HasPrefix(args[0], "-")) {
-		return errors.New(routesUsage)
+		return usageError{routesUsage}
 	}
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {

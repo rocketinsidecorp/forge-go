@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -56,7 +57,7 @@ func TestListReconciliationCandidatesUsesBoundedTenantScopedCursor(t *testing.T)
 	if len(second.Items) != 1 || second.Next != nil {
 		t.Fatalf("second page=%+v, want one item and no next cursor", second)
 	}
-	items := append(first.Items, second.Items...)
+	items := slices.Concat(first.Items, second.Items)
 	if sort.SliceIsSorted(items, func(i, j int) bool {
 		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
 			return items[i].ExecutionID.Compare(items[j].ExecutionID) < 0

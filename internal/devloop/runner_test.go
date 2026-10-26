@@ -9,6 +9,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 type fakeInstance struct {
@@ -366,14 +368,10 @@ func TestStartProcessReportsAMissingBinary(t *testing.T) {
 // waitForFile waits until the script reports that its signal handling is set.
 func waitForFile(t *testing.T, name string) {
 	t.Helper()
-	deadline := time.Now().Add(testWait)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(name); err == nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("script never became ready")
+	waittest.Until(t, testWait, "the script to become ready", func() bool {
+		_, err := os.Stat(name)
+		return err == nil
+	})
 }
 
 // writeScript writes a shell script for the tests to run as `/bin/sh

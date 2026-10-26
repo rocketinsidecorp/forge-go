@@ -44,7 +44,7 @@ func (m *Middleware) AuthenticateCookie(next http.Handler) http.Handler {
 			web.Error(w, r, err)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(ctx)) //nolint:contextcheck // the context comes from a helper that derives it from r.Context(); the analyzer cannot see through it
 	})
 }
 
@@ -76,7 +76,7 @@ func (m *Middleware) AuthenticateBrowser(signInPath string, next http.Handler) (
 			// cache may keep them after sign-out. Set before next runs, so a
 			// handler can still choose its own (stricter or deliberate) value.
 			w.Header().Set("Cache-Control", "no-store")
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r.WithContext(ctx)) //nolint:contextcheck // the context comes from a helper that derives it from r.Context(); the analyzer cannot see through it
 			return
 		}
 		if !web.PrefersHTML(r) || (!errors.Is(err, ErrCredentialsRequired) && !errors.Is(err, ErrCredentialsInvalid)) {

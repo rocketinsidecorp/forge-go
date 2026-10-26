@@ -89,7 +89,7 @@ func parse(sub string, args []string, env forge.CommandEnv) (action, error) {
 		older     = flags.Duration("older", 24*time.Hour, "minimum age of finished jobs")
 	)
 	if err := flags.Parse(args); err != nil {
-		return nil, fmt.Errorf("%w: %v", forge.ErrUsage, err)
+		return nil, fmt.Errorf("%w: %w", forge.ErrUsage, err)
 	}
 	out := env.Stdout
 	switch sub {

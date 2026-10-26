@@ -113,14 +113,14 @@ func (d *Document) ValidateResponse(method, path string, status int, header http
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
-		return fmt.Errorf("%w: %s %s %d body is not JSON: %v", ErrContract, method, route.path, status, err)
+		return fmt.Errorf("%w: %s %s %d body is not JSON: %w", ErrContract, method, route.path, status, err)
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%w: %s %s %d body has data after the JSON value", ErrContract, method, route.path, status)
 	}
 	v := validator{document: d.tree}
 	if err := v.validate(media["schema"], value, ""); err != nil {
-		return fmt.Errorf("%w: %s %s %d: %v", ErrContract, method, route.path, status, err)
+		return fmt.Errorf("%w: %s %s %d: %w", ErrContract, method, route.path, status, err)
 	}
 	return nil
 }
@@ -243,7 +243,7 @@ func (v *validator) validateString(schema map[string]any, value, at string) erro
 	if pattern, ok := schema["pattern"].(string); ok {
 		expression, err := regexp.Compile(pattern)
 		if err != nil {
-			return fmt.Errorf("%s: the document's pattern %q does not compile: %v", pointer(at), pattern, err)
+			return fmt.Errorf("%s: the document's pattern %q does not compile: %w", pointer(at), pattern, err)
 		}
 		if !expression.MatchString(value) {
 			return fmt.Errorf("%s: %q does not match %s", pointer(at), value, pattern)

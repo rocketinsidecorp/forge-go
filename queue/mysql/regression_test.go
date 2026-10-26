@@ -83,7 +83,7 @@ func TestRecoverDoesNotWaitForTheLocksOfLiveJobs(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("claim: %v %v", ok, err)
 	}
-	time.Sleep(2200 * time.Millisecond) // the first lease expires
+	time.Sleep(2200 * time.Millisecond) // real-clock: the first lease expires on the database clock
 
 	// A heartbeat in flight: the live job's lease_until index entry is locked
 	// by an uncommitted transaction.

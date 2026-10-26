@@ -11,6 +11,7 @@ package exectest
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 )
@@ -21,7 +22,7 @@ import (
 func Write(path, body string) error {
 	// The path is an argument, never part of the script, so no quoting is
 	// needed. The mode is set by chmod, not the umask.
-	command := exec.Command("/bin/sh", "-c", `cat > "$1" && chmod 700 "$1"`, "sh", path) // #nosec G204 -- fixed script; the path is a positional parameter.
+	command := exec.CommandContext(context.Background(), "/bin/sh", "-c", `cat > "$1" && chmod 700 "$1"`, "sh", path) // #nosec G204 -- fixed script; the path is a positional parameter.
 	command.Stdin = bytes.NewReader([]byte(body))
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("write executable %s: %w: %s", path, err, bytes.TrimSpace(output))

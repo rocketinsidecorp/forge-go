@@ -169,22 +169,27 @@ func (s *Server) Run(ctx context.Context) error {
 			address = ":https"
 		}
 	}
-	listener, err := net.Listen("tcp", address)
+	// Resolution only: a signal that cancelled ctx during start-up must still
+	// end in a clean stop below, not in "lookup localhost: operation was canceled".
+	listener, err := (&net.ListenConfig{}).Listen(context.WithoutCancel(ctx), "tcp", address)
 	if err != nil {
 		return fmt.Errorf("serve HTTP: %w", err)
 	}
 	s.logger.Info("serving HTTP", "address", listener.Addr().String())
 	errorsChannel := make(chan error, 1)
 	go func() {
+		var err error
+		if s.transport == config.TransportTLS {
+			err = s.server.ServeTLS(listener, s.certFile, s.keyFile)
+		} else {
+			err = s.server.Serve(listener)
+		}
 		// Serve closes the listener when it stops, but ServeTLS returns
 		// before serving when the certificate cannot be loaded; close it then
-		// too, as ListenAndServeTLS does, so the port is not held.
-		defer func() { _ = listener.Close() }()
-		if s.transport == config.TransportTLS {
-			errorsChannel <- s.server.ServeTLS(listener, s.certFile, s.keyFile)
-		} else {
-			errorsChannel <- s.server.Serve(listener)
-		}
+		// too, as ListenAndServeTLS does. Closing before the send means the
+		// port is free by the time Run returns.
+		_ = listener.Close()
+		errorsChannel <- err
 	}()
 
 	select {
@@ -194,7 +199,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		return fmt.Errorf("serve HTTP: %w", err)
 	case <-ctx.Done():
-		shutdownContext, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.shutdownTimeout)
 		defer cancel()
 		if err := s.server.Shutdown(shutdownContext); err != nil {
 			// The drain deadline passed. Closing the connections cancels the
@@ -268,9 +273,9 @@ func requestID(logger *slog.Logger, next http.Handler) http.Handler {
 
 func recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
+		defer func() { //nolint:contextcheck // false positive: the deferred closure uses the request context
 			if recovered := recover(); recovered != nil {
-				if recovered == http.ErrAbortHandler {
+				if recovered == http.ErrAbortHandler { //nolint:errorlint // net/http documents this sentinel panic value as compared with ==
 					panic(recovered)
 				}
 				web.Logger(r.Context()).Error("request panic", "method", r.Method, "path", r.URL.Path, "panic", recovered, "stack", string(debug.Stack()))

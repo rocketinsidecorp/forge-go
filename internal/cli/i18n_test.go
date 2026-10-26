@@ -121,7 +121,7 @@ func TestRunI18nUsage(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{{"i18n"}, {"i18n", "missing"}, {"i18n", "check", "--yaml"}} {
 		var stdout, stderr bytes.Buffer
-		if code := Run(args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "usage: forge i18n check") {
+		if code := Run(args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "usage: forge i18n check") {
 			t.Errorf("%v: code %d, stderr %q", args, code, stderr.String())
 		}
 	}

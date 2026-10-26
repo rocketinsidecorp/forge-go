@@ -252,7 +252,7 @@ func (c Config) Validate() error {
 	}
 	for i, prefix := range c.HTTP.TrustedProxies {
 		if err := CheckTrustedProxy(prefix); err != nil {
-			return fmt.Errorf("invalid FORGE_HTTP_TRUSTED_PROXIES: entry %d %s", i+1, err)
+			return fmt.Errorf("invalid FORGE_HTTP_TRUSTED_PROXIES: entry %d %w", i+1, err)
 		}
 	}
 	if err := c.Database.validate(c.Environment); err != nil {

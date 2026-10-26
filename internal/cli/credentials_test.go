@@ -18,6 +18,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/credentials"
 	"github.com/rocketinsidecorp/forge-go/encryption"
 	"github.com/rocketinsidecorp/forge-go/internal/exectest"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 const (
@@ -150,7 +151,7 @@ func TestCredentialsEditorHelper(t *testing.T) {
 	case "fail":
 		os.Exit(1)
 	case "sleep":
-		time.Sleep(time.Minute)
+		time.Sleep(time.Minute) // real-clock: helper process that waits to be killed by the test
 	}
 	os.Exit(0)
 }
@@ -369,23 +370,18 @@ func TestCredentialsEditCleansUpOnSIGTERM(t *testing.T) {
 	record := h.useHelperEditor(t, "sleep", "")
 	done := make(chan error, 1)
 	go func() { done <- h.run(t, "edit", "--environment", "production") }()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		// The helper writes the record, then a swap file next to the edited
-		// file (which must be cleaned up too), then sleeps. forge registers
-		// its SIGTERM handlers before it starts the editor, so the signal is
-		// safe once both exist.
+	// The helper writes the record, then a swap file next to the edited
+	// file (which must be cleaned up too), then sleeps. forge registers
+	// its SIGTERM handlers before it starts the editor, so the signal is
+	// safe once both exist.
+	waittest.Until(t, 20*time.Second, "the editor to start", func() bool {
 		var r editorRecord
 		if data, err := os.ReadFile(record); err == nil && json.Unmarshal(data, &r) == nil {
-			if _, err := os.Stat(r.Path + ".swp"); err == nil {
-				break
-			}
+			_, err := os.Stat(r.Path + ".swp")
+			return err == nil
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the editor never started")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return false
+	})
 	// Terminate the forge process (this one).
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)

@@ -62,10 +62,10 @@ func revendor(ctx context.Context, root string, args []string, stdout, stderr io
 		return nil
 	}
 	if info, err := os.Stat(filepath.Join(root, "vendor")); err != nil || !info.IsDir() {
-		return nil
+		return nil //nolint:nilerr // no vendor/ directory (or not a directory) means there is nothing to re-vendor
 	}
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		return nil
+		return nil //nolint:nilerr // no go.mod means there is nothing to re-vendor
 	}
 	if _, err := fmt.Fprintln(stdout, "  run     go mod vendor"); err != nil {
 		return err
@@ -100,7 +100,7 @@ func generateFiles(args []string, stdout io.Writer, root string, env []string, n
 	}
 	dryRun := len(args) == 3 && args[2] == "--dry-run"
 	if (len(args) != 2 && !dryRun) || (len(args) == 3 && !dryRun) {
-		return errors.New(generateUsage)
+		return usageError{generateUsage}
 	}
 	var files []generatedFile
 	var err error
@@ -112,7 +112,7 @@ func generateFiles(args []string, stdout io.Writer, root string, env []string, n
 	case "job":
 		files, err = planJob(root, args[1])
 	default:
-		return errors.New(generateUsage)
+		return usageError{generateUsage}
 	}
 	if err != nil {
 		return err

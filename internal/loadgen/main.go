@@ -133,12 +133,12 @@ type request struct {
 	want int
 }
 
-func (r request) build(base string) (*http.Request, error) {
+func (r request) build(ctx context.Context, base string) (*http.Request, error) {
 	var body io.Reader
 	if r.body != "" {
 		body = strings.NewReader(r.body)
 	}
-	built, err := http.NewRequest(r.method, base+r.path, body)
+	built, err := http.NewRequestWithContext(ctx, r.method, base+r.path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -262,11 +262,11 @@ func (t *target) waitReady(ctx context.Context) error {
 
 // do sends one request, drains the body and returns it (capped at 1 MiB).
 func (t *target) do(ctx context.Context, r request) (status int, header http.Header, body string, err error) {
-	built, err := r.build(t.base)
+	built, err := r.build(ctx, t.base)
 	if err != nil {
 		return 0, nil, "", err
 	}
-	response, err := t.client.Do(built.WithContext(ctx))
+	response, err := t.client.Do(built)
 	if err != nil {
 		return 0, nil, "", err
 	}

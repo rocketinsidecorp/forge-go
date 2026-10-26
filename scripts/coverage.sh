@@ -88,7 +88,7 @@ done
 raw="${COVERAGE_PROFILE:-}"
 if [ -z "$raw" ]; then
 	raw="$out/raw.out"
-	go test -count=1 -coverpkg=./... -coverprofile="$raw" ./...
+	go test -count=1 -timeout 30m -coverpkg=./... -coverprofile="$raw" ./...
 fi
 
 # One line per block: dropped when excluded, merged across test binaries

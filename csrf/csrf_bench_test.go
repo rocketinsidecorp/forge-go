@@ -44,6 +44,7 @@ func BenchmarkCSRFVerify(b *testing.B) {
 	handler := protection.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !csrf.Verified(r) {
 			http.Error(w, "unverified", http.StatusForbidden)
+			return
 		}
 	}))
 	w := benchWriter{header: http.Header{}}

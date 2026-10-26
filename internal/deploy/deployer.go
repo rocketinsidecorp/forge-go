@@ -131,7 +131,7 @@ func (d *Deployer) redactError(err error) error {
 	}
 	// A bare *RemoteError keeps its type (exit codes are read from it);
 	// its Error text is built from Host and Stderr only.
-	if remote, ok := err.(*RemoteError); ok {
+	if remote, ok := err.(*RemoteError); ok { //nolint:errorlint // only a bare *RemoteError keeps its type; a wrapped one is flattened to redacted text on purpose
 		remote.Stderr = d.redactor.Redact(remote.Stderr)
 		return remote
 	}

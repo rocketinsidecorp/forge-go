@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"slices"
@@ -74,6 +76,18 @@ func (e usageError) Error() string { return e.message }
 
 // ExitCode is the process exit status.
 func (usageError) ExitCode() int { return 2 }
+
+// parseFlags is flags.Parse that reports an invalid flag (unknown, or a bad
+// value) as a usageError, which exits 2 like Forge-Rust and the other usage
+// errors. A request for help (flag.ErrHelp) is returned unchanged: the caller
+// answers it with exit status 0.
+func parseFlags(flags *flag.FlagSet, args []string) error {
+	err := flags.Parse(args)
+	if err != nil && !errors.Is(err, flag.ErrHelp) {
+		return usageError{err.Error()}
+	}
+	return err
+}
 
 func isHelpFlag(arg string) bool { return arg == "-h" || arg == "--help" }
 
@@ -181,10 +195,33 @@ func currentCommandCatalog() commandCatalog {
 				{Name: "--forge-path", Value: "DIR", Description: "Use a local Forge checkout and vendor it."},
 				{Name: "--framework-path", Value: "DIR", Description: "Deprecated alias of --forge-path; prints a deprecation line and will be removed in the next minor version."},
 				{Name: "--skip-deps", Description: "Do not resolve Go dependencies."},
+				{Name: "--skip-lockfile", Description: "Alias of --skip-deps (Forge-Rust's name: go.sum is the lockfile)."},
 			},
 		},
 		devCommandDetail(),
 		{Name: "test", Usage: "forge test [ARGS]", Summary: "Run Go tests with Forge environment files loaded.", SideEffects: []string{"subprocess", "application_defined"}, Examples: []string{"forge test", "forge test ./... -run TestHealth"}, Environment: testEnvironment()},
+		{
+			Name: "check", Usage: "forge check",
+			Summary:     "Type-check the application: go build ./... and go vet ./... (the counterpart of Forge-Rust's cargo check --all-targets).",
+			SideEffects: []string{"subprocess"},
+			Examples:    []string{"forge check"},
+			Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "Runs the go tool in the current directory without a shell; it inherits the caller environment and writes no binary. Forge .env files are not loaded."},
+		},
+		{
+			Name: "format", Usage: "forge format [--check]",
+			Summary:     "Format the application's Go files with gofmt -l -w (vendor, testdata and nested modules are skipped); the files it rewrites are listed. With --check, list the files that need formatting, write nothing and exit 1 when there are any.",
+			SideEffects: []string{"filesystem_write", "subprocess"},
+			Examples:    []string{"forge format", "forge format --check"},
+			Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "Runs the gofmt of the Go toolchain found on PATH, without a shell."},
+			Flags:       []flagDetail{{Name: "--check", Description: "List the files that need formatting and exit 1 if there are any, without writing (the form CI runs)."}},
+		},
+		{
+			Name: "lint", Usage: "forge lint",
+			Summary:     "Run golangci-lint run ./... (with the application's .golangci.yml when it has one); when golangci-lint is not on PATH the command fails and names how to install it.",
+			SideEffects: []string{"subprocess"},
+			Examples:    []string{"forge lint"},
+			Environment: environmentInfo{Files: []string{".golangci.yml"}, Variables: []string{}, Notes: "golangci-lint is not part of the Go toolchain. Install it with `" + golangciLintInstall + "`. The counterpart of Forge-Rust's cargo clippy."},
+		},
 		{Name: "build", Usage: "forge build [NAME]", Summary: "Build the application binary under bin/.", SideEffects: []string{"filesystem_write", "subprocess"}, Examples: []string{"forge build", "forge build worker"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "The Go build subprocess inherits the caller environment; Forge .env files are not loaded."}},
 		dbCommandDetail(),
 		{Name: "migrate", Usage: "forge migrate [status]", Summary: "Apply pending migrations or report migration status.", SideEffects: []string{"database_write", "database_read"}, Examples: []string{"forge migrate", "forge migrate status"}, Environment: migrationEnvironment()},
@@ -311,10 +348,15 @@ func currentCommandCatalog() commandCatalog {
 		if commands[i].Environment.Variables == nil {
 			commands[i].Environment.Variables = []string{}
 		}
-		commands[i].ExitCodes = append([]exitCodeDetail{
+		codes := []exitCodeDetail{
 			{Code: 0, Meaning: "The command completed successfully."},
-			{Code: 1, Meaning: "The command failed, its arguments or configuration were invalid, or delegated application work failed."},
-		}, commands[i].ExitCodes...)
+			{Code: 1, Meaning: "The command, or a tool or application it runs (go, gofmt, golangci-lint, the database client, the application's own commands), failed, or the configuration was invalid."},
+		}
+		// help documents its own, narrower code 2.
+		if !slices.ContainsFunc(commands[i].ExitCodes, func(c exitCodeDetail) bool { return c.Code == 2 }) {
+			codes = append(codes, exitCodeDetail{Code: 2, Meaning: "Usage error: an unknown flag or subcommand, an invalid flag value, or a missing or extra argument; nothing ran."})
+		}
+		commands[i].ExitCodes = append(codes, commands[i].ExitCodes...)
 	}
 	return commandCatalog{
 		SchemaVersion: 1,
@@ -323,8 +365,8 @@ func currentCommandCatalog() commandCatalog {
 		GlobalOptions: []flagDetail{{Name: jsonErrorFormatFlag, Description: "Emit schema-versioned, secret-safe errors on stderr when a command fails."}},
 		ProcessExitCodes: append([]exitCodeDetail{
 			{Code: 0, Meaning: "The requested command completed successfully."},
-			{Code: 1, Meaning: "A command failed or its arguments/configuration were invalid."},
-			{Code: 2, Meaning: "No command was supplied, the top-level command is unknown, forge help was given an unknown command or invalid arguments, or forge deploy, logs or app got an unknown flag or subcommand or a missing or extra argument."},
+			{Code: 1, Meaning: "A command, or a tool or application it runs, failed, or the configuration was invalid."},
+			{Code: 2, Meaning: "No command was supplied, the top-level command is unknown, forge help was given an unknown command or invalid arguments, a command got an unknown flag or an invalid flag value, or forge deploy, logs or app got an unknown subcommand or a missing or extra argument."},
 		}, deployExitCodes...),
 		Commands: commands,
 	}

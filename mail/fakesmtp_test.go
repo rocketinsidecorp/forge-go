@@ -172,7 +172,9 @@ func (s *fakeSMTP) handle(raw net.Conn) {
 	}
 	say("220 fake.example ESMTP ready")
 	if s.stall {
-		time.Sleep(10 * time.Second)
+		// Say nothing more, swallow what the client sends and wait for it to
+		// give up and close the connection.
+		_, _ = io.Copy(io.Discard, conn)
 		return
 	}
 	for {

@@ -35,7 +35,7 @@ func (s *Store) Listen(ctx context.Context, listening func(), wake func(queueNam
 	// Hijack so the connection leaves the pool and is closed, rather than
 	// returning to it still LISTENing.
 	conn := pooled.Hijack()
-	defer closeConn(conn)
+	defer closeConn(ctx, conn)
 	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{NotifyChannel}.Sanitize()); err != nil {
 		return fmt.Errorf("listen for jobs: %w", err)
 	}
@@ -53,8 +53,10 @@ func (s *Store) Listen(ctx context.Context, listening func(), wake func(queueNam
 	}
 }
 
-func closeConn(conn *pgx.Conn) {
-	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+func closeConn(parent context.Context, conn *pgx.Conn) {
+	// The listener's context has ended by now: close with its values but not
+	// its cancellation.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), closeTimeout)
 	defer cancel()
 	_ = conn.Close(ctx)
 }

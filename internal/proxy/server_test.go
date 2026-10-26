@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 const testHost = "app.example.com"
@@ -91,7 +93,7 @@ func get(t *testing.T, client *http.Client, front, host, path string) (int, stri
 func TestSwitchUnderConcurrentLoadDropsNoRequests(t *testing.T) {
 	slow := func(name string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
-			time.Sleep(time.Duration(rand.IntN(3000)) * time.Microsecond)
+			time.Sleep(time.Duration(rand.IntN(3000)) * time.Microsecond) // real-clock: random handler latency interleaves requests with the switch under load
 			_, _ = io.WriteString(w, name)
 		}
 	}
@@ -145,7 +147,7 @@ func TestSwitchUnderConcurrentLoadDropsNoRequests(t *testing.T) {
 		if !result.Drained || result.InFlight != 0 {
 			t.Fatalf("deploy %d not drained: %+v", i, result)
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // real-clock: paces the deploys so requests run between the switches
 	}
 	close(stop)
 	workers.Wait()
@@ -245,16 +247,10 @@ func TestDeployDrainsInFlightRequestsBeforeReturning(t *testing.T) {
 		deployed <- result
 	}()
 	// New requests reach the new target while the old one drains.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, body, _ := get(t, http.DefaultClient, front.URL, testHost, "/"); body == "new" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("traffic never switched")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+	waittest.Until(t, 2*time.Second, "traffic to switch to the new target", func() bool {
+		_, body, _ := get(t, http.DefaultClient, front.URL, testHost, "/")
+		return body == "new"
+	})
 	select {
 	case result := <-deployed:
 		t.Fatalf("deploy returned before the old request finished: %+v", result)
@@ -495,7 +491,7 @@ func TestControlSocketAndStatePersistence(t *testing.T) {
 	socket := filepath.Join(dir, "run", "control.sock")
 	app := newBackend(t, "app", nil)
 	srv, _ := newTestServer(t, statePath)
-	listener, err := ListenControl(socket)
+	listener, err := ListenControl(context.Background(), socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +548,7 @@ func TestControlSocketAndStatePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A stale socket is replaced; a regular file is not.
-	if listener, err := ListenControl(socket); err != nil {
+	if listener, err := ListenControl(context.Background(), socket); err != nil {
 		t.Fatalf("stale socket not replaced: %v", err)
 	} else {
 		_ = listener.Close()
@@ -561,7 +557,7 @@ func TestControlSocketAndStatePersistence(t *testing.T) {
 	if err := os.WriteFile(plain, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ListenControl(plain); err == nil {
+	if _, err := ListenControl(context.Background(), plain); err == nil {
 		t.Fatal("regular file replaced by control socket")
 	}
 }

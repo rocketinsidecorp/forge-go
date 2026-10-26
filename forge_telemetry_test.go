@@ -17,6 +17,7 @@ import (
 
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/telemetry"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -220,13 +221,7 @@ func TestMetricsListenerFailureStopsRun(t *testing.T) {
 
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !condition() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not met in time")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waittest.Until(t, 5*time.Second, "the condition", condition)
 }
 
 // safeBuffer is a bytes.Buffer safe for the concurrent writes of a logger

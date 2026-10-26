@@ -187,7 +187,7 @@ func (p *Proxy) Serve(ctx context.Context, l net.Listener) error {
 	case <-ctx.Done():
 	}
 	p.hub.close()
-	shutdown, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	shutdown, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdown); err != nil {
 		_ = server.Close()

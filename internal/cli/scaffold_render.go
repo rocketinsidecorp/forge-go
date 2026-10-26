@@ -102,12 +102,10 @@ func (f fieldView) showExpr(value string) string {
 	}
 }
 
-// receiver parenthesizes a dereference so a method can be called on it.
+// receiver is the operand of a method call on value: a pointer needs no
+// explicit dereference, Go calls the method through it (gocritic underef).
 func receiver(value string) string {
-	if strings.HasPrefix(value, "*") {
-		return "(" + value + ")"
-	}
-	return value
+	return strings.TrimPrefix(value, "*")
 }
 
 func (f fieldView) displayLayout() string { return f.Camel + "DisplayTime" }

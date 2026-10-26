@@ -90,19 +90,21 @@ func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 		return c.baseConn.BeginTx(ctx, opts) // BEGIN IMMEDIATE, from _txlock
 	}
 	if _, err := c.ExecContext(ctx, "PRAGMA query_only = 1", nil); err != nil {
-		return nil, errors.Join(err, c.leaveReadOnly())
+		return nil, errors.Join(err, c.leaveReadOnly(ctx))
 	}
 	tx, err := c.baseConn.BeginTx(ctx, opts) // deferred BEGIN: no write lock
 	if err != nil {
-		return nil, errors.Join(err, c.leaveReadOnly())
+		return nil, errors.Join(err, c.leaveReadOnly(ctx))
 	}
 	return &readOnlyTx{tx: tx, conn: c}, nil
 }
 
 // leaveReadOnly resets query_only. On failure the connection is marked
 // broken, so database/sql closes it instead of reusing it.
-func (c *conn) leaveReadOnly() error {
-	if _, err := c.ExecContext(context.Background(), "PRAGMA query_only = 0", nil); err != nil {
+func (c *conn) leaveReadOnly(parent context.Context) error {
+	// The caller's context may be the reason the transaction failed to begin,
+	// and the reset must still run: keep its values, not its cancellation.
+	if _, err := c.ExecContext(context.WithoutCancel(parent), "PRAGMA query_only = 0", nil); err != nil {
 		c.broken.Store(true)
 		return fmt.Errorf("sqlite: leave read-only mode: %w", err)
 	}
@@ -127,10 +129,10 @@ type readOnlyTx struct {
 
 func (t *readOnlyTx) Commit() error {
 	err := t.tx.Commit()
-	return errors.Join(err, t.conn.leaveReadOnly())
+	return errors.Join(err, t.conn.leaveReadOnly(context.Background()))
 }
 
 func (t *readOnlyTx) Rollback() error {
 	err := t.tx.Rollback()
-	return errors.Join(err, t.conn.leaveReadOnly())
+	return errors.Join(err, t.conn.leaveReadOnly(context.Background()))
 }

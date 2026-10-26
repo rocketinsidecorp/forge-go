@@ -26,6 +26,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/httpserver"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -65,21 +66,21 @@ var servingHTTP = regexp.MustCompile(`msg="serving HTTP" address=(\S+)`)
 // address. A Run that fails first fails the test.
 func listenAddress(t *testing.T, logs *logBuffer, failed <-chan error) string {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		if match := servingHTTP.FindStringSubmatch(logs.String()); match != nil {
-			return match[1]
-		}
+	var address string
+	if !waittest.Poll(20*time.Second, func() bool {
 		select {
 		case err := <-failed:
 			t.Fatalf("the server stopped before it listened: %v", err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server never reported its address:\n%s", logs.String())
+		if match := servingHTTP.FindStringSubmatch(logs.String()); match != nil {
+			address = match[1]
 		}
-		time.Sleep(5 * time.Millisecond)
+		return address != ""
+	}) {
+		t.Fatalf("the server never reported its address:\n%s", logs.String())
 	}
+	return address
 }
 
 // selfSigned writes a certificate for 127.0.0.1 and its key.
@@ -126,22 +127,20 @@ func get(t *testing.T, client *http.Client, url string) (*http.Response, error) 
 // waitServing retries until the server at url answers.
 func waitServing(t *testing.T, client *http.Client, url string, failed <-chan error) *http.Response {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		response, err := get(t, client, url)
-		if err == nil {
-			return response
-		}
+	var response *http.Response
+	var err error
+	if !waittest.Poll(20*time.Second, func() bool {
 		select {
 		case runErr := <-failed:
 			t.Fatalf("the server stopped before it answered: %v", runErr)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server never answered: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+		response, err = get(t, client, url)
+		return err == nil
+	}) {
+		t.Fatalf("the server never answered: %v", err)
 	}
+	return response
 }
 
 func TestNewWithOptionsRejectsMissingPieces(t *testing.T) {
@@ -214,6 +213,24 @@ func TestRunServesPlainHTTPAndStopsOnCancel(t *testing.T) {
 	cancel()
 	if err := <-result; err != nil {
 		t.Errorf("a graceful stop = %v", err)
+	}
+}
+
+// A signal that arrives while the process starts cancels the context before
+// Run: the address, a host name here, must still be resolved and bound, and
+// the stop is clean (exit 0), not a "lookup localhost: operation was canceled".
+func TestRunWithACancelledContextStopsCleanlyOnAHostname(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.HTTP.Address = "localhost:0"
+	server, err := httpserver.New(cfg, http.NotFoundHandler(), quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := server.Run(ctx); err != nil {
+		t.Fatalf("Run with a cancelled context = %v, want a clean stop", err)
 	}
 }
 
