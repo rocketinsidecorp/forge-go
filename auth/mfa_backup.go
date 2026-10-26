@@ -18,16 +18,21 @@ const (
 	DefaultMFABackupCodeCount = 10
 )
 
+// MFABackupCode is a one-time code that signs in when the authenticator is unavailable. It formats
+// and logs as redacted.
 type MFABackupCode struct {
 	value string
 }
 
+// Reveal returns the code text, formatted in groups.
 func (c MFABackupCode) Reveal() string { return c.value }
 
 func (MFABackupCode) String() string { return "[REDACTED]" }
 
+// GoString redacts the code in %#v output.
 func (MFABackupCode) GoString() string { return "auth.MFABackupCode([REDACTED])" }
 
+// LogValue redacts the code in structured logs.
 func (MFABackupCode) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
 
 func newMFABackupCodes(count int) ([]MFABackupCode, []Digest, error) {

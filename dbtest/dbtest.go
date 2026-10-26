@@ -23,8 +23,8 @@ const (
 	// EnvURL is the test server of a generated application, whichever
 	// database it uses.
 	EnvURL = "FORGE_TEST_DATABASE_URL"
-	// EnvRequire=true turns a missing test server into a failure instead of
-	// a skip, so database tests can never silently stop running in CI.
+	// EnvRequire set to true turns a missing test server into a failure
+	// instead of a skip, so database tests can never silently stop running in CI.
 	EnvRequire = "FORGE_TEST_REQUIRE_DATABASE"
 
 	// SetupTimeout bounds creating, migrating and dropping test databases.

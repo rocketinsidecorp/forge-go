@@ -32,6 +32,7 @@ const (
 // underscores, starting with a letter, up to 32 bytes.
 type FlashKind string
 
+// The built-in flash kinds, which the generated layout renders.
 const (
 	FlashNotice FlashKind = "notice"
 	FlashAlert  FlashKind = "alert"

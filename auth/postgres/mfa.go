@@ -13,6 +13,8 @@ import (
 )
 
 var (
+	// ErrMFAIdentityRequired is returned when the account named for an MFA operation is missing or
+	// not active.
 	ErrMFAIdentityRequired               = errors.New("active MFA identity is required")
 	_                      auth.MFAStore = (*Repository)(nil)
 )
@@ -85,6 +87,9 @@ func spendStepUp(ctx context.Context, tx pgx.Tx, subjectID uuid.UUID, stepUp *au
 	return nil
 }
 
+// BeginTOTPEnrollment stores a pending TOTP secret (its digest and ciphertext) for an active
+// account that has no factor yet, replacing an earlier pending one. It returns
+// auth.ErrMFAAlreadyEnabled when a factor is already active.
 func (r *Repository) BeginTOTPEnrollment(
 	ctx context.Context,
 	subjectID uuid.UUID,
@@ -140,6 +145,8 @@ func (r *Repository) BeginTOTPEnrollment(
 	})
 }
 
+// LoadPendingTOTP returns the account's unexpired pending TOTP secret. found is false when there is
+// none.
 func (r *Repository) LoadPendingTOTP(ctx context.Context, subjectID uuid.UUID) (auth.TOTPSecretRecord, bool, error) {
 	var (
 		record    auth.TOTPSecretRecord
@@ -170,6 +177,9 @@ func (r *Repository) LoadPendingTOTP(ctx context.Context, subjectID uuid.UUID) (
 	return record, true, nil
 }
 
+// ConfirmTOTPEnrollment activates the pending factor whose digest is secretDigest, records counter
+// as the last accepted time step and stores the digests of the backup codes, all in one
+// transaction. It reports false when nothing matched.
 func (r *Repository) ConfirmTOTPEnrollment(
 	ctx context.Context,
 	subjectID uuid.UUID,
@@ -295,6 +305,9 @@ func (r *Repository) ConfirmTOTPEnrollment(
 	return confirmed, err
 }
 
+// CreateMFAChallenge stores the digest of a login challenge for membershipID, valid until
+// expiresAt, bound to credentialVersion and the account's current factor. The session created on
+// completion expires at sessionExpiresAt.
 func (r *Repository) CreateMFAChallenge(
 	ctx context.Context,
 	digest auth.Digest,
@@ -374,6 +387,8 @@ func (r *Repository) CreateMFAChallenge(
 	})
 }
 
+// LoadMFAChallenge returns the unconsumed, unexpired challenge with digest and the factor secret
+// needed to verify its code. found is false when it no longer qualifies.
 func (r *Repository) LoadMFAChallenge(ctx context.Context, digest auth.Digest) (auth.MFAChallengeRecord, bool, error) {
 	var (
 		record    auth.MFAChallengeRecord
@@ -441,6 +456,10 @@ const challengeUserQuery = `
 	WHERE c.token_digest = $1
 `
 
+// ConsumeMFAChallenge consumes the challenge and advances the factor's last counter to counter in
+// one transaction, so a challenge or a TOTP code is accepted at most once. It returns the
+// membership to sign in and false when the challenge, the secret digest or the counter does not
+// qualify.
 func (r *Repository) ConsumeMFAChallenge(
 	ctx context.Context,
 	digest auth.Digest,
@@ -525,6 +544,9 @@ func (r *Repository) ConsumeMFAChallenge(
 	return membershipID, true, nil
 }
 
+// ConsumeMFABackupChallenge consumes the challenge and spends the unused backup code with
+// backupCodeDigest in one transaction. It returns the membership to sign in and false when either
+// does not qualify.
 func (r *Repository) ConsumeMFABackupChallenge(
 	ctx context.Context,
 	digest auth.Digest,
@@ -602,6 +624,9 @@ func (r *Repository) ConsumeMFABackupChallenge(
 	return membershipID, true, nil
 }
 
+// BeginTOTPRotation stores a pending replacement secret for an account with an active factor, which
+// stays active until the replacement is confirmed. A non-nil stepUp backup code digest is spent in
+// the same transaction; auth.ErrMFAStepUpInvalid means it was not an unused code of the account.
 func (r *Repository) BeginTOTPRotation(
 	ctx context.Context,
 	subjectID uuid.UUID,
@@ -652,6 +677,9 @@ func (r *Repository) BeginTOTPRotation(
 	})
 }
 
+// ConfirmTOTPRotation replaces the active factor with the pending one whose digest is secretDigest,
+// records counter, replaces the backup codes with new ones and spends stepUp when given, all in one
+// transaction. It reports false when nothing matched.
 func (r *Repository) ConfirmTOTPRotation(
 	ctx context.Context,
 	subjectID uuid.UUID,
@@ -764,6 +792,8 @@ func (r *Repository) ConfirmTOTPRotation(
 	return confirmed, err
 }
 
+// DisableMFA removes the account's factor, pending enrollment and backup codes, spending stepUp
+// when given. It reports false when the account had no active factor.
 func (r *Repository) DisableMFA(ctx context.Context, subjectID uuid.UUID, stepUp *auth.Digest) (bool, error) {
 	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
 		return false, errors.New("MFA subject ID must be a UUIDv7")

@@ -12,8 +12,11 @@ import (
 	"github.com/rocketinsidecorp/forge-go/i18n"
 )
 
+// Environment is the deployment environment selected by FORGE_ENV.
 type Environment string
 
+// The supported environments. Production and staging are stricter about transport security and
+// fallbacks.
 const (
 	Development Environment = "development"
 	Test        Environment = "test"
@@ -21,14 +24,18 @@ const (
 	Production  Environment = "production"
 )
 
+// TransportMode is how the server terminates HTTP, selected by FORGE_HTTP_TRANSPORT.
 type TransportMode string
 
+// The supported transports: plain HTTP, TLS terminated by the server, and plain HTTP behind a
+// trusted TLS-terminating proxy.
 const (
 	TransportPlain        TransportMode = "plain"
 	TransportTLS          TransportMode = "tls"
 	TransportTrustedProxy TransportMode = "trusted-proxy"
 )
 
+// HTTP configures the HTTP server: address, transport, timeouts and size limits.
 type HTTP struct {
 	Address           string
 	Transport         TransportMode
@@ -48,9 +55,6 @@ type HTTP struct {
 	TrustedProxies []netip.Prefix
 }
 
-// Database configures the database connection pool. The URL's scheme selects
-// the adapter (see Adapter). An empty URL means the application runs without
-// a database.
 // Auth contains optional secrets for identity features. Zero values keep the
 // corresponding feature disabled rather than inventing insecure defaults.
 type Auth struct {
@@ -95,6 +99,9 @@ func (a Auth) validate() error {
 	return nil
 }
 
+// Database configures the database connection pool. The URL's scheme selects
+// the adapter (see Adapter). An empty URL means the application runs without
+// a database.
 type Database struct {
 	// URL is a postgres://, mysql:// or sqlite: URL. It usually embeds a
 	// password.
@@ -113,6 +120,8 @@ type Database struct {
 	AllowPlaintext bool
 }
 
+// Config is the application's configuration. Default returns safe defaults; Load reads FORGE_*
+// variables over them.
 type Config struct {
 	Environment Environment
 	HTTP        HTTP
@@ -175,6 +184,8 @@ func (c Config) ShowsMissingTranslations() bool {
 	return c.Environment == Development || c.Environment == Test
 }
 
+// Default returns the defaults: the development environment, plain HTTP on 127.0.0.1:8080,
+// conservative timeouts and size limits, and no database.
 func Default() Config {
 	return Config{
 		Environment: Development,
@@ -210,6 +221,8 @@ func Default() Config {
 	}
 }
 
+// Validate reports the first invalid or unsafe setting, such as an unknown environment, plain HTTP
+// in production or a missing TLS certificate.
 func (c Config) Validate() error {
 	switch c.Environment {
 	case Development, Test, Staging, Production:

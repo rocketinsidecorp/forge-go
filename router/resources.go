@@ -10,6 +10,7 @@ import (
 // Action is one conventional resource action.
 type Action string
 
+// The conventional resource actions.
 const (
 	ActionIndex   Action = "index"
 	ActionNew     Action = "new"
@@ -33,24 +34,31 @@ func (a Action) ReadOnly() bool {
 // A resource handler implements any subset of these interfaces; Resources
 // registers a route for each one it implements.
 type (
+	// ResourceIndex serves the index action: GET on the collection.
 	ResourceIndex interface {
 		Index(http.ResponseWriter, *http.Request)
 	}
+	// ResourceNew serves the new action: the form for a new member.
 	ResourceNew interface {
 		New(http.ResponseWriter, *http.Request)
 	}
+	// ResourceCreate serves the create action: POST on the collection.
 	ResourceCreate interface {
 		Create(http.ResponseWriter, *http.Request)
 	}
+	// ResourceShow serves the show action: GET on one member.
 	ResourceShow interface {
 		Show(http.ResponseWriter, *http.Request)
 	}
+	// ResourceEdit serves the edit action: the form for an existing member.
 	ResourceEdit interface {
 		Edit(http.ResponseWriter, *http.Request)
 	}
+	// ResourceUpdate serves the update action: PATCH and PUT on one member.
 	ResourceUpdate interface {
 		Update(http.ResponseWriter, *http.Request)
 	}
+	// ResourceDestroy serves the destroy action: DELETE on one member.
 	ResourceDestroy interface {
 		Destroy(http.ResponseWriter, *http.Request)
 	}

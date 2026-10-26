@@ -5,8 +5,11 @@ import (
 	"fmt"
 )
 
+// Value implements driver.Valuer; the database receives the canonical text.
 func (id UUID) Value() (driver.Value, error) { return id.String(), nil }
 
+// Scan implements sql.Scanner. It accepts the canonical text, or 16 raw bytes, of a UUIDv7 and
+// rejects any other value.
 func (id *UUID) Scan(value any) error {
 	if id == nil {
 		return errorsNewNilTarget()

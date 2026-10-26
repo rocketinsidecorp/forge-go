@@ -17,6 +17,8 @@ import (
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
+// Server is Forge's HTTP server: the standard library server behind a fixed chain of request ID,
+// client address, security headers, body limit and panic recovery.
 type Server struct {
 	server          *http.Server
 	transport       config.TransportMode
@@ -50,6 +52,7 @@ type Rewriter interface {
 	RewriteRequest(r *http.Request) *http.Request
 }
 
+// New returns a Server for handler with the configuration's timeouts, limits and transport.
 func New(cfg config.Config, handler http.Handler, logger *slog.Logger) (*Server, error) {
 	return NewWithMiddleware(cfg, handler, logger)
 }
@@ -145,8 +148,12 @@ func NewWithOptions(cfg config.Config, handler http.Handler, logger *slog.Logger
 	}, nil
 }
 
+// Handler returns the server's complete handler, so it can be tested without listening.
 func (s *Server) Handler() http.Handler { return s.server.Handler }
 
+// Run serves until ctx is cancelled and then shuts down gracefully, waiting up to the configured
+// shutdown timeout for in-flight requests and then closing their connections. It returns nil after
+// a clean stop and an error for a listener failure or a forced close.
 func (s *Server) Run(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("run context is required")

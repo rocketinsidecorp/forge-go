@@ -16,16 +16,22 @@ import (
 )
 
 var (
-	ErrExecutionNotStarted               = errors.New("agent execution is not pending")
-	ErrActorMismatch                     = errors.New("agent journal actor does not match authenticated principal")
-	failureCodePattern                   = regexp.MustCompile(`^[a-z][a-z0-9_.-]{2,63}$`)
-	_                      agent.Journal = (*Journal)(nil)
+	// ErrExecutionNotStarted is returned by Finish when no reserved execution of the actor matches.
+	ErrExecutionNotStarted = errors.New("agent execution is not pending")
+	// ErrActorMismatch is returned when the actor or tenant of a journal operation is not the
+	// authenticated principal's.
+	ErrActorMismatch                 = errors.New("agent journal actor does not match authenticated principal")
+	failureCodePattern               = regexp.MustCompile(`^[a-z][a-z0-9_.-]{2,63}$`)
+	_                  agent.Journal = (*Journal)(nil)
 )
 
+// Journal is the PostgreSQL agent.Journal. It stores attempt metadata only, under the tenant's
+// row-level security, never prompts or action input and output.
 type Journal struct {
 	db *postgres.DB
 }
 
+// NewJournal returns a Journal on db.
 func NewJournal(db *postgres.DB) (*Journal, error) {
 	if db == nil {
 		return nil, errors.New("agent PostgreSQL database is required")
@@ -33,6 +39,8 @@ func NewJournal(db *postgres.DB) (*Journal, error) {
 	return &Journal{db: db}, nil
 }
 
+// Begin reserves the attempt. It reports false when the actor already submitted the intent in the
+// tenant, so a replay is never executed.
 func (j *Journal) Begin(ctx context.Context, attempt agent.Attempt) (bool, error) {
 	if err := validateAttemptTenant(ctx, attempt, false); err != nil {
 		return false, err
@@ -55,6 +63,8 @@ func (j *Journal) Begin(ctx context.Context, attempt agent.Attempt) (bool, error
 	return created, err
 }
 
+// Reject records a denied attempt with failureCode without reserving an execution. It returns
+// agent.ErrIntentReplayed when the intent was already recorded.
 func (j *Journal) Reject(ctx context.Context, attempt agent.Attempt, failureCode string) error {
 	if err := validateAttemptTenant(ctx, attempt, true); err != nil {
 		return err
@@ -87,6 +97,9 @@ func (j *Journal) Reject(ctx context.Context, attempt agent.Attempt, failureCode
 	return nil
 }
 
+// Finish completes the reserved execution with outcome, which must be succeeded (with no failure
+// code), failed or unresolved (with one). It returns ErrActorMismatch unless actorID is the
+// authenticated principal.
 func (j *Journal) Finish(ctx context.Context, executionID, actorID uuid.UUID, outcome agent.Outcome, failureCode string) error {
 	if executionID.Version() != 7 || executionID.Variant() != 2 {
 		return errors.New("agent execution ID must be a UUIDv7")

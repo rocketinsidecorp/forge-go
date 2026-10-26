@@ -24,11 +24,19 @@ const (
 )
 
 var (
+	// ErrInvalidRecoveryToken is returned by ParseRecoveryToken for text that is not a canonical
+	// token.
 	ErrInvalidRecoveryToken = errors.New("invalid password recovery token")
-	ErrRecoveryInvalid      = fault.New("recovery_invalid", "recovery token is invalid or expired", fault.CategoryInvalid, 0)
-	ErrRecoveryThrottled    = fault.New("recovery_throttled", "too many recovery requests", fault.CategoryRateLimited, 0)
-	ErrPasswordInvalid      = fault.New("password_invalid", "password is invalid", fault.CategoryInvalid, 0)
-	ErrRecoveryDelivery     = errors.New("password recovery delivery failed")
+	// ErrRecoveryInvalid is the error for a recovery token that is unknown, used, superseded or
+	// expired; it does not say which.
+	ErrRecoveryInvalid = fault.New("recovery_invalid", "recovery token is invalid or expired", fault.CategoryInvalid, 0)
+	// ErrRecoveryThrottled is the 429 error for too many recovery requests.
+	ErrRecoveryThrottled = fault.New("recovery_throttled", "too many recovery requests", fault.CategoryRateLimited, 0)
+	// ErrPasswordInvalid is the 400 error for an empty or oversized new password in a password
+	// reset.
+	ErrPasswordInvalid = fault.New("password_invalid", "password is invalid", fault.CategoryInvalid, 0)
+	// ErrRecoveryDelivery is the error for a recovery message the sender could not deliver.
+	ErrRecoveryDelivery = errors.New("password recovery delivery failed")
 
 	// ErrRecoveryQueueFull is returned by a RecoveryDispatcher that holds as
 	// much work as it is allowed to: the request is dropped and logged, never
@@ -45,11 +53,14 @@ const DefaultRecoveryResponseTime = 100 * time.Millisecond
 
 const maxRecoveryResponseTime = 5 * time.Second
 
+// RecoveryToken is the single-use secret in a password-reset link. Persist Digest, never the token;
+// it formats and logs as redacted.
 type RecoveryToken struct {
 	secret string
 	digest Digest
 }
 
+// NewRecoveryToken returns a token made of 32 random bytes.
 func NewRecoveryToken() (RecoveryToken, error) {
 	return newRecoveryTokenWithEntropy(rand.Reader)
 }
@@ -68,6 +79,8 @@ func newRecoveryTokenWithEntropy(entropy io.Reader) (RecoveryToken, error) {
 	}, nil
 }
 
+// ParseRecoveryToken parses the canonical text of a token and returns ErrInvalidRecoveryToken for
+// anything else.
 func ParseRecoveryToken(secret string) (RecoveryToken, error) {
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(secret)
 	if err != nil || len(raw) != tokenBytes || base64.RawURLEncoding.EncodeToString(raw) != secret {
@@ -76,21 +89,30 @@ func ParseRecoveryToken(secret string) (RecoveryToken, error) {
 	return RecoveryToken{secret: secret, digest: sha256.Sum256(raw)}, nil
 }
 
+// Reveal returns the token text, for the reset link.
 func (t RecoveryToken) Reveal() string { return t.secret }
 
 func (RecoveryToken) String() string { return "[REDACTED]" }
 
+// GoString redacts the token in %#v output.
 func (RecoveryToken) GoString() string { return "auth.RecoveryToken([REDACTED])" }
 
+// LogValue redacts the token in structured logs.
 func (RecoveryToken) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
 
+// Digest returns the SHA-256 lookup key a store persists.
 func (t RecoveryToken) Digest() Digest { return t.digest }
 
+// RecoveryIdentity is the account a recovery request names: its ID and the address a reset message
+// goes to.
 type RecoveryIdentity struct {
 	SubjectID uuid.UUID
 	Email     string
 }
 
+// RecoveryStore persists recovery tokens as digests. ConsumeRecovery uses a usable token and
+// replaces the password hash in one step, and reports false for an unknown, used, superseded or
+// expired token; InvalidateRecovery marks a token used without changing the password.
 type RecoveryStore interface {
 	LookupRecovery(ctx context.Context, emailNormalized, tenantSlug string) (identity RecoveryIdentity, found bool, err error)
 	CreateRecovery(ctx context.Context, subjectID uuid.UUID, digest Digest, expiresAt time.Time) error
@@ -130,6 +152,8 @@ type RecoveryDispatcher interface {
 	DispatchRecovery(ctx context.Context, job RecoveryJob) error
 }
 
+// PasswordRecoveryMessage is what a RecoverySender delivers: the address, the tenant, and the token
+// that goes into the reset link with its expiry.
 type PasswordRecoveryMessage struct {
 	Email      string
 	TenantSlug string
@@ -144,24 +168,32 @@ type RecoverySender interface {
 	SendPasswordRecovery(ctx context.Context, message PasswordRecoveryMessage) error
 }
 
+// RecoverySenderFunc adapts a function to RecoverySender.
 type RecoverySenderFunc func(context.Context, PasswordRecoveryMessage) error
 
+// SendPasswordRecovery calls fn.
 func (fn RecoverySenderFunc) SendPasswordRecovery(ctx context.Context, message PasswordRecoveryMessage) error {
 	return fn(ctx, message)
 }
 
+// RecoveryRequest asks for a reset message for the account that Email and TenantSlug name. Source
+// is the client address, used for throttling.
 type RecoveryRequest struct {
 	Email      string
 	TenantSlug string
 	Source     string
 }
 
+// PasswordReset completes a recovery: the token from the reset link, the new password and the
+// client address (Source) used for throttling.
 type PasswordReset struct {
 	Token       string
 	NewPassword string
 	Source      string
 }
 
+// RecoveryService issues password-recovery tokens and resets passwords with them, without revealing
+// whether an account exists.
 type RecoveryService struct {
 	store        RecoveryStore
 	sender       RecoverySender
@@ -174,8 +206,11 @@ type RecoveryService struct {
 	responseTime time.Duration
 }
 
+// RecoveryOption configures a RecoveryService.
 type RecoveryOption func(*RecoveryService) error
 
+// WithRecoveryTTL sets how long a recovery token lasts, between 5 minutes and 24 hours; the default
+// is 30 minutes.
 func WithRecoveryTTL(ttl time.Duration) RecoveryOption {
 	return func(service *RecoveryService) error {
 		if ttl < minRecoveryTTL || ttl > maxRecoveryTTL {
@@ -186,6 +221,7 @@ func WithRecoveryTTL(ttl time.Duration) RecoveryOption {
 	}
 }
 
+// WithRecoveryClock sets the clock RecoveryService uses; the default is time.Now.
 func WithRecoveryClock(now func() time.Time) RecoveryOption {
 	return func(service *RecoveryService) error {
 		if now == nil {
@@ -196,6 +232,7 @@ func WithRecoveryClock(now func() time.Time) RecoveryOption {
 	}
 }
 
+// WithRecoveryThrottler replaces the default in-memory throttler.
 func WithRecoveryThrottler(throttler LoginThrottler) RecoveryOption {
 	return func(service *RecoveryService) error {
 		if throttler == nil {
@@ -206,6 +243,7 @@ func WithRecoveryThrottler(throttler LoginThrottler) RecoveryOption {
 	}
 }
 
+// WithRecoveryAuditor makes RecoveryService record its recovery and reset events.
 func WithRecoveryAuditor(auditor SecurityAuditor) RecoveryOption {
 	return func(service *RecoveryService) error {
 		if auditor == nil {
@@ -271,6 +309,8 @@ func DefaultRecoveryThrottleConfig() LoginThrottleConfig {
 	}
 }
 
+// NewRecoveryService builds a RecoveryService that keeps tokens in store and delivers them with
+// sender.
 func NewRecoveryService(store RecoveryStore, sender RecoverySender, options ...RecoveryOption) (*RecoveryService, error) {
 	if store == nil || sender == nil {
 		return nil, errors.New("recovery store and sender are required")
@@ -422,6 +462,9 @@ func (s *RecoveryService) waitUntil(ctx context.Context, deadline time.Time) {
 	}
 }
 
+// Reset replaces the account's password with reset.NewPassword and consumes the token, which also
+// revokes the account's sessions. It returns ErrRecoveryInvalid for an unknown, used or expired
+// token and a *RecoveryThrottledError when the attempt is throttled.
 func (s *RecoveryService) Reset(ctx context.Context, reset PasswordReset) error {
 	token, err := ParseRecoveryToken(strings.TrimSpace(reset.Token))
 	if err != nil {
@@ -513,6 +556,8 @@ func (s *RecoveryService) recordPasswordResetEvent(
 	return securityAuditError(s.auditor.RecordSecurityEvent(ctx, event), operationApplied)
 }
 
+// RecoveryDeliveryError reports that the RecoverySender failed; Cause is its error. It matches
+// ErrRecoveryDelivery.
 type RecoveryDeliveryError struct {
 	Cause error
 }
@@ -526,6 +571,8 @@ func (e *RecoveryDeliveryError) Unwrap() error {
 	return errors.Join(ErrRecoveryDelivery, e.Cause)
 }
 
+// RecoveryThrottledError reports a throttled recovery request and how long to wait. It matches
+// ErrRecoveryThrottled.
 type RecoveryThrottledError struct {
 	RetryAfter time.Duration
 }

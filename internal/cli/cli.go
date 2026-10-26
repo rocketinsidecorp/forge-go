@@ -21,6 +21,9 @@ const jsonErrorFormatFlag = "--error-format=json"
 
 var errDoctorUnhealthy = errors.New("doctor found invalid configuration")
 
+// Run executes the forge command line in args, writing to stdout and stderr, and returns the
+// process exit code: 0 on success, 1 on failure, 2 on misuse. With --error-format=json as the first
+// argument, failures are written to stderr as JSON.
 func Run(args []string, stdout, stderr io.Writer) int {
 	jsonErrors := len(args) > 0 && args[0] == jsonErrorFormatFlag
 	if jsonErrors {

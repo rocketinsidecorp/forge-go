@@ -60,6 +60,8 @@ type SessionRevoker interface {
 	RevokeSession(ctx context.Context, token Token) error
 }
 
+// LoginInput is one password sign-in attempt. Source is the client address, used only to throttle
+// attempts.
 type LoginInput struct {
 	Email      string
 	Password   string
@@ -67,6 +69,9 @@ type LoginInput struct {
 	Source     string
 }
 
+// LoginResult is the outcome of a correct password. When MFARequired is false, Token and ExpiresAt
+// describe the new session; otherwise MFAChallenge must first be completed with a TOTP or backup
+// code.
 type LoginResult struct {
 	Token        Token
 	ExpiresAt    time.Time
@@ -74,6 +79,8 @@ type LoginResult struct {
 	MFAChallenge MFAChallengeToken
 }
 
+// LoginService is the password sign-in use case: throttling, password verification (rehashing an
+// outdated hash) and creation of a session, or of an MFA challenge.
 type LoginService struct {
 	passwords PasswordStore
 	sessions  CredentialSessionCreator
@@ -84,8 +91,10 @@ type LoginService struct {
 	ttl       time.Duration
 }
 
+// LoginOption configures a LoginService.
 type LoginOption func(*LoginService) error
 
+// WithSessionTTL sets how long a new session lasts, between 5 minutes and 30 days.
 func WithSessionTTL(ttl time.Duration) LoginOption {
 	return func(service *LoginService) error {
 		if ttl < minSessionTTL || ttl > maxSessionTTL {
@@ -96,6 +105,7 @@ func WithSessionTTL(ttl time.Duration) LoginOption {
 	}
 }
 
+// WithLoginClock sets the clock LoginService uses; the default is time.Now.
 func WithLoginClock(now func() time.Time) LoginOption {
 	return func(service *LoginService) error {
 		if now == nil {
@@ -106,6 +116,8 @@ func WithLoginClock(now func() time.Time) LoginOption {
 	}
 }
 
+// WithLoginThrottler replaces the default in-memory throttler, for example with one that shares its
+// counters between processes.
 func WithLoginThrottler(throttler LoginThrottler) LoginOption {
 	return func(service *LoginService) error {
 		if throttler == nil {
@@ -116,6 +128,8 @@ func WithLoginThrottler(throttler LoginThrottler) LoginOption {
 	}
 }
 
+// WithMFAChallengeIssuer sets the issuer LoginService uses to start an MFA challenge for an account
+// that has multi-factor authentication enabled.
 func WithMFAChallengeIssuer(issuer MFAChallengeIssuer) LoginOption {
 	return func(service *LoginService) error {
 		if issuer == nil {
@@ -126,6 +140,7 @@ func WithMFAChallengeIssuer(issuer MFAChallengeIssuer) LoginOption {
 	}
 }
 
+// WithSecurityAuditor makes LoginService record its sign-in events.
 func WithSecurityAuditor(auditor SecurityAuditor) LoginOption {
 	return func(service *LoginService) error {
 		if auditor == nil {
