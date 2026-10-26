@@ -3,6 +3,7 @@ package scaffold_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -55,6 +56,41 @@ func TestPostgreSQLServesAndMigratesAsSeparateRoles(t *testing.T) {
 	}
 	if database := environments["postgres"]; database["POSTGRES_USER"] != "postgres" || database["POSTGRES_DB"] != "postgres" {
 		t.Errorf("postgres environment = %v, want the image's superuser bootstrapping init.sql", database)
+	}
+}
+
+// The postgres image runs init.sql as its own postgres user, not as the
+// developer who generated the application: the bind-mounted script and its
+// directories must be readable by everyone, or initdb stops with "Permission
+// denied" and the database container never starts.
+func TestPostgreSQLInitScriptIsReadableByTheContainer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permissions")
+	}
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "shop")
+	if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: "postgresql"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "docker", "postgres", "init.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("init.sql is %v, want 0644", got)
+	}
+	for _, directory := range []string{"docker", filepath.Join("docker", "postgres")} {
+		info, err := os.Stat(filepath.Join(dir, directory))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got&0o055 != 0o055 {
+			t.Errorf("%s is %v; the container cannot traverse it", directory, got)
+		}
+	}
+	// Everything else keeps the private default.
+	if info, err := os.Stat(filepath.Join(dir, "compose.yaml")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("compose.yaml = %v, %v; want 0600", info, err)
 	}
 }
 
