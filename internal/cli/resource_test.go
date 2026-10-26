@@ -464,7 +464,7 @@ func TestResourceIdentifiersAreUUIDv7AndTypesAreExact(t *testing.T) {
 	forbidden := regexp.MustCompile(`(?i)\b(serial|bigserial|smallserial|auto_increment|autoincrement|gen_random_uuid|uuid_generate_v[0-9a-z]+|float|float4|float8|real|double|decimal|numeric|money)\b`)
 	mysqlUUIDFunction := regexp.MustCompile(`\bUUID\(\)`)
 	idColumn := map[string]*regexp.Regexp{
-		"postgres": regexp.MustCompile(`(?m)^\s+"id"\s+uuid PRIMARY KEY DEFAULT uuidv7\(\),?$`),
+		"postgres": regexp.MustCompile(`(?m)^\s+"id"\s+uuid PRIMARY KEY,?$`),
 		"mysql":    regexp.MustCompile("(?m)^\\s+`id`\\s+CHAR\\(36\\) NOT NULL PRIMARY KEY,?$"),
 		"sqlite":   regexp.MustCompile(`(?m)^\s+"id"\s+TEXT NOT NULL PRIMARY KEY,?$`),
 	}
@@ -510,6 +510,11 @@ func TestResourceIdentifiersAreUUIDv7AndTypesAreExact(t *testing.T) {
 					}
 					if mysqlUUIDFunction.MatchString(up) {
 						t.Errorf("generated SQL calls UUID():\n%s", up)
+					}
+					// IDs come from the application only; uuidv7() would also
+					// tie the table to PostgreSQL 18.
+					if strings.Contains(strings.ToLower(up), "uuidv7(") {
+						t.Errorf("generated SQL calls uuidv7():\n%s", up)
 					}
 					for _, source := range rendered.sources {
 						if strings.Contains(source.content, "google/uuid") || strings.Contains(source.content, "uuid.NewString") {

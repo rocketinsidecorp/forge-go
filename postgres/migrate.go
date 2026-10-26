@@ -3,10 +3,14 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
+	"regexp"
 	"strconv"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 
 	forge "github.com/rocketinsidecorp/forge-go"
@@ -50,6 +54,45 @@ func (dialect) Placeholder(n int) string { return "$" + strconv.Itoa(n) }
 func (dialect) PrepareSession(ctx context.Context, conn *sql.Conn) error {
 	_, err := conn.ExecContext(ctx, "SET statement_timeout = 0")
 	return err
+}
+
+// ExplainScriptError makes a migration that calls uuidv7() on a server
+// without it (PostgreSQL 17 and older) say so: SQLSTATE 42883
+// (undefined_function) for the function uuidv7 itself gets the server version
+// and the two ways out. On PostgreSQL 18, where uuidv7() exists, or when the
+// version cannot be read, the error is returned unchanged. The failed
+// migration's transaction has been rolled back.
+func (dialect) ExplainScriptError(ctx context.Context, q migrate.Queryer, err error) error {
+	if !missingUUIDv7(err) {
+		return err
+	}
+	var version int
+	var name string
+	if q.QueryRowContext(ctx, "SELECT current_setting('server_version_num')::int, current_setting('server_version')").Scan(&version, &name) != nil {
+		return err
+	}
+	return uuidv7Hint(err, version, name)
+}
+
+// uuidv7Function matches PostgreSQL's "function uuidv7(...) does not exist",
+// schema-qualified or not, and no other function whose name merely contains
+// uuidv7.
+var uuidv7Function = regexp.MustCompile(`\bfunction (?:[a-z_][a-z0-9_$]*\.)?uuidv7\(`)
+
+// missingUUIDv7 reports an undefined_function error for uuidv7 itself.
+func missingUUIDv7(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42883" && uuidv7Function.MatchString(pgErr.Message)
+}
+
+// uuidv7Hint wraps err with the server version (server_version_num version,
+// server_version name) when the server predates uuidv7().
+func uuidv7Hint(err error, version int, name string) error {
+	if version >= 180000 {
+		return err
+	}
+	return fmt.Errorf("%w (this server is PostgreSQL %s: uuidv7() needs PostgreSQL 18, "+
+		"or a uuidv7() function defined by an earlier migration)", err, name)
 }
 
 func (dialect) TryLock(ctx context.Context, conn *sql.Conn) (bool, error) {

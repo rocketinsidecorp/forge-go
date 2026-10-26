@@ -23,7 +23,7 @@ x-app: &app
   env_file:
     - .env.local
 {{- end}}
-  environment:
+  environment: &app-environment
     FORGE_ENV: development
     FORGE_HTTP_ADDR: 0.0.0.0:8080
     FORGE_HTTP_TRANSPORT: plain
@@ -45,6 +45,10 @@ services:
       - "127.0.0.1:{{.DBHostPort}}:{{.DB.ContainerPort}}"
     volumes:
       - {{.DB.Service}}:{{.DB.VolumePath}}
+{{- if .AppMigrationURL}}
+      # Creates the app_migrator and app_runtime roles and the database.
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/001-forge.sql:ro
+{{- end}}
     healthcheck:
       test: {{.DB.Healthcheck}}
       interval: 2s
@@ -54,6 +58,12 @@ services:
 
   migrate:
     <<: *app
+{{- if .AppMigrationURL}}
+    # Only this one-off container gets the migration role's credential.
+    environment:
+      <<: *app-environment
+      FORGE_MIGRATION_DATABASE_URL: {{.AppMigrationURL}}
+{{- end}}
     command: ["migrate"]
 {{- if .DB.Server}}
     depends_on:

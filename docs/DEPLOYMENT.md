@@ -92,6 +92,24 @@ fixed development values. For MySQL and MariaDB, `.env.development` connects
 the application as the application user and tests as `root`, because only
 `root` may create the throwaway test databases.
 
+For PostgreSQL, `docker/postgres/init.sql` runs once, as the image's
+superuser, when the volume is empty, and creates two development-only roles
+and the database ([Database roles](DATABASE.md#database-roles-postgresql)):
+
+- `app_migrator`: owns the database and its schema and applies the
+  migrations. Only the one-off `migrate` service receives its credential,
+  `FORGE_MIGRATION_DATABASE_URL`.
+- `app_runtime`: what `app` serves with (`FORGE_DATABASE_URL`): no superuser,
+  no `BYPASSRLS`, no ownership, only data privileges, so the row-level
+  security policies apply to it.
+
+The health check probes over TCP, which the server opens only after
+`init.sql` has finished. `.env.development` points `FORGE_DATABASE_URL` and
+`FORGE_MIGRATION_DATABASE_URL` at the same two roles and
+`FORGE_TEST_DATABASE_URL` at the superuser, which the tests use to create
+their own databases and roles. A volume created before the roles existed
+keeps its old users: run `docker compose down --volumes` once to recreate it.
+
 Useful commands:
 
 ```sh
@@ -133,6 +151,7 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_HTTP_MAX_BODY_BYTES`         | `1048576`        | Maximum request body size; larger bodies get `413` |
 | `FORGE_HTTP_TRUSTED_PROXIES`        | (empty)          | Comma-separated CIDRs or addresses of reverse proxies whose `X-Forwarded-For` is believed; empty trusts nobody. Malformed entries, `/0`, IPv4 prefixes shorter than `/8` and IPv6 prefixes shorter than `/16` fail at startup. `forge deploy` sets it for the proxied role. See [Client addresses behind a proxy](#client-addresses-behind-a-proxy). |
 | `FORGE_DATABASE_URL`                | (empty)          | `postgres://...`, `mysql://...`, or `sqlite:path`; the scheme selects the adapter. Secret: redacted in logs and formatted output. Production TLS rules below. |
+| `FORGE_MIGRATION_DATABASE_URL`      | (empty)          | The migration role, which owns the schema: `migrate` and `rollback` (and `forge db`) connect as it, to the database of `FORGE_DATABASE_URL` (its own database is ignored). Validated like `FORGE_DATABASE_URL`, same adapter; never give it to serving processes. Unset: `FORGE_DATABASE_URL` is used. See [Database roles](DATABASE.md#database-roles-postgresql). |
 | `FORGE_DATABASE_MAX_CONNS`          | `10`             | Pool size per process, `1`-`1000` |
 | `FORGE_DATABASE_MIN_CONNS`          | `0`              | `0` to `FORGE_DATABASE_MAX_CONNS`; PostgreSQL only |
 | `FORGE_DATABASE_MAX_CONN_LIFETIME`  | `30m`            | Maximum connection age |
@@ -287,16 +306,60 @@ Provide `FORGE_DATABASE_URL` from the orchestrator's secret store at runtime,
 never through the image. Forge keeps it in a `config.Secret`, which is
 redacted in logs and formatted output.
 
+### Database roles
+
+On PostgreSQL, serve as a runtime role that is `NOSUPERUSER NOBYPASSRLS
+NOCREATEROLE`, owns no table and holds only `SELECT, INSERT, UPDATE, DELETE`,
+and migrate as a separate role that owns the schema. In `staging` and
+`production` (every environment except `development` and `test`) the
+generated application refuses to start when the role `FORGE_DATABASE_URL`
+logs in as, or acts as, is a superuser, has `BYPASSRLS` or `CREATEROLE`, or
+is a member of a superuser or `BYPASSRLS` role, and when the URL makes the
+session act as another role than its login (`options=-c role=...`), with an
+error that wraps `postgres.ErrRowSecurityBypass`. [Database
+roles](DATABASE.md#database-roles-postgresql) has the SQL to provision both
+roles once.
+
+**With `forge deploy`, for now.** `forge deploy` runs `migrate` in a one-off
+container with the env file of the role `migrate.role` names, so the
+migration credential cannot yet be given to the migrate step alone
+([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)).
+Until it can, add `FORGE_MIGRATION_DATABASE_URL` to that role's secrets
+(and to `.forge/secrets`):
+
+```yaml
+servers:
+  web:
+    hosts: [192.0.2.10, 192.0.2.11]
+    env: {secret: [FORGE_MIGRATION_DATABASE_URL]}   # interim, see forge-go#57
+env:
+  clear: {FORGE_ENV: production}
+  secret: [FORGE_DATABASE_URL, FORGE_AUTH_MFA_KEY]
+migrate: {enabled: true, cmd: ["migrate"], role: web}
+```
+
+The cost: every container of that role, the serving ones included, then holds
+the schema owner's credential in its environment. The application still
+serves as the runtime role and row-level security still applies to its
+queries, but anyone who can run code in a serving container can read the
+variable and connect as the owner, who may change or drop tables and switch
+row-level security off. Without it, `forge deploy` migrates as the runtime
+role, which cannot run DDL, so migrations fail. Alternatively run `migrate`
+yourself before `forge deploy` with the credential from your secret store
+(`docker run --rm ... migrate`, below) and set `migrate: {enabled: false}`.
+
 ### Migrations
 
 Run migrations as a separate release step before rolling out a new version;
 `serve` never applies them. Use the release image itself:
 
 ```sh
-docker run --rm -e FORGE_DATABASE_URL="$DATABASE_URL" myapp:1.4.0 migrate
+docker run --rm -e FORGE_DATABASE_URL="$DATABASE_URL" \
+  -e FORGE_MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" myapp:1.4.0 migrate
 ```
 
-For SQLite, mount the application's storage volume instead
+`FORGE_MIGRATION_DATABASE_URL` belongs to this one-off step only; the
+serving containers get `FORGE_DATABASE_URL` alone. For SQLite, mount the application's storage volume instead
 (`-v myapp-storage:/app/storage`); the database URL is already in the image.
 
 In Kubernetes, run the same command as a Job (or a pre-deploy hook) and
@@ -667,6 +730,13 @@ printed on stdout also on failure, with `ok`, `error` and `exit_code`.
    pull`, write the env files.
 4. Run `migrate` once, in a one-off container on the first host of the
    migrate role. A failure stops here: nothing was started or switched.
+   The container gets that role's env file: it does not yet receive a
+   separate `FORGE_MIGRATION_DATABASE_URL`, so `forge deploy` migrates as
+   the serving role unless that role's secrets include it, which then also
+   reach the serving containers ([Database roles](#database-roles) has the
+   interim configuration and its cost;
+   [forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)
+   tracks a migrate-only credential).
 5. On every host, for each role (the proxied one first), start the new
    container on the `forge` network with no published ports. For the
    proxied role, `forge-proxy deploy` probes `healthcheck.path` until it

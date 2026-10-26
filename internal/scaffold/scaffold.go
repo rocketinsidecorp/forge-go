@@ -71,6 +71,11 @@ type templateData struct {
 	AppDatabaseURL  string
 	DevDatabaseURL  string
 	TestDatabaseURL string
+	// AppMigrationURL and DevMigrationURL are FORGE_MIGRATION_DATABASE_URL
+	// inside compose and on the host: the role that owns the schema, when it
+	// differs from the serving one (PostgreSQL).
+	AppMigrationURL string
+	DevMigrationURL string
 	// MFAEncryptionKey is the base64-encoded 32-byte key for MFA secret encryption.
 	MFAEncryptionKey string
 }
@@ -92,6 +97,8 @@ const (
 	// identity (PostgreSQL): the HTML sign-in, sign-out and password pages.
 	// `forge generate authentication` renders the same files.
 	withIdentity
+	// withPostgres files are generated only for PostgreSQL applications.
+	withPostgres
 )
 
 type asset struct {
@@ -131,6 +138,7 @@ var files = []file{
 	{"Dockerfile.tmpl", fixed("Dockerfile"), everyApplication},
 	{"dockerignore.tmpl", fixed(".dockerignore"), everyApplication},
 	{"compose.yaml.tmpl", fixed("compose.yaml"), everyApplication},
+	{"postgres_init.sql.tmpl", fixed(filepath.Join("docker", "postgres", "init.sql")), withPostgres},
 	{"compose.observability.yaml.tmpl", fixed("compose.observability.yaml"), everyApplication},
 	{"gitignore.tmpl", fixed(".gitignore"), everyApplication},
 	{"ci.yml.tmpl", fixed(filepath.Join(".github", "workflows", "ci.yml")), everyApplication},
@@ -283,6 +291,13 @@ func Generate(opts Options) ([]string, error) {
 	for _, f := range selectedFiles(opts) {
 		relative := f.path(opts.Name)
 		target := filepath.Join(opts.Dir, relative)
+		if containerRead[relative] {
+			if err := writeContainerRead(target, rendered[relative]); err != nil {
+				return nil, cleanup(opts.Dir, created, err)
+			}
+			paths = append(paths, relative)
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 			return nil, cleanup(opts.Dir, created, err)
 		}
@@ -382,6 +397,7 @@ func render(opts Options) (map[string][]byte, error) {
 	data.DBUser, data.DBName = databaseIdentifiers(opts.Name)
 	if data.DB = profileFor(opts.Database, data.DBUser, data.DBName); data.DB != nil {
 		data.AppDatabaseURL, data.DevDatabaseURL, data.TestDatabaseURL = databaseURLs(data.DB, data.DBUser, data.DBName, data.DBHostPort)
+		data.AppMigrationURL, data.DevMigrationURL = migrationURLs(data.DB, data.DBName, data.DBHostPort)
 	}
 	// Keep the generated MFA key in the git-ignored .env.local, not the
 	// committed .env.development defaults.
@@ -427,7 +443,8 @@ func selectedFiles(opts Options) []file {
 	for _, f := range files {
 		switch {
 		case f.scope == withDatabase && opts.Database == "",
-			f.scope == withIdentity && !identity:
+			f.scope == withIdentity && !identity,
+			f.scope == withPostgres && opts.Database != "postgresql":
 			continue
 		}
 		selected = append(selected, f)
@@ -459,6 +476,30 @@ func cleanup(dir string, created bool, cause error) error {
 		}
 	}
 	return cause
+}
+
+// containerRead lists the generated files a container bind-mounts and reads
+// as another user: the postgres image runs docker/postgres/init.sql as its
+// own postgres user, which cannot read a 0600 file owned by the developer.
+var containerRead = map[string]bool{
+	filepath.Join("docker", "postgres", "init.sql"): true,
+}
+
+// writeContainerRead writes public, non-secret content that a container reads
+// as another user: traversable directories and a world-readable file.
+func writeContainerRead(target string, content []byte) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // G301: public, non-secret configuration
+		return err
+	}
+	// MkdirAll leaves existing directories alone and the umask may have
+	// narrowed new ones: make the mount path traversable explicitly.
+	if err := os.Chmod(filepath.Dir(target), 0o755); err != nil { //nolint:gosec // G302: public, non-secret configuration
+		return err
+	}
+	if err := os.WriteFile(target, content, 0o644); err != nil { //nolint:gosec // G306: public, non-secret configuration
+		return err
+	}
+	return os.Chmod(target, 0o644) //nolint:gosec // G302: the umask must not hide the file from the container
 }
 
 // writeObservability copies the static observability configuration under dir

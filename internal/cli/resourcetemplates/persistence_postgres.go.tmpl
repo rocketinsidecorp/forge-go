@@ -42,7 +42,8 @@ const (
 // InTenantTx behind the table's FORCE ROW LEVEL SECURITY policy, so even a
 // statement that forgot its tenant predicate could not cross tenants. The
 // database role the application serves with must be neither a superuser nor
-// BYPASSRLS, or the policy is bypassed.
+// BYPASSRLS, or the policy is bypassed: outside development and test the
+// generated bootstrap refuses such a role (postgres.RequireRowSecurity).
 type [[.Title]]Repository struct {
 	db *postgres.DB
 }

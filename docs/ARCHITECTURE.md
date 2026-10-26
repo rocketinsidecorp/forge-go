@@ -559,12 +559,11 @@ Every exported name carries the resource name (`ProductService`,
 same packages; the generator refuses to run when a name it would declare is
 already declared there. Rules the generated code follows:
 
-- **UUIDv7 identifiers only.** `uuid` on PostgreSQL (`DEFAULT uuidv7()` is a
-  fallback for rows inserted by hand), `CHAR(36)` on MySQL and MariaDB, `TEXT`
-  in a `STRICT` table on SQLite. Ids come from an injected `uuid.New`. A
-  framework test renders every database and scope and fails on `serial`,
-  `AUTO_INCREMENT`, `gen_random_uuid()`, `UUID()` or any float or decimal
-  type.
+- **UUIDv7 identifiers only.** `uuid` on PostgreSQL (no database default),
+  `CHAR(36)` on MySQL and MariaDB, `TEXT` in a `STRICT` table on SQLite. Ids
+  come from an injected `uuid.New`. A framework test renders every database
+  and scope and fails on `serial`, `AUTO_INCREMENT`, `gen_random_uuid()`,
+  `uuidv7()`, `UUID()` or any float or decimal type.
 - **Explicit scope.** Tenant-scoped repositories take the tenant from
   `tenancy.Require(ctx)` and bind `tenant_id` in every statement. On
   PostgreSQL they also run in `InTenantTx` behind `ENABLE` and `FORCE ROW
@@ -630,6 +629,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0043](adr/0043-openapi-from-typed-routes.md) | OpenAPI 3.1 from described routes, `GET /openapi.json`, `forge openapi` |
 | [0044](adr/0044-continuous-fuzzing-sbom-signed-images.md) | Continuous fuzzing, SBOMs and keyless-signed release images |
 | [0045](adr/0045-generated-mfa-settings-pages.md) | Generated two-factor settings pages (`/mfa`) with password and code step-up |
+| [0046](adr/0046-postgresql-runtime-and-migration-roles.md) | PostgreSQL runtime and migration roles; staging and production refuse a serving role that could bypass row-level security |
 
 ## Not yet implemented
 

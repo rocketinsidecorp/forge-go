@@ -81,13 +81,13 @@ func currentCommandCatalog() commandCatalog {
 		{Name: "test", Usage: "forge test [ARGS]", Summary: "Run Go tests with Forge environment files loaded.", SideEffects: []string{"subprocess", "application_defined"}, Examples: []string{"forge test", "forge test ./... -run TestHealth"}, Environment: testEnvironment()},
 		{Name: "build", Usage: "forge build [NAME]", Summary: "Build the application binary under bin/.", SideEffects: []string{"filesystem_write", "subprocess"}, Examples: []string{"forge build", "forge build worker"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "The Go build subprocess inherits the caller environment; Forge .env files are not loaded."}},
 		dbCommandDetail(),
-		{Name: "migrate", Usage: "forge migrate [status]", Summary: "Apply pending migrations or report migration status.", SideEffects: []string{"database_write", "database_read"}, Examples: []string{"forge migrate", "forge migrate status"}, Environment: runtimeEnvironment()},
+		{Name: "migrate", Usage: "forge migrate [status]", Summary: "Apply pending migrations or report migration status.", SideEffects: []string{"database_write", "database_read"}, Examples: []string{"forge migrate", "forge migrate status"}, Environment: migrationEnvironment()},
 		{
 			Name: "rollback", Usage: "forge rollback [-steps N]",
 			Summary:     "Run down migrations of the application (never Forge framework migrations); may destroy application data.",
 			SideEffects: []string{"database_destructive"},
 			Examples:    []string{"forge rollback", "forge rollback -steps 2"},
-			Environment: runtimeEnvironment(),
+			Environment: migrationEnvironment(),
 			Flags:       []flagDetail{{Name: "-steps", Value: "N", Default: "1", Description: "Number of application migrations to revert."}},
 		},
 		{
@@ -221,6 +221,15 @@ func currentCommandCatalog() commandCatalog {
 		}, deployExitCodes...),
 		Commands: commands,
 	}
+}
+
+// migrationEnvironment is runtimeEnvironment for the commands that run the
+// application's migrate and rollback, which connect as the migration role.
+func migrationEnvironment() environmentInfo {
+	environment := runtimeEnvironment()
+	environment.Variables = append(environment.Variables, "FORGE_MIGRATION_DATABASE_URL")
+	environment.Notes += " migrate and rollback connect as FORGE_MIGRATION_DATABASE_URL's role when it is set (on PostgreSQL the schema owner), to FORGE_DATABASE_URL's database."
+	return environment
 }
 
 func runtimeEnvironment() environmentInfo {

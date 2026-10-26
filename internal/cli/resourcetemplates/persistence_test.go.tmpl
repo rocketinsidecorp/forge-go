@@ -5,16 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-[[- if and .Postgres .Tenant]]
-	"strings"
-[[- else if .HasString]]
+[[- if .HasString]]
 	"strings"
 [[- end]]
 	"testing"
 	"time"
-[[- if and .Postgres .Tenant]]
-
+[[- if .Postgres]]
+[[if .Tenant]]
 	"github.com/jackc/pgx/v5"
+[[- end]]
 	"github.com/jackc/pgx/v5/pgconn"
 [[- end]]
 
@@ -26,7 +25,6 @@ import (
 [[- end]]
 	"github.com/rocketinsidecorp/forge-go/fault"
 [[- if .Postgres]]
-	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 [[- else]]
 	"github.com/rocketinsidecorp/forge-go/[[.Database]]/[[.Database]]test"
@@ -49,15 +47,19 @@ import (
 // FORGE_TEST_REQUIRE_DATABASE=true.
 [[- end]]
 
-func new[[.Title]]Repository(t *testing.T) (*persistence.[[.Title]]Repository, [[if .Postgres]]*postgres.DB[[else]]*sqldb.DB[[end]]) {
+func new[[.Title]]Repository(t *testing.T) (*persistence.[[.Title]]Repository, [[if .Postgres]]*postgrestest.RLS[[else]]*sqldb.DB[[end]]) {
 	t.Helper()
-[[- if and .Postgres .Identity]]
-	// The migration seeds forge_permissions, so the identity migrations run first.
-	database := postgrestest.NewMigratedSets(t, authpostgres.Migrations(), db.Migrations())
+[[- if .Postgres]]
+	// Migrated as the migration role that owns the schema[[if .Identity]] (the migration
+	// seeds forge_permissions, so the identity migrations run first)[[end]]. The
+	// repository runs as the runtime role the application serves with: not a
+	// superuser, no BYPASSRLS, not the owner, only data privileges.
+	database := postgrestest.NewRLS(t, [[if .Identity]]authpostgres.Migrations(), [[end]]db.Migrations())
+	return persistence.New[[.Title]]Repository(database.Runtime), database
 [[- else]]
 	database := [[.Database]]test.NewMigrated(t, db.Migrations())
-[[- end]]
 	return persistence.New[[.Title]]Repository(database), database
+[[- end]]
 }
 [[- if .Tenant]]
 
@@ -453,28 +455,44 @@ func Test[[.Title]]RepositoryRequiresTenant(t *testing.T) {
 	}
 }
 [[- end]]
-[[- if and .Postgres .Tenant]]
+[[- if .Postgres]]
 
-// new[[.Title]]Role creates an unprivileged role (no superuser, no BYPASSRLS)
-// that is dropped with the test, and returns its quoted name.
-func new[[.Title]]Role(t *testing.T, database *postgres.DB) string {
-	t.Helper()
-	role := "forge_rls_" + strings.ReplaceAll(uuid.MustNew().String(), "-", "")[:16]
-	quotedRole := pgx.Identifier{role}.Sanitize()
-	if _, err := database.Exec(context.Background(), "CREATE ROLE "+quotedRole+" NOLOGIN"); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = database.Exec(context.Background(), "DROP OWNED BY "+quotedRole)
-		_, _ = database.Exec(context.Background(), "DROP ROLE "+quotedRole)
-	})
-	return quotedRole
+// insufficientPrivilege[[.Title]] reports PostgreSQL's 42501, also raised for a row
+// that violates a row-level security policy.
+func insufficientPrivilege[[.Title]](err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42501"
 }
 
-// The repository's own predicates are not the only protection: the table's
-// row-level security policy confines a statement to the tenant InTenantTx
-// set. The test database user is a superuser, which bypasses RLS, so the
-// checks run as an unprivileged role.
+// The runtime role holds data privileges only: whatever an attacker makes the
+// application run, it cannot change, drop or empty the table[[if .Tenant]] or switch its
+// row-level security off[[end]].
+func Test[[.Title]]RuntimeRoleCannotChangeTheSchema(t *testing.T) {
+	_, database := new[[.Title]]Repository(t)
+	ctx := context.Background()
+	for _, statement := range []string{
+		`CREATE TABLE [[.Q "intruders"]] ([[.Q "id"]] uuid)`,
+		`CREATE TEMPORARY TABLE [[.Q "scratch"]] ([[.Q "id"]] uuid)`,
+		`ALTER TABLE [[.Q .Plural]] ADD COLUMN [[.Q "intruder"]] text`,
+[[- if .Tenant]]
+		`ALTER TABLE [[.Q .Plural]] DISABLE ROW LEVEL SECURITY`,
+		`ALTER TABLE [[.Q .Plural]] NO FORCE ROW LEVEL SECURITY`,
+[[- end]]
+		`TRUNCATE [[.Q .Plural]]`,
+		`DROP TABLE [[.Q .Plural]]`,
+	} {
+		if _, err := database.Runtime.Exec(ctx, statement); !insufficientPrivilege[[.Title]](err) {
+			t.Errorf("the runtime role ran %s: err = %v, want insufficient privilege (42501)", statement, err)
+		}
+	}
+}
+[[- end]]
+[[- if and .Postgres .Tenant]]
+
+// The repository's own predicates are not the only protection: as the runtime
+// role the application serves with, the table's row-level security policy
+// confines every statement to the tenant InTenantTx set, even one without a
+// tenant predicate, and a session without a tenant sees nothing.
 func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 	repo, database := new[[.Title]]Repository(t)
 	_, ctxA := new[[.Title]]Tenant(t)
@@ -482,18 +500,10 @@ func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 	own := mustCreate[[.Title]](t, ctxA, repo, true)
 	foreign := mustCreate[[.Title]](t, ctxB, repo, true)
 
-	ctx := context.Background()
-	quotedRole := new[[.Title]]Role(t, database)
-	if _, err := database.Exec(ctx, `GRANT SELECT, INSERT, UPDATE, DELETE ON [[.Q .Plural]] TO `+quotedRole); err != nil {
-		t.Fatal(err)
-	}
-
 	// As tenant A, with no tenant_id predicate anywhere.
+	ctx := context.Background()
 	tenantID := tenantB.ID
-	err := database.InTenantTx(ctxA, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quotedRole); err != nil {
-			return err
-		}
+	err := database.Runtime.InTenantTx(ctxA, func(tx pgx.Tx) error {
 		var visible, foreignVisible int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {
 			return err
@@ -519,8 +529,7 @@ func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 			return err
 		}
 		_, err = tx.Exec(ctx, `[[.RawInsert]]`, [[.RawInsertArgs]])
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+		if !insufficientPrivilege[[.Title]](err) {
 			t.Errorf("inserting a row for tenant B as tenant A: err = %v, want a row-level security violation (42501)", err)
 		}
 		_, err = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT cross_tenant_insert")
@@ -531,21 +540,12 @@ func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 	}
 
 	// Without InTenantTx nothing is visible: the policy fails closed.
-	err = database.InTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+quotedRole); err != nil {
-			return err
-		}
-		var visible int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {
-			return err
-		}
-		if visible != 0 {
-			t.Errorf("a session without a tenant sees %d rows, want none", visible)
-		}
-		return nil
-	})
-	if err != nil {
+	var visible int
+	if err := database.Runtime.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {
 		t.Fatal(err)
+	}
+	if visible != 0 {
+		t.Errorf("a session without a tenant sees %d rows, want none", visible)
 	}
 
 	for _, check := range []struct {
@@ -560,9 +560,9 @@ func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 	}
 }
 
-// FORCE ROW LEVEL SECURITY is what subjects the table's owner to the policy
-// (an owner otherwise bypasses it, and migrations run as the owner). Without
-// it, a service that connects as the owner would see every tenant's rows.
+// FORCE ROW LEVEL SECURITY is what subjects the table's owner, the migration
+// role, to the policy (an owner otherwise bypasses it). Without it, a service
+// that connects as the owner would see every tenant's rows.
 func Test[[.Title]]RowLevelSecurityAppliesToTheOwner(t *testing.T) {
 	repo, database := new[[.Title]]Repository(t)
 	_, ctxA := new[[.Title]]Tenant(t)
@@ -570,17 +570,9 @@ func Test[[.Title]]RowLevelSecurityAppliesToTheOwner(t *testing.T) {
 	mustCreate[[.Title]](t, ctxA, repo, true)
 	mustCreate[[.Title]](t, ctxB, repo, true)
 
-	ctx := context.Background()
-	owner := new[[.Title]]Role(t, database)
-	if _, err := database.Exec(ctx, `ALTER TABLE [[.Q .Plural]] OWNER TO `+owner); err != nil {
-		t.Fatal(err)
-	}
-	err := database.InTenantTx(ctxA, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SET LOCAL ROLE "+owner); err != nil {
-			return err
-		}
+	err := database.Migrator.InTenantTx(ctxA, func(tx pgx.Tx) error {
 		var visible int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {
+		if err := tx.QueryRow(ctxA, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {
 			return err
 		}
 		if visible != 1 {

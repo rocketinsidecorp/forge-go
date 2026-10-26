@@ -738,7 +738,7 @@ func TestUnknownResetTokensAreRefusedBeforeHashing(t *testing.T) {
 // FORGE_TEST_DATABASE_URL (`forge test` reads it from .env.development) and
 // is skipped otherwise.
 func TestPagesAgainstPostgres(t *testing.T) {
-	database := postgrestest.NewMigrated(t, authpostgres.Migrations())
+	database := postgrestest.NewRLS(t, authpostgres.Migrations()).Runtime // as the application serves
 	repository, err := authpostgres.New(database)
 	if err != nil {
 		t.Fatal(err)

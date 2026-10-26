@@ -417,8 +417,10 @@ func TestGeneratedApplication(t *testing.T) {
 			generateAndWireResources(t, dir, database.adapter)
 
 			// The database settings come from .env.local, as a developer
-			// would configure them.
-			writeFile(t, filepath.Join(dir, ".env.local"), "FORGE_DATABASE_URL="+cfg.URL.Reveal()+"\n")
+			// would configure them. One role serves and migrates here: the
+			// generated PostgreSQL FORGE_MIGRATION_DATABASE_URL names the
+			// Compose server, so a developer's own server replaces it too.
+			writeFile(t, filepath.Join(dir, ".env.local"), "FORGE_DATABASE_URL="+cfg.URL.Reveal()+"\nFORGE_MIGRATION_DATABASE_URL="+cfg.URL.Reveal()+"\n")
 			env, err := environment(dir, os.Environ())
 			if err != nil {
 				t.Fatal(err)

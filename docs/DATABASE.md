@@ -159,7 +159,10 @@ func Configure(ctx context.Context, app *forge.App) error {
 ```
 
 This is what `forge new` generates in `app/bootstrap/bootstrap.go`, with the
-adapter chosen by `--database`.
+adapter chosen by `--database`. For PostgreSQL it also passes
+`postgres.RequireRowSecurity(app.Config().Environment)`, so staging and
+production refuse a serving role that could bypass row-level security ([Database
+roles](#database-roles-postgresql)).
 
 `Open` fails if `FORGE_DATABASE_URL` is empty or selects another adapter,
 applies the pool and session settings above, and pings the database within
@@ -179,6 +182,85 @@ released).
 `Ping` matches `health.Check`. With it registered, `/health/ready` returns
 `503` while the database is unreachable. Each readiness check runs with a
 2-second timeout (`health.DefaultCheckTimeout`).
+
+## Database roles (PostgreSQL)
+
+Row-level security is defense in depth only when the role the application
+serves with cannot bypass it. A PostgreSQL application therefore uses two
+roles ([ADR 0046](adr/0046-postgresql-runtime-and-migration-roles.md)):
+
+| Role | Variable | Attributes and privileges |
+| ---- | -------- | ------------------------- |
+| runtime (`app_runtime` in development) | `FORGE_DATABASE_URL` | `NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`; owns no table or schema; `SELECT, INSERT, UPDATE, DELETE` on the tables and `USAGE, SELECT` on the sequences, no temporary tables, nothing else. `FORCE ROW LEVEL SECURITY` policies apply to it and it cannot run DDL. |
+| migration (`app_migrator` in development) | `FORGE_MIGRATION_DATABASE_URL` | owns the database and the `public` schema and applies the migrations, so it owns every table; `NOSUPERUSER NOBYPASSRLS`. Used only by `migrate` and `rollback` (and `forge db`), never by the serving process. |
+
+`<app> migrate` and `<app> rollback` connect with
+`FORGE_MIGRATION_DATABASE_URL` when it is set. It supplies the role (user,
+password, host, port and parameters) and is validated like
+`FORGE_DATABASE_URL`, production TLS rules included; its database is ignored
+(a `dbname`, `database`, `service` or `servicefile` parameter is refused), so
+migrations always change the database the application serves. Unset, they use
+`FORGE_DATABASE_URL`, as before. SQLite has no roles and ignores the variable.
+Unlike `forge db`, which refuses `host`, `hostaddr` and `port` parameters
+because its local-database safety check reads only the URL's host, the
+application's commands accept them like `FORGE_DATABASE_URL` does: they have
+no such check, and Forge still refuses a URL whose parameters would make pgx
+connect elsewhere than its host and port, so a migration role may reach the
+server another way than the serving one (for example directly instead of
+through a connection pooler).
+
+**Refusal outside development and test.** With
+`postgres.RequireRowSecurity(environment)` (the generated bootstrap passes
+it), `Open` in every environment except `development` and `test` (so in
+`staging` and `production`) checks both the role the URL logs in as
+(`session_user`) and the role in effect (`current_user`), and fails before
+anything is served when either is a superuser, has `BYPASSRLS` or
+`CREATEROLE` (before PostgreSQL 16 `CREATEROLE` can grant itself membership
+in a `BYPASSRLS` role), or is a member of a superuser or `BYPASSRLS` role (it
+could `SET ROLE` to it). It also fails when the two differ: a role setting
+(`?options=-c%20role=...`, `ALTER ROLE ... SET role`) makes the session act
+as another role, and `SET ROLE NONE` turns it back into the login role, so
+the URL must log in as the serving role itself. The error wraps
+`postgres.ErrRowSecurityBypass` and names the role. There is no override
+variable: fix the role, or remove the option from your bootstrap knowingly.
+Development and test are not checked, so local tools can connect as an
+administrator. The check does not refuse a role that owns
+tables: `FORCE ROW LEVEL SECURITY` still applies to an owner, but an owner can
+switch it off, so keep the serving role separate from the migration role.
+
+**Privileges for new tables.** The runtime role gets its grants from the
+migration role's default privileges, set once per database. The generated
+`docker/postgres/init.sql` sets them, with the schema privileges, in
+`template1`, so the development database and every database `forge db
+create` or `reset` makes later inherit them. For a production database,
+provision the equivalent once, as an administrator:
+
+```sql
+CREATE ROLE myapp_migrator LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
+CREATE ROLE myapp_runtime  LOGIN PASSWORD '...' NOSUPERUSER NOBYPASSRLS;
+ALTER DATABASE myapp OWNER TO myapp_migrator;
+-- connected to myapp:
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT ALL ON SCHEMA public TO myapp_migrator;
+GRANT USAGE ON SCHEMA public TO myapp_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE myapp_migrator IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO myapp_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE myapp_migrator IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO myapp_runtime;
+REVOKE TEMPORARY ON DATABASE myapp FROM PUBLIC;
+```
+
+Tables created before the default privileges existed need an explicit
+`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO
+myapp_runtime` (and the same for sequences). Moving an existing application
+that served and migrated as one role: create both roles, `ALTER TABLE ...
+OWNER TO` the migration role for each table (or `REASSIGN OWNED BY old TO
+myapp_migrator`), grant as above, then point `FORGE_DATABASE_URL` at the
+runtime role and `FORGE_MIGRATION_DATABASE_URL` at the migration role.
+
+A data migration that reads or writes a tenant table runs as the migration
+role, which `FORCE` subjects to the policy: set the tenant inside it
+(`SELECT set_config('forge.tenant_id', '<tenant uuid>', true)`).
 
 Escape hatches for features Forge does not wrap: `(*postgres.DB).Pool()`
 returns the `*pgxpool.Pool` (for `COPY` or `LISTEN`/`NOTIFY`), and
@@ -739,7 +821,9 @@ migrations ([Framework migrations](#framework-migrations)).
 Invalid arguments (`migrate foo`, `rollback -steps 0`) exit with status `2`;
 other failures exit with `1`. These commands load the same `FORGE_*`
 configuration as `serve`, so the production rules also apply, and they fail
-if `FORGE_DATABASE_URL` is empty.
+if `FORGE_DATABASE_URL` is empty. They connect as the migration role of
+`FORGE_MIGRATION_DATABASE_URL` when it is set ([Database
+roles](#database-roles-postgresql)).
 
 During development:
 
@@ -790,10 +874,17 @@ deletes the file (`0600`) and its `-wal`, `-shm`, `-journal` and
 role instead: it is validated like `FORGE_DATABASE_URL`, must use the same
 adapter, and its database is ignored (the target is always the one in
 `FORGE_DATABASE_URL`). It is used by `create`, `drop`, `schema:*` and
-`console`; the application's own `migrate` still uses `FORGE_DATABASE_URL`. These commands refuse either URL when its query picks the server or database (`host`, `hostaddr`, `port`, `dbname`, `service` and the like): put them in the URL's host, port and path, which is what the local-database check reads. A port must be a number from 1 to 65535 without leading zeros. A
+`console`, and the application's own `migrate` and `rollback` connect as it
+too ([Database roles](#database-roles-postgresql)). These commands refuse either URL when its query picks the server or database (`host`, `hostaddr`, `port`, `dbname`, `service` and the like): put them in the URL's host, port and path, which is what the local-database check reads. A port must be a number from 1 to 65535 without leading zeros. A
 database name must be 1-63 characters of letters, digits, `_`, `-` or `$`;
 `postgres`, `template0`, `template1`, `mysql`, `information_schema`,
 `performance_schema` and `sys` are never created or dropped.
+
+**Behaviour change (QG1).** `<app> migrate` and `<app> rollback` used
+`FORGE_DATABASE_URL` even when `FORGE_MIGRATION_DATABASE_URL` was set; they now
+connect as the role it names, so new tables belong to that role. If it names
+an administrator only meant for `create` and `drop`, give the serving role its
+grants (see [Database roles](#database-roles-postgresql)) or unset it.
 
 **Behaviour change (forge-go#23, #24).** A raw space, tab or other control
 character in a database URL's query is refused when the configuration loads;
@@ -852,8 +943,17 @@ Migrations are an explicit release step; `serve` never applies them.
    one-off container or a Kubernetes Job:
 
    ```sh
-   docker run --rm -e FORGE_DATABASE_URL="$DATABASE_URL" myapp:1.4.0 migrate
+   docker run --rm -e FORGE_DATABASE_URL="$DATABASE_URL" \
+     -e FORGE_MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" myapp:1.4.0 migrate
    ```
+
+   On PostgreSQL, `FORGE_MIGRATION_DATABASE_URL` is the migration role that
+   owns the schema; never give it to the serving containers, which get only
+   `FORGE_DATABASE_URL` ([Database roles](#database-roles-postgresql)).
+   `forge deploy` cannot yet give it to the migrate step alone
+   ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57));
+   [DEPLOYMENT.md](DEPLOYMENT.md#database-roles) has the interim
+   configuration and its cost.
 
    For SQLite, mount the same volume the application uses:
 
@@ -912,19 +1012,26 @@ round trip and tests can inject it.
 
 | Database | Column type | Notes |
 | -------- | ----------- | ----- |
-| PostgreSQL | `uuid` | `uuid.UUID` is passed to pgx and scanned directly. On PostgreSQL 18, `DEFAULT uuidv7()` is a fallback for rows inserted by hand or other tools. |
+| PostgreSQL | `uuid` | `uuid.UUID` is passed to pgx and scanned directly. Generated tables have no default: an insert without an ID fails instead of minting one in the database. |
 | MySQL / MariaDB | `CHAR(36)` | `uuid.UUID` is written and read as its canonical text. |
 | SQLite | `TEXT` | same as MySQL. |
 
 ```sql
--- PostgreSQL 18
 CREATE TABLE notes (
-    id      uuid    PRIMARY KEY DEFAULT uuidv7(),
+    id      uuid    PRIMARY KEY,
     body    text    NOT NULL,
     version integer NOT NULL DEFAULT 1 CHECK (version >= 1)
 );
 ```
 
+- Forge's identity tables (`auth/postgres`, released migrations) keep
+  `DEFAULT uuidv7()`, a PostgreSQL 18 function, so applications with Forge
+  identity need PostgreSQL 18. When a migration fails on an older server with
+  `function uuidv7() does not exist` (SQLSTATE 42883), the error adds the
+  server version and the two ways out: PostgreSQL 18, or a `uuidv7()`
+  function defined by an earlier migration. The failed migration is rolled
+  back; the ones before it stay applied. Nothing scans migrations in advance,
+  so an application that defines its own `uuidv7()` keeps working.
 - `uuid.UUID` accepts only version 7 when parsing or scanning. Do not use
   version 4 defaults such as `gen_random_uuid()` or MySQL's `UUID()`
   (version 1).
@@ -960,6 +1067,7 @@ func TestNoteRepository(t *testing.T) {
 | `NewMigrated(t, fsys)` | The same, with every migration in `fsys` applied |
 | `Config(t)` | A `config.Database` for a new, empty database, for code that opens its own pool (for example `Configure`) |
 | `NewWithConfig(t)` | Both the pool and its configuration |
+| `NewRLS(t, sets...)` (PostgreSQL) | A database owned by a new migration role that applied the migrations, and pools as that role (`Migrator`), as a new `NOSUPERUSER NOBYPASSRLS` runtime role holding only data privileges (`Runtime`, `RuntimeConfig`, `RuntimeRole`) and as the test server's user (`Admin`); the database and both roles are dropped when the test ends. Generated repository, sign-in and bootstrap tests run as `Runtime`, so row-level security applies to them as in production. The test server's user must be able to create roles (a superuser, as in the generated Compose service and CI) |
 
 - PostgreSQL and MySQL helpers create a database named `forge_test_<random>`
   on the test server and drop it when the test ends (PostgreSQL with
@@ -977,8 +1085,9 @@ func TestNoteRepository(t *testing.T) {
   workflows do.
 - `forge test` runs `go test` (default `./...`) with `.env.development` and
   `.env.local` loaded; the generated `.env.development` sets
-  `FORGE_TEST_DATABASE_URL` to the Compose database server (for MySQL and
-  MariaDB, as `root`). SQLite applications need no test URL.
+  `FORGE_TEST_DATABASE_URL` to the Compose database server (for PostgreSQL,
+  as the image's superuser `postgres`, which creates the per-test roles; for
+  MySQL and MariaDB, as `root`). SQLite applications need no test URL.
 - Never point a test URL at a server holding data you care about. Tests only
   drop the databases they created, but they create databases on that server
   with its credentials.

@@ -141,6 +141,39 @@ forge dev                       # rebuilds, restarts and reloads the browser whe
 With SQLite, `forge db prepare` and `forge dev` use `storage/development.db`
 directly.
 
+### Database roles (PostgreSQL)
+
+A PostgreSQL application serves as a runtime role that row-level security
+applies to and that cannot change the schema, and migrates as a separate role
+that owns it. `docker/postgres/init.sql` creates both in the Compose database
+(`app_runtime` and `app_migrator`, development-only passwords), and
+`.env.development` points `FORGE_DATABASE_URL` and
+`FORGE_MIGRATION_DATABASE_URL` at them:
+
+```sh
+docker compose up -d postgres     # first start: init.sql creates app_migrator, app_runtime and the database
+forge migrate                     # runs as app_migrator (FORGE_MIGRATION_DATABASE_URL)
+forge dev                         # serves as app_runtime (FORGE_DATABASE_URL)
+forge test                        # repository and sign-in tests run as a fresh runtime role
+docker compose down --volumes     # once, for a volume created before the roles existed
+```
+
+In production, provision the same two roles once (SQL in
+[Database roles](docs/DATABASE.md#database-roles-postgresql)), migrate with
+the migration role and serve with the runtime role only. In staging and
+production the application refuses to start when the role it logs in as, or
+acts as, is a superuser or has `BYPASSRLS` or `CREATEROLE`, or when the URL
+switches it to another role. With `forge deploy`, see the interim migration
+setup in [DEPLOYMENT.md](docs/DEPLOYMENT.md#database-roles)
+([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)):
+
+```sh
+docker run --rm -e FORGE_ENV=production \
+  -e FORGE_DATABASE_URL="$RUNTIME_DATABASE_URL" \
+  -e FORGE_MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" myapp migrate
+docker run -e FORGE_ENV=production -e FORGE_DATABASE_URL="$RUNTIME_DATABASE_URL" myapp
+```
+
 ### Development loop
 
 ```sh
@@ -180,9 +213,9 @@ and either type the database name at the prompt or pass `--yes` with
 FORGE_ALLOW_DESTRUCTIVE=true forge db drop --force-production --yes
 ```
 
-`FORGE_MIGRATION_DATABASE_URL` optionally names a privileged role for
-`create`, `drop`, `schema:*` and `console`; the database itself always comes
-from `FORGE_DATABASE_URL`.
+`FORGE_MIGRATION_DATABASE_URL` names the migration role (on PostgreSQL, the
+schema owner) for `create`, `drop`, `schema:*`, `console`, `migrate` and
+`rollback`; the database itself always comes from `FORGE_DATABASE_URL`.
 
 ### Sign in (PostgreSQL)
 

@@ -78,7 +78,12 @@ rejected fail-closed and comparisons use constant-time equality.
 - sessions containing only token digests, membership, credential version,
   expiry, and revocation time.
 
-All entity identifiers default to PostgreSQL `uuidv7()`.
+All entity identifiers default to PostgreSQL `uuidv7()` (the repositories
+supply them from Go; the default covers rows inserted in SQL, such as the
+permissions a generated resource migration adds), so the identity migrations
+need PostgreSQL 18. On an older server the identity migration fails, rolled
+back, with an error that names the server version and says `uuidv7()` needs
+PostgreSQL 18 (or a `uuidv7()` function defined by an earlier migration).
 
 `auth/postgres.Repository` implements `auth.Resolver`. Every resolution
 joins the live session, user, organization, tenant and membership state and

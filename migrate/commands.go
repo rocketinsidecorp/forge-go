@@ -25,6 +25,11 @@ type Opener func(ctx context.Context, cfg config.Database, migrations []Migratio
 // Because the migrations are embedded in the binary, the production image can
 // migrate its own database (for example as a one-off container or a
 // Kubernetes Job) with no extra tooling.
+//
+// They connect as the migration role of FORGE_MIGRATION_DATABASE_URL when it
+// is set, to the database of FORGE_DATABASE_URL (see
+// config.Config.MigrationDatabase), so the role the application serves with
+// needs no DDL privileges.
 func Commands(migrations fs.FS, open Opener) []forge.Command {
 	return CommandsFromSets([]fs.FS{migrations}, open)
 }
@@ -98,7 +103,15 @@ func withMigrator(ctx context.Context, env forge.CommandEnv, migrationSets []fs.
 	if env.Config.Database.URL.IsZero() {
 		return errors.New("database is not configured: set FORGE_DATABASE_URL")
 	}
-	migrator, err := open(ctx, env.Config.Database, migrations, env.Logger)
+	lookup := env.LookupEnv
+	if lookup == nil {
+		lookup = func(string) (string, bool) { return "", false }
+	}
+	database, err := env.Config.MigrationDatabase(lookup)
+	if err != nil {
+		return err
+	}
+	migrator, err := open(ctx, database, migrations, env.Logger)
 	if err != nil {
 		return err
 	}

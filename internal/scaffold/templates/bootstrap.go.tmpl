@@ -42,7 +42,15 @@ import (
 // business rules in app/domain and app/application; only wire them here.
 {{- if .DB}}
 func Configure(ctx context.Context, app *forge.App) error {
+{{- if eq .DB.Adapter "postgres"}}
+	// Outside development and test, Open refuses a role that could bypass
+	// row-level security (superuser, BYPASSRLS, CREATEROLE, a role setting):
+	// serve as the runtime role.
+	database, err := postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),
+		postgres.RequireRowSecurity(app.Config().Environment))
+{{- else}}
 	database, err := {{.DB.Adapter}}.Open(ctx, app.Config().Database, {{.DB.Adapter}}.WithTelemetry(app.Telemetry()))
+{{- end}}
 	if err != nil {
 		return err
 	}

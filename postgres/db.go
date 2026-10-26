@@ -91,6 +91,12 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 		pool.Close()
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
+	if settings.rowSecurity {
+		if err := refuseRowSecurityBypass(pingCtx, pool); err != nil {
+			pool.Close()
+			return nil, err
+		}
+	}
 	unobserve, err := observePool(settings.telemetry, settings.poolName, pool)
 	if err != nil {
 		pool.Close()

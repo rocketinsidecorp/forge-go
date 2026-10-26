@@ -125,9 +125,16 @@ so `docker compose up` is not needed):
 
 ```sh
 echo 'FORGE_DATABASE_URL=postgres://you:secret@127.0.0.1:5432/blog_development?sslmode=disable' >> .env.local
+echo 'FORGE_MIGRATION_DATABASE_URL=postgres://you:secret@127.0.0.1:5432/blog_development?sslmode=disable' >> .env.local
 echo 'FORGE_TEST_DATABASE_URL=postgres://you:secret@127.0.0.1:5432/postgres?sslmode=disable' >> .env.local
 forge db prepare
 ```
+
+The Compose database serves as `app_runtime` and migrates as `app_migrator`
+(`.env.development`), two roles its `docker/postgres/init.sql` creates; with
+your own server one user can do both during development. In production keep
+them apart ([Database roles](DATABASE.md#database-roles-postgresql)): in
+staging and production the application refuses to start as a superuser.
 
 Then create the first organization, tenant and owner account. The command
 prompts twice for the password (12 or more characters) and never takes it as an
