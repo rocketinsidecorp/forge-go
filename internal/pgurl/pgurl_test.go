@@ -1,6 +1,7 @@
 package pgurl_test
 
 import (
+	"errors"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -29,9 +30,7 @@ func parse(t *testing.T, raw string, scope pgurl.Scope) (*pgconn.Config, *pgurl.
 
 func TestTLSOnlyIgnoresTLSVariables(t *testing.T) {
 	t.Setenv("PGSSLMODE", "disable")
-	t.Setenv("PGSSLROOTCERT", "/nonexistent/ca.pem")
-	t.Setenv("PGSSLCERT", "/nonexistent/cert.pem")
-	t.Setenv("PGSSLKEY", "/nonexistent/key.pem")
+	t.Setenv("PGSSLSNI", "0")
 	t.Setenv("PGUSER", "from-env")
 
 	// Without sslmode: libpq's default, prefer (TLS first, plaintext second).
@@ -39,7 +38,7 @@ func TestTLSOnlyIgnoresTLSVariables(t *testing.T) {
 	if cfg.TLSConfig == nil || len(cfg.Fallbacks) != 1 || cfg.Fallbacks[0].TLSConfig != nil {
 		t.Errorf("PGSSLMODE changed the TLS mode: TLS=%v fallbacks=%d", cfg.TLSConfig != nil, len(cfg.Fallbacks))
 	}
-	// With sslmode: the URL decides, and PGSSLROOTCERT does not replace its trust anchors.
+	// With sslmode: the URL decides.
 	cfg, _ = parse(t, "postgres://u:p@db.internal:5432/app?sslmode=verify-full", pgurl.TLSOnly)
 	if cfg.TLSConfig == nil || len(cfg.Fallbacks) != 0 || cfg.TLSConfig.InsecureSkipVerify && cfg.TLSConfig.VerifyConnection == nil {
 		t.Errorf("verify-full was weakened: %+v", cfg.TLSConfig)
@@ -51,7 +50,9 @@ func TestTLSOnlyIgnoresTLSVariables(t *testing.T) {
 	}
 }
 
-func TestTLSOnlyPinsEveryTLSParameterWhenAServiceIsNamed(t *testing.T) {
+// A service named by the environment can set any parameter, TLS files
+// included: in both scopes it is replaced by an empty one.
+func TestAServiceNamedByTheEnvironmentIsIgnoredInBothScopes(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "svc.conf")
 	if err := os.WriteFile(file, []byte("[s]\nsslmode=disable\nsslrootcert=/nonexistent/ca.pem\n"), 0o600); err != nil {
@@ -59,16 +60,62 @@ func TestTLSOnlyPinsEveryTLSParameterWhenAServiceIsNamed(t *testing.T) {
 	}
 	t.Setenv("PGSERVICEFILE", file)
 	t.Setenv("PGSERVICE", "s")
-	cfg, _ := parse(t, "postgres://u:p@db.internal:5432/app", pgurl.TLSOnly)
-	if cfg.TLSConfig == nil {
-		t.Error("a service file lowered the URL's TLS mode")
+	for name, scope := range map[string]pgurl.Scope{"TLSOnly": pgurl.TLSOnly, "Everything": pgurl.Everything} {
+		cfg, _ := parse(t, "postgres://u:p@db.internal:5432/app", scope)
+		if cfg.TLSConfig == nil {
+			t.Errorf("%s: a service file lowered the URL's TLS mode", name)
+		}
+	}
+	// A servicefile in the URL without a service would pair with PGSERVICE.
+	if _, err := pgurl.Isolate("postgres://u@h/db?servicefile=/etc/x.conf", pgurl.TLSOnly, nil); !refused(err) {
+		t.Errorf("a URL servicefile with PGSERVICE: %v", err)
+	}
+}
+
+func refused(err error) bool {
+	var target *pgurl.RefusedError
+	return errors.As(err, &target)
+}
+
+// A PG* variable naming a TLS file has no neutral value: pinning it to ""
+// would turn "verify against this private CA" into "verify against the
+// system roots". It is refused, naming the variable and no value.
+func TestTLSFileVariablesTheURLDoesNotNameAreRefused(t *testing.T) {
+	for _, tc := range []struct{ env, key string }{
+		{"PGSSLROOTCERT", "sslrootcert"}, {"PGSSLCERT", "sslcert"}, {"PGSSLKEY", "sslkey"}, {"PGSSLPASSWORD", "sslpassword"},
+	} {
+		for name, scope := range map[string]pgurl.Scope{"TLSOnly": pgurl.TLSOnly, "Everything": pgurl.Everything} {
+			t.Run(tc.env+"/"+name, func(t *testing.T) {
+				t.Setenv(tc.env, "/secret-value-4711/ca.pem")
+				raw := "postgres://u:hunter2@db.internal:5432/app?sslmode=verify-ca"
+				iso, err := pgurl.Isolate(raw, scope, nil)
+				if err == nil {
+					iso.Close()
+					t.Fatalf("a set %s the URL does not name was accepted", tc.env)
+				}
+				if !refused(err) || !strings.Contains(err.Error(), tc.env) || !strings.Contains(err.Error(), tc.key+"=") {
+					t.Errorf("error = %v, want it to name %s and %s", err, tc.env, tc.key)
+				}
+				for _, leak := range []string{"secret-value", "hunter2", "db.internal", "://"} {
+					if strings.Contains(err.Error(), leak) {
+						t.Errorf("the error quotes %q: %v", leak, err)
+					}
+				}
+				// Named in the URL, the variable is irrelevant.
+				if iso, err := pgurl.Isolate(raw+"&"+tc.key+"=/ca.pem", scope, nil); err != nil {
+					t.Errorf("the URL names %s: %v", tc.key, err)
+				} else {
+					iso.Close()
+				}
+			})
+		}
 	}
 }
 
 func TestEverythingIgnoresEveryVariable(t *testing.T) {
 	for name, value := range map[string]string{
 		"PGSSLMODE": "disable", "PGOPTIONS": "-c search_path=evil", "PGTARGETSESSIONATTRS": "read-only",
-		"PGUSER": "evil", "PGPASSWORD": "evilpw", "PGSSLROOTCERT": "/nonexistent/ca.pem", "PGTZ": "Mars/Base",
+		"PGUSER": "evil", "PGPASSWORD": "evilpw", "PGTZ": "Mars/Base",
 		"PGAPPNAME": "evil", "PGCONNECT_TIMEOUT": "99", "PGPASSFILE": "/nonexistent/pgpass", "PGSSLNEGOTIATION": "direct",
 		"PGSERVICE": "missing-service", "PGSERVICEFILE": "/nonexistent/pg_service.conf",
 	} {
@@ -219,5 +266,68 @@ func TestIsolateDoesNotEditTheEnvironment(t *testing.T) {
 	case msg := <-torn:
 		t.Fatal(msg)
 	default:
+	}
+}
+
+// A temporary directory with a space reaches pgx as %20: url.QueryEscape's
+// "+" would be kept literally and break the service file path.
+func TestEmptyServiceFileSurvivesASpaceInTheTempDirectory(t *testing.T) {
+	spaced := filepath.Join(t.TempDir(), "with space")
+	if err := os.Mkdir(spaced, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", spaced)
+	t.Setenv("PGSERVICE", "s")
+	t.Setenv("PGSSLMODE", "disable")
+	cfg, iso := parse(t, "postgres://u:p@db.internal:5432/app", pgurl.Everything)
+	if cfg.TLSConfig == nil {
+		t.Error("sslmode was not neutralized")
+	}
+	if strings.Contains(iso.URL, "+") || !strings.Contains(iso.URL, "with%20space") {
+		t.Errorf("the service file path is not percent-encoded: %s", iso.URL)
+	}
+}
+
+// Go and pgx read these URLs differently: the first would let a
+// fragment hide the real query, the second reorders sslmode. config.Load
+// refuses them; a Database built in code reaches Isolate directly.
+func TestIsolateRefusesURLsParsedDifferently(t *testing.T) {
+	for name, raw := range map[string]string{
+		"fragment":           "postgres://h/db#?sslmode=verify-full",
+		"empty fragment":     "postgres://h/db#",
+		"@ in the query":     "postgres://h:5432?sslmode=verify-full@x/db",
+		"@ in the path":      "postgres://h/d@b",
+		"space in the query": "postgres://h/db?application_name=a b",
+		"repeated parameter": "postgres://h/db?sslmode=verify-full&sslmode=disable",
+	} {
+		if _, err := pgurl.Isolate(raw, pgurl.TLSOnly, nil); !refused(err) || !strings.Contains(err.Error(), "ambiguous") {
+			t.Errorf("%s: err = %v", name, err)
+		} else if strings.Contains(err.Error(), "://") {
+			t.Errorf("%s: the error quotes the URL: %v", name, err)
+		}
+	}
+	// An encoded @ in the password is fine.
+	if _, err := pgurl.Isolate("postgres://u:p%40w@h/db?sslmode=verify-full", pgurl.TLSOnly, nil); err != nil {
+		t.Errorf("an encoded @: %v", err)
+	}
+}
+
+// Only ssl=true spells sslmode=require; another ssl value is a session
+// setting, so sslmode is still pinned when PGSSLMODE is set.
+func TestOnlySSLTrueNamesSSLMode(t *testing.T) {
+	t.Setenv("PGSSLMODE", "disable")
+	iso, err := pgurl.Isolate("postgres://u@h/db?ssl=false", pgurl.TLSOnly, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(iso.URL, "sslmode=prefer") {
+		t.Errorf("ssl=false must not stand in for sslmode: %s", iso.URL)
+	}
+	iso, err = pgurl.Isolate("postgres://u@h/db?ssl=true", pgurl.TLSOnly, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(iso.URL, "sslmode") {
+		t.Errorf("a pin would override ssl=true: %s", iso.URL)
 	}
 }

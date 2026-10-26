@@ -9,6 +9,13 @@
 // environment alone and writes the libpq default of each such parameter into
 // the URL itself: a parameter the URL names beats the environment in pgx, so
 // the parse no longer depends on it.
+//
+// Parameters with no neutral value are refused instead: a PG* variable naming
+// a TLS file (PGSSLROOTCERT, PGSSLCERT, PGSSLKEY, PGSSLPASSWORD) that the URL
+// does not name stops Isolate with a [RefusedError]. Pinning them to "" would
+// turn "verify against this private CA" into "verify against the system
+// roots" and discard the home-directory defaults, so the caller is asked to
+// put the parameter in the URL.
 package pgurl
 
 import (
@@ -19,6 +26,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // Scope selects which environment-supplied parameters Isolate pins.
@@ -36,32 +44,46 @@ const (
 	Everything
 )
 
+// RefusedError is a URL or environment Isolate will not make safe. Its
+// message names variables and parameters, never a value or the URL, so a
+// caller may show it.
+type RefusedError struct{ msg string }
+
+func (e *RefusedError) Error() string { return e.msg }
+
+func refuse(format string, args ...any) error {
+	return &RefusedError{msg: fmt.Sprintf(format, args...)}
+}
+
 // variable is one PG* variable pgx reads: the URL parameter it defaults and
-// the value that parameter has when nothing sets it (libpq's default).
+// the value that parameter has when nothing sets it (libpq's default). A
+// variable with refuse set has no neutral value: it must be named in the URL
+// when it is set.
 type variable struct {
 	env     string
 	key     string
 	neutral string
 	tls     bool
+	refuse  bool
 }
 
 var variables = []variable{
-	{"PGSSLMODE", "sslmode", "prefer", true},
-	{"PGSSLROOTCERT", "sslrootcert", "", true},
-	{"PGSSLCERT", "sslcert", "", true},
-	{"PGSSLKEY", "sslkey", "", true},
-	{"PGSSLPASSWORD", "sslpassword", "", true},
-	{"PGSSLSNI", "sslsni", "", true},
-	{"PGSSLNEGOTIATION", "sslnegotiation", "", true},
-	{"PGCHANNELBINDING", "channel_binding", "", true},
-	{"PGREQUIREAUTH", "require_auth", "", true},
-	{"PGMINPROTOCOLVERSION", "min_protocol_version", "", false},
-	{"PGMAXPROTOCOLVERSION", "max_protocol_version", "", false},
-	{"PGUSER", "user", "", false},
-	{"PGPASSWORD", "password", "", false},
-	{"PGPASSFILE", "passfile", "", false},
-	{"PGCONNECT_TIMEOUT", "connect_timeout", "0", false},
-	{"PGTARGETSESSIONATTRS", "target_session_attrs", "any", false},
+	{"PGSSLMODE", "sslmode", "prefer", true, false},
+	{"PGSSLROOTCERT", "sslrootcert", "", true, true},
+	{"PGSSLCERT", "sslcert", "", true, true},
+	{"PGSSLKEY", "sslkey", "", true, true},
+	{"PGSSLPASSWORD", "sslpassword", "", true, true},
+	{"PGSSLSNI", "sslsni", "", true, false},
+	{"PGSSLNEGOTIATION", "sslnegotiation", "", true, false},
+	{"PGCHANNELBINDING", "channel_binding", "", true, false},
+	{"PGREQUIREAUTH", "require_auth", "", true, false},
+	{"PGMINPROTOCOLVERSION", "min_protocol_version", "", false, false},
+	{"PGMAXPROTOCOLVERSION", "max_protocol_version", "", false, false},
+	{"PGUSER", "user", "", false, false},
+	{"PGPASSWORD", "password", "", false, false},
+	{"PGPASSFILE", "passfile", "", false, false},
+	{"PGCONNECT_TIMEOUT", "connect_timeout", "0", false, false},
+	{"PGTARGETSESSIONATTRS", "target_session_attrs", "any", false, false},
 }
 
 // Isolated is a URL made independent of the environment.
@@ -80,17 +102,31 @@ type Isolated struct {
 // listed, as pgx treats them alike), and the parameters Isolate adds are
 // reported by PinnedKeys so the caller can allow them to pgx. Close the result
 // when the parse is done.
+//
+// Isolate refuses, with a [RefusedError], a URL that net/url and pgx would
+// read differently (a fragment, an "@" in the query or path, whitespace or a
+// control character in the query, a repeated parameter), and a set PG* TLS
+// file variable that the URL does not name (see the package comment).
 func Isolate(raw string, scope Scope, allowed []string) (*Isolated, error) {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
 		return nil, errors.New("not a PostgreSQL URL")
+	}
+	if u.Fragment != "" || strings.Contains(raw, "#") || strings.Contains(u.RawQuery, "@") || strings.Contains(u.Path, "@") {
+		return nil, refuse("the database URL is ambiguous: percent-encode \"@\" and \"#\" in passwords and parameters")
+	}
+	if strings.IndexFunc(u.RawQuery, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return nil, refuse("the database URL is ambiguous: its parameters hold whitespace or a control character (percent-encode spaces as %%20)")
 	}
 	query, err := url.ParseQuery(u.RawQuery)
 	if err != nil {
 		return nil, errors.New("malformed query string")
 	}
 	named := map[string]bool{}
-	for key := range query {
+	for key, values := range query {
+		if len(values) > 1 {
+			return nil, refuse("the database URL is ambiguous: it repeats a parameter")
+		}
 		named[key] = true
 		// dbname is database's alias for pgx.
 		listed := slices.Contains(allowed, key) || (key == "dbname" && slices.Contains(allowed, "database"))
@@ -104,38 +140,40 @@ func Isolate(raw string, scope Scope, allowed []string) (*Isolated, error) {
 			named["password"] = true
 		}
 	}
-	// ssl=true is the URL spelling of sslmode=require.
-	if named["ssl"] {
+	// ssl=true is the URL spelling of sslmode=require; any other ssl value is
+	// an unrelated session setting.
+	if query.Get("ssl") == "true" {
 		named["sslmode"] = true
 	}
 
 	iso := &Isolated{named: named, cleanup: func() {}}
 	var pins []string
 	pin := func(key, value string) {
-		pins = append(pins, url.QueryEscape(key)+"="+url.QueryEscape(value))
+		pins = append(pins, escape(key)+"="+escape(value))
 		iso.pinned = append(iso.pinned, key)
 	}
 
 	// A service named by the environment is read by pgx, and a service file
-	// can set any parameter. In Everything scope it is replaced by an empty
-	// one of that name; in TLSOnly scope every TLS parameter is pinned.
-	serviceName := os.Getenv("PGSERVICE")
-	serviceRead := serviceName != "" && !named["service"]
-	if serviceRead && scope == Everything && !named["servicefile"] {
+	// can set any parameter, TLS files included: it is replaced by an empty
+	// one of that name, in both scopes.
+	if serviceName := os.Getenv("PGSERVICE"); serviceName != "" && !named["service"] {
+		if named["servicefile"] {
+			return nil, refuse("PGSERVICE is set and the database URL names a servicefile but no service: name the service in the URL (Forge does not read PG* variables for it)")
+		}
 		path, cleanup, err := emptyServiceFile(serviceName)
 		if err != nil {
 			return nil, err
 		}
 		iso.cleanup = cleanup
 		pin("servicefile", path)
-		serviceRead = false
 	}
 	for _, v := range variables {
-		if scope == TLSOnly && !v.tls {
+		if (scope == TLSOnly && !v.tls) || named[v.key] || os.Getenv(v.env) == "" {
 			continue
 		}
-		if named[v.key] || (os.Getenv(v.env) == "" && !serviceRead) {
-			continue
+		if v.refuse {
+			iso.Close()
+			return nil, refuse("%s is set but the database URL has no %s: put %s=... in the URL (Forge does not read PG* TLS variables)", v.env, v.key, v.key)
 		}
 		pin(v.key, v.neutral)
 	}
@@ -154,6 +192,10 @@ func Isolate(raw string, scope Scope, allowed []string) (*Isolated, error) {
 	}
 	return iso, nil
 }
+
+// escape percent-encodes a query component. A space is %20, not the "+" of
+// url.QueryEscape, which pgx would keep literally.
+func escape(s string) string { return strings.ReplaceAll(url.QueryEscape(s), "+", "%20") }
 
 // PinnedKeys lists the parameters Isolate added to the URL.
 func (i *Isolated) PinnedKeys() []string { return i.pinned }

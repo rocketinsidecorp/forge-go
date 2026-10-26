@@ -320,7 +320,6 @@ func TestPgConnConfigIgnoresPGEnvironment(t *testing.T) {
 	t.Setenv("PGSERVICEFILE", "/nonexistent/pg_service.conf")
 	t.Setenv("PGUSER", "evil")
 	t.Setenv("PGPASSWORD", "evilpw")
-	t.Setenv("PGSSLROOTCERT", "/nonexistent/ca.pem")
 	t.Setenv("PGTZ", "Mars/Base")
 	target := adminTarget(t, "postgres://m:pw@localhost/shop")
 	cfg, err := target.pgConnConfig("shop")
@@ -348,6 +347,27 @@ func TestPgConnConfigIgnoresPGEnvironment(t *testing.T) {
 	}
 	if got := os.Getenv("PGPASSWORD"); got != "evilpw" {
 		t.Errorf("PGPASSWORD after the parse = %q, want it restored", got)
+	}
+}
+
+// A PGSSLROOTCERT (or PGSSLCERT, PGSSLKEY, PGSSLPASSWORD) the URL does not
+// name has no neutral value: ignoring it could swap the CA a verify mode
+// checks against, so the admin connection is refused, naming the variable
+// and quoting neither its value nor the URL.
+func TestPgConnConfigRefusesATLSFileVariableTheURLDoesNotName(t *testing.T) {
+	for _, name := range []string{"PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY", "PGSSLPASSWORD"} {
+		t.Setenv(name, "/secret-value-4711/file.pem")
+		target := adminTarget(t, "postgres://m:hunter2@localhost/shop?sslmode=verify-ca")
+		_, err := target.pgConnConfig("shop")
+		if err == nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("%s: err = %v, want a refusal naming it", name, err)
+		}
+		for _, leak := range []string{"secret-value", "hunter2", "localhost", "://"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Errorf("%s: the error quotes %q: %v", name, leak, err)
+			}
+		}
+		t.Setenv(name, "")
 	}
 }
 

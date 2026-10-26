@@ -63,6 +63,10 @@ func (t *Target) pgConnConfig(name string) (*pgx.ConnConfig, error) {
 	u.Path, u.RawPath = "/"+name, ""
 	cfg, err := parsePgConfig(u.String())
 	if err != nil {
+		var refused *pgurl.RefusedError
+		if errors.As(err, &refused) {
+			return nil, refused
+		}
 		// Not wrapped: parse errors can quote the URL.
 		var pathErr *fs.PathError
 		if errors.As(err, &pathErr) {
@@ -99,12 +103,19 @@ func (t *Target) pgConnConfig(name string) (*pgx.ConnConfig, error) {
 // environment, and a service named by PGSERVICE is replaced by an empty one.
 // A URL without sslmode therefore gets the libpq default (prefer) from both
 // pgx and the vendor tools (pgEnvironment drops the variables for them),
-// never a lower PGSSLMODE. Session settings the URL does not name (PGOPTIONS,
+// never a lower PGSSLMODE. A PG* variable naming a TLS file (PGSSLROOTCERT,
+// PGSSLCERT, PGSSLKEY, PGSSLPASSWORD) that the URL does not name is refused:
+// it has no neutral value, and ignoring it could weaken verification. Session settings the URL does not name (PGOPTIONS,
 // PGTZ, PGAPPNAME) are removed after the parse.
 func parsePgConfig(connString string) (*pgx.ConnConfig, error) {
 	allowed := append([]string{"host", "port", "database"}, pgOptionKeys...)
 	iso, err := pgurl.Isolate(connString, pgurl.Everything, allowed)
 	if err != nil {
+		var refused *pgurl.RefusedError
+		if errors.As(err, &refused) {
+			// Names variables and parameters, never a value or the URL.
+			return nil, refused
+		}
 		return nil, errors.New("the PostgreSQL connection URL is not valid")
 	}
 	defer iso.Close()

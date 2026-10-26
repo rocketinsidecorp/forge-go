@@ -1,29 +1,74 @@
 package postgres
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"math/big"
+	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/pgurl"
 )
+
+// encodeQuery percent-encodes a space as %20: pgx keeps the "+" of
+// url.Values.Encode literally.
+func encodeQuery(query url.Values) string { return strings.ReplaceAll(query.Encode(), "+", "%20") }
+
+func databaseAt(raw string) config.Database {
+	cfg := config.Default().Database
+	cfg.URL = config.NewSecret(raw)
+	return cfg
+}
+
+// writeCA writes a self-signed CA certificate, as a private CA's file would
+// be, and returns its path and pool.
+func writeCA(t *testing.T) (string, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "forge test private CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "private-ca.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(certificate)
+	return path, pool
+}
 
 // pgx reads PGSSLMODE and the other TLS variables as defaults for what the
 // URL leaves out. They must not decide the TLS of a URL that is parsed, and
 // parsing must not touch the process environment.
-func TestParseConfigIgnoresPGTLSVariables(t *testing.T) {
+func TestParseConfigIgnoresPGTLSModeVariables(t *testing.T) {
 	t.Setenv("PGSSLMODE", "disable")
-	t.Setenv("PGSSLROOTCERT", "/nonexistent/ca.pem")
-	t.Setenv("PGSSLCERT", "/nonexistent/cert.pem")
-	t.Setenv("PGSSLKEY", "/nonexistent/key.pem")
-
-	database := func(raw string) config.Database {
-		cfg := config.Default().Database
-		cfg.URL = config.NewSecret(raw)
-		return cfg
-	}
+	t.Setenv("PGCHANNELBINDING", "disable")
 
 	// No sslmode in the URL: libpq's default, prefer, not PGSSLMODE=disable.
-	pool, err := parseConfig(database("postgres://app:pw@db.internal:5432/app"))
+	pool, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,12 +76,15 @@ func TestParseConfigIgnoresPGTLSVariables(t *testing.T) {
 	if conn.TLSConfig == nil || len(conn.Fallbacks) != 1 {
 		t.Errorf("PGSSLMODE changed the mode: TLS=%v fallbacks=%d", conn.TLSConfig != nil, len(conn.Fallbacks))
 	}
+	if conn.ChannelBinding != "prefer" {
+		t.Errorf("PGCHANNELBINDING changed channel binding to %q", conn.ChannelBinding)
+	}
 
-	// sslmode=require in the URL keeps TLS on every attempt, and the
-	// unreadable PGSSLROOTCERT is not consulted.
-	pool, err = parseConfig(database("postgres://app:pw@db.internal:5432/app?sslmode=require&pool_max_conns=3"))
+	// sslmode=require in the URL keeps TLS on every attempt, and pool
+	// parameters survive.
+	pool, err = parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?sslmode=require&pool_max_conns=3"))
 	if err != nil {
-		t.Fatalf("a PG* TLS variable changed the parse: %v", err)
+		t.Fatal(err)
 	}
 	if conn = pool.ConnConfig.Config; conn.TLSConfig == nil || len(conn.Fallbacks) != 0 {
 		t.Errorf("sslmode=require lost TLS: TLS=%v fallbacks=%d", conn.TLSConfig != nil, len(conn.Fallbacks))
@@ -44,10 +92,71 @@ func TestParseConfigIgnoresPGTLSVariables(t *testing.T) {
 	if pool.MaxConns != 3 {
 		t.Errorf("pool parameters must survive: max conns %d", pool.MaxConns)
 	}
+	if os.Getenv("PGSSLMODE") != "disable" {
+		t.Error("PGSSLMODE was removed from the process environment")
+	}
+}
 
-	for _, name := range []string{"PGSSLMODE", "PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY"} {
-		if os.Getenv(name) == "" {
-			t.Errorf("%s was removed from the process environment", name)
+// Regression: pinning PGSSLROOTCERT to "" made verify-ca (and require) verify
+// against the system roots, with no host name check. The variable is now
+// refused when the URL does not name sslrootcert, whatever the sslmode, and
+// when the URL names it the variable is irrelevant: the private CA's file is
+// the only trust anchor.
+func TestParseConfigRefusesAPGRootCertTheURLDoesNotRepeat(t *testing.T) {
+	caPath, caPool := writeCA(t)
+	t.Setenv("PGSSLROOTCERT", caPath)
+
+	for _, mode := range []string{"verify-ca", "verify-full", "require"} {
+		raw := "postgres://app:s3cret@db.internal:5432/app?sslmode=" + mode
+		_, err := parseConfig(databaseAt(raw))
+		var refused *pgurl.RefusedError
+		if !errors.As(err, &refused) || !strings.Contains(err.Error(), "PGSSLROOTCERT") || !strings.Contains(err.Error(), "sslrootcert=") {
+			t.Fatalf("sslmode=%s: err = %v, want a refusal naming PGSSLROOTCERT and sslrootcert", mode, err)
+		}
+		for _, leak := range []string{caPath, "s3cret", "db.internal", "://"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Errorf("sslmode=%s: the error quotes %q: %v", mode, leak, err)
+			}
+		}
+	}
+
+	// Without sslmode the default (prefer) is not a verification mode, but
+	// the variable is refused all the same: the URL must say what it trusts.
+	if _, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app")); err == nil {
+		t.Error("a PGSSLROOTCERT the URL does not repeat was accepted without sslmode")
+	}
+
+	// Named in the URL: verify-ca trusts that file alone, whatever PGSSLROOTCERT holds.
+	other, _ := writeCA(t)
+	t.Setenv("PGSSLROOTCERT", other)
+	query := url.Values{"sslmode": {"verify-ca"}, "sslrootcert": {caPath}}
+	pool, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?" + encodeQuery(query)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsConfig := pool.ConnConfig.TLSConfig
+	if tlsConfig == nil || tlsConfig.RootCAs == nil || !tlsConfig.RootCAs.Equal(caPool) {
+		t.Fatalf("verify-ca must trust only the URL's sslrootcert file: %+v", tlsConfig)
+	}
+	query.Set("sslmode", "require")
+	pool, err = parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?" + encodeQuery(query)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.ConnConfig.TLSConfig == nil {
+		t.Error("require with sslrootcert lost TLS")
+	}
+}
+
+// config.Load refuses these URLs; a Database built in code reaches
+// postgres.Open directly and gets the same refusal.
+func TestParseConfigRefusesURLsGoAndPgxReadDifferently(t *testing.T) {
+	for name, raw := range map[string]string{
+		"fragment":       "postgres://app:pw@db.internal/app#?sslmode=verify-full",
+		"@ in the query": "postgres://db.internal:5432?sslmode=verify-full@x/app",
+	} {
+		if _, err := parseConfig(databaseAt(raw)); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+			t.Errorf("%s: err = %v", name, err)
 		}
 	}
 }

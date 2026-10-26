@@ -118,9 +118,15 @@ func parseConfig(cfg config.Database) (*pgxpool.Config, error) {
 	// PG* variables fill what the URL leaves out, but TLS (sslmode, the
 	// certificate files, channel binding, required authentication) is the
 	// URL's alone: a PGSSLMODE in the process environment must not weaken or
-	// redirect it. See pgurl.Isolate.
+	// redirect it, and a PGSSLROOTCERT the URL does not repeat is refused,
+	// not ignored. See pgurl.Isolate.
 	iso, err := pgurl.Isolate(cfg.URL.Reveal(), pgurl.TLSOnly, nil)
 	if err != nil {
+		var refused *pgurl.RefusedError
+		if errors.As(err, &refused) {
+			// Names variables and parameters, never a value or the URL.
+			return nil, refused
+		}
 		return nil, errors.New("FORGE_DATABASE_URL is not a valid PostgreSQL connection string")
 	}
 	defer iso.Close()
