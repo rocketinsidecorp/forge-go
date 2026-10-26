@@ -215,7 +215,7 @@ roles ([ADR 0046](adr/0046-postgresql-runtime-and-migration-roles.md)):
 
 | Role | Variable | Attributes and privileges |
 | ---- | -------- | ------------------------- |
-| runtime (`app_runtime` in development) | `FORGE_DATABASE_URL` | `NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`; owns no table or schema; `SELECT, INSERT, UPDATE, DELETE` on the tables and `USAGE, SELECT` on the sequences, no temporary tables, nothing else. `FORCE ROW LEVEL SECURITY` policies apply to it and it cannot run DDL. |
+| runtime (`app_runtime` in development) | `FORGE_DATABASE_URL` | `NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION`; owns no table or schema and is a member of no role; `SELECT, INSERT, UPDATE, DELETE` on the tables and `USAGE, SELECT` on the sequences, no temporary tables, nothing else. `FORCE ROW LEVEL SECURITY` policies apply to it and it cannot run DDL. |
 | migration (`app_migrator` in development) | `FORGE_MIGRATION_DATABASE_URL` | owns the database and the `public` schema and applies the migrations, so it owns every table; `NOSUPERUSER NOBYPASSRLS`. Used only by `migrate` and `rollback` (and `forge db`), never by the serving process. |
 
 `<app> migrate` and `<app> rollback` connect with
@@ -238,19 +238,25 @@ through a connection pooler).
 it), `Open` in every environment except `development` and `test` (so in
 `staging` and `production`) checks both the role the URL logs in as
 (`session_user`) and the role in effect (`current_user`), and fails before
-anything is served when either is a superuser, has `BYPASSRLS` or
+anything is served when either is a superuser, has `BYPASSRLS`,
 `CREATEROLE` (before PostgreSQL 16 `CREATEROLE` can grant itself membership
-in a `BYPASSRLS` role), or is a member of a superuser or `BYPASSRLS` role (it
-could `SET ROLE` to it). It also fails when the two differ: a role setting
+in a `BYPASSRLS` role) or `REPLICATION` (logical decoding reads every
+tenant's changes), is a member of a superuser, `BYPASSRLS` or `REPLICATION`
+role (it could `SET ROLE` to it), is a member of `pg_execute_server_program`,
+`pg_write_server_files` or `pg_read_server_files` (paths to superuser or to
+the data files), or owns, or could `SET ROLE` to the owner of, a table with
+row-level security enabled (an owner can run `ALTER TABLE ... NO FORCE ROW
+LEVEL SECURITY`). It also fails when the two differ: a role setting
 (`?options=-c%20role=...`, `ALTER ROLE ... SET role`) makes the session act
 as another role, and `SET ROLE NONE` turns it back into the login role, so
 the URL must log in as the serving role itself. The error wraps
 `postgres.ErrRowSecurityBypass` and names the role. There is no override
 variable: fix the role, or remove the option from your bootstrap knowingly.
 Development and test are not checked, so local tools can connect as an
-administrator. The check does not refuse a role that owns
-tables: `FORCE ROW LEVEL SECURITY` still applies to an owner, but an owner can
-switch it off, so keep the serving role separate from the migration role.
+administrator. A role that owns only tables without row-level security is
+accepted, and the check reads the tables of the database it is connected to.
+Keep the serving role separate from the migration role: it must own no table
+with row-level security and be no member of the migration role.
 
 **Privileges for new tables.** The runtime role gets its grants from the
 migration role's default privileges, set once per database. The generated
@@ -1094,7 +1100,7 @@ func TestNoteRepository(t *testing.T) {
 | `NewMigrated(t, fsys)` | The same, with every migration in `fsys` applied |
 | `Config(t)` | A `config.Database` for a new, empty database, for code that opens its own pool (for example `Configure`) |
 | `NewWithConfig(t)` | Both the pool and its configuration |
-| `NewRLS(t, sets...)` (PostgreSQL) | A database owned by a new migration role that applied the migrations, and pools as that role (`Migrator`), as a new `NOSUPERUSER NOBYPASSRLS` runtime role holding only data privileges (`Runtime`, `RuntimeConfig`, `RuntimeRole`) and as the test server's user (`Admin`); the database and both roles are dropped when the test ends. Generated repository, sign-in and bootstrap tests run as `Runtime`, so row-level security applies to them as in production. The test server's user must be able to create roles (a superuser, as in the generated Compose service and CI) |
+| `NewRLS(t, sets...)` (PostgreSQL) | A database owned by a new migration role that applied the migrations, and pools as that role (`Migrator`), as a new `NOSUPERUSER NOBYPASSRLS NOREPLICATION` runtime role holding only data privileges (`Runtime`, `RuntimeConfig`, `RuntimeRole`) and as the test server's user (`Admin`); the database and both roles are dropped when the test ends. Generated repository, sign-in and bootstrap tests run as `Runtime`, so row-level security applies to them as in production. The test server's user must be able to create roles (a superuser, as in the generated Compose service and CI) |
 
 - PostgreSQL and MySQL helpers create a database named `forge_test_<random>`
   on the test server and drop it when the test ends (PostgreSQL with

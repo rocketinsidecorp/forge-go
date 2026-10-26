@@ -41,9 +41,11 @@ The serving database role must not be a superuser or have `BYPASSRLS`, because
 those roles bypass policies. This is enforced, not only advised: the generated
 bootstrap opens its pool with `postgres.RequireRowSecurity`, and in `staging`
 and `production` the application refuses to start when the role it logs in
-as or acts as is a superuser, has `BYPASSRLS` or `CREATEROLE`, or is a member
-of a superuser or `BYPASSRLS` role, or when the URL switches the session to
-another role. Row-level security protects against a query that forgets its
+as or acts as is a superuser, has `BYPASSRLS`, `CREATEROLE` or `REPLICATION`,
+is a member of a superuser, `BYPASSRLS` or `REPLICATION` role or of
+`pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files`,
+or owns (or can `SET ROLE` to the owner of) a table with row-level security,
+or when the URL switches the session to another role. Row-level security protects against a query that forgets its
 tenant predicate; it does not stop SQL injected into the serving process,
 which can set `forge.tenant_id` itself. Generated applications serve as
 a runtime role (`FORGE_DATABASE_URL`, `app_runtime` in development) that owns

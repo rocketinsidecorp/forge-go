@@ -311,12 +311,15 @@ redacted in logs and formatted output.
 ### Database roles
 
 On PostgreSQL, serve as a runtime role that is `NOSUPERUSER NOBYPASSRLS
-NOCREATEROLE`, owns no table and holds only `SELECT, INSERT, UPDATE, DELETE`,
+NOCREATEROLE NOREPLICATION`, owns no table and holds only `SELECT, INSERT, UPDATE, DELETE`,
 and migrate as a separate role that owns the schema. In `staging` and
 `production` (every environment except `development` and `test`) the
 generated application refuses to start when the role `FORGE_DATABASE_URL`
-logs in as, or acts as, is a superuser, has `BYPASSRLS` or `CREATEROLE`, or
-is a member of a superuser or `BYPASSRLS` role, and when the URL makes the
+logs in as, or acts as, is a superuser, has `BYPASSRLS`, `CREATEROLE` or
+`REPLICATION`, is a member of a superuser, `BYPASSRLS` or `REPLICATION` role
+or of `pg_execute_server_program`, `pg_write_server_files` or
+`pg_read_server_files`, or owns (or can `SET ROLE` to the owner of) a table
+with row-level security, and when the URL makes the
 session act as another role than its login (`options=-c role=...`), with an
 error that wraps `postgres.ErrRowSecurityBypass`. [Database
 roles](DATABASE.md#database-roles-postgresql) has the SQL to provision both
