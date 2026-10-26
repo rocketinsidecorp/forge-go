@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -395,5 +396,102 @@ func TestRequireRowSecurityIgnoresAShadowingOperator(t *testing.T) {
 		if !errors.Is(err, postgres.ErrRowSecurityBypass) || !strings.Contains(err.Error(), "is a superuser") {
 			t.Errorf("%s: err = %v, want the superuser refused", name, err)
 		}
+	}
+}
+
+// The refusal is Open's default outside development and test, read from
+// cfg.Environment; a Database built in code without an environment is
+// checked too (fail closed), and AllowRowSecurityBypass is the explicit,
+// order-sensitive opt-out.
+func TestOpenRefusesBypassingRolesByDefaultOutsideDevelopmentAndTest(t *testing.T) {
+	admin, cfg := postgrestest.NewWithConfig(t)
+	ctx := context.Background()
+	var superuser bool
+	if err := admin.QueryRow(ctx, "SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user").Scan(&superuser); err != nil {
+		t.Fatal(err)
+	}
+	if !superuser {
+		t.Skip("the test server's user is not a superuser")
+	}
+	open := func(environment config.Environment, opts ...postgres.Option) error {
+		in := cfg
+		in.Environment = environment
+		pool, err := postgres.Open(ctx, in, opts...)
+		if err == nil {
+			pool.Close()
+		}
+		return err
+	}
+	for _, environment := range []config.Environment{config.Staging, config.Production, ""} {
+		if err := open(environment); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+			t.Errorf("a superuser in %q without options: err = %v, want ErrRowSecurityBypass", environment, err)
+		}
+		if err := open(environment, postgres.AllowRowSecurityBypass()); err != nil {
+			t.Errorf("a superuser in %q with AllowRowSecurityBypass: %v", environment, err)
+		}
+	}
+	for _, environment := range []config.Environment{config.Development, config.Test} {
+		if err := open(environment); err != nil {
+			t.Errorf("a superuser in %s: %v", environment, err)
+		}
+	}
+	// The last of the two options wins.
+	if err := open(config.Production, postgres.RequireRowSecurity(config.Production), postgres.AllowRowSecurityBypass()); err != nil {
+		t.Errorf("RequireRowSecurity then AllowRowSecurityBypass: %v", err)
+	}
+	if err := open(config.Development, postgres.AllowRowSecurityBypass(), postgres.RequireRowSecurity(config.Production)); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+		t.Errorf("AllowRowSecurityBypass then RequireRowSecurity(production): err = %v, want ErrRowSecurityBypass", err)
+	}
+}
+
+// A lazy pool connects on its first query, so Open succeeds without a
+// reachable server, and it checks the role of every connection it opens
+// instead of the pool at Open.
+func TestLazyPoolConnectsOnFirstUseAndChecksEachConnection(t *testing.T) {
+	ctx := context.Background()
+	unreachable := config.Default().Database
+	unreachable.URL = config.NewSecret("postgres://forge:secret@127.0.0.1:1/forge?sslmode=disable")
+	unreachable.ConnectTimeout = 2 * time.Second
+	if _, err := postgres.Open(ctx, unreachable); err == nil {
+		t.Fatal("Open connected to an unreachable server")
+	}
+	lazy, err := postgres.Open(ctx, unreachable, postgres.Lazy(true))
+	if err != nil {
+		t.Fatalf("a lazy pool on an unreachable server: %v", err)
+	}
+	if err := lazy.Ping(ctx); err == nil {
+		t.Error("a lazy pool on an unreachable server answered a ping")
+	}
+	lazy.Close()
+
+	db := postgrestest.NewRLS(t, rlsMigrations)
+	runtime := db.RuntimeConfig
+	runtime.Environment = config.Production
+	served, err := postgres.Open(ctx, runtime, postgres.Lazy(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer served.Close()
+	if err := served.Ping(ctx); err != nil {
+		t.Errorf("the runtime role through a lazy pool in production: %v", err)
+	}
+
+	var superuser bool
+	if err := db.Admin.QueryRow(ctx, "SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user").Scan(&superuser); err != nil {
+		t.Fatal(err)
+	}
+	if !superuser {
+		return
+	}
+	admin := postgrestest.Config(t)
+	admin.Environment = config.Production
+	refusing, err := postgres.Open(ctx, admin, postgres.Lazy(true))
+	if err != nil {
+		t.Fatalf("Open of a lazy pool checked the role up front: %v", err)
+	}
+	defer refusing.Close()
+	var one int
+	if err := refusing.QueryRow(ctx, "SELECT 1").Scan(&one); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+		t.Fatalf("a superuser's first query through a lazy pool in production: err = %v, want ErrRowSecurityBypass", err)
 	}
 }

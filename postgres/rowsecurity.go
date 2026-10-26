@@ -6,20 +6,25 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rocketinsidecorp/forge-go/config"
 )
 
-// ErrRowSecurityBypass is returned by Open with RequireRowSecurity when the
-// connection's role would not be subject to row-level security.
+// ErrRowSecurityBypass is returned by Open, outside development and test,
+// when the connection's role would not be subject to row-level security (see
+// RequireRowSecurity).
 var ErrRowSecurityBypass = errors.New("the database role bypasses row-level security")
 
-// RequireRowSecurity makes Open fail, in every environment except
-// development and test (so in staging and production), when the connection
-// could escape row-level security. Both the role FORGE_DATABASE_URL logs in
-// as (session_user) and the role it acts as (current_user) are checked, and
-// Open fails when either
+// RequireRowSecurity makes Open check the role, as described below, in
+// every environment except development and test (so in staging and
+// production), whatever cfg.Environment says. Open already does so for
+// cfg.Environment, which config.Load and forge.New set; pass this option
+// only for a config.Database built in code whose Environment is not the
+// application's.
+//
+// The check covers both the role FORGE_DATABASE_URL logs in as
+// (session_user) and the role it acts as (current_user), and Open fails when
+// either
 //
 //   - is a superuser or has BYPASSRLS or REPLICATION (logical decoding reads
 //     every tenant's changes),
@@ -27,7 +32,7 @@ var ErrRowSecurityBypass = errors.New("the database role bypasses row-level secu
 //   - has CREATEROLE (before PostgreSQL 16 it can grant itself such a
 //     membership),
 //   - is a member of pg_execute_server_program, pg_write_server_files or
-//     pg_read_server_files (paths to superuser or to the data files), or
+//     pg_read_server_files (paths to superuser or to the data files),
 //   - owns, or is a member of the owner of, a table of this database with
 //     row-level security enabled (an owner can ALTER TABLE ... NO FORCE ROW
 //     LEVEL SECURITY), or
@@ -45,17 +50,35 @@ var ErrRowSecurityBypass = errors.New("the database role bypasses row-level secu
 // to serve instead. In development and test it does nothing, so local tools
 // may connect as an administrator.
 //
-// Pass it where the application opens its serving pool:
-//
-//	postgres.Open(ctx, app.Config().Database, postgres.RequireRowSecurity(app.Config().Environment))
-//
 // Serve as a NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOREPLICATION runtime role
 // that owns no table and migrate as a separate role (FORGE_MIGRATION_DATABASE_URL); see
 // docs/DATABASE.md.
 func RequireRowSecurity(environment config.Environment) Option {
-	return func(o *openOptions) {
-		o.rowSecurity = environment != config.Development && environment != config.Test
-	}
+	check := environment != config.Development && environment != config.Test
+	return func(o *openOptions) { o.rowSecurity = &check }
+}
+
+// AllowRowSecurityBypass is the explicit opt-out of the check Open applies
+// outside development and test (see RequireRowSecurity): Open then accepts
+// any role. Pass it only for a pool that must connect as such a role on
+// purpose, such as an administration or reporting tool, never for the pool
+// an application serves tenants with. The last of RequireRowSecurity and
+// AllowRowSecurityBypass passed to Open wins.
+func AllowRowSecurityBypass() Option {
+	check := false
+	return func(o *openOptions) { o.rowSecurity = &check }
+}
+
+// Lazy, with true, makes Open return without connecting: the pool connects
+// on its first query, and each connection it opens is checked for
+// row-level security (RequireRowSecurity) before its first use, where Open
+// would check the pool. A wrong URL or an unreachable database is then
+// reported by that query, not by Open. Generated applications pass
+// Lazy(!app.Serving()): `routes` and `openapi` compose the application
+// without serving it and need no reachable database. Lazy(false) is Open's
+// default.
+func Lazy(lazy bool) Option {
+	return func(o *openOptions) { o.lazy = lazy }
 }
 
 // roleEscapeQuery describes the login role (session_user) and the role in
@@ -96,12 +119,17 @@ FROM pg_catalog.pg_roles u
 WHERE u.rolname IN (session_user, current_user)
 ORDER BY u.rolname = session_user DESC`
 
+// txStarter is a pool, or one connection of a lazy pool.
+type txStarter interface {
+	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
+}
+
 // refuseRowSecurityBypass runs roleEscapeQuery in a read-only transaction
 // whose search_path is pg_catalog alone; the connection's own search_path,
 // which the URL can set, is back after the rollback. Any failure, including
 // starting the transaction or pinning the path, refuses.
-func refuseRowSecurityBypass(ctx context.Context, pool *pgxpool.Pool) error {
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+func refuseRowSecurityBypass(ctx context.Context, db txStarter) error {
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return fmt.Errorf("check the database role's row-level security: %w", err)
 	}

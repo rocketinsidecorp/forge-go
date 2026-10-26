@@ -164,7 +164,10 @@ the migration role and serve with the runtime role only. In staging and
 production the application refuses to start when the role it logs in as, or
 acts as, is a superuser or has `BYPASSRLS` or `CREATEROLE`, holds `TRUNCATE`,
 `REFERENCES` or `TRIGGER` on a table with row-level security (a `GRANT ALL`),
-or when the URL switches it to another role.
+or when the URL switches it to another role. `postgres.Open` does this for
+every pool, also in a hand-written application; a pool that must use such a
+role on purpose (a reporting tool, never the serving pool) opts out in code
+with `postgres.Open(ctx, cfg, postgres.AllowRowSecurityBypass())`.
 
 ```sh
 docker run --rm -e FORGE_ENV=production \

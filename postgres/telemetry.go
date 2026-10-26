@@ -16,8 +16,13 @@ type Option func(*openOptions)
 type openOptions struct {
 	telemetry *telemetry.Telemetry
 	poolName  string
-	// rowSecurity refuses a role that bypasses row-level security.
-	rowSecurity bool
+	// rowSecurity, when set, says whether Open refuses a role that could
+	// bypass row-level security (RequireRowSecurity,
+	// AllowRowSecurityBypass). Unset, it follows the configuration's
+	// environment.
+	rowSecurity *bool
+	// lazy defers connecting to the first query (Lazy).
+	lazy bool
 }
 
 // poolSystem is the db.system.name of the pool's metrics.

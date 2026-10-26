@@ -45,12 +45,22 @@ var _ DBTX = (*DB)(nil)
 // Open creates a connection pool from validated configuration and verifies
 // connectivity within cfg.ConnectTimeout, so misconfiguration fails at
 // startup rather than on the first request.
+//
+// Outside development and test (cfg.Environment, which config.Load and
+// forge.New set from FORGE_ENV) it also refuses, with ErrRowSecurityBypass,
+// a role that could bypass row-level security; see RequireRowSecurity for
+// the rules and AllowRowSecurityBypass for the explicit opt-out. With
+// Lazy(true) it connects on the first query instead.
 func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error) {
 	var settings openOptions
 	for _, option := range opts {
 		if option != nil {
 			option(&settings)
 		}
+	}
+	checkRowSecurity := cfg.Environment != config.Development && cfg.Environment != config.Test
+	if settings.rowSecurity != nil {
+		checkRowSecurity = *settings.rowSecurity
 	}
 	observer, err := sqldb.NewObserver(settings.telemetry, poolSystem, classify)
 	if err != nil {
@@ -77,29 +87,39 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 	}
 	// pgx scans timestamptz into time.Local by default, which makes results
 	// depend on the host's zone. Forge returns instants in UTC everywhere.
-	poolConfig.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
+	poolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		conn.TypeMap().RegisterType(&pgtype.Type{
 			Name:  "timestamptz",
 			OID:   pgtype.TimestamptzOID,
 			Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC},
 		})
+		if settings.lazy && checkRowSecurity {
+			// Nothing was checked when the pool was created: every
+			// connection is, before its first use.
+			return refuseRowSecurityBypass(ctx, conn)
+		}
 		return nil
+	}
+	if settings.lazy {
+		poolConfig.MinConns = 0
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("create connection pool: %w", err)
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("connect to database: %w", err)
-	}
-	if settings.rowSecurity {
-		if err := refuseRowSecurityBypass(pingCtx, pool); err != nil {
+	if !settings.lazy {
+		pingCtx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout)
+		defer cancel()
+		if err := pool.Ping(pingCtx); err != nil {
 			pool.Close()
-			return nil, err
+			return nil, fmt.Errorf("connect to database: %w", err)
+		}
+		if checkRowSecurity {
+			if err := refuseRowSecurityBypass(pingCtx, pool); err != nil {
+				pool.Close()
+				return nil, err
+			}
 		}
 	}
 	unobserve, err := observePool(settings.telemetry, settings.poolName, pool)

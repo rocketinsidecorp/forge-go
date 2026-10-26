@@ -190,10 +190,9 @@ func Configure(ctx context.Context, app *forge.App) error {
 ```
 
 This is what `forge new` generates in `app/bootstrap/bootstrap.go`, with the
-adapter chosen by `--database`. For PostgreSQL it also passes
-`postgres.RequireRowSecurity(app.Config().Environment)`, so staging and
-production refuse a serving role that could bypass row-level security ([Database
-roles](#database-roles-postgresql)).
+adapter chosen by `--database`. On PostgreSQL, `Open` refuses in staging and
+production a serving role that could bypass row-level security ([Database
+roles](#database-roles-postgresql)); no option is needed.
 
 `Open` fails if `FORGE_DATABASE_URL` is empty or selects another adapter,
 applies the pool and session settings above, and pings the database within
@@ -240,10 +239,12 @@ connect elsewhere than its host and port, so a migration role may reach the
 server another way than the serving one (for example directly instead of
 through a connection pooler).
 
-**Refusal outside development and test.** With
-`postgres.RequireRowSecurity(environment)` (the generated bootstrap passes
-it), `Open` in every environment except `development` and `test` (so in
-`staging` and `production`) checks both the role the URL logs in as
+**Refusal outside development and test.** `postgres.Open`, in every
+environment except `development` and `test` (so in `staging` and
+`production`; the environment is `config.Database.Environment`, which
+`config.Load` and `forge.New` set from `FORGE_ENV`, and a `config.Database`
+built in code without one is checked too), checks both the role the URL logs
+in as
 (`session_user`) and the role in effect (`current_user`), and fails before
 anything is served when either is a superuser, has `BYPASSRLS`,
 `CREATEROLE` (before PostgreSQL 16 `CREATEROLE` can grant itself membership
@@ -260,10 +261,30 @@ rows; the usual cause is a `GRANT ALL`). It also fails when the two differ: a ro
 (`?options=-c%20role=...`, `ALTER ROLE ... SET role`) makes the session act
 as another role, and `SET ROLE NONE` turns it back into the login role, so
 the URL must log in as the serving role itself. The error wraps
-`postgres.ErrRowSecurityBypass` and names the role. There is no override
-variable: fix the role, or remove the option from your bootstrap knowingly.
+`postgres.ErrRowSecurityBypass` and names the role. This is `Open`'s default
+for every application, generated or hand-written, and for every pool it opens
+(the `jobs`, `seed` and `auth setup` commands included).
+`postgres.RequireRowSecurity(environment)` checks for an explicit
+environment instead. There is no override variable; the only opt-out is in
+code, for a pool that must use such a role on purpose (an administration or
+reporting tool), never for the pool that serves tenants:
+
+```go
+// Reporting connects as a BYPASSRLS role on purpose and serves no request.
+reports, err := postgres.Open(ctx, reportingConfig, postgres.AllowRowSecurityBypass())
+```
+
 Development and test are not checked, so local tools can connect as an
-administrator. A role that owns only tables without row-level security is
+administrator.
+
+**Behaviour change (forge-go QG9).** The refusal used to apply only to a
+pool opened with `postgres.RequireRowSecurity`, as the generated bootstrap
+did; a hand-written application or a second pool was not checked. Now every
+`postgres.Open` checks outside development and test. A deployment that
+serves as a superuser, a `BYPASSRLS` role or a role holding `TRUNCATE` on a
+tenant table now refuses to start: fix the role ([Database
+roles](#database-roles-postgresql)), or pass `AllowRowSecurityBypass()` to a
+pool that really needs it. A role that owns only tables without row-level security is
 accepted, and the check reads the tables of the database it is connected to.
 Keep the serving role separate from the migration role: it must own no table
 with row-level security and be no member of the migration role.

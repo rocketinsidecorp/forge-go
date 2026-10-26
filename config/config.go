@@ -118,6 +118,13 @@ type Database struct {
 	// AllowPlaintext permits production connections without TLS, for
 	// databases reachable only over a trusted private network.
 	AllowPlaintext bool
+	// Environment is the environment the pool serves in. Outside
+	// development and test, postgres.Open refuses a role that could bypass
+	// row-level security unless postgres.AllowRowSecurityBypass is passed.
+	// Default sets Development, and Load and forge.New copy
+	// Config.Environment into it. The zero value, in a Database built in
+	// code, is neither development nor test, so it is checked: fail closed.
+	Environment Environment
 }
 
 // Config is the application's configuration. Default returns safe defaults; Load reads FORGE_*
@@ -201,6 +208,7 @@ func Default() Config {
 			MaxBodyBytes:      1 << 20,
 		},
 		Database: Database{
+			Environment:      Development,
 			MaxConns:         10,
 			MinConns:         0,
 			MaxConnLifetime:  30 * time.Minute,

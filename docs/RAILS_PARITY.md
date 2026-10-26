@@ -171,7 +171,8 @@ the work is finished and waiting for its review; **Planned** means not started.
   `/docker-entrypoint-initdb.d/001-forge.sql`, and gives
   `FORGE_MIGRATION_DATABASE_URL` only to the `migrate` container. Forge-Go
   goes further in three ways Forge-Rust adopted: outside development and
-  test `postgres.RequireRowSecurity` refuses a serving role that logs in as
+  test `postgres.Open` (by default since forge-go QG9; earlier through
+  `postgres.RequireRowSecurity`) refuses a serving role that logs in as
   or acts as a superuser, a `BYPASSRLS` or `CREATEROLE` role or a member of a
   superuser or `BYPASSRLS` role, or whose URL switches it to another role;
   the generated repository tests connect as the runtime role

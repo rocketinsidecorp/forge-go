@@ -84,7 +84,8 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations())",
 		},
 		"app/bootstrap/bootstrap.go": {
-			"postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),\n\t\tpostgres.RequireRowSecurity(app.Config().Environment))",
+			"postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()))",
+			"Open refuses a role that could bypass\n\t// row-level security",
 			`app.Readiness("database", database.Ping)`,
 			"authpostgres.New(database, authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))",
 			"authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())",

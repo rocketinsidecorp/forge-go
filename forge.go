@@ -114,6 +114,10 @@ func New(opts ...Option) (*App, error) {
 			return nil, err
 		}
 	}
+	// The database adapters decide on Database.Environment whether to refuse
+	// a role that bypasses row-level security: it is always the
+	// application's own environment.
+	settings.config.Database.Environment = settings.config.Environment
 	if err := settings.config.Validate(); err != nil {
 		return nil, err
 	}

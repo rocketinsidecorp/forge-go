@@ -313,8 +313,8 @@ redacted in logs and formatted output.
 On PostgreSQL, serve as a runtime role that is `NOSUPERUSER NOBYPASSRLS
 NOCREATEROLE NOREPLICATION`, owns no table and holds only `SELECT, INSERT, UPDATE, DELETE`,
 and migrate as a separate role that owns the schema. In `staging` and
-`production` (every environment except `development` and `test`) the
-generated application refuses to start when the role `FORGE_DATABASE_URL`
+`production` (every environment except `development` and `test`)
+`postgres.Open`, so every application, refuses to start when the role `FORGE_DATABASE_URL`
 logs in as, or acts as, is a superuser, has `BYPASSRLS`, `CREATEROLE` or
 `REPLICATION`, is a member of a superuser, `BYPASSRLS` or `REPLICATION` role
 or of `pg_execute_server_program`, `pg_write_server_files` or
