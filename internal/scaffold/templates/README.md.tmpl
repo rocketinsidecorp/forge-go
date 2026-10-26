@@ -69,6 +69,9 @@ forge dev
 
 ```bash
 forge test                               # go test ./... with .env.development loaded
+forge check                              # go build ./... and go vet ./...
+forge format --check                     # list files that need gofmt; exit 1 if any (forge format rewrites them)
+forge lint                               # golangci-lint run ./... (install it first when missing)
 forge build                              # static binary in bin/{{.Name}}
 docker build -t {{.Name}} .                  # production image
 forge generate view welcome --dry-run     # preview files without writing

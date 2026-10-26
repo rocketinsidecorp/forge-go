@@ -705,6 +705,16 @@ response against the document. Details, type mapping and tags:
 | `forge uuid [--count N]` | Print N UUIDv7 values (1-1000) |
 | `forge version` | Print CLI version, commit, and build date |
 
+Check, format and lint an application, from its directory (the counterparts of
+Forge-Rust's `forge check`, `forge format` and `forge lint`):
+
+```sh
+forge check             # go build ./... and go vet ./...: type-check, no binary written
+forge format --check    # list the Go files that need gofmt and exit 1 if any; writes nothing (CI)
+forge format            # gofmt -l -w: rewrite them, listing each file
+forge lint              # golangci-lint run ./...; if it is missing, prints the go install command
+```
+
 `NAME` for `dev` and `build` is needed only if `cmd/` has several commands.
 `migrate`, `rollback`, `setup`, `seed` and `db` require exactly one.
 
