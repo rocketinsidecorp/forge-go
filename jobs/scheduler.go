@@ -133,8 +133,10 @@ type SchedulerOptions struct {
 	// only move forward, so the outcome does not depend on the replicas'
 	// clocks, and no connection is held while a job runs. A tick that could
 	// not be recorded (the database unreachable) is skipped and reported to
-	// OnError. Use jobs/postgres or jobs/mysql NewTickClaimer; nil runs
-	// every tick on every replica.
+	// OnError. One replica runs the ticks of a job one after another, but two
+	// replicas can run consecutive ticks of a job at the same time when a run
+	// outlasts the interval; guard such jobs yourself. Use jobs/postgres or
+	// jobs/mysql NewTickClaimer; nil runs every tick on every replica.
 	Ticks TickClaimer
 }
 
