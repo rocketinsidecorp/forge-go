@@ -344,3 +344,38 @@ func TestGenerateAndDestroyAliases(t *testing.T) {
 		t.Errorf("forge help does not list the aliases:\n%s", usageText.String())
 	}
 }
+
+// The seam is never read or written through a symlink, a directory in its
+// place is an error, and files of package bootstrap that do not parse are
+// skipped when looking for the application's own guards.
+func TestSeamRefusesSymlinksAndOddFiles(t *testing.T) {
+	t.Parallel()
+	dir := seamApplication(t, "sqlite")
+	path := filepath.Join(dir, scaffold.RoutesFile)
+	writeFile(t, filepath.Join(dir, "app", "bootstrap", "broken.go"), "package bootstrap\n\nfunc (\n")
+	if err := os.Mkdir(filepath.Join(dir, "app", "bootstrap", "dir.go"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, path+".real"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("routes_gen.go.real", path); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := runGenerateEnv([]string{"controller", "pages", "home", "--public"}, &out, dir, withoutDatabaseURL(), seamNow); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("a symlinked seam: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGenerateEnv([]string{"controller", "pages", "home", "--public"}, &out, dir, withoutDatabaseURL(), seamNow); err == nil {
+		t.Fatal("a directory in place of the seam was accepted")
+	}
+	if err := writeRoutes(filepath.Join(dir, "missing"), nil); err == nil {
+		t.Fatal("writeRoutes outside an application succeeded")
+	}
+}

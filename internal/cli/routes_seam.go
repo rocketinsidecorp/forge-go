@@ -175,10 +175,7 @@ func planRoutes(projectRoot *os.Root, seam routesSeam, change routesChange) ([]b
 	if err != nil {
 		return nil, "", err
 	}
-	if current != nil && string(rendered) == string(current) {
-		if change.remove {
-			return current, "unwire", nil
-		}
+	if !change.remove && current != nil && string(rendered) == string(current) {
 		return current, "identical", nil
 	}
 	return rendered, verb, nil

@@ -86,6 +86,7 @@ func TestGenerateMigrationWithoutInferenceIsBlankAndWarns(t *testing.T) {
 		{"add_x_to_forge_users", "x:string"},
 		{"Add_X", "x:string"},
 		{"add_x_to_products", "x:float"},
+		{"add_x_to_" + strings.Repeat("p", 40), strings.Repeat("x", 30) + ":string"},
 		{},
 	} {
 		var out bytes.Buffer
