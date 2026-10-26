@@ -179,8 +179,12 @@ In production, provision the same two roles once (SQL in
 [Database roles](docs/DATABASE.md#database-roles-postgresql)), migrate with
 the migration role and serve with the runtime role only. In staging and
 production the application refuses to start when the role it logs in as, or
-acts as, is a superuser or has `BYPASSRLS` or `CREATEROLE`, or when the URL
-switches it to another role.
+acts as, is a superuser or has `BYPASSRLS` or `CREATEROLE`, holds `TRUNCATE`,
+`REFERENCES` or `TRIGGER` on a table with row-level security (a `GRANT ALL`),
+or when the URL switches it to another role. `postgres.Open` does this for
+every pool, also in a hand-written application; a pool that must use such a
+role on purpose (a reporting tool, never the serving pool) opts out in code
+with `postgres.Open(ctx, cfg, postgres.AllowRowSecurityBypass())`.
 
 ```sh
 docker run --rm -e FORGE_ENV=production \
@@ -715,7 +719,7 @@ response against the document. Details, type mapping and tags:
 | `forge i18n check [--json]` | Read-only: list the translations each locale in `config/locales` lacks (keys of the other locales and literal keys used by `t` and `i18n.T`), missing CLDR plural forms and unused keys; exit 1 when anything is missing. See [Translations](#translations-i18n) |
 | `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
-| `forge routes [NAME]` | Table of every route registered while the application composes (HTML and JSON, including the `/v1/<plural>` routes of generated resources) with its resource action and the source line that registered it, plus Forge's built-in routes. Builds `cmd/NAME` and runs its `routes` command without serving HTTP, so it needs what `serve` needs to configure; `NAME` picks `cmd/NAME` when there are several binaries. When the application cannot be built or configured it says why on stderr and lists what a scan of the source finds (literal paths only). Try `forge routes \| grep /v1` |
+| `forge routes [NAME]` | Table of every route registered while the application composes (HTML and JSON, including the `/v1/<plural>` routes of generated resources) with its resource action and the source line that registered it, plus Forge's built-in routes. Builds `cmd/NAME` and runs its `routes` command without serving HTTP: `Configure` sees `app.Serving()` false, so a generated application opens its PostgreSQL or MySQL pool lazily (`postgres.Lazy`, `mysql.Lazy`) and starts no scheduler or worker, and the command works with the database stopped and records no job tick; `NAME` picks `cmd/NAME` when there are several binaries. When the application cannot be built or configured it says why on stderr and lists what a scan of the source finds (literal paths only). Try `forge routes \| grep /v1` |
 | `forge openapi [--output FILE \| --check FILE]` | Build the application and run its `openapi` command with the development environment: print or write the OpenAPI 3.1 document of the described routes, list undescribed ones on stderr; `--check` exits 1 when FILE is out of date. See [OpenAPI](#openapi) |
 | `forge help COMMAND`, `forge COMMAND --help` (or `-h`) | Print one command's usage, flags, examples and notes, and exit 0; for example `forge help new` or `forge generate --help` |
 | `forge help --json` | Emit the versioned command catalog with per-command flags, examples, environment inputs, exit codes and side effects |
@@ -811,7 +815,22 @@ the generated `main.go` composes, so `migrate` creates it). Recording a tick is
 one statement; no connection is held while the job runs, and the outcome does
 not depend on the replicas' clocks. A tick that cannot be recorded is skipped
 and reported, and two replicas can run consecutive ticks of one job at the
-same time. An application generated earlier adopts it by composing the
+same time. A job that falls behind its schedule (a run longer than its
+interval, a paused VM, a slow tick claim, a wait for a free slot) does not
+replay the ticks it missed back to back: only the latest tick due runs, once,
+and only while it is at most `jobs.SchedulerOptions.MaxLateness` late (zero,
+the default, means one interval of the job's schedule); the others are skipped
+and reported to `OnError` as a `*jobs.SkippedTicksError`, which the generated
+`JobsConfigure` logs as a warning. To skip a tick that is more than ten
+minutes late, even for a daily job:
+
+```go
+options := jobs.SchedulerOptions{
+	// ... MaxConcurrentJobs, Telemetry, OnError and Ticks as generated ...
+	MaxLateness: 10 * time.Minute,
+}
+```
+ An application generated earlier adopts it by composing the
 migration in `cmd/<name>/main.go` and passing the claimer to `JobsConfigure`
 in `app/bootstrap/bootstrap.go`. PostgreSQL:
 
@@ -880,7 +899,19 @@ The generator refuses to overwrite any file and never edits
 `RegisterProducts` needs a `protect` function and asks it for `products:read` or
 `products:write` per route, so the endpoints are never public by accident. On
 PostgreSQL (Forge identity) the migration adds those permissions to
-`forge_permissions` and the wiring uses `auth.RequireAudited`; a global resource's
+`forge_permissions` and the wiring uses `auth.RequireAudited` behind the bearer
+token of `POST /auth/login`. That login exists only in an application created
+with `--api-auth` (or given it by `forge generate authentication --api-auth`);
+in a default application, which issues no bearer tokens, the printed `protect`
+refuses every request instead, as forge-rust's `DenyAll` does, so the JSON API
+is generated but closed until you open it:
+
+```sh
+forge generate authentication --api-auth   # paste the JSON authentication wiring it prints
+forge generate resource product name:string --tenant-scoped --dry-run   # now prints the bearer guard
+```
+
+A global resource's
 write routes additionally stay behind a deny-all `protectPlatformWrite` you replace
 with operator-level authorization (tenant roles must not be able to change rows every
 tenant reads); on other databases the
@@ -901,7 +932,8 @@ arguments, writes exactly the same resource files, and adds:
 - the views base (`app/views/views.go`, `layouts/application.gohtml`,
   `shared/_flash.gohtml`) when the application lacks it.
 
-The pages live at `/<plural>` (the JSON API stays at `/v1/<plural>`). Forms
+The pages live at `/<plural>` (the JSON API stays at `/v1/<plural>`, wired
+closed in an application without bearer sign-in, as above). Forms
 carry the CSRF token and use `_method` for `PATCH` and `DELETE`; invalid input
 re-renders the form with `422` and a message beside each field, success sets a
 flash notice and answers `303 See Other`, a missing record shows a `404` page,
@@ -1095,6 +1127,25 @@ Binaries built with `forge.Main` accept:
 | `serve` | Default. Serve HTTP until `SIGINT`/`SIGTERM` |
 | `healthcheck` | Probe `/health/live` on loopback; used by the Docker `HEALTHCHECK` |
 | `openapi [--output FILE \| --check FILE]` | Run `Configure` without listening and print or write the OpenAPI document (what `forge openapi` runs) |
+| `routes` | Run `Configure` without listening and print the route table (what `forge routes` runs) |
+
+While `routes` and `openapi` run `Configure`, `app.Serving()` is false. The
+generated `Configure` then opens its database pool lazily and starts no
+scheduler, job worker or recovery queue, so both work without a reachable
+database and never run or claim a job. A hand-written `Configure` does the
+same:
+
+```go
+database, err := postgres.Open(ctx, app.Config().Database, postgres.Lazy(!app.Serving()))
+// ...
+if app.Serving() {
+	scheduler.Start() // and worker.Start(ctx), with their OnShutdown hooks
+}
+```
+
+```sh
+FORGE_DATABASE_URL=postgres://app:app@127.0.0.1:1/down forge routes   # still lists every route
+```
 | `help` | List the available commands |
 | `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database); `rollback` reverts application migrations only |
 | `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |
@@ -1168,6 +1219,9 @@ Cache (memory, or shared in the database; stampede-protected `Fetch`):
 ```go
 c, _ := cache.NewMemory(cache.MemoryOptionsFromConfig(cfg.Cache))
 price, err := cache.FetchJSON(ctx, c, cache.Key("price", sku), 10*time.Minute, loadPrice)
+// A cached value that no longer decodes is a miss, logged once per key at
+// warn level (key hashed) and counted:
+undecodable := cache.DecodeFailures()
 ```
 
 Shared stores for several replicas (PostgreSQL shown; `mysql` and `sqlite` work
@@ -1313,7 +1367,15 @@ jq -r '.components[] | "\(.name) \(.version)"' dist/sbom/forge.cdx.json
 Applications from `forge new` keep an SBOM of their image as the `sbom`
 artifact of every CI run, and get an opt-in `.github/workflows/release.yml`
 (enable it with `gh variable set FORGE_RELEASE_IMAGES --body true`, then push
-a `v*` tag); their README shows how to verify the result.
+a `v*` tag); their README shows how to verify the result. Their `Dockerfile`
+pins both base images by digest, the same ones Forge builds with
+(`TestDockerfilesPinBaseImagesByDigest`), and Dependabot proposes new
+digests. To move to another Go release, replace the whole reference:
+
+```sh
+docker buildx imagetools inspect golang:1.27.4-alpine --format '{{ .Manifest.Digest }}'
+# then in Dockerfile: FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:<that digest> AS build
+```
 
 ## Benchmarks
 

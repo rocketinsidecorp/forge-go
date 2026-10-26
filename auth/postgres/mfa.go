@@ -259,11 +259,8 @@ func (r *Repository) ConfirmTOTPEnrollment(
 			return postgres.Translate(err)
 		}
 		for _, backupDigest := range backupCodeDigests {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO forge_mfa_backup_codes (user_id, code_digest)
-				VALUES ($1, $2)
-			`, subjectID, backupDigest[:]); err != nil {
-				return postgres.Translate(err)
+			if err := insertBackupCode(ctx, tx, subjectID, backupDigest[:]); err != nil {
+				return err
 			}
 		}
 		if _, err := tx.Exec(ctx, `
@@ -364,11 +361,15 @@ func (r *Repository) CreateMFAChallenge(
 			return postgres.Translate(err)
 		}
 
+		id, err := uuid.New()
+		if err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO forge_mfa_challenges
-				(token_digest, membership_id, credential_version, factor_secret_digest,
+				(id, token_digest, membership_id, credential_version, factor_secret_digest,
 				 expires_at, session_expires_at)
-			SELECT $1, m.id, u.session_version, f.secret_digest, $4, $5
+			SELECT $6, $1, m.id, u.session_version, f.secret_digest, $4, $5
 			FROM forge_memberships m
 			JOIN forge_users u ON u.id = m.user_id
 			JOIN forge_totp_factors f ON f.user_id = u.id
@@ -376,7 +377,7 @@ func (r *Repository) CreateMFAChallenge(
 			  AND u.session_version = $3
 			  AND m.status = 'active'
 			  AND u.status = 'active'
-		`, digest[:], membershipID, credentialVersion, expiresAt.UTC(), sessionExpiresAt.UTC())
+		`, digest[:], membershipID, credentialVersion, expiresAt.UTC(), sessionExpiresAt.UTC(), id)
 		if err != nil {
 			return postgres.Translate(err)
 		}
@@ -749,11 +750,8 @@ func (r *Repository) ConfirmTOTPRotation(
 			return postgres.Translate(err)
 		}
 		for _, backupDigest := range backupCodeDigests {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO forge_mfa_backup_codes (user_id, code_digest)
-				VALUES ($1, $2)
-			`, subjectID, backupDigest[:]); err != nil {
-				return postgres.Translate(err)
+			if err := insertBackupCode(ctx, tx, subjectID, backupDigest[:]); err != nil {
+				return err
 			}
 		}
 		if _, err := tx.Exec(ctx, `
@@ -910,4 +908,18 @@ func authDigest(raw []byte) (auth.Digest, error) {
 	var digest auth.Digest
 	copy(digest[:], raw)
 	return digest, nil
+}
+
+// insertBackupCode stores one backup code digest of subjectID, with an ID
+// from the application (UUIDv7), not a database default.
+func insertBackupCode(ctx context.Context, tx pgx.Tx, subjectID uuid.UUID, digest []byte) error {
+	id, err := uuid.New()
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO forge_mfa_backup_codes (id, user_id, code_digest)
+		VALUES ($1, $2, $3)
+	`, id, subjectID, digest)
+	return postgres.Translate(err)
 }

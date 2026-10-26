@@ -49,6 +49,7 @@ func TestSetPrunesOpportunistically(t *testing.T) {
 		if err := store.Set(ctx, key, []byte("v"), time.Hour); err != nil {
 			t.Fatal(err)
 		}
+		// real-clock: the store stamps each write with its clock; distinct times order which entries pruning keeps.
 		time.Sleep(5 * time.Millisecond)
 	}
 	// Writes pruned inline: after one more explicit prune the bound holds.
@@ -73,6 +74,7 @@ func TestPruneIsBounded(t *testing.T) {
 		if err := store.Set(ctx, fmt.Sprintf("k%02d", i), []byte("v"), time.Hour); err != nil {
 			t.Fatal(err)
 		}
+		// real-clock: the store stamps each write with its clock; distinct times make the prune order deterministic.
 		time.Sleep(2 * time.Millisecond)
 	}
 	// One call is bounded work: MaxPruneRounds batches of 2.

@@ -164,6 +164,7 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 	if err := loadTelemetry(lookup, &cfg.Telemetry); err != nil {
 		return Config{}, err
 	}
+	cfg.Database.Environment = cfg.Environment
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}

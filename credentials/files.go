@@ -36,6 +36,10 @@ var (
 	// ErrDirectoryPermissions reports a credentials directory that group or
 	// others can write, so they could replace the key file.
 	ErrDirectoryPermissions = errors.New("credentials: directory must not be writable by group or others (chmod 700)")
+	// ErrSymlink reports a key or credentials file that is a symbolic link.
+	// Neither is followed, even to a file inside the directory: whoever can
+	// plant a link there could point it at a key they control.
+	ErrSymlink = errors.New("credentials: symbolic links are not accepted")
 )
 
 // FileName returns the credentials file name of env, such as production.json.enc.
@@ -62,8 +66,8 @@ func (s KeySource) String() string {
 // LoadKeys reads the keys for env: FORGE_MASTER_KEY when set (through lookup,
 // os.LookupEnv when nil), otherwise <dir>/<env>.key. The first key is active;
 // the others only decrypt. Key files that group or others can read, key
-// files in a directory that group or others can write, and non-regular files
-// (a FIFO, a device) are refused. With neither source the error is
+// files in a directory that group or others can write, symbolic links
+// (ErrSymlink) and non-regular files (a FIFO, a device) are refused. With neither source the error is
 // ErrKeyMissing.
 func LoadKeys(dir, env string, lookup func(string) (string, bool)) ([]encryption.Key, KeySource, error) {
 	if err := ValidateEnvironment(env); err != nil {
@@ -94,7 +98,7 @@ func LoadKeys(dir, env string, lookup func(string) (string, bool)) ([]encryption
 	if err := checkPrivateDir(root, dir); err != nil {
 		return nil, KeySource{}, err
 	}
-	file, err := openNonblocking(root, KeyFileName(env))
+	file, err := openNoFollow(root, KeyFileName(env))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, KeySource{}, ErrKeyMissing
 	}
@@ -128,7 +132,7 @@ func LoadKeys(dir, env string, lookup func(string) (string, bool)) ([]encryption
 }
 
 // ReadFile reads the encrypted file of env from dir. A missing file is
-// ErrNotFound.
+// ErrNotFound; a symbolic link is refused (ErrSymlink).
 func ReadFile(dir, env string) ([]byte, error) {
 	if err := ValidateEnvironment(env); err != nil {
 		return nil, err
@@ -144,7 +148,36 @@ func ReadFile(dir, env string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	return readLimited(openNonblocking(root, FileName(env)))
+	return readLimited(openNoFollow(root, FileName(env)))
+}
+
+// openNoFollow opens name in root like openNonblocking, but refuses a
+// symbolic link (ErrSymlink): os.Root follows links that stay inside the
+// directory and ignores O_NOFOLLOW, so name is checked with Lstat first, and
+// the opened file must be the one Lstat saw, so a link swapped in between
+// the two calls is refused too.
+func openNoFollow(root *os.Root, name string) (*os.File, error) {
+	seen, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if seen.Mode()&fs.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: %s", ErrSymlink, name)
+	}
+	file, err := openNonblocking(root, name)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !os.SameFile(seen, opened) {
+		_ = file.Close()
+		return nil, fmt.Errorf("%w: %s changed while it was opened", ErrSymlink, name)
+	}
+	return file, nil
 }
 
 // openNonblocking opens name in root for reading without blocking: opening a
@@ -314,13 +347,13 @@ func writeAtomicIn(root *os.Root, dir, name string, data []byte, replace bool) (
 	if !replace {
 		// Link refuses to replace an existing file, which closes the window
 		// between the check above and the final name appearing.
-		if err = root.Link(temp, name); err != nil {
+		if err := root.Link(temp, name); err != nil {
 			return err
 		}
 		_ = root.Remove(temp)
 		return syncDir(root)
 	}
-	if err = root.Rename(temp, name); err != nil {
+	if err := root.Rename(temp, name); err != nil {
 		return err
 	}
 	return syncDir(root)
@@ -331,7 +364,7 @@ func writeAtomicIn(root *os.Root, dir, name string, data []byte, replace bool) (
 func syncDir(root *os.Root) error {
 	d, err := root.Open(".")
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // best effort: some platforms cannot open a directory to fsync it, and the rename already happened.
 	}
 	_ = d.Sync()
 	return d.Close()

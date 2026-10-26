@@ -68,7 +68,8 @@ var tlsModes = map[string]bool{"true": true, "skip-verify": true, "preferred": t
 
 // Open creates a connection pool from validated configuration and verifies
 // connectivity within cfg.ConnectTimeout, so misconfiguration fails at
-// startup rather than on the first request. It serves MySQL and MariaDB.
+// startup rather than on the first request (with Lazy(true), on the first
+// query instead). It serves MySQL and MariaDB.
 func Open(ctx context.Context, cfg config.Database, opts ...Option) (*sqldb.DB, error) {
 	obs, poolName, err := observer(opts)
 	if err != nil {
@@ -83,11 +84,13 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*sqldb.DB, 
 		_ = pool.Close()
 		return nil, err
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout)
-	defer cancel()
-	if err := db.Ping(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("connect to database: %w", err)
+	if !collectOptions(opts).lazy {
+		pingCtx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout)
+		defer cancel()
+		if err := db.Ping(pingCtx); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("connect to database: %w", err)
+		}
 	}
 	if err := obs.ObservePool(poolName, db); err != nil {
 		_ = db.Close()

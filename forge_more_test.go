@@ -140,3 +140,23 @@ func TestExecuteHealthcheckProbesTLSAndReportsBadStatus(t *testing.T) {
 		t.Errorf("a portless address passed: %s", stderr.String())
 	}
 }
+
+// The adapters decide on Database.Environment whether to refuse a database
+// role that bypasses row-level security: New makes it the application's
+// environment, whatever the configuration it was given said.
+func TestNewGivesTheDatabaseTheApplicationsEnvironment(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.Environment = config.Production
+	cfg.HTTP.Transport = config.TransportTrustedProxy
+	if cfg.Database.Environment != "" {
+		t.Fatalf("Default's database environment = %q", cfg.Database.Environment)
+	}
+	app, err := forge.New(forge.WithConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := app.Config().Database.Environment; got != config.Production {
+		t.Fatalf("Database.Environment = %q, want production", got)
+	}
+}

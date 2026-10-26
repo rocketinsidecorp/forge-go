@@ -1,5 +1,8 @@
+-- IDs are UUIDv7 values the application generates (package uuid), never
+-- the database: the id columns have no default, so PostgreSQL 16 and 17
+-- apply these migrations too.
 CREATE TABLE forge_users (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY,
     email text NOT NULL,
     email_normalized text NOT NULL,
     password_hash text NOT NULL,
@@ -11,7 +14,7 @@ CREATE TABLE forge_users (
 );
 
 CREATE TABLE forge_organizations (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY,
     name text NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
     status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -19,7 +22,7 @@ CREATE TABLE forge_organizations (
 );
 
 CREATE TABLE forge_tenants (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY,
     organization_id uuid NOT NULL REFERENCES forge_organizations(id),
     slug text NOT NULL CHECK (slug ~ '^[a-z][a-z0-9-]{1,62}$'),
     status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
@@ -29,7 +32,7 @@ CREATE TABLE forge_tenants (
 );
 
 CREATE TABLE forge_memberships (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY,
     user_id uuid NOT NULL REFERENCES forge_users(id),
     tenant_id uuid NOT NULL REFERENCES forge_tenants(id),
     status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
@@ -40,7 +43,7 @@ CREATE TABLE forge_memberships (
 );
 
 CREATE TABLE forge_roles (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY,
     tenant_id uuid NOT NULL REFERENCES forge_tenants(id),
     name text NOT NULL CHECK (name ~ '^[a-z][a-z0-9_.-]{0,62}$'),
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -74,7 +77,7 @@ CREATE TABLE forge_membership_roles (
 );
 
 CREATE TABLE forge_sessions (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY,
     token_digest bytea NOT NULL CHECK (octet_length(token_digest) = 32),
     membership_id uuid NOT NULL REFERENCES forge_memberships(id) ON DELETE CASCADE,
     credential_version bigint NOT NULL CHECK (credential_version > 0),

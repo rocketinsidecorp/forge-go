@@ -7,8 +7,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/jobs"
 	"github.com/rocketinsidecorp/forge-go/jobs/ticktest"
 )
@@ -106,13 +108,7 @@ func TestATickClaimedElsewhereIsNotAnError(t *testing.T) {
 	ticks := &scriptedTicks{claim: func(int) (bool, error) { return false, nil }}
 	var runs, errs atomic.Int32
 	scheduleTick(t, ticks, func(string, error) { errs.Add(1) }, func(context.Context) error { runs.Add(1); return nil })
-	deadline := time.Now().Add(30 * time.Second)
-	for ticks.calls.Load() < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("no ticks were claimed")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waittest.Until(t, 30*time.Second, "two ticks claimed", func() bool { return ticks.calls.Load() >= 2 })
 	if runs.Load() != 0 || errs.Load() != 0 {
 		t.Fatalf("runs=%d errors=%d for ticks claimed elsewhere; want 0 and 0", runs.Load(), errs.Load())
 	}
@@ -142,47 +138,53 @@ func TestAnEarlyTickWaitsForTheDatabaseClock(t *testing.T) {
 }
 
 // A replica waits for a concurrency slot before claiming, so it never claims
-// a tick it cannot run now.
+// a tick it cannot run now. It runs in a synctest bubble: the bubble's clock
+// starts on a tick of both jobs and only moves when every goroutine waits.
 func TestTicksAreClaimedOnlyWithAFreeSlot(t *testing.T) {
 	t.Parallel()
-	ticks := newMemoryTicks()
-	release := make(chan struct{})
-	blocked := make(chan struct{})
-	var once sync.Once
-	s := jobs.NewScheduler(jobs.SchedulerOptions{MaxConcurrentJobs: 1, Ticks: ticks})
-	for _, register := range []struct {
-		name  string
-		every time.Duration
-		job   jobs.Job
-	}{
-		// Its run times out after its interval, 3s, freeing the slot.
-		{"blocker", 3 * time.Second, func(ctx context.Context) error {
-			once.Do(func() { close(blocked) })
-			select {
-			case <-release:
-			case <-ctx.Done():
+	synctest.Test(t, func(t *testing.T) {
+		ticks := newMemoryTicks()
+		release := make(chan struct{})
+		blocked := make(chan struct{})
+		var once sync.Once
+		s := jobs.NewScheduler(jobs.SchedulerOptions{MaxConcurrentJobs: 1, Ticks: ticks})
+		for _, register := range []struct {
+			name  string
+			every time.Duration
+			job   jobs.Job
+		}{
+			// Its run times out after its interval, 3s, freeing the slot.
+			{"blocker", 3 * time.Second, func(ctx context.Context) error {
+				once.Do(func() { close(blocked) })
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+				return nil
+			}},
+			{"other", time.Second, func(context.Context) error { return nil }},
+		} {
+			if err := s.Register(register.name, jobs.ScheduleSpec{Every: register.every}, register.job); err != nil {
+				t.Fatal(err)
 			}
-			return nil
-		}},
-		{"other", time.Second, func(context.Context) error { return nil }},
-	} {
-		if err := s.Register(register.name, jobs.ScheduleSpec{Every: register.every}, register.job); err != nil {
-			t.Fatal(err)
 		}
-	}
-	s.Start()
-	defer func() { _ = s.Stop() }()
-	select {
-	case <-blocked:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the blocking job never started")
-	}
-	before := ticks.attempts("other")
-	time.Sleep(1200 * time.Millisecond) // a tick of "other" passes while the slot is taken
-	if after := ticks.attempts("other"); after != before {
-		t.Fatalf("the replica claimed %d tick(s) of another job while its only slot was taken", after-before)
-	}
-	close(release)
+		s.Start()
+		defer func() { _ = s.Stop() }()
+		<-blocked
+		synctest.Wait()
+		before := ticks.attempts("other")
+		// fake-clock: a tick of "other" passes while the blocker holds the only slot.
+		time.Sleep(1200 * time.Millisecond)
+		synctest.Wait()
+		if after := ticks.attempts("other"); after != before {
+			t.Fatalf("the replica claimed %d tick(s) of another job while its only slot was taken", after-before)
+		}
+		close(release)
+		synctest.Wait()
+		if after := ticks.attempts("other"); after == before {
+			t.Fatal("the other job never claimed a tick once the slot was free")
+		}
+	})
 }
 
 func TestRegisterRefusesAJobNameTooLongToRecord(t *testing.T) {

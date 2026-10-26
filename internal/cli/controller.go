@@ -47,6 +47,9 @@ type controllerSpec struct {
 	// controller then gets its permission from a migration and authenticates
 	// the session cookie (HTML) or the bearer token (JSON).
 	Identity bool
+	// BearerSignIn reports that bootstrap.go mounts the bearer-token login
+	// (--api-auth); without it a JSON controller is wired closed.
+	BearerSignIn bool
 	// NoDatabase reports an application created without a database, whose
 	// Configure only calls routes.
 	NoDatabase bool
@@ -208,6 +211,7 @@ func planController(root string, request controllerRequest, env []string, now ti
 	}
 	spec := controllerSpec{controllerRequest: request, Module: module}
 	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot) && !apiOnlyApplication(projectRoot)
+	spec.BearerSignIn = spec.Identity && hasBearerSignIn(projectRoot)
 	spec.NoDatabase = adapter == "none"
 	if !request.API {
 		spec.ViewRenderer = hasViewRenderer(projectRoot)
@@ -345,6 +349,10 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 	switch {
 	case spec.Public:
 		parts.Notes = append(parts.Notes, fmt.Sprintf("WARNING: --public mounts the %s routes without a guard: anyone who can reach the server can call them.", spec.Name))
+	case spec.Identity && spec.API && !spec.BearerSignIn:
+		parts.Guard = closedJSONGuard
+		parts.Notes = append(parts.Notes, closedJSONNote)
+		arguments += ", protect"
 	case spec.Identity && spec.API:
 		parts.Guard = identityJSONGuard
 		arguments += ", protect"

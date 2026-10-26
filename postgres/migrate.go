@@ -25,7 +25,7 @@ var migrationLockKey = LockKey("forge:schema_migrations")
 // own dedicated connections, never ones from an application pool; close it
 // when done.
 func NewMigrator(cfg config.Database, migrations []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
-	poolConfig, err := parseConfig(cfg)
+	poolConfig, err := parseConfig(cfg, keepEnvironmentSession)
 	if err != nil {
 		return nil, err
 	}

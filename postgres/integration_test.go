@@ -647,3 +647,34 @@ func TestMigrationCannotRedirectBookkeeping(t *testing.T) {
 		t.Fatalf("expected the session switch to be refused, got %v", err)
 	}
 }
+
+// TestPGOptionsCannotGiveSessionsADefaultTenant is the negative test for an
+// environment that sets a tenant for every session: the pool must not take
+// it, so a query outside InTenantTx sees no tenant (and RLS policies return
+// no rows) instead of that tenant's rows.
+func TestPGOptionsCannotGiveSessionsADefaultTenant(t *testing.T) {
+	// Created before the variables are set: the test server's own
+	// administration connection reads them too.
+	cfg := postgrestest.Config(t)
+	tenant := uuid.MustNew().String()
+	t.Setenv("PGOPTIONS", "-c forge.tenant_id="+tenant)
+	t.Setenv("PGTZ", "Pacific/Kiritimati")
+	t.Setenv("PGAPPNAME", "from-the-environment")
+	ctx := context.Background()
+	db, err := postgres.Open(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var setting, zone, application string
+	if err := db.QueryRow(ctx, "SELECT coalesce(current_setting('forge.tenant_id', true), ''), current_setting('TimeZone'), current_setting('application_name')").
+		Scan(&setting, &zone, &application); err != nil {
+		t.Fatal(err)
+	}
+	if setting != "" {
+		t.Fatalf("PGOPTIONS gave the session a default tenant: %q", setting)
+	}
+	if zone == "Pacific/Kiritimati" || application != "forge" {
+		t.Fatalf("PGTZ or PGAPPNAME reached the session: TimeZone=%q application_name=%q", zone, application)
+	}
+}

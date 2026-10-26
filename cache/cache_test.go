@@ -3,6 +3,8 @@ package cache
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -285,6 +287,7 @@ func TestFlightPanicReleasesWaiters(t *testing.T) {
 			defer func() { _ = recover() }()
 			_, _ = f.Do(bg, "k", func(context.Context) ([]byte, error) {
 				close(started)
+				// fake-clock: the leader computes for a while in the synctest bubble before it panics.
 				time.Sleep(100 * time.Millisecond)
 				panic("boom")
 			})
@@ -379,6 +382,54 @@ func TestJSONHelpersTreatUndecodableEntriesAsMisses(t *testing.T) {
 	var stored profile
 	if err := json.Unmarshal(raw, &stored); err != nil || stored.Name != "New" {
 		t.Fatalf("the stale entry was not replaced: %s", raw)
+	}
+}
+
+// A value that does not decode is counted every time and logged once per
+// key, at warn level, with a hash of the key and never the key or the value.
+func TestUndecodableEntriesAreCountedAndLoggedOncePerKey(t *testing.T) {
+	m, _ := NewMemory(MemoryOptions{})
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	ctx := context.Background()
+	key := "profiles:" + t.Name()
+	_ = m.Set(ctx, key, []byte(`{"name": "secret-value-12345", "age": "old"}`), time.Minute)
+	before := DecodeFailures()
+	for range 3 {
+		if _, ok, err := GetJSON[profile](ctx, m, key); ok || err != nil {
+			t.Fatalf("GetJSON on a stale entry = %v, %v; want a miss", ok, err)
+		}
+	}
+	// FetchJSON reads the entry twice but counts it once, then replaces it.
+	if _, err := FetchJSON(ctx, m, key, time.Minute, func(context.Context) (profile, error) { return profile{"New", 1}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := DecodeFailures() - before; got != 4 {
+		t.Fatalf("DecodeFailures grew by %d, want 4", got)
+	}
+	output := logs.String()
+	if n := strings.Count(output, "cached value does not decode"); n != 1 {
+		t.Fatalf("logged %d times, want once per key:\n%s", n, output)
+	}
+	if !strings.Contains(output, "level=WARN") || !strings.Contains(output, "key_hmac=") {
+		t.Errorf("the log line lacks the level or the keyed key hash:\n%s", output)
+	}
+	if strings.Contains(output, key) || strings.Contains(output, "secret-value-12345") {
+		t.Errorf("the log line leaks the key or the value:\n%s", output)
+	}
+	// Not an unkeyed hash of the key, which a guess could be checked against.
+	plain := sha256.Sum256([]byte(key))
+	if strings.Contains(output, hex.EncodeToString(plain[:8])) {
+		t.Errorf("the log line holds an unkeyed SHA-256 of the key:\n%s", output)
+	}
+	// The replaced entry decodes again: no new failure.
+	if _, ok, _ := GetJSON[profile](ctx, m, key); !ok {
+		t.Fatal("the replaced entry does not decode")
+	}
+	if got := DecodeFailures() - before; got != 4 {
+		t.Fatalf("DecodeFailures grew by %d after a good read, want 4", got)
 	}
 }
 

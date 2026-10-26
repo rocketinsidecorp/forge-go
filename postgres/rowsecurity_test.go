@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -279,6 +280,78 @@ func TestRequireRowSecurityRefusesBypassingRolesOutsideDevelopmentAndTest(t *tes
 	}
 	exec("DROP TABLE plain_owned")
 
+	// TRUNCATE, REFERENCES and TRIGGER are not subject to row-level
+	// security (TRUNCATE empties every tenant's rows): held directly,
+	// through PUBLIC, through an inherited membership or through one it can
+	// only SET ROLE to, they are refused on a table with row-level security,
+	// and not on a plain table.
+	const unconfined = "holds TRUNCATE, REFERENCES or TRIGGER"
+	for _, privilege := range []string{"TRUNCATE", "REFERENCES", "TRIGGER", "ALL"} {
+		exec("GRANT " + privilege + " ON notes TO " + db.RuntimeRole)
+		refused(privilege+" on an RLS table", open(db.RuntimeConfig, config.Production), unconfined)
+		exec("REVOKE " + privilege + " ON notes FROM " + db.RuntimeRole)
+		exec("GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO " + db.RuntimeRole)
+	}
+	// A column-level REFERENCES grant probes the rows as well.
+	exec("GRANT REFERENCES (tenant_id) ON notes TO " + db.RuntimeRole)
+	refused("column REFERENCES on an RLS table", open(db.RuntimeConfig, config.Production), unconfined)
+	exec("REVOKE REFERENCES (tenant_id) ON notes FROM " + db.RuntimeRole)
+	exec("GRANT TRUNCATE ON notes TO PUBLIC")
+	refused("TRUNCATE through PUBLIC", open(db.RuntimeConfig, config.Production), unconfined)
+	exec("REVOKE TRUNCATE ON notes FROM PUBLIC")
+	group := pgx.Identifier{"forge_test_group_" + strings.ReplaceAll(uuid.MustNew().String(), "-", "")}.Sanitize()
+	exec("CREATE ROLE " + group + " NOLOGIN")
+	t.Cleanup(func() {
+		_, _ = db.Admin.Exec(context.Background(), "DROP OWNED BY "+group+"; DROP ROLE IF EXISTS "+group)
+	})
+	exec("GRANT TRUNCATE ON notes TO " + group)
+	exec("GRANT " + group + " TO " + db.RuntimeRole)
+	refused("TRUNCATE through an inherited membership", open(db.RuntimeConfig, config.Production), unconfined)
+	exec("REVOKE " + group + " FROM " + db.RuntimeRole)
+	// PostgreSQL 16 and later: a membership whose privileges are not
+	// inherited, but which still allows SET ROLE.
+	exec("GRANT " + group + " TO " + db.RuntimeRole + " WITH INHERIT FALSE")
+	refused("TRUNCATE through a SET ROLE membership", open(db.RuntimeConfig, config.Production), unconfined)
+	exec("REVOKE " + group + " FROM " + db.RuntimeRole)
+	if err := open(db.RuntimeConfig, config.Development); err != nil {
+		t.Errorf("TRUNCATE in development: %v", err)
+	}
+	exec("CREATE TABLE plain_truncated (id int)")
+	exec("GRANT ALL ON plain_truncated TO " + db.RuntimeRole)
+	if err := open(db.RuntimeConfig, config.Production); err != nil {
+		t.Errorf("ALL on a table without row-level security in production: %v", err)
+	}
+	exec("DROP TABLE plain_truncated")
+
+	// A partition without row-level security of a partitioned table with it:
+	// querying the partition directly skips the parent's policies, so any
+	// privilege on it is refused; with its own row-level security it is an
+	// ordinary RLS table.
+	const partition = "holds a privilege on a partition without row-level security"
+	exec(`CREATE TABLE events (tenant_id uuid NOT NULL, at timestamptz NOT NULL) PARTITION BY RANGE (at)`)
+	exec("ALTER TABLE events ENABLE ROW LEVEL SECURITY")
+	exec("ALTER TABLE events FORCE ROW LEVEL SECURITY")
+	exec(`CREATE POLICY events_tenant ON events USING (tenant_id::text = current_setting('forge.tenant_id', true))`)
+	exec(`CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')`)
+	exec("GRANT SELECT ON events TO " + db.RuntimeRole)
+	if err := open(db.RuntimeConfig, config.Production); err != nil {
+		t.Errorf("SELECT on the partitioned parent only: %v", err)
+	}
+	for _, grant := range []string{"SELECT", "INSERT", "DELETE", "SELECT (tenant_id)"} {
+		on := " ON events_2026 "
+		exec("GRANT " + grant + on + "TO " + db.RuntimeRole)
+		refused(grant+" on an unprotected partition", open(db.RuntimeConfig, config.Production), partition)
+		exec("REVOKE " + grant + on + "FROM " + db.RuntimeRole)
+	}
+	exec("GRANT SELECT ON events_2026 TO " + db.RuntimeRole)
+	exec("ALTER TABLE events_2026 ENABLE ROW LEVEL SECURITY")
+	exec("ALTER TABLE events_2026 FORCE ROW LEVEL SECURITY")
+	exec(`CREATE POLICY events_2026_tenant ON events_2026 USING (tenant_id::text = current_setting('forge.tenant_id', true))`)
+	if err := open(db.RuntimeConfig, config.Production); err != nil {
+		t.Errorf("SELECT on a partition with its own row-level security: %v", err)
+	}
+	exec("DROP TABLE events")
+
 	// Two unprivileged roles, but the session acts as another role than the
 	// one it logged in as: only a login as the serving role itself passes.
 	plain := "forge_test_plain_" + strings.ReplaceAll(uuid.MustNew().String(), "-", "")
@@ -356,5 +429,129 @@ func TestRequireRowSecurityIgnoresAShadowingOperator(t *testing.T) {
 		if !errors.Is(err, postgres.ErrRowSecurityBypass) || !strings.Contains(err.Error(), "is a superuser") {
 			t.Errorf("%s: err = %v, want the superuser refused", name, err)
 		}
+	}
+}
+
+// The refusal is Open's default outside development and test, read from
+// cfg.Environment; a Database built in code without an environment is
+// checked too (fail closed), and AllowRowSecurityBypass is the explicit,
+// order-sensitive opt-out.
+func TestOpenRefusesBypassingRolesByDefaultOutsideDevelopmentAndTest(t *testing.T) {
+	admin, cfg := postgrestest.NewWithConfig(t)
+	ctx := context.Background()
+	var superuser bool
+	if err := admin.QueryRow(ctx, "SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user").Scan(&superuser); err != nil {
+		t.Fatal(err)
+	}
+	if !superuser {
+		t.Skip("the test server's user is not a superuser")
+	}
+	open := func(environment config.Environment, opts ...postgres.Option) error {
+		in := cfg
+		in.Environment = environment
+		pool, err := postgres.Open(ctx, in, opts...)
+		if err == nil {
+			pool.Close()
+		}
+		return err
+	}
+	for _, environment := range []config.Environment{config.Staging, config.Production, ""} {
+		if err := open(environment); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+			t.Errorf("a superuser in %q without options: err = %v, want ErrRowSecurityBypass", environment, err)
+		}
+		if err := open(environment, postgres.AllowRowSecurityBypass()); err != nil {
+			t.Errorf("a superuser in %q with AllowRowSecurityBypass: %v", environment, err)
+		}
+	}
+	for _, environment := range []config.Environment{config.Development, config.Test} {
+		if err := open(environment); err != nil {
+			t.Errorf("a superuser in %s: %v", environment, err)
+		}
+	}
+	// A pool built by hand from config.Default has no environment: checked.
+	hand := config.Default().Database
+	hand.URL = cfg.URL
+	if pool, err := postgres.Open(ctx, hand); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+		if err == nil {
+			pool.Close()
+		}
+		t.Errorf("a superuser through config.Default().Database: err = %v, want ErrRowSecurityBypass", err)
+	}
+	// RequireRowSecurity only ever adds the check: for development it does
+	// not switch off the check a production configuration asks for, and for
+	// production it wins over AllowRowSecurityBypass in either order.
+	for _, environment := range []config.Environment{config.Development, config.Test} {
+		if err := open(config.Production, postgres.RequireRowSecurity(environment)); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+			t.Errorf("RequireRowSecurity(%s) on a production configuration: err = %v, want ErrRowSecurityBypass", environment, err)
+		}
+		if err := open(environment, postgres.RequireRowSecurity(environment)); err != nil {
+			t.Errorf("RequireRowSecurity(%s) on a %s configuration: %v", environment, environment, err)
+		}
+	}
+	if err := open(config.Development, postgres.RequireRowSecurity(config.Production)); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+		t.Errorf("RequireRowSecurity(production) on a development configuration: err = %v, want ErrRowSecurityBypass", err)
+	}
+	for name, opts := range map[string][]postgres.Option{
+		"Require then Allow": {postgres.RequireRowSecurity(config.Production), postgres.AllowRowSecurityBypass()},
+		"Allow then Require": {postgres.AllowRowSecurityBypass(), postgres.RequireRowSecurity(config.Production)},
+	} {
+		if err := open(config.Development, opts...); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+			t.Errorf("%s: err = %v, want ErrRowSecurityBypass", name, err)
+		}
+	}
+	if err := open(config.Production, postgres.RequireRowSecurity(config.Development), postgres.AllowRowSecurityBypass()); err != nil {
+		t.Errorf("AllowRowSecurityBypass with RequireRowSecurity(development): %v", err)
+	}
+}
+
+// A lazy pool connects on its first query, so Open succeeds without a
+// reachable server, and it checks the role of every connection it opens
+// instead of the pool at Open.
+func TestLazyPoolConnectsOnFirstUseAndChecksEachConnection(t *testing.T) {
+	ctx := context.Background()
+	unreachable := config.Default().Database
+	unreachable.URL = config.NewSecret("postgres://forge:secret@127.0.0.1:1/forge?sslmode=disable")
+	unreachable.ConnectTimeout = 2 * time.Second
+	if _, err := postgres.Open(ctx, unreachable); err == nil {
+		t.Fatal("Open connected to an unreachable server")
+	}
+	lazy, err := postgres.Open(ctx, unreachable, postgres.Lazy(true))
+	if err != nil {
+		t.Fatalf("a lazy pool on an unreachable server: %v", err)
+	}
+	if err := lazy.Ping(ctx); err == nil {
+		t.Error("a lazy pool on an unreachable server answered a ping")
+	}
+	lazy.Close()
+
+	db := postgrestest.NewRLS(t, rlsMigrations)
+	runtime := db.RuntimeConfig
+	runtime.Environment = config.Production
+	served, err := postgres.Open(ctx, runtime, postgres.Lazy(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer served.Close()
+	if err := served.Ping(ctx); err != nil {
+		t.Errorf("the runtime role through a lazy pool in production: %v", err)
+	}
+
+	var superuser bool
+	if err := db.Admin.QueryRow(ctx, "SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user").Scan(&superuser); err != nil {
+		t.Fatal(err)
+	}
+	if !superuser {
+		return
+	}
+	admin := postgrestest.Config(t)
+	admin.Environment = config.Production
+	refusing, err := postgres.Open(ctx, admin, postgres.Lazy(true))
+	if err != nil {
+		t.Fatalf("Open of a lazy pool checked the role up front: %v", err)
+	}
+	defer refusing.Close()
+	var one int
+	if err := refusing.QueryRow(ctx, "SELECT 1").Scan(&one); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+		t.Fatalf("a superuser's first query through a lazy pool in production: err = %v, want ErrRowSecurityBypass", err)
 	}
 }

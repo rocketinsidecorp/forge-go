@@ -102,6 +102,11 @@ type resourceSpec struct {
 	Module   string
 	Database string // postgres, mysql (also MariaDB) or sqlite
 	Identity bool   // Forge identity (permissions table) is available
+	// BearerSignIn reports that bootstrap.go mounts the bearer-token login
+	// (POST /auth/login, from --api-auth): without it no caller can hold the
+	// bearer token the JSON routes of an identity application authenticate,
+	// so they are wired closed.
+	BearerSignIn bool
 	// BrowserPipeline reports that app/bootstrap/bootstrap.go appears to
 	// install the CSRF, method-override and flash middleware server-rendered
 	// forms rely on. Only scaffolds look.
@@ -442,6 +447,7 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 	}
 	spec := resourceSpec{resourceRequest: request, Module: module, Database: adapter}
 	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot) && !apiOnlyApplication(projectRoot)
+	spec.BearerSignIn = spec.Identity && hasBearerSignIn(projectRoot)
 
 	rendered, err := renderResource(spec)
 	if err != nil {

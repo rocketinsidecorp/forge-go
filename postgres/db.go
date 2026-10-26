@@ -45,6 +45,12 @@ var _ DBTX = (*DB)(nil)
 // Open creates a connection pool from validated configuration and verifies
 // connectivity within cfg.ConnectTimeout, so misconfiguration fails at
 // startup rather than on the first request.
+//
+// Outside development and test (cfg.Environment, which config.Load and
+// forge.New set from FORGE_ENV) it also refuses, with ErrRowSecurityBypass,
+// a role that could bypass row-level security; see RequireRowSecurity for
+// the rules and AllowRowSecurityBypass for the explicit opt-out. With
+// Lazy(true) it connects on the first query instead.
 func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error) {
 	var settings openOptions
 	for _, option := range opts {
@@ -52,11 +58,17 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 			option(&settings)
 		}
 	}
+	checkRowSecurity := settings.requireRowSecurity ||
+		(!settings.allowRowSecurityBypass && cfg.Environment != config.Development && cfg.Environment != config.Test)
 	observer, err := sqldb.NewObserver(settings.telemetry, poolSystem, classify)
 	if err != nil {
 		return nil, err
 	}
-	poolConfig, err := parseConfig(cfg)
+	// The serving pool takes no session setting from the environment: a
+	// PGOPTIONS='-c forge.tenant_id=...' would give every pooled session a
+	// default tenant, so a query outside InTenantTx would read that
+	// tenant's rows instead of none.
+	poolConfig, err := parseConfig(cfg, stripEnvironmentSession)
 	if err != nil {
 		return nil, err
 	}
@@ -73,29 +85,39 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 	}
 	// pgx scans timestamptz into time.Local by default, which makes results
 	// depend on the host's zone. Forge returns instants in UTC everywhere.
-	poolConfig.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
+	poolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		conn.TypeMap().RegisterType(&pgtype.Type{
 			Name:  "timestamptz",
 			OID:   pgtype.TimestamptzOID,
 			Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC},
 		})
+		if settings.lazy && checkRowSecurity {
+			// Nothing was checked when the pool was created: every
+			// connection is, before its first use.
+			return refuseRowSecurityBypass(ctx, conn)
+		}
 		return nil
+	}
+	if settings.lazy {
+		poolConfig.MinConns = 0
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("create connection pool: %w", err)
 	}
-	pingCtx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("connect to database: %w", err)
-	}
-	if settings.rowSecurity {
-		if err := refuseRowSecurityBypass(pingCtx, pool); err != nil {
+	if !settings.lazy {
+		pingCtx, cancel := context.WithTimeout(ctx, cfg.ConnectTimeout)
+		defer cancel()
+		if err := pool.Ping(pingCtx); err != nil {
 			pool.Close()
-			return nil, err
+			return nil, fmt.Errorf("connect to database: %w", err)
+		}
+		if checkRowSecurity {
+			if err := refuseRowSecurityBypass(pingCtx, pool); err != nil {
+				pool.Close()
+				return nil, err
+			}
 		}
 	}
 	unobserve, err := observePool(settings.telemetry, settings.poolName, pool)
@@ -106,9 +128,23 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 	return &DB{pool: pool, unobserve: unobserve}, nil
 }
 
+// sessionSource says whether the session settings pgx reads from the
+// environment (PGOPTIONS, PGTZ, PGAPPNAME) reach the connection.
+type sessionSource bool
+
+const (
+	// stripEnvironmentSession keeps only the session settings the URL
+	// names: the serving pool's choice.
+	stripEnvironmentSession sessionSource = false
+	// keepEnvironmentSession lets the environment fill the session settings
+	// the URL leaves out, as for psql: the migrator's choice, so an operator
+	// can run PGOPTIONS='-c lock_timeout=5s' forge migrate.
+	keepEnvironmentSession sessionSource = true
+)
+
 // parseConfig builds the pgx configuration shared by the pool and the
 // migrator's dedicated session.
-func parseConfig(cfg config.Database) (*pgxpool.Config, error) {
+func parseConfig(cfg config.Database, session sessionSource) (*pgxpool.Config, error) {
 	if cfg.URL.IsZero() {
 		return nil, errors.New("database is not configured: set FORGE_DATABASE_URL")
 	}
@@ -137,6 +173,9 @@ func parseConfig(cfg config.Database) (*pgxpool.Config, error) {
 	}
 	if err := matchesValidatedURL(cfg.URL.Reveal(), poolConfig.ConnConfig.Config); err != nil {
 		return nil, err
+	}
+	if session == stripEnvironmentSession {
+		iso.StripSession(poolConfig.ConnConfig.RuntimeParams)
 	}
 	poolConfig.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
 	return poolConfig, nil

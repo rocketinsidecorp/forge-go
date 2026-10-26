@@ -93,9 +93,19 @@ Rules enforced at startup ([ADR 0005](adr/0005-environment-configuration-fail-fa
   `PGSSLPASSWORD` have no neutral value, so a set one that the URL does not
   name (`sslrootcert=...`, ...) stops the application at startup, with an
   error that names the variable and never a value: ignoring it could replace
-  the CA the URL's `sslmode` verifies against. The other `PG*` variables
-  (`PGUSER`, `PGPASSWORD`, `PGAPPNAME`, ...) still fill what the URL leaves
-  out, as for `psql`. Forge does this without editing its own environment: it
+  the CA the URL's `sslmode` verifies against. The serving pool
+  (`postgres.Open`) also takes no session setting from the environment:
+  `PGOPTIONS`, `PGTZ` and `PGAPPNAME` are dropped unless the URL names
+  `options`, `timezone` or `application_name`, so a
+  `PGOPTIONS='-c forge.tenant_id=...'` cannot give every pooled session a
+  default tenant (a query outside `InTenantTx` sees no tenant and RLS returns
+  no rows). The same holds for session settings in a service file the URL
+  names (`service=...&servicefile=...`): its `options`, `application_name`
+  and the like are dropped from the serving pool unless the URL repeats
+  them. The migrator still honours them, so
+  `PGOPTIONS='-c lock_timeout=5s' forge migrate` works. The other `PG*`
+  variables (`PGUSER`, `PGPASSWORD`, ...) still fill what the URL leaves out,
+  as for `psql`. Forge does this without editing its own environment: it
   writes the default of each such parameter into the URL it gives pgx, and
   replaces a service named by `PGSERVICE` with an empty one. The URL itself
   must be unambiguous: a fragment, an `@` after the host, whitespace in the
@@ -183,15 +193,24 @@ func Configure(ctx context.Context, app *forge.App) error {
 ```
 
 This is what `forge new` generates in `app/bootstrap/bootstrap.go`, with the
-adapter chosen by `--database`. For PostgreSQL it also passes
-`postgres.RequireRowSecurity(app.Config().Environment)`, so staging and
-production refuse a serving role that could bypass row-level security ([Database
-roles](#database-roles-postgresql)).
+adapter chosen by `--database`. On PostgreSQL, `Open` refuses in staging and
+production a serving role that could bypass row-level security ([Database
+roles](#database-roles-postgresql)); no option is needed.
 
 `Open` fails if `FORGE_DATABASE_URL` is empty or selects another adapter,
 applies the pool and session settings above, and pings the database within
 `FORGE_DATABASE_CONNECT_TIMEOUT`, so a wrong URL or unreachable database stops
-startup instead of failing the first request.
+startup instead of failing the first request. With `postgres.Lazy(true)` (or
+`mysql.Lazy(true)`) it connects on the first query instead, and a lazy
+PostgreSQL pool checks the role of each connection it opens (see [Database
+roles](#database-roles-postgresql)) before its first use. Generated
+applications pass `Lazy(!app.Serving())`, so `routes` and `openapi`, which run
+`Configure` only to describe the application, need no reachable database:
+
+```go
+database, err := postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),
+	postgres.Lazy(!app.Serving()))
+```
 
 `App.OnShutdown` hooks run after the HTTP server has drained, and also when
 `Configure` returns an error. `Shutdown(ctx)` closes the pool but stops
@@ -233,10 +252,13 @@ connect elsewhere than its host and port, so a migration role may reach the
 server another way than the serving one (for example directly instead of
 through a connection pooler).
 
-**Refusal outside development and test.** With
-`postgres.RequireRowSecurity(environment)` (the generated bootstrap passes
-it), `Open` in every environment except `development` and `test` (so in
-`staging` and `production`) checks both the role the URL logs in as
+**Refusal outside development and test.** `postgres.Open`, in every
+environment except `development` and `test` (so in `staging` and
+`production`; the environment is `config.Database.Environment`, which
+`config.Load` and `forge.New` set from `FORGE_ENV`, and a `config.Database`
+built in code without one, `config.Default().Database` included, is checked
+too), checks both the role the URL logs
+in as
 (`session_user`) and the role in effect (`current_user`), and fails before
 anything is served when either is a superuser, has `BYPASSRLS`,
 `CREATEROLE` (before PostgreSQL 16 `CREATEROLE` can grant itself membership
@@ -246,14 +268,45 @@ role (it could `SET ROLE` to it), is a member of `pg_execute_server_program`,
 `pg_write_server_files` or `pg_read_server_files` (paths to superuser or to
 the data files), or owns, or could `SET ROLE` to the owner of, a table with
 row-level security enabled (an owner can run `ALTER TABLE ... NO FORCE ROW
-LEVEL SECURITY`). It also fails when the two differ: a role setting
+LEVEL SECURITY`), holds `TRUNCATE`, `REFERENCES` (also on a single column)
+or `TRIGGER` on such a table, itself, through `PUBLIC` or through a role it
+belongs to (none of the three is subject to row-level security: `TRUNCATE`
+empties every tenant's rows; the usual cause is a `GRANT ALL`), or holds any
+privilege on a partition that lacks row-level security of its own under a
+partitioned table that has it (querying the partition directly skips the
+parent's policies: enable and force row-level security, with the same
+policies, on every partition). Membership counts whatever its `INHERIT` and
+`SET` options, so even a `WITH INHERIT FALSE, SET FALSE` grant, which cannot
+use the other role's privileges, is refused: a deliberate, fail-closed
+over-refusal. It also fails when the two differ: a role setting
 (`?options=-c%20role=...`, `ALTER ROLE ... SET role`) makes the session act
 as another role, and `SET ROLE NONE` turns it back into the login role, so
 the URL must log in as the serving role itself. The error wraps
-`postgres.ErrRowSecurityBypass` and names the role. There is no override
-variable: fix the role, or remove the option from your bootstrap knowingly.
+`postgres.ErrRowSecurityBypass` and names the role. This is `Open`'s default
+for every application, generated or hand-written, and for every pool it opens
+(the `jobs`, `seed` and `auth setup` commands included).
+`postgres.RequireRowSecurity(environment)` adds the check for an explicit
+staging or production environment, whatever `cfg.Environment` says; it never
+switches the check off, and it wins over the opt-out. There is no override
+variable; the only opt-out, `postgres.AllowRowSecurityBypass()`, is in code, for a pool that must use such a role on purpose (an administration or
+reporting tool), never for the pool that serves tenants:
+
+```go
+// Reporting connects as a BYPASSRLS role on purpose and serves no request.
+reports, err := postgres.Open(ctx, reportingConfig, postgres.AllowRowSecurityBypass())
+```
+
 Development and test are not checked, so local tools can connect as an
-administrator. A role that owns only tables without row-level security is
+administrator.
+
+**Behaviour change (forge-go QG9).** The refusal used to apply only to a
+pool opened with `postgres.RequireRowSecurity`, as the generated bootstrap
+did; a hand-written application or a second pool was not checked. Now every
+`postgres.Open` checks outside development and test. A deployment that
+serves as a superuser, a `BYPASSRLS` role or a role holding `TRUNCATE` on a
+tenant table now refuses to start: fix the role ([Database
+roles](#database-roles-postgresql)), or pass `AllowRowSecurityBypass()` to a
+pool that really needs it. A role that owns only tables without row-level security is
 accepted, and the check reads the tables of the database it is connected to.
 Keep the serving role separate from the migration role: it must own no table
 with row-level security and be no member of the migration role.
@@ -1059,9 +1112,12 @@ CREATE TABLE notes (
 );
 ```
 
-- Forge's identity tables (`auth/postgres`, released migrations) keep
-  `DEFAULT uuidv7()`, a PostgreSQL 18 function, so applications with Forge
-  identity need PostgreSQL 18. When a migration fails on an older server with
+- Forge's identity tables (`auth/postgres`) have no id default either: the
+  repositories generate the ids, so applications with Forge identity run on
+  PostgreSQL 16 and 17 too. (They declared `DEFAULT uuidv7()` until forge-go
+  QG9; the migrations were edited before any release, and a database that
+  applied the earlier text still verifies.) When an application migration
+  fails on an older server with
   `function uuidv7() does not exist` (SQLSTATE 42883), the error adds the
   server version and the two ways out: PostgreSQL 18, or a `uuidv7()`
   function defined by an earlier migration. The failed migration is rolled

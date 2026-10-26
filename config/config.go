@@ -118,6 +118,14 @@ type Database struct {
 	// AllowPlaintext permits production connections without TLS, for
 	// databases reachable only over a trusted private network.
 	AllowPlaintext bool
+	// Environment is the environment the pool serves in. Outside
+	// development and test, postgres.Open refuses a role that could bypass
+	// row-level security unless postgres.AllowRowSecurityBypass is passed.
+	// Load and forge.New copy Config.Environment into it. Default leaves it
+	// empty, like a Database built in code: the empty value is neither
+	// development nor test, so such a pool is checked (fail closed) until
+	// the environment is set explicitly.
+	Environment Environment
 }
 
 // Config is the application's configuration. Default returns safe defaults; Load reads FORGE_*

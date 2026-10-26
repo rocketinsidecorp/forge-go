@@ -202,7 +202,9 @@ func (i *Isolated) PinnedKeys() []string { return i.pinned }
 
 // StripSession removes from params, the session settings pgx parsed, every
 // setting the URL does not name: PGAPPNAME, PGOPTIONS, PGTZ and whatever a
-// service file adds. It is meant for Everything scope.
+// service file adds. It works in both scopes: an application's serving pool
+// (TLSOnly) uses it so that PGOPTIONS cannot give its sessions a default
+// tenant, and forge db (Everything) so that no PG* variable has any effect.
 func (i *Isolated) StripSession(params map[string]string) {
 	for key := range params {
 		if !i.named[key] {

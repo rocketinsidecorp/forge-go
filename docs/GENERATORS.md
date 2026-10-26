@@ -116,7 +116,9 @@ the same way.
 - Without `--public` it needs a `protect(permission, next)` function and asks
   it for `NAME:read`. With Forge identity the printed wiring authenticates the
   session cookie (HTML; signed-out browsers go to `/session/new` and back) or
-  the bearer token (`--api`), and the migration registers the permission and
+  the bearer token (`--api`; in an application without the bearer login
+  `POST /auth/login` of `--api-auth` the printed guard refuses every request
+  instead, as forge-rust's `DenyAll` does), and the migration registers the permission and
   grants it to the `owner` role. When a migration already registers
   `NAME:read` (a model, resource or scaffold whose plural is `NAME`), the
   controller reuses it and generates no migration; the printed wiring names

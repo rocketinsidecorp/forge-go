@@ -114,7 +114,7 @@ forge generate controller pages home --public # handlers, routes, views and test
 forge generate mailer user welcome:name  # a mailer with text and HTML templates, previews and tests
 forge destroy controller pages home --public # remove what a generator created, unless you edited it
 {{- end}}
-forge routes                             # list the routes found in app/ and cmd/
+forge routes                             # every route of the composed app (no database needed)
 {{- if .DB}}
 {{- if .API}}
 forge generate resource post title:string --tenant-scoped # a JSON API under /v1/posts through every layer
@@ -596,8 +596,12 @@ a TLS-terminating proxy){{if and .DB .DB.ProductionTLS}} and {{.DB.ProductionTLS
 `FORGE_DATABASE_URL`{{end}}.
 
 Behind a reverse proxy the application sees the proxy's address unless it
-trusts that proxy's `X-Forwarded-For`. List the proxy networks so sign-in
+trusts that proxy's `X-Forwarded-For`. List the proxy networks so
+{{- if .API}}
+rate limits and audit records count each client
+{{- else}} sign-in
 throttles, rate limits and audit records count each client
+{{- end}}
 (`forge deploy` sets this to the forge-proxy network automatically; empty
 trusts nobody):
 

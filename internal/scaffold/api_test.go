@@ -133,7 +133,7 @@ func TestGenerateAPIOnlyApplicationForEveryDatabase(t *testing.T) {
 				t.Errorf(".env.development of an API-only application configures the sign-in pages:\n%s", env)
 			}
 			readme := read("README.md")
-			for _, forbidden := range []string{`src="app/assets/`, "## HTML pages", "## Translations", "## JavaScript and styles", "## Sign in", "forge generate view", "forge setup"} {
+			for _, forbidden := range []string{`src="app/assets/`, "## HTML pages", "## Translations", "## JavaScript and styles", "## Sign in", "forge generate view", "forge setup", "sign-in\nthrottles"} {
 				if strings.Contains(readme, forbidden) {
 					t.Errorf("README.md of an API-only application mentions %q", forbidden)
 				}

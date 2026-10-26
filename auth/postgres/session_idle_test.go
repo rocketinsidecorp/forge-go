@@ -285,9 +285,9 @@ func TestSessionIdleMigrationKeepsExistingSessions(t *testing.T) {
 	}
 	digest := token.Digest()
 	if _, err := db.Exec(ctx, `
-		INSERT INTO forge_sessions (token_digest, membership_id, credential_version, expires_at, created_at)
-		VALUES ($1, $2, 1, now() + interval '20 days', now() - interval '3 days')
-	`, digest[:], membershipID); err != nil {
+		INSERT INTO forge_sessions (id, token_digest, membership_id, credential_version, expires_at, created_at)
+		VALUES ($3, $1, $2, 1, now() + interval '20 days', now() - interval '3 days')
+	`, digest[:], membershipID, uuid.MustNew()); err != nil {
 		t.Fatal(err)
 	}
 

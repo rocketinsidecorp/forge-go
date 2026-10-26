@@ -103,3 +103,37 @@ func TestExecuteRoutesReportsFailures(t *testing.T) {
 		t.Errorf("an extra command named routes: code=%d, want 2", code)
 	}
 }
+
+// routes and openapi compose the application only to describe it:
+// App.Serving is false while their Configure runs, so it starts no
+// scheduler or worker; serve and an App built with New are serving.
+func TestServingIsFalseOnlyWhileDescribingTheApplication(t *testing.T) {
+	t.Parallel()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !app.Serving() {
+		t.Error("an App built with New is not serving")
+	}
+	lookup := envLookup(map[string]string{"FORGE_ENV": "development", "FORGE_HTTP_ADDR": "127.0.0.1:0"})
+	for _, command := range []string{"routes", "openapi", "serve"} {
+		var seen []bool
+		configure := func(_ context.Context, app *forge.App) error {
+			seen = append(seen, app.Serving())
+			return nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		if command == "serve" {
+			cancel() // serve composes, then stops at once
+		}
+		var stdout, stderr bytes.Buffer
+		if code := forge.Execute(ctx, []string{command}, lookup, &stdout, &stderr, configure); code != 0 {
+			t.Fatalf("%s: code=%d stderr=%s", command, code, stderr.String())
+		}
+		cancel()
+		if want := command == "serve"; len(seen) != 1 || seen[0] != want {
+			t.Errorf("%s: Serving() during Configure = %v, want [%v]", command, seen, want)
+		}
+	}
+}

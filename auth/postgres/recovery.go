@@ -99,10 +99,14 @@ func (r *Repository) CreateRecovery(ctx context.Context, subjectID uuid.UUID, di
 		`, subjectID); err != nil {
 			return postgres.Translate(err)
 		}
+		id, err := uuid.New()
+		if err != nil {
+			return err
+		}
 		_, err = tx.Exec(ctx, `
-			INSERT INTO forge_password_recovery (token_digest, user_id, expires_at)
-			VALUES ($1, $2, $3)
-		`, digest[:], subjectID, expiresAt.UTC())
+			INSERT INTO forge_password_recovery (id, token_digest, user_id, expires_at)
+			VALUES ($4, $1, $2, $3)
+		`, digest[:], subjectID, expiresAt.UTC(), id)
 		return postgres.Translate(err)
 	})
 }

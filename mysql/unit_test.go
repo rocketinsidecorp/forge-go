@@ -189,6 +189,26 @@ func TestOpenUnreachableHostFailsFast(t *testing.T) {
 	}
 }
 
+// A lazy pool returns at once on an unreachable server; its first query
+// reports the failure.
+func TestLazyOpenConnectsOnFirstQuery(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default().Database
+	cfg.URL = config.NewSecret("mysql://app:hunter2@127.0.0.1:1/app")
+	cfg.ConnectTimeout = 300 * time.Millisecond
+	db, err := mysql.Open(context.Background(), cfg, mysql.Lazy(true))
+	if err != nil {
+		t.Fatalf("a lazy pool on an unreachable server: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.Ping(context.Background()); err == nil {
+		t.Fatal("a lazy pool on an unreachable server answered a ping")
+	}
+	if _, err := mysql.Open(context.Background(), cfg, mysql.Lazy(true), mysql.Lazy(false)); err == nil {
+		t.Fatal("Lazy(false) did not connect at Open")
+	}
+}
+
 // TestUnknownParameterNamesAreNotEchoed is a regression test: with an
 // unencoded "?" in the password, part of the password became a parameter
 // name and was quoted in the startup error.

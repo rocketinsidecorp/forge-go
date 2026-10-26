@@ -133,6 +133,9 @@ func Configure(ctx context.Context, app *forge.App) error {
         Logger: app.Logger(),
     })
     if err != nil { return err }
+    // `routes` and `openapi` compose the application only to describe it:
+    // no worker claims jobs there.
+    if !app.Serving() { return nil }
     if err := worker.Start(ctx); err != nil { return err }
     // Registered after the database hook, so it runs before it (reverse order).
     return app.OnShutdown(worker.Shutdown)

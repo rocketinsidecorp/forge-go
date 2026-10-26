@@ -79,12 +79,20 @@ rejected fail-closed and comparisons use constant-time equality.
   expiry, revocation time and last use (`last_seen_at`, for the idle
   timeout).
 
-All entity identifiers default to PostgreSQL `uuidv7()` (the repositories
-supply them from Go; the default covers rows inserted in SQL, such as the
-permissions a generated resource migration adds), so the identity migrations
-need PostgreSQL 18. On an older server the identity migration fails, rolled
-back, with an error that names the server version and says `uuidv7()` needs
-PostgreSQL 18 (or a `uuidv7()` function defined by an earlier migration).
+All entity identifiers are UUIDv7 values the repositories generate in Go
+(package `uuid`); the id columns have no database default, so the identity
+migrations apply on PostgreSQL 16, 17 and 18. A row you insert by hand needs
+its id: `uuid.MustNew()` in Go, or `forge uuid` in a shell:
+
+```sh
+psql "$FORGE_MIGRATION_DATABASE_URL" -c "INSERT INTO forge_roles (id, tenant_id, name) VALUES ('$(forge uuid)', '<tenant id>', 'auditor')"
+```
+
+**Behaviour change (forge-go QG9).** The identity migrations used to declare
+`DEFAULT uuidv7()`, a PostgreSQL 18 function. They were edited in place
+because no release included them yet; a database that applied the earlier
+text keeps its (unused) defaults, and `migrate` accepts the checksum Forge
+recorded for it, so no action is needed.
 
 `auth/postgres.Repository` implements `auth.Resolver`. Every resolution
 joins the live session, user, organization, tenant and membership state and

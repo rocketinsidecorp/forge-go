@@ -270,7 +270,7 @@ func (m *Migrator) Status(ctx context.Context) ([]MigrationStatus, error) {
 		status := MigrationStatus{Version: migration.Version, Name: migration.Name, State: StatePending}
 		if row, ok := state[migration.Version]; ok {
 			status.State, status.AppliedAt = StateApplied, row.appliedAt
-			if row.checksum != migration.Checksum {
+			if !checksumMatches(migration, row.name, row.checksum) {
 				status.State = StateModified
 			}
 		}
@@ -318,7 +318,7 @@ func (m *Migrator) verify(state map[int64]applied) error {
 			}
 			return fmt.Errorf("database has migration %d_%s, which this build does not contain", version, row.name)
 		}
-		if row.checksum != migration.Checksum {
+		if !checksumMatches(migration, row.name, row.checksum) {
 			return fmt.Errorf("migration %d_%s was modified after it was applied; add a new migration instead", version, migration.Name)
 		}
 	}

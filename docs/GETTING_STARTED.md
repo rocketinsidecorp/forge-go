@@ -49,7 +49,8 @@ Contents: [1 Prerequisites](#1-prerequisites) ·
 - **A database.** PostgreSQL 18 is the default and the only database with
   sign-in and tenants, so this guide uses it. The easiest way to get one is
   Docker (with Compose): the generated `compose.yaml` starts it. Without
-  Docker, any PostgreSQL 18 server whose user may create databases works.
+  Docker, any PostgreSQL 16, 17 or 18 server whose user may create databases
+  works.
   SQLite needs nothing installed ([see below](#sqlite-instead-of-postgresql)).
 - `curl` and `openssl` for a few commands, and the `psql` client for `forge db
   console` (section 11).
