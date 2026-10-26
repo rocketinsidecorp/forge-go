@@ -230,7 +230,23 @@ expired counters on every attempt (more than one attempt creates), so the table
 follows the live windows however many logins and sources an attacker cycles
 through, with no scheduled job; `PruneExpired` still deletes expired counters in
 bounded batches using `SKIP LOCKED` to empty a table that stopped receiving
-attempts. `MaxEntries` bounds only the in-memory throttler.
+attempts. `MaxEntries` bounds only the in-memory throttler. Generated
+PostgreSQL applications wire it for sign-in, two-factor codes and password
+resets.
+
+The in-memory throttler counts per process: with several replicas a guesser
+gets each replica's budget, and every restart or deploy resets it. When
+`FORGE_ENV=production`, `NewLoginService`, `NewMFAService` and
+`NewRecoveryService` therefore log a warning (through `slog.Default`, or the
+recovery service's `WithRecoveryLogger`) when they count attempts in a
+`MemoryLoginThrottler`, the default or an explicit one. It is a warning and
+not a refusal, since a single-process application (SQLite, one replica) may
+count in memory on purpose:
+
+```text
+level=WARN msg="auth: sign-in attempts are throttled in this process only (auth.MemoryLoginThrottler): ..." service=sign-in environment=production
+```
+
 A blocked login returns `login_throttled` with HTTP `429`; the HTTP adapter
 also sends `Retry-After`. The source is the client address the HTTP server
 resolved (`web.ClientIP`): the socket peer, unless the peer is a trusted proxy

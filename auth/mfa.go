@@ -321,6 +321,7 @@ func NewMFAService(store MFAStore, sessions CredentialSessionCreator, secretCiph
 			return nil, err
 		}
 	}
+	warnProcessLocalThrottle(nil, "two-factor", service.throttler)
 	return service, nil
 }
 

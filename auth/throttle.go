@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"log/slog"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -171,6 +173,24 @@ type throttleBucket struct {
 }
 
 func (b *throttleBucket) blocking() bool { return b.count >= b.limit }
+
+// warnProcessLocalThrottle logs a warning when a production process (FORGE_ENV
+// is production) counts the attempts of service with a MemoryLoginThrottler,
+// the default of NewLoginService, NewMFAService and NewRecoveryService. It
+// is a warning, not a refusal: a single-node application (SQLite, one
+// replica) may legitimately count in memory. logger nil means slog.Default.
+func warnProcessLocalThrottle(logger *slog.Logger, service string, throttler LoginThrottler) {
+	if _, inMemory := throttler.(*MemoryLoginThrottler); !inMemory || os.Getenv("FORGE_ENV") != "production" {
+		return
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("auth: "+service+" attempts are throttled in this process only (auth.MemoryLoginThrottler): "+
+		"with several replicas a guesser gets each replica's budget, and every restart or deploy resets it; "+
+		"share the counters with auth/postgres.NewLoginThrottler (forge new wires it) unless the application runs as a single process",
+		"service", service, "environment", "production")
+}
 
 func NewMemoryLoginThrottler(config LoginThrottleConfig) (*MemoryLoginThrottler, error) {
 	return newMemoryLoginThrottler(config, time.Now)

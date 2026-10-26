@@ -136,6 +136,11 @@ func WithSecurityAuditor(auditor SecurityAuditor) LoginOption {
 	}
 }
 
+// NewLoginService builds the password sign-in use case. Without
+// WithLoginThrottler it counts attempts in a MemoryLoginThrottler, per
+// process; with FORGE_ENV=production it then logs a warning through
+// slog.Default, because replicas and restarts each get a fresh budget. Pass
+// auth/postgres.NewLoginThrottler to share the counters.
 func NewLoginService(passwords PasswordStore, sessions CredentialSessionCreator, options ...LoginOption) (*LoginService, error) {
 	if passwords == nil || sessions == nil {
 		return nil, errors.New("password store and session creator are required")
@@ -159,6 +164,7 @@ func NewLoginService(passwords PasswordStore, sessions CredentialSessionCreator,
 			return nil, err
 		}
 	}
+	warnProcessLocalThrottle(nil, "sign-in", service.throttler)
 	return service, nil
 }
 
