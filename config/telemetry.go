@@ -189,7 +189,7 @@ func (t Telemetry) validate(environment Environment, httpAddress string) error {
 	}
 	if t.MetricsAddress != "" {
 		host, port, err := net.SplitHostPort(t.MetricsAddress)
-		if number, convErr := strconv.Atoi(port); err != nil || convErr != nil || number < 1 || number > 65535 || strings.ContainsAny(host, "/?#@") {
+		if number, convErr := strconv.Atoi(port); err != nil || convErr != nil || number < 0 || number > 65535 || strings.ContainsAny(host, "/?#@") {
 			return errors.New("FORGE_TELEMETRY_METRICS_ADDR must be host:port, such as 127.0.0.1:9464")
 		}
 		if t.MetricsAddress == httpAddress {

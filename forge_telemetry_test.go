@@ -49,14 +49,14 @@ func TestExecuteServesMetricsExportsTracesAndCorrelatesLogs(t *testing.T) {
 	collector := &otlpCollector{}
 	otlp := httptest.NewServer(collector)
 	defer otlp.Close()
-	appAddress, metricsAddress := freeAddress(t), freeAddress(t)
 	lookup := envLookup(map[string]string{
 		"FORGE_ENV":                     "test",
-		"FORGE_HTTP_ADDR":               appAddress,
+		"FORGE_HTTP_ADDR":               anyAddress,
 		"FORGE_TELEMETRY_SERVICE_NAME":  "orders",
 		"FORGE_TELEMETRY_EXPORTER":      "otlp",
 		"FORGE_TELEMETRY_OTLP_ENDPOINT": otlp.URL,
-		"FORGE_TELEMETRY_METRICS_ADDR":  metricsAddress,
+		// Not the application's spelling: the two addresses must differ.
+		"FORGE_TELEMETRY_METRICS_ADDR": "localhost:0",
 	})
 	configure := func(_ context.Context, app *forge.App) error {
 		if app.Telemetry() == nil {
@@ -73,6 +73,8 @@ func TestExecuteServesMetricsExportsTracesAndCorrelatesLogs(t *testing.T) {
 	done := make(chan int, 1)
 	go func() { done <- forge.Execute(ctx, nil, lookup, &output, io.Discard, configure) }()
 
+	appAddress := boundAddress(t, &output, "serving HTTP")
+	metricsAddress := boundAddress(t, &output, "serving metrics")
 	waitFor(t, func() bool {
 		response, err := http.Get("http://" + appAddress + "/orders/42?secret=1")
 		if err != nil {
@@ -193,15 +195,14 @@ func TestRecoveredPanicsAreMeasuredAsServerErrors(t *testing.T) {
 
 func TestMetricsListenerFailureStopsRun(t *testing.T) {
 	t.Parallel()
-	busy := freeAddress(t)
-	listener, err := net.Listen("tcp", busy)
+	listener, err := net.Listen("tcp", anyAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
 	cfg := config.Default()
-	cfg.HTTP.Address = freeAddress(t)
-	cfg.Telemetry.MetricsAddress = busy
+	cfg.HTTP.Address = anyAddress
+	cfg.Telemetry.MetricsAddress = listener.Addr().String()
 	app, err := forge.New(forge.WithConfig(cfg))
 	if err != nil {
 		t.Fatal(err)
@@ -274,9 +275,8 @@ func TestPublicMetricsAddressWithoutOptInLogsAWarning(t *testing.T) {
 	t.Parallel()
 	var logs safeBuffer
 	cfg := config.Default()
-	cfg.HTTP.Address = freeAddress(t)
-	_, port, _ := net.SplitHostPort(freeAddress(t))
-	cfg.Telemetry.MetricsAddress = "0.0.0.0:" + port
+	cfg.HTTP.Address = anyAddress
+	cfg.Telemetry.MetricsAddress = "0.0.0.0:0"
 	app, err := forge.New(forge.WithConfig(cfg), forge.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	if err != nil {
 		t.Fatal(err)
@@ -301,10 +301,9 @@ func runWithLogs(t *testing.T, collector http.Handler, extra map[string]string) 
 	t.Helper()
 	otlp := httptest.NewServer(collector)
 	defer otlp.Close()
-	appAddress := freeAddress(t)
 	env := map[string]string{
 		"FORGE_ENV":                     "test",
-		"FORGE_HTTP_ADDR":               appAddress,
+		"FORGE_HTTP_ADDR":               anyAddress,
 		"FORGE_TELEMETRY_SERVICE_NAME":  "orders",
 		"FORGE_TELEMETRY_OTLP_ENDPOINT": otlp.URL,
 	}
@@ -321,6 +320,7 @@ func runWithLogs(t *testing.T, collector http.Handler, extra map[string]string) 
 	var output safeBuffer
 	done := make(chan int, 1)
 	go func() { done <- forge.Execute(ctx, nil, envLookup(env), &output, io.Discard, configure) }()
+	appAddress := boundAddress(t, &output, "serving HTTP")
 	waitFor(t, func() bool {
 		response, err := http.Get("http://" + appAddress + "/orders/42")
 		if err != nil {
@@ -458,9 +458,9 @@ func TestExecuteLogExportFailureStaysOutOfTheLogQueue(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	// "starting HTTP server" and "order loaded" are the only records queued;
-	// the failure warning must not be among them.
-	if records > 2 || logRequests == 0 {
+	// "starting HTTP server", "serving HTTP" and "order loaded" are the only
+	// records queued; the failure warning must not be among them.
+	if records > 3 || logRequests == 0 {
 		t.Fatalf("log export requests %d, records %d", logRequests, records)
 	}
 }

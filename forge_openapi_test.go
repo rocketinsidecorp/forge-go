@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"net"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,11 +12,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/config"
-	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/openapi"
 )
 
@@ -186,7 +184,7 @@ func TestInaccurateDescriptionStopsStartup(t *testing.T) {
 			Responses: []openapi.Response{openapi.Empty(http.StatusNoContent)},
 		}))
 	}
-	lookup := envLookup(map[string]string{"FORGE_ENV": "test", "FORGE_HTTP_ADDR": freeAddress(t)})
+	lookup := envLookup(map[string]string{"FORGE_ENV": "test", "FORGE_HTTP_ADDR": anyAddress})
 	var stdout, stderr bytes.Buffer
 	if code := forge.Execute(context.Background(), nil, lookup, &stdout, &stderr, configure); code != 1 || !strings.Contains(stdout.String()+stderr.String(), "not a wildcard") {
 		t.Fatalf("serve: code=%d output=%s%s", code, stdout.String(), stderr.String())
@@ -228,8 +226,9 @@ func TestServedDocumentIncludesRoutesAddedBeforeTheFirstRequest(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
 	cfg.Environment = config.Test
-	cfg.HTTP.Address = freeAddress(t)
-	app, err := forge.New(forge.WithConfig(cfg))
+	cfg.HTTP.Address = anyAddress
+	var logs safeBuffer
+	app, err := forge.New(forge.WithConfig(cfg), forge.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,17 +242,7 @@ func TestServedDocumentIncludesRoutesAddedBeforeTheFirstRequest(t *testing.T) {
 		}
 	}()
 	// Wait for the listener without sending a request.
-	var dialErr error
-	if !waittest.Poll(5*time.Second, func() bool {
-		var connection net.Conn
-		connection, dialErr = net.Dial("tcp", cfg.HTTP.Address)
-		if dialErr == nil {
-			_ = connection.Close()
-		}
-		return dialErr == nil
-	}) {
-		t.Fatalf("the server did not listen: %v", dialErr)
-	}
+	address := boundAddress(t, &logs, "serving HTTP")
 	select {
 	case err := <-done:
 		t.Fatalf("the application stopped before the request: %v", err)
@@ -263,7 +252,7 @@ func TestServedDocumentIncludesRoutesAddedBeforeTheFirstRequest(t *testing.T) {
 	if err := app.Handle("GET /v1/late", late); err != nil {
 		t.Fatal(err)
 	}
-	response, err := http.Get("http://" + cfg.HTTP.Address + forge.OpenAPIPath)
+	response, err := http.Get("http://" + address + forge.OpenAPIPath)
 	if err != nil {
 		t.Fatal(err)
 	}
