@@ -83,7 +83,10 @@ func TestSecretCarriersNeverRevealTheirSecret(t *testing.T) {
 			}
 			for _, output := range outputs {
 				for _, secret := range tc.secrets {
-					if secret != "" && strings.Contains(output, secret) {
+					if secret == "" {
+						t.Fatal("the test case has an empty secret, so it would pass vacuously")
+					}
+					if strings.Contains(output, secret) {
 						t.Errorf("output leaks %q: %s", secret, output)
 					}
 				}
