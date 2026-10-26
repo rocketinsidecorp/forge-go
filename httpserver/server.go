@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"slices"
@@ -158,15 +159,21 @@ func (s *Server) Run(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("run context is required")
 	}
+	// Listening here, rather than through ListenAndServe, lets the log below
+	// report the address the kernel bound: with port 0 the configured address
+	// does not say which port was chosen.
+	listener, err := net.Listen("tcp", s.server.Addr)
+	if err != nil {
+		return fmt.Errorf("serve HTTP: %w", err)
+	}
+	s.logger.Info("serving HTTP", "address", listener.Addr().String())
 	errorsChannel := make(chan error, 1)
 	go func() {
-		var err error
 		if s.transport == config.TransportTLS {
-			err = s.server.ListenAndServeTLS(s.certFile, s.keyFile)
+			errorsChannel <- s.server.ServeTLS(listener, s.certFile, s.keyFile)
 		} else {
-			err = s.server.ListenAndServe()
+			errorsChannel <- s.server.Serve(listener)
 		}
-		errorsChannel <- err
 	}()
 
 	select {

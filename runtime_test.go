@@ -5,12 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand/v2"
-	"net"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -26,46 +25,34 @@ func envLookup(values map[string]string) func(string) (string, bool) {
 	}
 }
 
-// handedOut holds every address freeAddress returned in this process.
-var handedOut = struct {
-	sync.Mutex
-	addresses map[string]bool
-}{addresses: map[string]bool{}}
-
-// freeAddress returns a loopback address that was free a moment ago and
-// that no other test of this process was given.
+// anyAddress asks the kernel for a port when the application binds it.
 //
-// The port is drawn from 20000-29999, below the range operating systems hand
-// out to anything that asks for "any port" (32768 and up on Linux, 49152 and
-// up elsewhere). A port the kernel itself chose would be free only until the
-// next httptest server, or the next outgoing connection of any test binary
-// running in parallel, was given the same one; that made "address already in
-// use" appear on loaded machines.
-func freeAddress(t *testing.T) string {
+// A port chosen by the test, even one probed and released a moment before,
+// can be taken by another test binary or process before the application binds
+// it: "address already in use". Port 0 has no such window, because the kernel
+// picks the port while binding. The application logs the address it bound
+// ("serving HTTP", "serving metrics"); boundAddress reads it from there.
+const anyAddress = "127.0.0.1:0"
+
+// boundAddress waits for the log record msg and returns its address
+// attribute: where the application really listens.
+func boundAddress(t *testing.T, logs interface{ String() string }, msg string) string {
 	t.Helper()
-	handedOut.Lock()
-	defer handedOut.Unlock()
-	for range 500 {
-		address := fmt.Sprintf("127.0.0.1:%d", 20000+rand.IntN(10000))
-		if handedOut.addresses[address] {
-			continue
+	pattern := regexp.MustCompile(`msg="?` + regexp.QuoteMeta(msg) + `"? address=(\S+)`)
+	var address string
+	waitFor(t, func() bool {
+		match := pattern.FindStringSubmatch(logs.String())
+		if match == nil {
+			return false
 		}
-		listener, err := net.Listen("tcp", address)
-		if err != nil {
-			continue // taken by another process
-		}
-		if err := listener.Close(); err != nil {
-			t.Fatal(err)
-		}
-		handedOut.addresses[address] = true
-		return address
-	}
-	t.Fatal("no unused loopback port in 500 tries")
-	return ""
+		address = match[1]
+		return true
+	})
+	return address
 }
 
 func TestExecuteServeHealthcheckAndGracefulShutdown(t *testing.T) {
-	lookup := envLookup(map[string]string{"FORGE_ENV": "test", "FORGE_HTTP_ADDR": freeAddress(t)})
+	lookup := envLookup(map[string]string{"FORGE_ENV": "test", "FORGE_HTTP_ADDR": anyAddress})
 	var closedResources []string
 	configure := func(_ context.Context, app *forge.App) error {
 		for _, name := range []string{"first", "second"} {
@@ -77,21 +64,19 @@ func TestExecuteServeHealthcheckAndGracefulShutdown(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var serveOutput, serveErrors bytes.Buffer
+	defer cancel()
+	var serveOutput, serveErrors safeBuffer
 	done := make(chan int, 1)
 	go func() { done <- forge.Execute(ctx, nil, lookup, &serveOutput, &serveErrors, configure) }()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		var stdout, stderr bytes.Buffer
-		if forge.Execute(context.Background(), []string{"healthcheck"}, lookup, &stdout, &stderr, configure) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("server never became healthy: %s", stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The healthcheck command probes the configured port, so it is given the
+	// address the server bound. The kernel completes connections once the
+	// listener exists, so the probe needs no retry.
+	address := boundAddress(t, &serveOutput, "serving HTTP")
+	var stdout, stderr bytes.Buffer
+	probe := envLookup(map[string]string{"FORGE_ENV": "test", "FORGE_HTTP_ADDR": address})
+	if code := forge.Execute(context.Background(), []string{"healthcheck"}, probe, &stdout, &stderr, configure); code != 0 {
+		t.Fatalf("server never became healthy: %s", stderr.String())
 	}
 
 	cancel()
@@ -113,7 +98,9 @@ func TestExecuteServeHealthcheckAndGracefulShutdown(t *testing.T) {
 
 func TestExecuteHealthcheckFailsWhenNothingListens(t *testing.T) {
 	t.Parallel()
-	lookup := envLookup(map[string]string{"FORGE_HTTP_ADDR": freeAddress(t)})
+	// Nothing can listen on port 0, so the probe is refused whatever else
+	// runs on the machine.
+	lookup := envLookup(map[string]string{"FORGE_HTTP_ADDR": anyAddress})
 	var stdout, stderr bytes.Buffer
 	if code := forge.Execute(context.Background(), []string{"healthcheck"}, lookup, &stdout, &stderr, func(context.Context, *forge.App) error { return nil }); code != 1 {
 		t.Fatalf("code=%d want 1", code)
@@ -214,9 +201,10 @@ func TestConfigureFailureReleasesAcquiredResources(t *testing.T) {
 func TestShutdownBudgetCancelsStuckRequests(t *testing.T) {
 	cfg := config.Default()
 	cfg.Environment = config.Test
-	cfg.HTTP.Address = freeAddress(t)
+	cfg.HTTP.Address = anyAddress
 	cfg.HTTP.ShutdownTimeout = 200 * time.Millisecond
-	app, err := forge.New(forge.WithConfig(cfg))
+	var logs safeBuffer
+	app, err := forge.New(forge.WithConfig(cfg), forge.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,9 +229,10 @@ func TestShutdownBudgetCancelsStuckRequests(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- app.Run(ctx) }()
+	address := boundAddress(t, &logs, "serving HTTP")
 	go func() {
 		for {
-			response, err := http.Get("http://" + cfg.HTTP.Address + "/stuck")
+			response, err := http.Get("http://" + address + "/stuck")
 			if err == nil {
 				_ = response.Body.Close()
 				return

@@ -21,7 +21,7 @@ import (
 
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
-	cfg, err := config.LoadWithLookup(envLookup(map[string]string{"FORGE_ENV": "test", "FORGE_HTTP_ADDR": freeAddress(t)}))
+	cfg, err := config.LoadWithLookup(envLookup(map[string]string{"FORGE_ENV": "test", "FORGE_HTTP_ADDR": anyAddress}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestRunFailsWhenTheMetricsAddressIsTaken(t *testing.T) {
 
 func TestServeReleasesWhatConfigureAcquiredWhenItFails(t *testing.T) {
 	t.Parallel()
-	lookup := envLookup(map[string]string{"FORGE_ENV": "test", "FORGE_HTTP_ADDR": freeAddress(t)})
+	lookup := envLookup(map[string]string{"FORGE_ENV": "test", "FORGE_HTTP_ADDR": anyAddress})
 	var stdout, stderr bytes.Buffer
 	var released atomic.Bool
 	code := forge.Execute(context.Background(), nil, lookup, &stdout, &stderr, func(_ context.Context, app *forge.App) error {
