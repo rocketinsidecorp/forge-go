@@ -17,6 +17,9 @@ import (
 {{- if and .DB .DB.Identity}}
 	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
 {{- end}}
+{{- if and .DB .DB.Jobs}}
+	jobs{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/jobs/{{.DB.Adapter}}"
+{{- end}}
 {{- if .DB}}
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
 {{- end}}
@@ -32,11 +35,15 @@ func main() {
 	forge.Main(
 		bootstrap.Configure,
 		append(
-			postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations()),
+			postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations()),
 			authpostgres.SetupCommand(),
 			postgres.SeedCommand(db.Seed),
 		)...,
 	)
+}
+{{- else if and .DB .DB.Jobs -}}
+func main() {
+	forge.Main(bootstrap.Configure, append({{.DB.Adapter}}.CommandsFromSets(jobs{{.DB.Adapter}}.Migrations(), db.Migrations()), {{.DB.Adapter}}.SeedCommand(db.Seed))...)
 }
 {{- else if .DB -}}
 func main() {

@@ -233,8 +233,8 @@ func TestGenerateJobCreatesCancellationAwareStubAndTests(t *testing.T) {
 		"RunCleanupOldSessions",
 		"ErrCleanupOldSessionsNotImplemented",
 		"ctx.Err()",
-		"each tick runs on one replica only",
-		"tick lock",
+		"records each tick in the database",
+		"runs on exactly one replica",
 	} {
 		if !strings.Contains(string(jobSource), want) {
 			t.Errorf("generated job is missing %q", want)

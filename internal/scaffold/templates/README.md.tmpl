@@ -402,10 +402,11 @@ tests of generated resources check every response against it.
 `jobs.Scheduler` for recurring work and stops it within the shutdown timeout
 (`FORGE_HTTP_SHUTDOWN_TIMEOUT`). Add a job with `forge generate job cleanup`,
 then register it there with an explicit schedule. Every replica runs the
-scheduler, and a lock in the database (`{{.DB.Adapter}}.NewSchedulerLock`)
-makes each tick of a job run on one replica only, so scaling out does not
-multiply runs. A replica that reaches a tick more than five seconds late
-skips it; keep replica clocks synchronized (NTP).
+scheduler, and each tick of a job runs on exactly one replica: the first to
+record it in the `forge_job_schedules` table (a framework migration applied by
+`migrate`), so scaling out does not multiply runs. Recording a tick holds no
+connection while the job runs and does not depend on the replicas' clocks.
+Two replicas can run consecutive ticks of one job at the same time.
 {{end}}
 Work that must survive restarts and retry runs on the persistent job queue
 (`queue/{{.DB.Adapter}}`), like Solid Queue in Rails:

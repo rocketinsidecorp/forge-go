@@ -195,9 +195,9 @@ var Err{{Name}}NotImplemented = errors.New("{{name}} job is not implemented")
 
 // Run{{Name}} performs one {{name}} job invocation. The scheduler provides a
 // bounded context and cancels it during shutdown; honor cancellation promptly.
-// The generated JobsConfigure gives the scheduler the database's tick lock, so
-// each tick runs on one replica only; a tick can still be skipped (a replica
-// far behind, an unreachable database), so keep the work safe to run late.
+// The generated JobsConfigure records each tick in the database, so each tick
+// runs on exactly one replica; a tick is skipped while the database is
+// unreachable, and two replicas can run consecutive ticks at the same time.
 // Scheduler failures are reported but not retried automatically.
 func Run{{Name}}(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
