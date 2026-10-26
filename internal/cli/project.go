@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strings"
 
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
@@ -18,6 +19,28 @@ import (
 )
 
 var releaseVersion = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`)
+
+// readBuildInfo is replaced by tests.
+var readBuildInfo = debug.ReadBuildInfo
+
+// frameworkTarget is the framework version `forge new` pins. A release build
+// stamps version.Version through ldflags. A CLI installed with
+// `go install ...forge-go/cmd/forge@VERSION` carries no ldflags ("dev") but
+// records the module version it was built from, which is then pinned so the
+// generated application uses the framework its templates came from. Anything
+// else (a build of a working tree is "(devel)", a dirty one ends in "+dirty")
+// is not fetchable and resolves to "latest".
+func frameworkTarget(ldflagsVersion string, build func() (*debug.BuildInfo, bool)) string {
+	if releaseVersion.MatchString(ldflagsVersion) {
+		return ldflagsVersion
+	}
+	if ldflagsVersion == "dev" {
+		if info, ok := build(); ok && info != nil && info.Main.Path == scaffold.FrameworkModule && releaseVersion.MatchString(info.Main.Version) {
+			return info.Main.Version
+		}
+	}
+	return "latest"
+}
 
 func runNew(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("new", flag.ContinueOnError)
@@ -81,10 +104,7 @@ func resolveDependencies(ctx context.Context, dir, localFramework string, stdout
 			{"mod", "vendor"},
 		}
 	} else {
-		target := "latest"
-		if releaseVersion.MatchString(version.Version) {
-			target = version.Version
-		}
+		target := frameworkTarget(version.Version, readBuildInfo)
 		steps = [][]string{{"get", scaffold.FrameworkModule + "@" + target}, {"mod", "tidy"}}
 	}
 	for _, step := range steps {

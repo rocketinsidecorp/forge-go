@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -114,5 +115,56 @@ func TestRunNewRefusesConflictingOrUnusableArguments(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Next steps:") {
 		t.Errorf("output %q", out.String())
+	}
+}
+
+func TestFrameworkTargetPinsTheVersionTheCLIWasBuiltFrom(t *testing.T) {
+	t.Parallel()
+	info := func(path, version string) func() (*debug.BuildInfo, bool) {
+		return func() (*debug.BuildInfo, bool) {
+			return &debug.BuildInfo{Main: debug.Module{Path: path, Version: version}}, true
+		}
+	}
+	const module = "github.com/rocketinsidecorp/forge-go"
+	const pseudo = "v0.0.0-20261024123456-0123456789ab"
+	for name, tc := range map[string]struct {
+		ldflags string
+		build   func() (*debug.BuildInfo, bool)
+		want    string
+	}{
+		"ldflags release wins":              {"v1.2.3", info(module, pseudo), "v1.2.3"},
+		"ldflags prerelease":                {"v1.2.3-rc.1", info(module, ""), "v1.2.3-rc.1"},
+		"go install of a pseudo":            {"dev", info(module, pseudo), pseudo},
+		"go install of a tag":               {"dev", info(module, "v0.4.0"), "v0.4.0"},
+		"build of a working tree":           {"dev", info(module, "(devel)"), "latest"},
+		"dirty vcs stamp":                   {"dev", info(module, pseudo+"+dirty"), "latest"},
+		"empty module version":              {"dev", info(module, ""), "latest"},
+		"another main module":               {"dev", info("example.com/fork", pseudo), "latest"},
+		"no build info":                     {"dev", func() (*debug.BuildInfo, bool) { return nil, false }, "latest"},
+		"nil build info":                    {"dev", func() (*debug.BuildInfo, bool) { return nil, true }, "latest"},
+		"unknown ldflags ignore build info": {"nightly", info(module, pseudo), "latest"},
+	} {
+		if got := frameworkTarget(tc.ldflags, tc.build); got != tc.want {
+			t.Errorf("%s: frameworkTarget(%q) = %q, want %q", name, tc.ldflags, got, tc.want)
+		}
+	}
+}
+
+func TestResolveDependenciesPinsTheBuildInfoVersionButNotALocalCheckout(t *testing.T) {
+	// Not parallel: readBuildInfo is replaced.
+	previous := readBuildInfo
+	t.Cleanup(func() { readBuildInfo = previous })
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Main: debug.Module{Path: "github.com/rocketinsidecorp/forge-go", Version: "v0.0.0-20261024123456-0123456789ab"}}, true
+	}
+	var out strings.Builder
+	_ = resolveDependencies(context.Background(), t.TempDir(), "", &out, io.Discard)
+	if want := "run     go get github.com/rocketinsidecorp/forge-go@v0.0.0-20261024123456-0123456789ab"; !strings.Contains(out.String(), want) {
+		t.Errorf("output %q lacks %q", out.String(), want)
+	}
+	out.Reset()
+	_ = resolveDependencies(context.Background(), t.TempDir(), "/checkout/forge-go", &out, io.Discard)
+	if strings.Contains(out.String(), "go get") || !strings.Contains(out.String(), "-replace=") {
+		t.Errorf("a local checkout must replace, not fetch: %q", out.String())
 	}
 }
