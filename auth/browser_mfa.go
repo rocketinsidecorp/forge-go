@@ -297,12 +297,19 @@ func (b *Browser) stepUp(w http.ResponseWriter, r *http.Request, action Security
 			return verifiedStepUp{}, ErrMFAAlreadyEnabled
 		}
 	}
-	login, ok, err := verifySubjectPassword(ctx, b.passwords, subject, proof.Password)
+	started := b.login.hasher.checkStarted()
+	login, ok, err := verifySubjectPassword(ctx, b.login.hasher, b.passwords, subject, proof.Password)
 	if err != nil {
+		setPasswordWorkRetryAfter(w, err)
 		return verifiedStepUp{}, err
 	}
 	if !ok {
+		// Audited before the legacy timing floor's padding, so hanging up
+		// during it cannot skip the record.
 		b.recordStepUpDenied(r, action, subject, key)
+		if err := b.login.hasher.padFailedCheck(ctx, started); err != nil {
+			return verifiedStepUp{}, err
+		}
 		return verifiedStepUp{}, ErrMFAStepUpInvalid
 	}
 	var codeProof MFAStepUpProof

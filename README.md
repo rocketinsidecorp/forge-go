@@ -416,6 +416,27 @@ forge generate authentication             # app/adapters/htmlauth, app/views/{se
 forge generate authentication --api-auth  # the same, and the wiring of the JSON authentication APIs
 ```
 
+Passwords are stored as Argon2id (`m=19456,t=2,p=1`, the same hashes
+Forge-Rust writes); PBKDF2 hashes from earlier releases are upgraded at the
+next sign-in (until none remain, failed sign-ins wait as long as a PBKDF2
+check, so dormant accounts cannot be told from unknown ones; the guide has
+the SQL that resets dormant accounts), and at most one hash per CPU (16 at
+most) runs at once, beyond which sign-ins answer `503` with `Retry-After`. An
+application created with this release never stored a PBKDF2 hash and can
+drop that wait where `identityRoutes` builds the login service:
+
+```go
+hasher, err := auth.NewPasswordHasher(auth.WithLegacyHashTimingFloor(false))
+login, err := auth.NewLoginService(repository, repository, append(loginOptions, auth.WithLoginPasswordHasher(hasher))...)
+```
+
+A FIPS 140 build writes PBKDF2-HMAC-SHA256 instead
+([docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#password-hashing)):
+
+```sh
+go build -tags forge_pbkdf2 -o bin/myapp ./cmd/myapp
+```
+
 MySQL, MariaDB and SQLite applications are refused: Forge persists identities
 only in PostgreSQL. They still get `db/seeds.go` and `forge seed`. See
 [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#server-rendered-sign-in-pages).

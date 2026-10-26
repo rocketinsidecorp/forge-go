@@ -60,8 +60,10 @@ func BenchmarkSessionCookieVerify(b *testing.B) {
 }
 
 // BenchmarkPasswordVerify is scenario "password_verify" in docs/BENCHMARKS.md.
-// It is deliberately slow: PBKDF2-HMAC-SHA256 with 600000 iterations makes
-// each guess of an attacker as expensive as one iteration of this benchmark.
+// It is deliberately slow: Argon2id with m=19456 KiB, t=2, p=1 (Forge-Rust's
+// parameters, so the two frameworks' password_verify measure the same work)
+// makes each guess of an attacker as expensive as one iteration of this
+// benchmark.
 // Do not optimize it; compare it only with itself.
 func BenchmarkPasswordVerify(b *testing.B) {
 	hash, err := auth.HashPassword("correct horse battery staple")

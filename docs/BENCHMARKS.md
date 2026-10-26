@@ -68,7 +68,7 @@ compare or store numbers: shared runners are too noisy for that.
 | `html_render` | `layout_partial`, `layout_partial_csrf` | a page of 50 rows in a layout with partials, auto-escaping text that contains markup; the second variant is the page a generated app serves, with the CSRF meta tags, a form token and flash messages, through the csrf and flash middleware | `BenchmarkHTMLRender/<variant>` (`views`) |
 | `csrf_verify` | `match`, `header_post`, `form_post` | constant-time comparison of two tokens; a POST through the CSRF middleware with the token in a header; the same with the token in a parsed form body | `BenchmarkCSRFVerify/<variant>` (`csrf`) |
 | `session_cookie_verify` | none | `AuthenticateCookie` for a valid session cookie: cookie lookup, token decode, SHA-256 digest, session check, principal and tenant context; the session store is an in-memory function | `BenchmarkSessionCookieVerify` (`auth`) |
-| `password_verify` | none | PBKDF2-HMAC-SHA256, 600000 iterations, one correct password | `BenchmarkPasswordVerify` (`auth`) |
+| `password_verify` | none | Argon2id, m=19456 KiB, t=2, p=1 (Forge-Rust's parameters), one correct password | `BenchmarkPasswordVerify` (`auth`) |
 | `uuid_v7` | `new`, `string` | generating an identifier; formatting it | `BenchmarkUUIDv7/<variant>` (`uuid`) |
 | `i18n_lookup` | `simple`, `interpolation`, `plural_one`, `plural_other`, `fallback` | `Translator.Translate`: a plain key; one `%{name}` argument; the `one` and `other` plural forms; a key answered by the parent locale (`pt-BR` to `pt`) | `BenchmarkI18nLookup/<variant>` (`i18n`) |
 | `attribute_encryption` | `seal`, `open`, `value_seal`, `value_open` | AES-GCM of one 64-byte attribute bound to table, column and record, with `Cipher` and with the `Value` column type models use | `BenchmarkAttributeEncryption/<variant>` (`encryption`) |
@@ -203,7 +203,9 @@ measurements; its load average was between 1.2 and 2.4 before they started).
 
 `go test -p 1 -run '^$' -bench . -benchmem -count 3 ./...`; the median of three
 runs. `password_verify` is deliberately slow (about 113 ms, PBKDF2 with 600000
-iterations).
+iterations; this run predates Argon2id, [ADR 0048](adr/0048-argon2id-password-hashing.md),
+whose verification measured about 35 ms and 19 MiB on a 4-CPU development
+container).
 
 | Scenario | Variant | ns/op | B/op | allocs/op |
 | --- | --- | ---: | ---: | ---: |

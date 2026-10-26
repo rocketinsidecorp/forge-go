@@ -52,6 +52,7 @@ var (
 			openapi.JSON[mfaRequiredResponse](http.StatusAccepted),
 			errorResponse(http.StatusUnauthorized, "The credentials are invalid", "WWW-Authenticate"),
 			errorResponse(http.StatusTooManyRequests, "Too many attempts; retry after the Retry-After seconds", "Retry-After"),
+			errorResponse(http.StatusServiceUnavailable, "Password hashing is saturated; retry after the Retry-After seconds", "Retry-After"),
 		},
 	}
 
@@ -102,6 +103,7 @@ var (
 		Responses: []openapi.Response{
 			openapi.Empty(http.StatusNoContent),
 			errorResponse(http.StatusTooManyRequests, "Too many attempts; retry after the Retry-After seconds", "Retry-After"),
+			errorResponse(http.StatusServiceUnavailable, "Password hashing is saturated; retry after the Retry-After seconds", "Retry-After"),
 		},
 	}
 
@@ -117,6 +119,7 @@ var (
 			{Status: http.StatusOK, Body: openapi.TypeOf[cookieLoginResponse](), Headers: []string{"Set-Cookie"}},
 			openapi.JSON[mfaRequiredResponse](http.StatusAccepted),
 			errorResponse(http.StatusTooManyRequests, "Too many attempts; retry after the Retry-After seconds", "Retry-After"),
+			errorResponse(http.StatusServiceUnavailable, "Password hashing is saturated; retry after the Retry-After seconds", "Retry-After"),
 		},
 		Errors: []int{http.StatusUnauthorized, http.StatusForbidden},
 	}
