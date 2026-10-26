@@ -101,10 +101,10 @@ func renderSelected(opts Options, keep func(file) bool) ([]BaseFile, error) {
 }
 
 // isViewBase selects the files under app/views, app/assets and app/javascript
-// that every application has; the authentication pages belong to
+// that every full-stack application has; the authentication pages belong to
 // AuthenticationFiles.
 func isViewBase(f file) bool {
-	if f.scope != everyApplication {
+	if f.scope != withViews {
 		return false
 	}
 	path := f.path("")

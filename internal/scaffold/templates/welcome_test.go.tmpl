@@ -1,3 +1,30 @@
+{{- if .API -}}
+package bootstrap
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/openapi"
+)
+
+// TestWelcomeNamesTheService runs for every API-only application, with or
+// without a database: GET / answers JSON, never a page.
+func TestWelcomeNamesTheService(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	openapi.Typed(http.StatusOK, openapi.Operation{}, welcome).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	var body welcomeResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); recorder.Code != http.StatusOK || err != nil {
+		t.Fatalf("status=%d err=%v body=%s", recorder.Code, err, recorder.Body.String())
+	}
+	if body.Application != "{{.Name}}" || body.Version != apiVersion || recorder.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("GET / = %+v, Content-Type %q", body, recorder.Header().Get("Content-Type"))
+	}
+}
+{{- else -}}
 package bootstrap
 
 import (
@@ -43,3 +70,4 @@ func TestWelcomePageContentSecurityPolicyHashesItsStylesheet(t *testing.T) {
 	}
 	assertWelcomeContentSecurityPolicy(t, recorder)
 }
+{{- end}}

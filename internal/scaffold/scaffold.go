@@ -56,7 +56,19 @@ type Options struct {
 	// /v1/auth/session. Without it the HTML pages are the only way to sign
 	// in. It needs Forge identity (PostgreSQL).
 	APIAuth bool
+	// API generates an API-only application (`forge new --api`, like `rails
+	// new --api`): JSON handlers only, with no views, assets, JavaScript,
+	// translations, sign-in pages or browser middleware (CSRF, method
+	// override, flash). It conflicts with APIAuth and with a Locale other
+	// than the default, as in Forge-Rust.
+	API bool
 }
+
+// APIOnlyMarker is the phrase the generated app/bootstrap/bootstrap.go of an
+// API-only application carries in its package comment. The generators read it
+// to refuse what needs views (pages, scaffolds, HTML controllers, sign-in
+// pages) instead of adding a views base to such an application.
+const APIOnlyMarker = "API-only application (forge new --api)"
 
 // Locales are the locales Forge ships translations of the generated pages
 // for: `forge new --locale` accepts them.
@@ -105,6 +117,10 @@ const (
 	withIdentity
 	// withPostgres files are generated only for PostgreSQL applications.
 	withPostgres
+	// withViews files are generated only for full-stack applications (not
+	// `forge new --api`): server-rendered views, assets, JavaScript and the
+	// translations of the pages.
+	withViews
 )
 
 type asset struct {
@@ -121,15 +137,15 @@ var files = []file{
 	{"bootstrap_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap_test.go")), everyApplication},
 	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), everyApplication},
 	{"welcome_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome_test.go")), everyApplication},
-	{"app_assets.go.tmpl", fixed(filepath.Join("app", "assets", "assets.go")), everyApplication},
-	{"app_assets_test.go.tmpl", fixed(filepath.Join("app", "assets", "assets_test.go")), everyApplication},
-	{"javascript.go.tmpl", fixed(filepath.Join("app", "javascript", "javascript.go")), everyApplication},
-	{"locales.go.tmpl", fixed(filepath.Join("config", "locales", "locales.go")), everyApplication},
-	{"locales_test.go.tmpl", fixed(filepath.Join("config", "locales", "locales_test.go")), everyApplication},
-	{"views.go.tmpl", fixed(filepath.Join("app", "views", "views.go")), everyApplication},
-	{"views_test.go.tmpl", fixed(filepath.Join("app", "views", "views_test.go")), everyApplication},
-	{"application.gohtml.tmpl", fixed(filepath.Join("app", "views", "layouts", "application.gohtml")), everyApplication},
-	{"flash.gohtml.tmpl", fixed(filepath.Join("app", "views", "shared", "_flash.gohtml")), everyApplication},
+	{"app_assets.go.tmpl", fixed(filepath.Join("app", "assets", "assets.go")), withViews},
+	{"app_assets_test.go.tmpl", fixed(filepath.Join("app", "assets", "assets_test.go")), withViews},
+	{"javascript.go.tmpl", fixed(filepath.Join("app", "javascript", "javascript.go")), withViews},
+	{"locales.go.tmpl", fixed(filepath.Join("config", "locales", "locales.go")), withViews},
+	{"locales_test.go.tmpl", fixed(filepath.Join("config", "locales", "locales_test.go")), withViews},
+	{"views.go.tmpl", fixed(filepath.Join("app", "views", "views.go")), withViews},
+	{"views_test.go.tmpl", fixed(filepath.Join("app", "views", "views_test.go")), withViews},
+	{"application.gohtml.tmpl", fixed(filepath.Join("app", "views", "layouts", "application.gohtml")), withViews},
+	{"flash.gohtml.tmpl", fixed(filepath.Join("app", "views", "shared", "_flash.gohtml")), withViews},
 	{"htmlauth.go.tmpl", fixed(filepath.Join("app", "adapters", "htmlauth", "htmlauth.go")), withIdentity},
 	{"htmlauth_test.go.tmpl", fixed(filepath.Join("app", "adapters", "htmlauth", "htmlauth_test.go")), withIdentity},
 	{"htmlauth_mfa_test.go.tmpl", fixed(filepath.Join("app", "adapters", "htmlauth", "mfa_test.go")), withIdentity},
@@ -212,6 +228,12 @@ func Normalize(opts Options) (Options, error) {
 		return Options{}, fmt.Errorf("unsupported locale %q: Forge generates translations for %s; add others to config/locales afterwards (docs/I18N.md)", opts.Locale, strings.Join(Locales, ", "))
 	}
 	opts.Locale = locale
+	if opts.API && opts.APIAuth {
+		return Options{}, errors.New("--api-auth cannot be used with --api: an API-only application has no sign-in pages for the JSON authentication APIs to sit beside")
+	}
+	if opts.API && opts.Locale != i18n.DefaultLocale {
+		return Options{}, errors.New("--locale cannot be used with --api: an API-only application has no pages to translate")
+	}
 	if opts.APIAuth && !hasIdentity(opts) {
 		return Options{}, errors.New("--api-auth needs Forge identity, which is PostgreSQL-only: use --database postgresql")
 	}
@@ -316,8 +338,7 @@ func Generate(opts Options) ([]string, error) {
 		}
 		paths = append(paths, relative)
 	}
-	copied := append(slices.Clone(assets), repositoryFiles...)
-	for _, asset := range append(copied, localeAssets(opts.Locale, hasIdentity(opts))...) {
+	for _, asset := range copiedFiles(opts) {
 		content, err := templateFS.ReadFile(asset.source)
 		if err != nil {
 			return nil, cleanup(opts.Dir, created, fmt.Errorf("read asset %s: %w", asset.source, err))
@@ -345,6 +366,18 @@ func Generate(opts Options) ([]string, error) {
 		filepath.Join(credentials.DefaultDir, credentials.KeyFileName("development")),
 		filepath.Join(credentials.DefaultDir, credentials.FileName("development")))
 	return paths, nil
+}
+
+// copiedFiles are the files Generate copies unchanged: the release workflow
+// and, in a full-stack application, the assets, the JavaScript and the
+// translations of the pages.
+func copiedFiles(opts Options) []asset {
+	copied := slices.Clone(repositoryFiles)
+	if opts.API {
+		return copied
+	}
+	copied = append(slices.Clone(assets), copied...)
+	return append(copied, localeAssets(opts.Locale, hasIdentity(opts))...)
 }
 
 func parseTemplates(views bool) (*template.Template, error) {
@@ -406,6 +439,9 @@ func render(opts Options) (map[string][]byte, error) {
 	data := templateData{Options: opts, DBHostPort: dbHostPort(opts.Name)}
 	data.DBUser, data.DBName = databaseIdentifiers(opts.Name)
 	if data.DB = profileFor(opts.Database, data.DBUser, data.DBName); data.DB != nil {
+		// An API-only application has no sign-in pages, so no Forge
+		// identity wiring either (Forge-Rust's --api has no authentication).
+		data.DB.Identity = hasIdentity(opts)
 		data.AppDatabaseURL, data.DevDatabaseURL, data.TestDatabaseURL = databaseURLs(data.DB, data.DBUser, data.DBName, data.DBHostPort)
 		data.AppMigrationURL, data.DevMigrationURL = migrationURLs(data.DB, data.DBName, data.DBHostPort)
 	}
@@ -441,8 +477,11 @@ func render(opts Options) (map[string][]byte, error) {
 }
 
 // hasIdentity reports whether the application gets Forge identity (the
-// sign-in pages): PostgreSQL applications.
+// sign-in pages): full-stack PostgreSQL applications.
 func hasIdentity(opts Options) bool {
+	if opts.API {
+		return false
+	}
 	profile := profileFor(opts.Database, "", "")
 	return profile != nil && profile.Identity
 }
@@ -454,6 +493,7 @@ func selectedFiles(opts Options) []file {
 		switch {
 		case f.scope == withDatabase && opts.Database == "",
 			f.scope == withIdentity && !identity,
+			f.scope == withViews && opts.API,
 			f.scope == withPostgres && opts.Database != "postgresql":
 			continue
 		}

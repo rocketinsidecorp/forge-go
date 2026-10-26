@@ -1,10 +1,18 @@
 // Package bootstrap is {{.Name}}'s composition root: it builds the adapters
 // and wires them into the Forge runtime.
+{{- if .API}}
+//
+// {{.Name}} is an API-only application (forge new --api): JSON handlers
+// only, with no views, assets, translations or browser middleware (CSRF,
+// method override, flash). The generators that write pages refuse it.
+{{- end}}
 package bootstrap
 
 import (
 	"context"
+{{- if not .API}}
 	"errors"
+{{- end}}
 	{{- if and .DB .DB.Identity}}
 	"log/slog"
 	{{- end}}
@@ -16,8 +24,10 @@ import (
 	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
 	"github.com/rocketinsidecorp/forge-go/auth/recoverymail"
 {{- end}}
+{{- if not .API}}
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/i18n"
+{{- end}}
 {{- if and .DB .DB.Jobs}}
 	"github.com/rocketinsidecorp/forge-go/jobs"
 	jobs{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/jobs/{{.DB.Adapter}}"
@@ -29,10 +39,12 @@ import (
 {{- if .DB}}
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
 {{- end}}
+{{- if not .API}}
 	"github.com/rocketinsidecorp/forge-go/web"
 
 	appassets "{{.Module}}/app/assets"
 	"{{.Module}}/config/locales"
+{{- end}}
 {{- if and .DB .DB.Identity}}
 	"{{.Module}}/app/adapters/htmlauth"
 	"{{.Module}}/app/views"
@@ -67,6 +79,11 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := app.Readiness("database", database.Ping); err != nil {
 		return err
 	}
+{{- if .API}}
+	if err := routes(ctx, app); err != nil {
+		return err
+	}
+{{- else}}
 	// Translations (config/locales) for the pages and flash messages, in
 	// each request's locale.
 	translator, err := locales.New(app.Config(), app.Logger())
@@ -76,6 +93,7 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := routes(ctx, app, translator); err != nil {
 		return err
 	}
+{{- end}}
 {{- if .DB.Identity}}
 	if err := identityRoutes(ctx, app, database, translator); err != nil {
 		return err
@@ -89,6 +107,10 @@ func Configure(ctx context.Context, app *forge.App) error {
 {{- else}}
 	return nil
 {{- end}}
+}
+{{- else if .API}}
+func Configure(ctx context.Context, app *forge.App) error {
+	return routes(ctx, app)
 }
 {{- else}}
 func Configure(_ context.Context, app *forge.App) error {
@@ -146,6 +168,32 @@ func JobsConfigure(app *forge.App, ticks jobs.TickClaimer) error {
 	return nil
 }
 {{- end}}
+
+{{- if .API}}
+
+func routes(_ context.Context, app *forge.App) error {
+	// JSON endpoints declare their types: GET /openapi.json (development
+	// and test, or FORGE_OPENAPI_ENABLED=true) and `forge openapi` describe
+	// them. openapi.Typed derives the description from the handler itself.
+	if err := app.SetAPIInfo(openapi.Info{Title: "{{.Name}}", Version: apiVersion}); err != nil {
+		return err
+	}
+	// Public routes. Forge serves /health, /health/live and /health/ready.
+	if err := app.Handle("GET /{$}", openapi.Typed(http.StatusOK, openapi.Operation{
+		Summary: "Application name and version",
+		Tags:    []string{"status"},
+	}, welcome)); err != nil {
+		return err
+	}
+	if err := app.Handle("GET /v1/status", openapi.Typed(http.StatusOK, openapi.Operation{
+		Summary: "Service status",
+		Tags:    []string{"status"},
+	}, status)); err != nil {
+		return err
+	}
+	return nil
+}
+{{- else}}
 
 func routes(ctx context.Context, app *forge.App, translator *i18n.Translator) error {
 	if err := useBrowserPipeline(app, translator); err != nil {
@@ -210,6 +258,7 @@ func useBrowserPipeline(app *forge.App, translator *i18n.Translator) error {
 	}
 	return nil
 }
+{{- end}}
 
 type statusResponse struct {
 	Service string `json:"service" example:"{{.Name}}"`
