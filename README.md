@@ -162,8 +162,9 @@ In production, provision the same two roles once (SQL in
 [Database roles](docs/DATABASE.md#database-roles-postgresql)), migrate with
 the migration role and serve with the runtime role only. In staging and
 production the application refuses to start when the role it logs in as, or
-acts as, is a superuser or has `BYPASSRLS` or `CREATEROLE`, or when the URL
-switches it to another role.
+acts as, is a superuser or has `BYPASSRLS` or `CREATEROLE`, holds `TRUNCATE`,
+`REFERENCES` or `TRIGGER` on a table with row-level security (a `GRANT ALL`),
+or when the URL switches it to another role.
 
 ```sh
 docker run --rm -e FORGE_ENV=production \

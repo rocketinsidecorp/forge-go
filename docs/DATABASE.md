@@ -253,7 +253,10 @@ role (it could `SET ROLE` to it), is a member of `pg_execute_server_program`,
 `pg_write_server_files` or `pg_read_server_files` (paths to superuser or to
 the data files), or owns, or could `SET ROLE` to the owner of, a table with
 row-level security enabled (an owner can run `ALTER TABLE ... NO FORCE ROW
-LEVEL SECURITY`). It also fails when the two differ: a role setting
+LEVEL SECURITY`), or holds `TRUNCATE`, `REFERENCES` or `TRIGGER` on such a
+table, itself, through `PUBLIC` or through a role it belongs to (none of the
+three is subject to row-level security: `TRUNCATE` empties every tenant's
+rows; the usual cause is a `GRANT ALL`). It also fails when the two differ: a role setting
 (`?options=-c%20role=...`, `ALTER ROLE ... SET role`) makes the session act
 as another role, and `SET ROLE NONE` turns it back into the login role, so
 the URL must log in as the serving role itself. The error wraps

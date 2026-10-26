@@ -279,6 +279,45 @@ func TestRequireRowSecurityRefusesBypassingRolesOutsideDevelopmentAndTest(t *tes
 	}
 	exec("DROP TABLE plain_owned")
 
+	// TRUNCATE, REFERENCES and TRIGGER are not subject to row-level
+	// security (TRUNCATE empties every tenant's rows): held directly,
+	// through PUBLIC, through an inherited membership or through one it can
+	// only SET ROLE to, they are refused on a table with row-level security,
+	// and not on a plain table.
+	const unconfined = "holds TRUNCATE, REFERENCES or TRIGGER"
+	for _, privilege := range []string{"TRUNCATE", "REFERENCES", "TRIGGER", "ALL"} {
+		exec("GRANT " + privilege + " ON notes TO " + db.RuntimeRole)
+		refused(privilege+" on an RLS table", open(db.RuntimeConfig, config.Production), unconfined)
+		exec("REVOKE " + privilege + " ON notes FROM " + db.RuntimeRole)
+		exec("GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO " + db.RuntimeRole)
+	}
+	exec("GRANT TRUNCATE ON notes TO PUBLIC")
+	refused("TRUNCATE through PUBLIC", open(db.RuntimeConfig, config.Production), unconfined)
+	exec("REVOKE TRUNCATE ON notes FROM PUBLIC")
+	group := pgx.Identifier{"forge_test_group_" + strings.ReplaceAll(uuid.MustNew().String(), "-", "")}.Sanitize()
+	exec("CREATE ROLE " + group + " NOLOGIN")
+	t.Cleanup(func() {
+		_, _ = db.Admin.Exec(context.Background(), "DROP OWNED BY "+group+"; DROP ROLE IF EXISTS "+group)
+	})
+	exec("GRANT TRUNCATE ON notes TO " + group)
+	exec("GRANT " + group + " TO " + db.RuntimeRole)
+	refused("TRUNCATE through an inherited membership", open(db.RuntimeConfig, config.Production), unconfined)
+	exec("REVOKE " + group + " FROM " + db.RuntimeRole)
+	// PostgreSQL 16 and later: a membership whose privileges are not
+	// inherited, but which still allows SET ROLE.
+	exec("GRANT " + group + " TO " + db.RuntimeRole + " WITH INHERIT FALSE")
+	refused("TRUNCATE through a SET ROLE membership", open(db.RuntimeConfig, config.Production), unconfined)
+	exec("REVOKE " + group + " FROM " + db.RuntimeRole)
+	if err := open(db.RuntimeConfig, config.Development); err != nil {
+		t.Errorf("TRUNCATE in development: %v", err)
+	}
+	exec("CREATE TABLE plain_truncated (id int)")
+	exec("GRANT ALL ON plain_truncated TO " + db.RuntimeRole)
+	if err := open(db.RuntimeConfig, config.Production); err != nil {
+		t.Errorf("ALL on a table without row-level security in production: %v", err)
+	}
+	exec("DROP TABLE plain_truncated")
+
 	// Two unprivileged roles, but the session acts as another role than the
 	// one it logged in as: only a login as the serving role itself passes.
 	plain := "forge_test_plain_" + strings.ReplaceAll(uuid.MustNew().String(), "-", "")

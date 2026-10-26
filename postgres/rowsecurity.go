@@ -30,7 +30,12 @@ var ErrRowSecurityBypass = errors.New("the database role bypasses row-level secu
 //     pg_read_server_files (paths to superuser or to the data files), or
 //   - owns, or is a member of the owner of, a table of this database with
 //     row-level security enabled (an owner can ALTER TABLE ... NO FORCE ROW
-//     LEVEL SECURITY),
+//     LEVEL SECURITY), or
+//   - holds TRUNCATE, REFERENCES or TRIGGER on such a table, itself, through
+//     PUBLIC or through a role it is a member of (none of the three is
+//     subject to row-level security: TRUNCATE empties every tenant's rows, a
+//     foreign key probes them and a trigger sees them; the usual cause is a
+//     GRANT ALL),
 //
 // or when the two differ: a role setting (`options=-c role=...`, ALTER ROLE
 // ... SET role) makes the session act as another role, and `SET ROLE NONE`
@@ -62,7 +67,10 @@ func RequireRowSecurity(environment config.Environment) Option {
 // pg_read_server_files: a path to superuser or to every tenant's data); and
 // whether it owns, or is a member of the owner of, a table of this database
 // with row-level security enabled (an owner can switch FORCE off with ALTER
-// TABLE; pg_has_role(u, u) is true, so direct ownership counts too). It runs with
+// TABLE; pg_has_role(u, u) is true, so direct ownership counts too); and
+// whether it, or a role it is a member of, holds TRUNCATE, REFERENCES or
+// TRIGGER on such a table (has_table_privilege counts PUBLIC and inherited
+// grants; the membership join adds roles it can only SET ROLE to). It runs with
 // search_path pinned to pg_catalog (see refuseRowSecurityBypass), so the
 // operators (=, IN, <>) and catalog names resolve to PostgreSQL's own, never
 // to a function, operator or view a search_path setting would put first;
@@ -79,7 +87,11 @@ SELECT u.rolname, u.rolname = session_user, u.rolsuper, u.rolbypassrls, u.rolcre
                  AND pg_catalog.pg_has_role(u.oid, r.oid, 'MEMBER')),
        EXISTS (SELECT 1 FROM pg_catalog.pg_class c
                WHERE c.relrowsecurity
-                 AND pg_catalog.pg_has_role(u.oid, c.relowner, 'MEMBER'))
+                 AND pg_catalog.pg_has_role(u.oid, c.relowner, 'MEMBER')),
+       EXISTS (SELECT 1 FROM pg_catalog.pg_class c, pg_catalog.pg_roles r
+               WHERE c.relrowsecurity
+                 AND pg_catalog.pg_has_role(u.oid, r.oid, 'MEMBER')
+                 AND pg_catalog.has_table_privilege(r.oid, c.oid, 'TRUNCATE, REFERENCES, TRIGGER'))
 FROM pg_catalog.pg_roles u
 WHERE u.rolname IN (session_user, current_user)
 ORDER BY u.rolname = session_user DESC`
@@ -106,9 +118,9 @@ func refuseRowSecurityBypass(ctx context.Context, pool *pgxpool.Pool) error {
 	refusal := ""
 	for rows.Next() {
 		var role string
-		var isLogin, superuser, bypass, createRole, replication, member, serverFiles, ownsRLS bool
+		var isLogin, superuser, bypass, createRole, replication, member, serverFiles, ownsRLS, unconfined bool
 		if err := rows.Scan(&role, &isLogin, &superuser, &bypass, &createRole, &replication,
-			&member, &serverFiles, &ownsRLS); err != nil {
+			&member, &serverFiles, &ownsRLS, &unconfined); err != nil {
 			return fmt.Errorf("check the database role's row-level security: %w", err)
 		}
 		if isLogin {
@@ -132,6 +144,10 @@ func refuseRowSecurityBypass(ctx context.Context, pool *pgxpool.Pool) error {
 			reason = "is a member of pg_execute_server_program, pg_write_server_files or pg_read_server_files"
 		case ownsRLS:
 			reason = "owns, or can SET ROLE to the owner of, a table with row-level security"
+		case unconfined:
+			reason = "holds TRUNCATE, REFERENCES or TRIGGER, which row-level security does not confine, " +
+				"on a table with row-level security, itself, through PUBLIC or through a role it belongs to " +
+				"(REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM each of them)"
 		}
 		if reason != "" && refusal == "" {
 			refusal = fmt.Sprintf("PostgreSQL role %q, which %s", role, reason)

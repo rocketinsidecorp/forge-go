@@ -45,6 +45,8 @@ as or acts as is a superuser, has `BYPASSRLS`, `CREATEROLE` or `REPLICATION`,
 is a member of a superuser, `BYPASSRLS` or `REPLICATION` role or of
 `pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files`,
 or owns (or can `SET ROLE` to the owner of) a table with row-level security,
+or holds `TRUNCATE`, `REFERENCES` or `TRIGGER` on one (none of them is
+subject to row-level security; `TRUNCATE` empties every tenant's rows),
 or when the URL switches the session to another role. Row-level security protects against a query that forgets its
 tenant predicate; it does not stop SQL injected into the serving process,
 which can set `forge.tenant_id` itself. Generated applications serve as
