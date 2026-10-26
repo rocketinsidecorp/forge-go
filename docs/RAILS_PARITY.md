@@ -62,9 +62,10 @@ the work is finished and waiting for its review; **Planned** means not started.
   or TRIGGER", and one with any privilege on a partition without row-level
   security of a partitioned table with it (`pg_partition_ancestors`); runs the refusal by default in every
   `postgres.Open` outside development and test (`config.Database.Environment`),
-  with `postgres.AllowRowSecurityBypass()` as the only opt-out; keeps
-  `PGOPTIONS`, `PGTZ` and `PGAPPNAME` out of the serving pool unless the URL
-  names them (the migrator keeps them); refuses symlinked credential key and
+  with `postgres.AllowRowSecurityBypass()` as the only opt-out; refuses
+  to open a pool while `PGOPTIONS` is set and ignores `PGTZ` and `PGAPPNAME`
+  unless the URL names them (the migrator keeps all three; Forge-Rust
+  refuses the same way, since SQLx cannot drop `PGOPTIONS`); refuses symlinked credential key and
   `.json.enc` files (`credentials.ErrSymlink`, as Rust's `O_NOFOLLOW`);
   exposes `App.Serving()` (false under `routes` and `openapi`), and the
   generated bootstrap starts its scheduler and recovery queue only when
@@ -80,10 +81,14 @@ the work is finished and waiting for its review; **Planned** means not started.
   reasons in `require_row_security`; the refusal on every pool a command
   opens (it runs for `serve`, `jobs work` and the `jobs` commands, while
   application commands such as `seed` and `setup` get an unchecked pool),
-  with an opt-out named like `AllowRowSecurityBypass`; ignoring `PGOPTIONS`
-  for the serving pool (SQLx reads it); digest-pinned bases in its generated
+  with an opt-out named like `AllowRowSecurityBypass`; digest-pinned bases in its generated
   `Dockerfile`; a counter and one warning per key for undecodable cache
-  values; and agreeing the `max_lateness` default.
+  values.
+  Both frameworks now refuse `PGOPTIONS` for every pool but the migrator's,
+  floor an explicit scheduler lateness at a minute, and refuse a
+  `FORGE_TELEMETRY_METRICS_ADDR` that overlaps `FORGE_HTTP_ADDR` by the same
+  rule (same non-zero port on the same or an unspecified host; port 0 never
+  overlaps).
 
 - CLI differences that remain after `forge check`, `forge format` and
   `forge lint` (forge-go QG10, audit gap 3). Flag-parse and usage errors of
@@ -136,8 +141,10 @@ the work is finished and waiting for its review; **Planned** means not started.
   a job. Both skip stale ticks instead of replaying them (Rust
   `Schedule::max_lateness`, Go `SchedulerOptions.MaxLateness` since forge-go
   QG9: the latest due tick runs once, earlier ones are skipped and reported);
-  the defaults differ (Rust five minutes, at least one; Go one interval of
-  the schedule), to be agreed. Rust lacks the
+  the default is one interval of the schedule in both, and an explicit
+  `MaxLateness` below a minute is raised to a minute in both (Rust also
+  floors the default, which only matters for a Go `Every` below a minute).
+  Rust lacks the
   wake-up: it adopts `NOTIFY forge_jobs` (payload: the queue name, sent in
   `forge_jobs_enqueue` for due jobs) and a worker `LISTEN` owned by `Jobs::run`
   with the same reconnect backoff (0.5s to 1s, doubling to 15s to 30s) behind

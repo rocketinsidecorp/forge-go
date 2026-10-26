@@ -55,8 +55,8 @@ func TestExecuteServesMetricsExportsTracesAndCorrelatesLogs(t *testing.T) {
 		"FORGE_TELEMETRY_SERVICE_NAME":  "orders",
 		"FORGE_TELEMETRY_EXPORTER":      "otlp",
 		"FORGE_TELEMETRY_OTLP_ENDPOINT": otlp.URL,
-		// Not the application's spelling: the two addresses must differ.
-		"FORGE_TELEMETRY_METRICS_ADDR": "localhost:0",
+		// Port 0 on both: the kernel picks two distinct ports.
+		"FORGE_TELEMETRY_METRICS_ADDR": anyAddress,
 	})
 	configure := func(_ context.Context, app *forge.App) error {
 		if app.Telemetry() == nil {

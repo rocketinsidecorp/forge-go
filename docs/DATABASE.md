@@ -94,15 +94,21 @@ Rules enforced at startup ([ADR 0005](adr/0005-environment-configuration-fail-fa
   name (`sslrootcert=...`, ...) stops the application at startup, with an
   error that names the variable and never a value: ignoring it could replace
   the CA the URL's `sslmode` verifies against. The serving pool
-  (`postgres.Open`) also takes no session setting from the environment:
-  `PGOPTIONS`, `PGTZ` and `PGAPPNAME` are dropped unless the URL names
-  `options`, `timezone` or `application_name`, so a
-  `PGOPTIONS='-c forge.tenant_id=...'` cannot give every pooled session a
-  default tenant (a query outside `InTenantTx` sees no tenant and RLS returns
-  no rows). The same holds for session settings in a service file the URL
-  names (`service=...&servicefile=...`): its `options`, `application_name`
-  and the like are dropped from the serving pool unless the URL repeats
-  them. The migrator still honours them, so
+  (`postgres.Open`, lazy or not) takes no session setting from the
+  environment: it **refuses to open while `PGOPTIONS` is set** (non-empty),
+  with an error that names the variable and never its value, because a
+  `PGOPTIONS='-c forge.tenant_id=...'` would give every pooled session a
+  default tenant (a query outside `InTenantTx` would see that tenant's rows
+  instead of none). Forge-Rust refuses the same way (SQLx cannot drop the
+  variable once read); unset it for the application and name session settings
+  in the URL's `options` parameter instead. `PGTZ` and `PGAPPNAME` are
+  ignored: sessions are in UTC and the `application_name` is the URL's, else
+  `forge`. Session settings in a service file the URL names
+  (`service=...&servicefile=...`: its `options`, `application_name` and the
+  like) are dropped from the serving pool unless the URL repeats them. This
+  covers every command that opens the application's pool: `serve`, `routes`,
+  `openapi`, `seed`, `forge setup` and `jobs`. The migrator is the exception
+  and still honours `PGOPTIONS`, `PGTZ` and `PGAPPNAME`, so
   `PGOPTIONS='-c lock_timeout=5s' forge migrate` works. The other `PG*`
   variables (`PGUSER`, `PGPASSWORD`, ...) still fill what the URL leaves out,
   as for `psql`. Forge does this without editing its own environment: it

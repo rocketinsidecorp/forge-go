@@ -429,6 +429,14 @@ satisfy them.
 - The migrator refuses to run if an applied migration was modified or if the
   database has a migration the image does not know (for example, an older
   release deploying over a newer schema).
+- Only `migrate` and `rollback` read `PGOPTIONS` (PostgreSQL), as for `psql`:
+  `docker run --rm -e PGOPTIONS='-c lock_timeout=5s' ... myapp migrate`. Every
+  other command that opens the application's pool (`serve`, `seed`, `jobs`,
+  `routes`) refuses to start while `PGOPTIONS` is set, naming the variable and
+  never its value, because it would give every session its settings (a
+  `forge.tenant_id` would be a default tenant). Do not set it in the serving
+  container's environment; name session settings in the URL's `options`
+  parameter. `PGTZ` and `PGAPPNAME` are ignored by the serving pool.
 - Migrations run without a statement timeout. Bound lock waits in
   migrations that touch busy tables (for example `SET LOCAL lock_timeout` on
   PostgreSQL).
