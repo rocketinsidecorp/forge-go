@@ -571,7 +571,7 @@ func (a *App) serveMetrics(ctx context.Context) (func() error, error) {
 	if !a.config.Telemetry.MetricsLoopback() && !a.config.Telemetry.MetricsPublic {
 		a.logger.Warn("the metrics listener has no authentication and is not bound to loopback; keep its port off public networks and set FORGE_TELEMETRY_METRICS_PUBLIC=true to confirm (production refuses to start otherwise)", "address", address)
 	}
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", address)
+	listener, err := (&net.ListenConfig{}).Listen(context.WithoutCancel(ctx), "tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("listen for metrics: %w", err)
 	}

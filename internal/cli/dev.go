@@ -175,7 +175,7 @@ func startReloadProxy(ctx context.Context, env []string, logf func(string, ...an
 	if err != nil {
 		return nil, nil, err
 	}
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.HTTP.Address)
+	listener, err := (&net.ListenConfig{}).Listen(context.WithoutCancel(ctx), "tcp", cfg.HTTP.Address)
 	if err != nil {
 		return nil, nil, fmt.Errorf("listen on %s (FORGE_HTTP_ADDR): %w", cfg.HTTP.Address, err)
 	}

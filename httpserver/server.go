@@ -169,7 +169,9 @@ func (s *Server) Run(ctx context.Context) error {
 			address = ":https"
 		}
 	}
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", address)
+	// Resolution only: a signal that cancelled ctx during start-up must still
+	// end in a clean stop below, not in "lookup localhost: operation was canceled".
+	listener, err := (&net.ListenConfig{}).Listen(context.WithoutCancel(ctx), "tcp", address)
 	if err != nil {
 		return fmt.Errorf("serve HTTP: %w", err)
 	}

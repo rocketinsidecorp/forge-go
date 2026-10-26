@@ -216,6 +216,24 @@ func TestRunServesPlainHTTPAndStopsOnCancel(t *testing.T) {
 	}
 }
 
+// A signal that arrives while the process starts cancels the context before
+// Run: the address, a host name here, must still be resolved and bound, and
+// the stop is clean (exit 0), not a "lookup localhost: operation was canceled".
+func TestRunWithACancelledContextStopsCleanlyOnAHostname(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.HTTP.Address = "localhost:0"
+	server, err := httpserver.New(cfg, http.NotFoundHandler(), quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := server.Run(ctx); err != nil {
+		t.Fatalf("Run with a cancelled context = %v, want a clean stop", err)
+	}
+}
+
 func TestRunServesTLSWithHSTS(t *testing.T) {
 	t.Parallel()
 	certFile, keyFile := selfSigned(t)

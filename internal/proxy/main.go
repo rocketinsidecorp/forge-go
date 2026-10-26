@@ -133,7 +133,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	plain := newHTTPServer(*httpAddr, handler, nil, *readHeaderTimeout, *idleTimeout, *maxHeaderBytes, logger)
 	servers = append([]*http.Server{plain}, servers...)
 	for _, srv := range servers {
-		tcp, err := (&net.ListenConfig{}).Listen(ctx, "tcp", srv.Addr)
+		tcp, err := (&net.ListenConfig{}).Listen(context.WithoutCancel(ctx), "tcp", srv.Addr)
 		if err != nil {
 			return err
 		}
