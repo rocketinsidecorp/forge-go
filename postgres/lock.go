@@ -2,11 +2,8 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"hash/fnv"
-	"strconv"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -39,49 +36,4 @@ func TryAdvisoryXactLock(ctx context.Context, tx pgx.Tx, key int64) (bool, error
 		return false, fmt.Errorf("try advisory lock: %w", err)
 	}
 	return acquired, nil
-}
-
-// SchedulerLock is the jobs.Lock of PostgreSQL: one transaction-scoped
-// advisory lock per tick of a scheduled job, keyed on LockKey of the job name
-// and the tick time. Every replica that uses the same database agrees on it.
-type SchedulerLock struct {
-	db *DB
-}
-
-// NewSchedulerLock returns a scheduler lock on db's pool, for
-// jobs.SchedulerOptions.Lock.
-func NewSchedulerLock(db *DB) *SchedulerLock { return &SchedulerLock{db: db} }
-
-// schedulerLockKey keys the lock of one tick of one job.
-func schedulerLockKey(job string, tick time.Time) int64 {
-	return LockKey("forge.jobs.tick\x00" + job + "\x00" + strconv.FormatInt(tick.UTC().UnixNano(), 10))
-}
-
-// TryLock takes the tick's lock without waiting. The lock lives in a
-// transaction that holds one pooled connection until unlock rolls it back; if
-// the rollback fails, pgx closes the connection, which releases the lock too,
-// so the lock cannot leak into the pool. It works through PgBouncer in
-// transaction pooling mode.
-func (l *SchedulerLock) TryLock(ctx context.Context, job string, tick time.Time) (func(context.Context) error, bool, error) {
-	if l == nil || l.db == nil {
-		return nil, false, errors.New("scheduler lock needs a database")
-	}
-	tx, err := l.db.Pool().Begin(ctx)
-	if err != nil {
-		return nil, false, fmt.Errorf("begin scheduler lock transaction: %w", err)
-	}
-	unlock := func(ctx context.Context) error {
-		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
-			return fmt.Errorf("release scheduler lock: %w", err)
-		}
-		return nil
-	}
-	acquired, err := TryAdvisoryXactLock(ctx, tx, schedulerLockKey(job, tick))
-	if err != nil || !acquired {
-		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		_ = unlock(rollbackCtx)
-		return nil, false, err
-	}
-	return unlock, true, nil
 }

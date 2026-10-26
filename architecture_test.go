@@ -35,7 +35,7 @@ var corePackages = []string{
 	modulePath + "/mail",
 	modulePath + "/mail/mailtest",
 	modulePath + "/jobs",
-	modulePath + "/jobs/locktest",
+	modulePath + "/jobs/ticktest",
 	modulePath + "/migrate",
 	modulePath + "/migrate/migratetest",
 	modulePath + "/openapi",

@@ -47,6 +47,7 @@ var frameworkMigrations = []FrameworkMigration{
 	{Version: 20261014000000, Name: "jobs", Owner: "queue"},
 	{Version: 20261019000000, Name: "rate_limits", Owner: "ratelimit"},
 	{Version: 20261019000100, Name: "cache", Owner: "cache"},
+	{Version: 20261026120000, Name: "job_schedules", Owner: "jobs"},
 }
 
 // FrameworkMigrations returns every registered framework migration in
