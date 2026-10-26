@@ -286,6 +286,21 @@ bound to the account is required by every change of an existing factor, and
 a step-up backup code is used up with the change); custom stores and direct
 callers port as [docs/MFA.md](docs/MFA.md#upgrading) describes.
 
+Release note: pages now embed the CSRF token masked with a fresh pad on every
+render (BREACH), so it no longer equals the `__Host-forge_csrf` cookie. Two
+tests of applications generated earlier compare them byte for byte and fail:
+`TestLayoutRendersFlashAndCSRF` (`app/views/views_test.go`) and
+`TestBrowserPipelineRequiresCSRFToken` (`app/bootstrap/bootstrap_test.go`).
+Replace the comparison with `csrf.Match(cookie, embedded)`, as
+[docs/VIEWS.md](docs/VIEWS.md#upgrading-tests-that-compare-the-embedded-token-with-the-cookie)
+shows:
+
+```go
+if !csrf.Match(cookies[0].Value, form.Body.String()) { // was: cookies[0].Value != form.Body.String()
+	t.Fatalf("form body %q does not carry the CSRF cookie's token", form.Body.String())
+}
+```
+
 Password-reset emails are off until outgoing mail is configured, and so are
 the reset pages and the "Forgot your password?" link. To try them locally,
 add to `.env.local` (or uncomment the same lines in `.env.development`),
