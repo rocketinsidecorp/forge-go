@@ -161,8 +161,13 @@ list is in [DEPLOYMENT.md](DEPLOYMENT.md#environment-variables).
 - `Resources(path, handler, middleware...)` registers the conventional
   index, new, create, show, edit, update (`PATCH` and `PUT`) and destroy
   routes for the methods the handler implements; `ResourceRoutes(path)`
-  lists them. `forge routes` and `forge inspect` expand `Resources` calls
-  with a literal path.
+  lists them. `Registrations()` adds the resource action and the source
+  line that registered each route. `forge routes` builds the application and
+  runs its `routes` command, which prints `Registrations()` after `Configure`
+  (so routes built from constants or loops, such as `/v1/<plural>`, are
+  listed), and falls back to a source scan when the application cannot run;
+  `forge inspect` stays a source scan and expands `Resources` calls with a
+  literal path.
 
 ### httpserver
 
@@ -448,7 +453,8 @@ routes, and constructs the HTTP server. `App` exposes `Config`, `Logger`,
 cancelled on `SIGINT`/`SIGTERM`:
 
 1. Validates the extra commands: each needs a name and a `Run` function,
-   names must be unique, and `serve`, `healthcheck`, and `help` are reserved.
+   names must be unique, and `serve`, `healthcheck`, `openapi`, `routes`, and
+   `help` are reserved.
    A violation exits with code `2`.
 2. Parses the subcommand (default `serve`). `help`, `-h`, and `--help` list
    the commands and exit `0`. Unknown commands, or arguments to `serve` or
@@ -467,6 +473,9 @@ cancelled on `SIGINT`/`SIGTERM`:
    certificate is issued for the public hostname, not the loopback address.
    The probe sends no credentials. It exists because distroless images have
    no shell or `curl`.
+   `routes` composes the application like `openapi` (it runs `configure`,
+   does not listen) and prints the registered routes as a table with the
+   resource action and registering source line; `forge routes` runs it.
 7. Extra commands: `forge.Command{Name, Summary, Run}`. `Run(ctx, env, args)`
    receives the remaining arguments and a `CommandEnv` with the loaded
    configuration, the logger, stdout, and stderr. An error is printed as

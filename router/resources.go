@@ -118,6 +118,7 @@ func (r *Router) Resources(path string, handler any, middleware ...ResourceMiddl
 	}
 	type registration struct {
 		pattern string
+		action  Action
 		handler http.Handler
 	}
 	var registrations []registration
@@ -138,13 +139,13 @@ func (r *Router) Resources(path string, handler any, middleware ...ResourceMiddl
 				return fmt.Errorf("resource %s %s: middleware returned a nil handler", route.Action, path)
 			}
 		}
-		registrations = append(registrations, registration{route.Method + " " + route.Pattern, wrapped})
+		registrations = append(registrations, registration{route.Method + " " + route.Pattern, route.Action, wrapped})
 	}
 	if len(registrations) == 0 {
 		return fmt.Errorf("resource handler %T implements no resource action", handler)
 	}
 	for _, current := range registrations {
-		if err := r.Handle(current.pattern, current.handler); err != nil {
+		if err := r.handle(current.pattern, current.handler, current.action); err != nil {
 			return err
 		}
 	}

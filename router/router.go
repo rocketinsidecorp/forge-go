@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -14,24 +16,52 @@ import (
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
+// ErrFrozen is returned when a route is registered after the router served its
+// first request.
 var ErrFrozen = errors.New("router is frozen")
 
+// Route identifies a registered route by HTTP method and path pattern.
 type Route struct {
 	Method  string
 	Pattern string
 }
 
-type Router struct {
-	mu       sync.RWMutex
-	mux      *http.ServeMux
-	routes   []Route
-	handlers map[Route]http.Handler
-	frozen   atomic.Bool
+// Registration is a registered route together with how it got there, which
+// `forge routes` prints.
+type Registration struct {
+	Route
+	// Action is the resource action for a route that Resources registered,
+	// and empty for a route registered with Handle.
+	Action Action
+	// Source is the "file.go:line" of the application code that registered
+	// the route. It is empty for routes the framework registers itself.
+	Source string
 }
 
-func New() *Router { return &Router{mux: http.NewServeMux(), handlers: map[Route]http.Handler{}} }
+// Router is the route registry. Routes are registered before the first
+// request; after that the router is frozen.
+type Router struct {
+	mu            sync.RWMutex
+	mux           *http.ServeMux
+	routes        []Route
+	handlers      map[Route]http.Handler
+	registrations map[Route]Registration
+	frozen        atomic.Bool
+}
 
-func (r *Router) Handle(pattern string, handler http.Handler) (err error) {
+// New returns an empty router.
+func New() *Router {
+	return &Router{mux: http.NewServeMux(), handlers: map[Route]http.Handler{}, registrations: map[Route]Registration{}}
+}
+
+// Handle registers handler for pattern, a net/http.ServeMux pattern such as
+// "GET /posts/{id}". It returns an error for an invalid or conflicting
+// pattern, a nil handler, or when the router is already frozen.
+func (r *Router) Handle(pattern string, handler http.Handler) error {
+	return r.handle(pattern, handler, "")
+}
+
+func (r *Router) handle(pattern string, handler http.Handler, action Action) (err error) {
 	if handler == nil {
 		return errors.New("route handler is required")
 	}
@@ -54,7 +84,57 @@ func (r *Router) Handle(pattern string, handler http.Handler) (err error) {
 	route := Route{Method: method, Pattern: path}
 	r.routes = append(r.routes, route)
 	r.handlers[route] = handler
+	r.registrations[route] = Registration{Route: route, Action: action, Source: registrationSource()}
 	return nil
+}
+
+// frameworkPackage is the import path prefix of the Forge module, which
+// registrationSource skips to find the application's registering code.
+var frameworkPackage = strings.TrimSuffix(reflect.TypeOf(Router{}).PkgPath(), "/router")
+
+// registrationSource returns the file and line of the nearest caller outside
+// the framework, or "" when only the framework itself registered the route.
+func registrationSource() string {
+	var pcs [16]uintptr
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs[:])])
+	for {
+		frame, more := frames.Next()
+		if frame.Function != "" && !frameworkFunction(frame.Function) {
+			return fmt.Sprintf("%s:%d", frame.File, frame.Line)
+		}
+		if !more {
+			return ""
+		}
+	}
+}
+
+// frameworkFunction reports whether a fully qualified function name belongs
+// to the framework's own packages; examples and tests are application code.
+func frameworkFunction(function string) bool {
+	rest, ok := strings.CutPrefix(function, frameworkPackage)
+	if !ok || rest == "" || (rest[0] != '/' && rest[0] != '.') {
+		return false
+	}
+	if strings.HasPrefix(rest, "/examples/") {
+		return false
+	}
+	if i := strings.Index(rest, "."); i >= 0 && strings.HasSuffix(rest[:i], "_test") {
+		return false
+	}
+	return true
+}
+
+// Registrations returns every registered route with its resource action and
+// the source location that registered it, sorted like Routes.
+func (r *Router) Registrations() []Registration {
+	routes := r.Routes()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]Registration, 0, len(routes))
+	for _, route := range routes {
+		result = append(result, r.registrations[route])
+	}
+	return result
 }
 
 // Lookup returns the handler registered for route exactly as it was given to
@@ -67,10 +147,12 @@ func (r *Router) Lookup(route Route) (http.Handler, bool) {
 	return handler, ok
 }
 
+// HandleFunc is Handle for a handler function.
 func (r *Router) HandleFunc(pattern string, handler http.HandlerFunc) error {
 	return r.Handle(pattern, handler)
 }
 
+// Routes returns the registered routes sorted by path, then method.
 func (r *Router) Routes() []Route {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

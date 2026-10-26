@@ -368,7 +368,7 @@ commands:
                       and keys no template or Go code references
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
-  routes              list the routes found in the source, as a table
+  routes              list the registered routes, as a table
   openapi [--output FILE | --check FILE]
                       print or write the OpenAPI 3.1 document of the described
                       routes; --check fails when FILE is out of date
