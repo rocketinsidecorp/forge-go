@@ -78,13 +78,26 @@ func matrixApplicationFor(t *testing.T, database, command string, resources [][]
 // matrixApplicationWith is matrixApplicationFor with extra `forge new` flags.
 func matrixApplicationWith(t *testing.T, database string, newFlags []string, command string, resources [][]string) string {
 	t.Helper()
+	return matrixApplicationModule(t, "example.com/mx", database, newFlags, command, resources)
+}
+
+// matrixApplicationModule is matrixApplicationWith for a module path. An empty
+// module leaves forge new to its default, the application name ("mx"): a
+// module path without a dot.
+func matrixApplicationModule(t *testing.T, module, database string, newFlags []string, command string, resources [][]string) string {
+	t.Helper()
+	moduleFlags := []string{"--module", module}
+	if module == "" {
+		module, moduleFlags = "mx", nil
+	}
 	frameworkPath, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "mx")
 	var stdout, stderr bytes.Buffer
-	args := append([]string{"new", "mx", "--module", "example.com/mx", "--dir", dir, "--database", database, "--skip-deps"}, newFlags...)
+	args := append(append([]string{"new", "mx"}, moduleFlags...), "--dir", dir, "--database", database, "--skip-deps")
+	args = append(args, newFlags...)
 	if code := Run(args, &stdout, &stderr); code != 0 {
 		t.Fatalf("forge new: code=%d %s %s", code, stdout.String(), stderr.String())
 	}
@@ -93,7 +106,7 @@ func matrixApplicationWith(t *testing.T, database string, newFlags []string, com
 	frameworkMod := readFile(t, filepath.Join(frameworkPath, "go.mod"))
 	_, requirements, _ := strings.Cut(frameworkMod, "go 1.27.3")
 	requirements = strings.Replace(requirements, "require (\n", "require (\n\t"+"github.com/rocketinsidecorp/forge-go v0.0.0\n", 1)
-	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/mx\n\ngo 1.27.3\n"+requirements+"\nreplace github.com/rocketinsidecorp/forge-go => "+frameworkPath+"\n")
+	writeFile(t, filepath.Join(dir, "go.mod"), "module "+module+"\n\ngo 1.27.3\n"+requirements+"\nreplace github.com/rocketinsidecorp/forge-go => "+frameworkPath+"\n")
 	writeFile(t, filepath.Join(dir, "go.sum"), readFile(t, filepath.Join(frameworkPath, "go.sum")))
 	writeFile(t, filepath.Join(dir, ".golangci.yml"), readFile(t, filepath.Join(frameworkPath, ".golangci.yml")))
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -22,68 +23,78 @@ func TestRoutesListsTheJSONRoutesOfGeneratedScaffolds(t *testing.T) {
 	}
 	t.Setenv("GOFLAGS", "-mod=mod")
 	t.Setenv("GOPROXY", "off")
-	dir := matrixApplicationFor(t, "sqlite", "scaffold", scaffoldRequests())
-	var specs []resourceSpec
-	for _, args := range scaffoldRequests() {
-		request, err := parseGeneratorArgs(args, scaffoldUsage)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request.Scaffold = true
-		specs = append(specs, resourceSpec{resourceRequest: request, Module: "example.com/mx", Database: "sqlite", BrowserPipeline: true})
-	}
-	wireResources(t, dir, specs)
+	// "example.com/mx" has a dot; the default module of `forge new mx`, "mx",
+	// has none and looks like a standard library path, so its frames must still
+	// be reported as the application's.
+	for _, module := range []string{"example.com/mx", ""} {
+		modulePath := cmp.Or(module, "mx")
+		t.Run(modulePath, func(t *testing.T) {
+			dir := matrixApplicationModule(t, module, "sqlite", nil, "scaffold", scaffoldRequests())
+			var specs []resourceSpec
+			for _, args := range scaffoldRequests() {
+				request, err := parseGeneratorArgs(args, scaffoldUsage)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.Scaffold = true
+				specs = append(specs, resourceSpec{resourceRequest: request, Module: modulePath, Database: "sqlite", BrowserPipeline: true})
+			}
+			wireResources(t, dir, specs)
 
-	var output, stderr bytes.Buffer
-	if err := runRoutesAt(nil, &output, &stderr, dir); err != nil {
-		t.Fatalf("forge routes: %v\n%s", err, output.String())
-	}
-	table := output.String()
-	if stderr.Len() != 0 {
-		t.Fatalf("forge routes fell back to the source scan:\n%s\n%s", stderr.String(), table)
-	}
-	// Columns are padded to the longest cell: compare the cells only.
-	var rows []string
-	for _, line := range strings.Split(table, "\n") {
-		rows = append(rows, strings.Join(strings.Fields(line), " "))
-	}
-	for _, want := range []string{
-		"GET /v1/products - app/adapters/httpapi/product.go:",
-		"POST /v1/products - app/adapters/httpapi/product.go:",
-		"GET /v1/products/{id} - app/adapters/httpapi/product.go:",
-		"PATCH /v1/products/{id} - app/adapters/httpapi/product.go:",
-		"DELETE /v1/products/{id} - app/adapters/httpapi/product.go:",
-		"GET /v1/categories - app/adapters/httpapi/category.go:",
-		"DELETE /v1/categories/{id} - app/adapters/httpapi/category.go:",
-		// The HTML pages come from a Resources call, with their action.
-		"GET /products index app/adapters/htmlui/product.go:",
-		"PUT /products/{id} update app/adapters/htmlui/product.go:",
-		"GET /health/ready - forge (built in)",
-		"GET /openapi.json - forge (built in; development and test, or FORGE_OPENAPI_ENABLED=true)",
-	} {
-		if !slices.ContainsFunc(rows, func(row string) bool { return strings.HasPrefix(row, want) }) {
-			t.Errorf("the table has no row starting %q:\n%s", want, table)
-		}
-	}
+			var output, stderr bytes.Buffer
+			if err := runRoutesAt(nil, &output, &stderr, dir); err != nil {
+				t.Fatalf("forge routes: %v\n%s", err, output.String())
+			}
+			table := output.String()
+			if stderr.Len() != 0 {
+				t.Fatalf("forge routes fell back to the source scan:\n%s\n%s", stderr.String(), table)
+			}
+			// Columns are padded to the longest cell: compare the cells only.
+			var rows []string
+			for _, line := range strings.Split(table, "\n") {
+				rows = append(rows, strings.Join(strings.Fields(line), " "))
+			}
+			for _, want := range []string{
+				"GET /v1/products - app/adapters/httpapi/product.go:",
+				"POST /v1/products - app/adapters/httpapi/product.go:",
+				"GET /v1/products/{id} - app/adapters/httpapi/product.go:",
+				"PATCH /v1/products/{id} - app/adapters/httpapi/product.go:",
+				"DELETE /v1/products/{id} - app/adapters/httpapi/product.go:",
+				"GET /v1/categories - app/adapters/httpapi/category.go:",
+				"DELETE /v1/categories/{id} - app/adapters/httpapi/category.go:",
+				// The HTML pages come from a Resources call, with their action.
+				"GET /products index app/adapters/htmlui/product.go:",
+				"PUT /products/{id} update app/adapters/htmlui/product.go:",
+				// Registered by Configure itself.
+				"GET /v1/status - app/bootstrap/bootstrap.go:",
+				"GET /health/ready - forge (built in)",
+				"GET /openapi.json - forge (built in; development and test, or FORGE_OPENAPI_ENABLED=true)",
+			} {
+				if !slices.ContainsFunc(rows, func(row string) bool { return strings.HasPrefix(row, want) }) {
+					t.Errorf("the table has no row starting %q:\n%s", want, table)
+				}
+			}
 
-	// With a second binary, forge routes needs a NAME to choose one; without
-	// it, it says so on stderr and lists what a source scan finds.
-	writeFile(t, filepath.Join(dir, "cmd", "worker", "main.go"), readFile(t, filepath.Join(dir, "cmd", "mx", "main.go")))
-	var ambiguousOut, ambiguousErr bytes.Buffer
-	if err := runRoutesAt(nil, &ambiguousOut, &ambiguousErr, dir); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(ambiguousErr.String(), "several commands found (mx, worker): pass one name") || strings.Contains(ambiguousOut.String(), "several commands") {
-		t.Errorf("without a NAME: stdout=%s stderr=%s", ambiguousOut.String(), ambiguousErr.String())
-	}
-	for _, name := range []string{"mx", "worker"} {
-		var named, namedErr bytes.Buffer
-		if err := runRoutesAt([]string{name}, &named, &namedErr, dir); err != nil {
-			t.Fatalf("forge routes %s: %v", name, err)
-		}
-		if namedErr.Len() != 0 || !strings.Contains(strings.Join(strings.Fields(named.String()), " "), "GET /v1/products - app/adapters/httpapi/product.go:") {
-			t.Errorf("forge routes %s: stderr=%q\n%s", name, namedErr.String(), named.String())
-		}
+			// With a second binary, forge routes needs a NAME to choose one; without
+			// it, it says so on stderr and lists what a source scan finds.
+			writeFile(t, filepath.Join(dir, "cmd", "worker", "main.go"), readFile(t, filepath.Join(dir, "cmd", "mx", "main.go")))
+			var ambiguousOut, ambiguousErr bytes.Buffer
+			if err := runRoutesAt(nil, &ambiguousOut, &ambiguousErr, dir); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(ambiguousErr.String(), "several commands found (mx, worker): pass one name") || strings.Contains(ambiguousOut.String(), "several commands") {
+				t.Errorf("without a NAME: stdout=%s stderr=%s", ambiguousOut.String(), ambiguousErr.String())
+			}
+			for _, name := range []string{"mx", "worker"} {
+				var named, namedErr bytes.Buffer
+				if err := runRoutesAt([]string{name}, &named, &namedErr, dir); err != nil {
+					t.Fatalf("forge routes %s: %v", name, err)
+				}
+				if namedErr.Len() != 0 || !strings.Contains(strings.Join(strings.Fields(named.String()), " "), "GET /v1/products - app/adapters/httpapi/product.go:") {
+					t.Errorf("forge routes %s: stderr=%q\n%s", name, namedErr.String(), named.String())
+				}
+			}
+		})
 	}
 }
 

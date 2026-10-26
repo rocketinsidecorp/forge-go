@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -100,7 +101,7 @@ func registrationSource() string {
 	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs[:])])
 	for {
 		frame, more := frames.Next()
-		if frame.Function != "" && !frameworkFunction(frame.Function) {
+		if frame.Function != "" && !skippedFrame(frame.Function, mainModulePath()) {
 			return fmt.Sprintf("%s:%d", frame.File, frame.Line)
 		}
 		if !more {
@@ -109,26 +110,35 @@ func registrationSource() string {
 	}
 }
 
-// frameworkFunction reports whether a fully qualified function name belongs
-// to the framework's own packages or to the standard library and the runtime
+// mainModulePath is the module path of the running binary's main module, or
+// "" when the build information is unavailable.
+var mainModulePath = sync.OnceValue(func() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		return info.Main.Path
+	}
+	return ""
+})
+
+// skippedFrame reports whether a fully qualified function name belongs to
+// the framework's own packages or to the standard library and the runtime
 // (sync.Once, runtime.goexit, testing.tRunner): neither is the application
 // code that registered a route. Examples and tests of the framework are
-// application code.
-func frameworkFunction(function string) bool {
-	if standardLibraryFunction(function) {
+// application code, and so is every package of the main module, whatever its
+// path: a module created with `forge new myapp` is simply "myapp".
+func skippedFrame(function, mainModule string) bool {
+	if rest, ok := strings.CutPrefix(function, frameworkPackage); ok && rest != "" && (rest[0] == '/' || rest[0] == '.') {
+		if strings.HasPrefix(rest, "/examples/") {
+			return false
+		}
+		if i := strings.Index(rest, "."); i >= 0 && strings.HasSuffix(rest[:i], "_test") {
+			return false
+		}
 		return true
 	}
-	rest, ok := strings.CutPrefix(function, frameworkPackage)
-	if !ok || rest == "" || (rest[0] != '/' && rest[0] != '.') {
+	if mainModule != "" && (strings.HasPrefix(function, mainModule+"/") || strings.HasPrefix(function, mainModule+".")) {
 		return false
 	}
-	if strings.HasPrefix(rest, "/examples/") {
-		return false
-	}
-	if i := strings.Index(rest, "."); i >= 0 && strings.HasSuffix(rest[:i], "_test") {
-		return false
-	}
-	return true
+	return standardLibraryFunction(function)
 }
 
 // standardLibraryFunction reports whether function is in a package whose
