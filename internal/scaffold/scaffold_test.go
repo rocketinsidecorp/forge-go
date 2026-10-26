@@ -105,6 +105,8 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		},
 		"db/db.go": {"//go:embed all:migrations"},
 		"README.md": {
+			"queuepostgres.Commands()",
+			"docker compose run --rm app jobs status", "docker compose run --rm app jobs dead", "docker compose run --rm app jobs show JOB_ID", "docker compose run --rm app jobs retry JOB_ID", "docker compose run --rm app jobs discard JOB_ID", "docker compose run --rm app jobs prune -older 24h",
 			"POST /auth/login",
 			"POST /auth/logout",
 			"`/auth/recovery/request`",
@@ -149,6 +151,7 @@ func TestGenerateWithoutDatabase(t *testing.T) {
 		"app/bootstrap/bootstrap.go": "postgres",
 		".github/workflows/ci.yml":   "postgres",
 		".env.development":           "DATABASE",
+		"README.md":                  "jobs dead",
 	} {
 		content, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
 		if err != nil {
@@ -297,7 +300,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"app/bootstrap/bootstrap.go":      {"mysql.Open(ctx, app.Config().Database, mysql.WithTelemetry(app.Telemetry()))"},
 				"app/bootstrap/bootstrap_test.go": {`"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"`, "mysqltest.Config(t)"},
 				".github/workflows/ci.yml":        {"image: mysql:8.4", "MYSQL_ROOT_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
-				"README.md":                       {"MySQL 8.4", "`tls=true`"},
+				"README.md":                       {"MySQL 8.4", "`tls=true`", "queuemysql.Commands()", "docker compose run --rm app jobs dead"},
 			},
 			forbidden: map[string]string{
 				"compose.yaml":               "postgres",
@@ -329,6 +332,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				".gitignore":                      {"/storage/"},
 				".dockerignore":                   {"storage"},
 				"cmd/shop/main.go":                {"sqlite.Commands(db.Migrations())"},
+				"README.md":                       {"queuesqlite.Commands()", "docker compose run --rm app jobs dead"},
 				"app/bootstrap/bootstrap_test.go": {"sqlitetest.Config(t)"},
 			},
 			forbidden: map[string]string{

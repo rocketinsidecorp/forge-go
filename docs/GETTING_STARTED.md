@@ -61,6 +61,7 @@ deploy`) and runs the observability stack; none of the rest needs it.
 ```sh
 go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest
 forge help            # the command list
+forge help new        # one command's flags and examples (also: forge new --help)
 ```
 
 `go install` puts `forge` in `$(go env GOPATH)/bin` (usually `~/go/bin`); make

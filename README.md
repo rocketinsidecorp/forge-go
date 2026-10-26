@@ -630,6 +630,7 @@ response against the document. Details, type mapping and tags:
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes` | Read-only table of the routes found in the source (including `Resources` routes) and Forge's health routes |
 | `forge openapi [--output FILE \| --check FILE]` | Build the application and run its `openapi` command with the development environment: print or write the OpenAPI 3.1 document of the described routes, list undescribed ones on stderr; `--check` exits 1 when FILE is out of date. See [OpenAPI](#openapi) |
+| `forge help COMMAND`, `forge COMMAND --help` (or `-h`) | Print one command's usage, flags, examples and notes, and exit 0; for example `forge help new` or `forge generate --help` |
 | `forge help --json` | Emit the versioned command catalog with per-command flags, examples, environment inputs, exit codes and side effects |
 | `forge uuid [--count N]` | Print N UUIDv7 values (1-1000) |
 | `forge version` | Print CLI version, commit, and build date |
@@ -656,7 +657,13 @@ Flags for `forge new`:
   directive pointing at a local checkout, then runs `go mod tidy` and
   `go mod vendor` so the Docker build context is self-contained. Without it,
   `forge new` runs `go get github.com/rocketinsidecorp/forge-go@<cli version or
-  latest>` followed by `go mod tidy`.
+  latest>` followed by `go mod tidy`. The CLI version is the release stamped at
+  build time or, for a CLI installed from the module proxy with
+  `go install github.com/rocketinsidecorp/forge-go/cmd/forge@VERSION`, the
+  module (pseudo-)version recorded in its build info (`forge version` reports
+  it too). A CLI built from a checkout (`go build`, or `go install` run in it)
+  resolves `latest`, even when Go stamps a VCS pseudo-version, because that
+  commit may not be published.
 
 `forge generate migration NAME` requires `NAME` to match
 `^[a-z][a-z0-9_]{0,99}$` and `db/migrations` to exist. If a migration with the
@@ -668,9 +675,13 @@ file. The generated stub returns an explicit not-implemented error until it
 is replaced, so registering it cannot silently report successful work. It does
 not edit `bootstrap.JobsConfigure`: choose a schedule and register the handler
 there explicitly. `NAME` must be lowercase snake_case with each segment
-starting with a letter. Scheduler failures are reported but are not retried
-automatically; jobs that run on multiple replicas must be idempotent or use a
-PostgreSQL advisory lock when only one replica may perform a schedule tick.
+starting with a letter. The generated shutdown hook calls
+`scheduler.StopContext(ctx)`, which cancels running jobs and waits for them only
+within the shutdown budget (`FORGE_HTTP_SHUTDOWN_TIMEOUT`); a job that ignores
+its context keeps running and the hook returns the deadline error. Scheduler
+failures are reported but are not retried automatically; jobs that run on
+multiple replicas must be idempotent or use a PostgreSQL advisory lock when only
+one replica may perform a schedule tick.
 
 `forge generate resource NAME field:type... (--tenant-scoped | --global)
 [--plural PLURAL] [--dry-run]` generates a working, tested CRUD resource for
@@ -881,6 +892,19 @@ Binaries built with `forge.Main` accept:
 | `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database); `rollback` reverts application migrations only |
 | `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |
 | `setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | Added by `authpostgres.SetupCommand()` (PostgreSQL): the first tenant and owner, once |
+| `jobs status`, `jobs dead [-queue Q] [-kind K] [-limit N]`, `jobs show ID`, `jobs retry ID`, `jobs discard ID`, `jobs prune [-older D]` | Added by `queuepostgres.Commands()` (`queuemysql`, `queuesqlite` for the other databases) once the persistent job queue is wired ([JOBS](docs/JOBS.md)): inspect and repair the queue; payloads are never printed |
+
+The `jobs` commands ship inside the production image, so operators need no
+extra tooling:
+
+```sh
+docker compose run --rm app jobs status                # jobs per queue and state
+docker compose run --rm app jobs dead                  # dead jobs; also -queue Q, -kind K, -limit N
+docker compose run --rm app jobs show JOB_ID           # one job's metadata
+docker compose run --rm app jobs retry JOB_ID          # move a dead job back to pending
+docker compose run --rm app jobs discard JOB_ID        # delete a dead job permanently
+docker compose run --rm app jobs prune -older 24h      # delete finished jobs
+```
 
 Exit status is `0` on success, `1` on failure (including invalid
 configuration), and `2` for an unknown command or invalid arguments.

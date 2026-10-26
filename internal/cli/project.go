@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strings"
 
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
@@ -18,6 +19,47 @@ import (
 )
 
 var releaseVersion = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`)
+
+// readBuildInfo is replaced by tests.
+var readBuildInfo = debug.ReadBuildInfo
+
+// builtVersion is the framework version recorded in the CLI's build info, or
+// "" when there is none worth trusting. Only a CLI fetched from the module
+// proxy or cache (`go install ...forge-go/cmd/forge@VERSION`) qualifies: Go
+// records a checksum (Main.Sum) for it, and the version is one `go get` can
+// resolve. A build of a checkout has no Sum even when Go stamps a VCS
+// pseudo-version, which may name a commit that was never published; a working
+// tree is "(devel)" and a dirty one ends in "+dirty".
+func builtVersion(build func() (*debug.BuildInfo, bool)) string {
+	info, ok := build()
+	if !ok || info == nil || info.Main.Path != scaffold.FrameworkModule || info.Main.Sum == "" || !releaseVersion.MatchString(info.Main.Version) {
+		return ""
+	}
+	return info.Main.Version
+}
+
+// effectiveVersion is the version this CLI reports: the release stamped
+// through ldflags or, when those left "dev", builtVersion.
+func effectiveVersion(ldflagsVersion string, build func() (*debug.BuildInfo, bool)) string {
+	if ldflagsVersion == "dev" {
+		if built := builtVersion(build); built != "" {
+			return built
+		}
+	}
+	return ldflagsVersion
+}
+
+// frameworkTarget is the framework version `forge new` pins. A release build
+// stamps version.Version through ldflags. A CLI installed from the module
+// proxy carries no ldflags ("dev") but records the module version it was built
+// from (builtVersion), which is then pinned so the generated application uses
+// the framework its templates came from. Anything else resolves to "latest".
+func frameworkTarget(ldflagsVersion string, build func() (*debug.BuildInfo, bool)) string {
+	if version := effectiveVersion(ldflagsVersion, build); releaseVersion.MatchString(version) {
+		return version
+	}
+	return "latest"
+}
 
 func runNew(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("new", flag.ContinueOnError)
@@ -69,6 +111,12 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	return err
 }
 
+// runGoStep runs one go command of resolveDependencies in dir; tests replace
+// it to observe the arguments without running the go tool.
+var runGoStep = func(ctx context.Context, dir string, stdout, stderr io.Writer, args ...string) error {
+	return goCommand(ctx, dir, nil, stdout, stderr, args...).Run()
+}
+
 // resolveDependencies adds the framework requirement. With a local checkout
 // the dependency is replaced and vendored, so the Docker build context stays
 // self-contained; otherwise the matching release is fetched.
@@ -81,15 +129,12 @@ func resolveDependencies(ctx context.Context, dir, localFramework string, stdout
 			{"mod", "vendor"},
 		}
 	} else {
-		target := "latest"
-		if releaseVersion.MatchString(version.Version) {
-			target = version.Version
-		}
+		target := frameworkTarget(version.Version, readBuildInfo)
 		steps = [][]string{{"get", scaffold.FrameworkModule + "@" + target}, {"mod", "tidy"}}
 	}
 	for _, step := range steps {
 		fmt.Fprintf(stdout, "  run     go %s\n", strings.Join(step, " "))
-		if err := goCommand(ctx, dir, nil, stdout, stderr, step...).Run(); err != nil {
+		if err := runGoStep(ctx, dir, stdout, stderr, step...); err != nil {
 			return fmt.Errorf("go %s: %w", step[0], err)
 		}
 	}

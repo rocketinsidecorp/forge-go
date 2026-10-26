@@ -93,7 +93,10 @@ func Configure(_ context.Context, app *forge.App) error {
 }
 {{- end}}
 
-{{- if and .DB .DB.Jobs}}
+{{ if and .DB .DB.Jobs}}
+// JobsConfigure starts the in-process scheduler for recurring jobs and stops
+// it, waiting for running jobs within the shutdown budget, when the application
+// shuts down. Register application jobs on the scheduler below.
 func JobsConfigure(app *forge.App) error {
 	scheduler := jobs.NewScheduler(jobs.SchedulerOptions{
 		MaxConcurrentJobs: 4,
@@ -102,14 +105,17 @@ func JobsConfigure(app *forge.App) error {
 			app.Logger().Error("scheduled job failed", "job", name, "error", err)
 		},
 	})
-	// Register application jobs here, e.g.:
-	// scheduler.Register("cleanup", jobs.ScheduleSpec{Every: 24 * time.Hour}, func(ctx context.Context) error {
-	//     return app.InTx(ctx, func(tx pgx.Tx) error {
-	//         // cleanup work
-	//         return nil
-	//     })
-	// })
-	if err := app.OnShutdown(func(ctx context.Context) error { return scheduler.Stop() }); err != nil {
+	// Register application jobs here (they need the time package), e.g.:
+	// if err := scheduler.Register("cleanup", jobs.ScheduleSpec{Every: 24 * time.Hour}, func(ctx context.Context) error {
+	//	// ctx is cancelled on shutdown: return promptly when it is done.
+	//	return nil
+	// }); err != nil {
+	//	_ = scheduler.Stop()
+	//	return err
+	// }
+	// A job that needs the database uses the handle Configure opened: pass it
+	// to the job's constructor and call database.InTx(ctx, func(tx ...) error).
+	if err := app.OnShutdown(scheduler.StopContext); err != nil {
 		_ = scheduler.Stop()
 		return err
 	}

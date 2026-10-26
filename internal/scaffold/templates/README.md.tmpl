@@ -346,6 +346,43 @@ forge openapi --check openapi.json   # exits 1 when the committed file is stale 
 In staging and production the document is not served unless
 `FORGE_OPENAPI_ENABLED=true`: it lists every documented route. The handler
 tests of generated resources check every response against it.
+{{- if .DB}}
+
+## Background jobs
+{{if .DB.Jobs}}
+`app/bootstrap/bootstrap.go` has `JobsConfigure`, which starts an in-process
+`jobs.Scheduler` for recurring work and stops it within the shutdown timeout
+(`FORGE_HTTP_SHUTDOWN_TIMEOUT`). Add a job with `forge generate job cleanup`,
+then register it there with an explicit schedule.
+{{end}}
+Work that must survive restarts and retry runs on the persistent job queue
+(`queue/{{.DB.Adapter}}`), like Solid Queue in Rails:
+
+```bash
+forge generate job send_welcome user_id:uuid --queue --dry-run   # preview the typed handler and its tests
+forge generate job send_welcome user_id:uuid --queue             # create app/jobs/send_welcome.go and its test
+```
+
+Follow the printed wiring, and add the queue's tables and the `jobs` command
+to `cmd/{{.Name}}/main.go` (`queue{{.DB.Adapter}}.Migrations()` and
+`queue{{.DB.Adapter}}.Commands()`; see the
+[jobs guide](https://github.com/rocketinsidecorp/forge-go/blob/main/docs/JOBS.md)).
+Delivery is at least once: make handlers idempotent. A job out of attempts is
+`dead` until you act. The application binary's `jobs` command inspects and
+repairs the queue (payloads are never printed):
+
+```bash
+docker compose run --rm app jobs status                   # jobs per queue and state
+docker compose run --rm app jobs dead                     # dead jobs; also -queue Q, -kind K, -limit N
+docker compose run --rm app jobs show JOB_ID              # one job's metadata
+docker compose run --rm app jobs retry JOB_ID             # run a dead job again with a fresh attempt budget
+docker compose run --rm app jobs discard JOB_ID           # delete a dead job
+docker compose run --rm app jobs prune -older 24h         # delete finished jobs
+```
+
+On a host deployed with `forge deploy`, run them as
+`forge app exec jobs dead`.
+{{- end}}
 
 ## Observability
 

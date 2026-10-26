@@ -26,6 +26,9 @@ type commonFlags struct {
 func newFlags(name string, stderr io.Writer, withJSON bool) (*flag.FlagSet, *commonFlags) {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	// parseFlags prints the usage of a command line that fails to parse; a
+	// request for help (flag.ErrHelp) is answered by the caller, once.
+	flags.Usage = func() {}
 	common := &commonFlags{}
 	flags.StringVar(&common.config, "config", DefaultConfigPath, "deploy configuration")
 	flags.StringVar(&common.config, "c", DefaultConfigPath, "shorthand for --config")
@@ -37,12 +40,24 @@ func newFlags(name string, stderr io.Writer, withJSON bool) (*flag.FlagSet, *com
 	return flags, common
 }
 
+// parseFlags is flags.Parse that, for an invalid command line, also lists the
+// flags on the flag set's output as the flag package would. For -h and --help
+// it prints nothing and returns flag.ErrHelp.
+func parseFlags(flags *flag.FlagSet, args []string) error {
+	err := flags.Parse(args)
+	if err != nil && !errors.Is(err, flag.ErrHelp) {
+		fmt.Fprintf(flags.Output(), "Usage of %s:\n", flags.Name())
+		flags.PrintDefaults()
+	}
+	return err
+}
+
 // parseAll parses flags anywhere among the arguments and returns the
 // positional ones.
 func parseAll(flags *flag.FlagSet, args []string) ([]string, error) {
 	var positional []string
 	for {
-		if err := flags.Parse(args); err != nil {
+		if err := parseFlags(flags, args); err != nil {
 			return nil, err
 		}
 		if flags.NArg() == 0 {
@@ -365,8 +380,9 @@ func defaultServiceName(root string) string {
 func runInit(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	flags.Usage = func() {} // parseFlags prints it for a bad command line only
 	service := flags.String("service", "", "service name (default: from go.mod)")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
@@ -435,7 +451,7 @@ func RunApp(args []string, stdout, stderr io.Writer) error {
 		flags.StringVar(&image, "image", "", "debug image with a shell, run as a sidecar (distroless images have no shell)")
 	}
 	// Flags must precede the command, whose own flags are passed through.
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseFlags(flags, args[1:]); err != nil {
 		return err
 	}
 	d, err := common.deployer(stdout, stderr)

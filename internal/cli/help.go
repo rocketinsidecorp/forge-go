@@ -2,9 +2,10 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/rocketinsidecorp/forge-go/internal/version"
 )
@@ -52,10 +53,113 @@ func runHelp(args []string, output io.Writer) error {
 		usage(output)
 		return nil
 	}
-	if len(args) != 1 || args[0] != "--json" {
-		return errors.New("usage: forge help [--json]")
+	if len(args) == 1 && args[0] == "--json" {
+		return json.NewEncoder(output).Encode(currentCommandCatalog())
 	}
-	return json.NewEncoder(output).Encode(currentCommandCatalog())
+	// forge help COMMAND --help is the help of COMMAND, like forge COMMAND --help.
+	if len(args) == 2 && isHelpFlag(args[1]) && !strings.HasPrefix(args[0], "-") {
+		args = args[:1]
+	}
+	if len(args) == 1 && !strings.HasPrefix(args[0], "-") {
+		return writeCommandHelp(output, args[0])
+	}
+	return usageError{helpUsage}
+}
+
+// usageError is an invalid command line: exit status 2, like an unknown
+// top-level command.
+type usageError struct{ message string }
+
+func (e usageError) Error() string { return e.message }
+
+// ExitCode is the process exit status.
+func (usageError) ExitCode() int { return 2 }
+
+func isHelpFlag(arg string) bool { return arg == "-h" || arg == "--help" }
+
+const helpUsage = "usage: forge help [--json | COMMAND]"
+
+// helpArgumentLimit is how many leading arguments, command name included, a
+// command that forwards the rest of its line to another program may have
+// before -h and --help belong to that program: `forge test -h` is Forge's help
+// but `forge test ./... -h` is go test's, and `forge app exec CMD --help` runs
+// CMD --help on the host.
+var helpArgumentLimit = map[string]int{"test": 2, "app": 3}
+
+// commandHelpRequested reports whether args (a command name and its
+// arguments) ask for that command's help: -h or --help before a literal "--".
+func commandHelpRequested(args []string) bool {
+	if len(args) < 2 || commandDetailNamed(args[0]) == nil {
+		return false
+	}
+	if args[0] == "help" {
+		// forge help --help describes help; forge help COMMAND --help is
+		// answered by runHelp.
+		return len(args) == 2 && isHelpFlag(args[1])
+	}
+	limit, bounded := helpArgumentLimit[args[0]]
+	for i, arg := range args[1:] {
+		if arg == "--" || (bounded && i+1 >= limit) {
+			return false
+		}
+		if isHelpFlag(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+func commandDetailNamed(name string) *commandDetail {
+	catalog := currentCommandCatalog()
+	for i := range catalog.Commands {
+		if catalog.Commands[i].Name == name {
+			return &catalog.Commands[i]
+		}
+	}
+	return nil
+}
+
+// writeCommandHelp prints one command's usage, summary, flags, examples and
+// notes, from the same catalog `forge help --json` serves.
+func writeCommandHelp(output io.Writer, name string) error {
+	command := commandDetailNamed(name)
+	if command == nil {
+		return usageError{fmt.Sprintf("unknown command %q: run `forge help` to list the commands", name)}
+	}
+	var text strings.Builder
+	fmt.Fprintf(&text, "usage: %s\n\n%s\n", command.Usage, command.Summary)
+	if len(command.Flags) > 0 {
+		text.WriteString("\nflags:\n")
+		for _, f := range command.Flags {
+			label := f.Name
+			if f.Value != "" {
+				label += " " + f.Value
+			}
+			fmt.Fprintf(&text, "  %s\n", label)
+			description := f.Description
+			if f.Default != "" {
+				description += " (default: " + f.Default + ")"
+			}
+			fmt.Fprintf(&text, "      %s\n", description)
+		}
+	}
+	if len(command.Examples) > 0 {
+		text.WriteString("\nexamples:\n")
+		for _, example := range command.Examples {
+			fmt.Fprintf(&text, "  %s\n", example)
+		}
+	}
+	if command.Environment.Notes != "" {
+		fmt.Fprintf(&text, "\nnotes:\n  %s\n", command.Environment.Notes)
+	}
+	if len(command.Environment.Files) > 0 {
+		fmt.Fprintf(&text, "\nreads: %s\n", strings.Join(command.Environment.Files, ", "))
+	}
+	if len(command.Environment.Variables) > 0 {
+		fmt.Fprintf(&text, "\nenvironment: %s\n", strings.Join(command.Environment.Variables, ", "))
+	}
+	_, err := io.WriteString(output, text.String())
+	return err
 }
 
 func currentCommandCatalog() commandCatalog {
@@ -190,7 +294,7 @@ func currentCommandCatalog() commandCatalog {
 			Flags:       []flagDetail{{Name: "--count", Value: "N", Default: "1", Description: "Number of identifiers, from 1 to 1000."}},
 		},
 		{Name: "version", Usage: "forge version", Summary: "Print the Forge version.", SideEffects: []string{"read_only"}, Examples: []string{"forge version"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}},
-		{Name: "help", Usage: "forge help [--json]", Summary: "Show human-readable help or the versioned command catalog.", SideEffects: []string{"read_only"}, Examples: []string{"forge help", "forge help --json"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}, Flags: []flagDetail{{Name: "--json", Description: "Print the stable machine-readable command catalog."}}},
+		{Name: "help", Usage: "forge help [--json | COMMAND]", Summary: "Show human-readable help, one command's help (also forge COMMAND --help) or the versioned command catalog.", SideEffects: []string{"read_only"}, Examples: []string{"forge help", "forge help new", "forge new --help", "forge help --json"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}}, ExitCodes: []exitCodeDetail{{Code: 2, Meaning: "The command is unknown or the arguments are invalid."}}, Flags: []flagDetail{{Name: "--json", Description: "Print the stable machine-readable command catalog."}}},
 	}
 	commands = append(commands, deployCommandDetails()...)
 	commands = slices.Insert(commands, slices.IndexFunc(commands, func(c commandDetail) bool { return c.Name == "generate" })+1, destroyCommandDetail())
@@ -212,12 +316,12 @@ func currentCommandCatalog() commandCatalog {
 	return commandCatalog{
 		SchemaVersion: 1,
 		Name:          "forge",
-		Version:       version.Version,
+		Version:       effectiveVersion(version.Version, readBuildInfo),
 		GlobalOptions: []flagDetail{{Name: jsonErrorFormatFlag, Description: "Emit schema-versioned, secret-safe errors on stderr when a command fails."}},
 		ProcessExitCodes: append([]exitCodeDetail{
 			{Code: 0, Meaning: "The requested command completed successfully."},
 			{Code: 1, Meaning: "A command failed or its arguments/configuration were invalid."},
-			{Code: 2, Meaning: "No command was supplied or the top-level command is unknown."},
+			{Code: 2, Meaning: "No command was supplied, the top-level command is unknown, or forge help was given an unknown command or invalid arguments."},
 		}, deployExitCodes...),
 		Commands: commands,
 	}
