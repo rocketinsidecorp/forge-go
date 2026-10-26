@@ -193,6 +193,9 @@ func snapshotTree(t *testing.T, root string) []string {
 			return err
 		}
 		relative, _ := filepath.Rel(root, path)
+		if relative == ".forge" {
+			return nil // the generate lock's directory, which generators keep
+		}
 		entries = append(entries, relative)
 		return nil
 	})

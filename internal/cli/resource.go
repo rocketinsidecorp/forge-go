@@ -347,6 +347,9 @@ func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 }
 
 func validateResourceName(name string) error {
+	if err := rejectSeamReservedName("resource name", name); err != nil {
+		return err
+	}
 	switch {
 	case len(name) > maxResourceNameLength || !resourceName.MatchString(name):
 		return fmt.Errorf("resource name %q must be singular snake_case (lowercase letters and digits, words separated by single underscores, starting with a letter, at most %d characters)", name, maxResourceNameLength)
@@ -359,6 +362,9 @@ func validateResourceName(name string) error {
 }
 
 func validateResourcePlural(name, plural string, explicit bool) error {
+	if err := rejectSeamReservedName("plural", plural); err != nil {
+		return err
+	}
 	hint := ""
 	if !explicit {
 		hint = "; pass --plural"

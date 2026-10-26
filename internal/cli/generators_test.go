@@ -350,7 +350,7 @@ func TestGenerateControllerInIdentityApplicationsRegistersItsPermission(t *testi
 		t.Errorf("a JSON controller without bearer sign-in does not authenticate the session cookie:\n%s", api)
 	}
 	writeFile(t, filepath.Join(root, "app", "bootstrap", "bootstrap.go"), "package bootstrap\n\n// app.Handle(\"POST /auth/login\", loginHandler)\n")
-	bearer := mustGenerate(t, root, "controller", "streams", "latest", "--api")
+	bearer := mustGenerate(t, root, "controller", "event_feeds", "latest", "--api")
 	if !strings.Contains(bearer, "middleware.Authenticate(guarded)") || strings.Contains(bearer, "AuthenticateCookie") {
 		t.Errorf("a JSON controller with bearer sign-in does not authenticate the bearer token:\n%s", bearer)
 	}

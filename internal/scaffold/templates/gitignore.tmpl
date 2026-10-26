@@ -13,3 +13,8 @@ coverage.out
 .env.*.local
 # Credential keys: never commit. The encrypted *.json.enc files are committed.
 /config/credentials/*.key
+# Generator state: the lock forge generate and forge destroy hold while they
+# run, and the seam's temporary file. (.forge/ itself also holds committed
+# files, such as forge deploy hooks.)
+/.forge/generate.lock
+/app/bootstrap/routes_gen.go.tmp

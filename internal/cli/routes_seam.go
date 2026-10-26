@@ -78,6 +78,23 @@ func bootstrapDeclarations(projectRoot *os.Root) map[string]bool {
 	return names
 }
 
+// seamReservedNames are the names of the seam's guards, shared blocks and
+// parameters, in snake_case as a resource, plural or controller would spell
+// them: generated code named like them would be confusing to read next to
+// them, so the generators refuse them.
+var seamReservedNames = []string{
+	"protect", "public", "protect_cookie", "protect_platform_write", "renderer", "signer", "stream_signer",
+	"streams", "generated_routes", "repository", "middleware",
+}
+
+// rejectSeamReservedName refuses a name the routes seam uses.
+func rejectSeamReservedName(kind, name string) error {
+	if slices.Contains(seamReservedNames, name) {
+		return fmt.Errorf("%s %q is reserved: app/bootstrap/routes_gen.go uses the names %s; choose another name", kind, name, strings.Join(seamReservedNames, ", "))
+	}
+	return nil
+}
+
 // routesChange is what one generator adds to the seam, or takes out of it.
 type routesChange struct {
 	// entry is the generator's own block. Only its ID matters for a removal.
@@ -120,6 +137,13 @@ const (
 // the same, "" when a removal finds nothing to remove. It refuses a seam that
 // was edited by hand, and an entry the seam already wires differently.
 func planRoutes(projectRoot *os.Root, seam routesSeam, change routesChange) ([]byte, string, error) {
+	// A temporary file left by an interrupted write would make the write
+	// fail after the generator's files exist: refuse before anything.
+	if _, err := projectRoot.Lstat(routesTemporary); err == nil {
+		return nil, "", fmt.Errorf("%s exists: an earlier write of the routes seam was interrupted. Check %s, then remove %s and run the command again", filepath.ToSlash(routesTemporary), filepath.ToSlash(scaffold.RoutesFile), filepath.ToSlash(routesTemporary))
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, "", err
+	}
 	current, err := projectRoot.ReadFile(scaffold.RoutesFile)
 	var blocks []scaffold.RouteBlock
 	switch {
@@ -258,24 +282,40 @@ func writeRoutes(root string, content []byte) error {
 	return writeRootFileAtomic(projectRoot, scaffold.RoutesFile, content)
 }
 
-// writeRootFileAtomic replaces path with content through a temporary file in the
-// same directory, synced and renamed over it, so a crash or a full disk never
-// leaves a half-written seam.
+// routesTemporary is the file the seam is written to before it is renamed
+// over routes_gen.go.
+var routesTemporary = scaffold.RoutesFile + ".tmp"
+
+// writeRootFileAtomic replaces path with content through a temporary file in
+// the same directory, synced, renamed over it, and the directory synced, so a
+// crash or a full disk never leaves a half-written seam. The file keeps its
+// permissions (0600, as every generated file, when it is new).
 func writeRootFileAtomic(root *os.Root, path string, content []byte) error {
+	mode := os.FileMode(0o600)
+	if info, err := root.Lstat(path); err == nil {
+		mode = info.Mode().Perm()
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	temporary := path + ".tmp"
-	file, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return fmt.Errorf("write %s: %w (remove %s if no generator is running)", path, err, temporary)
 	}
 	_, writeErr := file.Write(content)
+	chmodErr := file.Chmod(mode) // the umask may have narrowed it
 	syncErr := file.Sync()
-	if err := errors.Join(writeErr, syncErr, file.Close()); err != nil {
+	if err := errors.Join(writeErr, chmodErr, syncErr, file.Close()); err != nil {
 		return errors.Join(err, root.Remove(temporary))
 	}
 	if err := root.Rename(temporary, path); err != nil {
 		return errors.Join(err, root.Remove(temporary))
 	}
-	return nil
+	directory, err := root.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	return errors.Join(directory.Sync(), directory.Close())
 }
 
 // generateLock is the file that keeps two generators (or destroys) from
@@ -286,38 +326,45 @@ var generateLock = filepath.Join(".forge", "generate.lock")
 // errGenerateLocked refuses a generator while another one holds the lock.
 var errGenerateLocked = fmt.Errorf("another forge generate or forge destroy is running in this application (%s exists): wait for it to finish, or remove the file if none is running", filepath.ToSlash(generateLock))
 
-// withGenerateLock runs fn holding the application's generate lock, created
-// exclusively and removed afterwards (with the .forge directory, when this
-// call created it). A root that cannot be opened is left to fn to report.
+// withGenerateLock runs fn holding the application's generate lock: the
+// file is created exclusively in .forge (made if missing, never removed:
+// another run may be using it) and removed afterwards. Anything that keeps
+// the lock from being taken refuses the run rather than running unlocked:
+// an existing lock, a .forge that is not a plain directory (a symlink, a
+// file), or any other error. A directory without go.mod is not an
+// application, and fn reports that itself.
 func withGenerateLock(root string, fn func() error) error {
 	projectRoot, err := os.OpenRoot(root)
 	if err != nil {
 		return fn()
 	}
 	defer func() { _ = projectRoot.Close() }()
-	createdDirectory := false
-	if err := projectRoot.Mkdir(filepath.Dir(generateLock), 0o750); err == nil {
-		createdDirectory = true
-	} else if !errors.Is(err, fs.ErrExist) {
-		return fn() // not an application directory we can write: fn reports why
+	if info, err := projectRoot.Lstat("go.mod"); err != nil || !info.Mode().IsRegular() {
+		return fn()
+	}
+	directory := filepath.Dir(generateLock)
+	info, err := projectRoot.Lstat(directory)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		if err := projectRoot.MkdirAll(directory, 0o750); err != nil {
+			return fmt.Errorf("take the generate lock: %w", err)
+		}
+	case err != nil:
+		return fmt.Errorf("take the generate lock: %w", err)
+	case !info.IsDir():
+		return fmt.Errorf("refusing to run: %s is not a directory (a symlink or a file), so the generate lock cannot be taken safely", directory)
 	}
 	lock, err := projectRoot.OpenFile(generateLock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, fs.ErrExist) {
 		return errGenerateLocked
 	}
 	if err != nil {
-		if createdDirectory {
-			_ = projectRoot.Remove(filepath.Dir(generateLock))
-		}
-		return fn()
+		return fmt.Errorf("take the generate lock: %w", err)
 	}
-	_ = lock.Close()
-	defer func() {
-		_ = projectRoot.Remove(generateLock)
-		if createdDirectory {
-			_ = projectRoot.Remove(filepath.Dir(generateLock))
-		}
-	}()
+	if err := lock.Close(); err != nil {
+		return errors.Join(fmt.Errorf("take the generate lock: %w", err), projectRoot.Remove(generateLock))
+	}
+	defer func() { _ = projectRoot.Remove(generateLock) }()
 	return fn()
 }
 

@@ -61,8 +61,17 @@ fields, never from the name. Running `remove_...` prints a data-loss warning.
 
 Generators and `forge destroy` take `.forge/generate.lock` while they run, so
 two of them in one application never interleave their edits of the routes
-seam; a second one is refused until the first finishes. The seam is written
-through a temporary file renamed over it.
+seam; a second one is refused until the first finishes, and so is any run
+that cannot take the lock (`.forge` a symlink or a file, for example). The
+seam is written through `app/bootstrap/routes_gen.go.tmp`, synced and renamed
+over it, keeping its permissions; a leftover temporary file (an interrupted
+write) is refused before anything is generated. The generated `.gitignore`
+ignores both files.
+
+The names the seam uses cannot name a resource, plural or controller:
+`protect`, `public`, `protect_cookie`, `protect_platform_write`, `renderer`,
+`signer`, `stream_signer`, `streams`, `generated_routes`, `repository` and
+`middleware`.
 
 ## Model
 

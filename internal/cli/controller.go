@@ -109,6 +109,9 @@ func parseControllerArgs(args []string) (controllerRequest, error) {
 }
 
 func validateControllerName(name string) error {
+	if err := rejectSeamReservedName("controller name", name); err != nil {
+		return err
+	}
 	switch {
 	case len(name) > maxGeneratorNameLength || !snakeName.MatchString(name):
 		return fmt.Errorf("controller name %q must be snake_case, usually plural (lowercase letters and digits, words separated by single underscores, starting with a letter, at most %d characters)", name, maxGeneratorNameLength)
@@ -380,6 +383,7 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 		adapterPackage = "httpapi"
 	}
 	parts := resourceWiringParts{Imports: []string{spec.Module + "/app/adapters/" + adapterPackage}}
+	guard := func(name string) string { return guardReference(spec.Seam, spec.Identity, false, name) }
 	parts.Where = "inside Configure, after the `routes(ctx, app)` call and its error check"
 	if spec.NoDatabase {
 		parts.Where = "inside routes, before its final `return nil`"
@@ -403,13 +407,13 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 	case spec.Identity && spec.API && !spec.BearerSignIn:
 		parts.Guard = cookieJSONGuard
 		parts.Notes = append(parts.Notes, cookieJSONNote)
-		arguments += ", protect"
+		arguments += ", " + guard("protect")
 	case spec.Identity && spec.API:
 		parts.Guard = identityJSONGuard
-		arguments += ", protect"
+		arguments += ", " + guard("protect")
 	case spec.Identity:
 		parts.Guard = identityPagesGuard
-		arguments += ", protectCookie"
+		arguments += ", " + guard("protectCookie")
 	default:
 		parts.Imports = append(parts.Imports, "github.com/rocketinsidecorp/forge-go/fault", "github.com/rocketinsidecorp/forge-go/web")
 		parts.Guard = denyAllGuard(fmt.Sprintf("%q", spec.Name+":read"), "")
@@ -431,7 +435,7 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 	}
 	parts.Usage = fmt.Sprintf("\tif err := %s.Register%sController(%s); err != nil {\n\t\treturn err\n\t}\n", adapterPackage, title, arguments)
 	if spec.Seam {
-		toSeam(&parts, spec.Identity)
+		toSeam(&parts)
 	}
 	var routes []string
 	for _, action := range newControllerView(spec).Actions {

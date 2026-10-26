@@ -683,15 +683,11 @@ func wireRoutes(t *testing.T, dir string, partsList []resourceWiringParts) {
 		wireParts(t, dir, partsList)
 		return
 	}
-	seam := readFile(t, filepath.Join(dir, scaffold.RoutesFile))
-	// With Forge identity the seam's guards take the session store.
-	identity := strings.Contains(seam, "repository *authpostgres.Repository")
+	// With Forge identity the seam's guards take the session store: compare
+	// the printed wiring with the seam's calls of them left out.
+	seam := strings.ReplaceAll(readFile(t, filepath.Join(dir, scaffold.RoutesFile)), "(repository, middleware)", "")
 	for _, parts := range partsList {
-		usage := parts.Usage
-		if identity {
-			usage = seamIdentityGuardCalls(usage)
-		}
-		for _, line := range strings.Split(strings.TrimSpace(usage), "\n") {
+		for _, line := range strings.Split(strings.TrimSpace(parts.Usage), "\n") {
 			if line = strings.TrimSpace(line); line != "" && !strings.Contains(seam, line) {
 				t.Fatalf("the generators did not wire %q into %s:\n%s", line, scaffold.RoutesFile, seam)
 			}

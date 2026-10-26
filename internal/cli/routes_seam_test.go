@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -506,7 +507,7 @@ func TestConcurrentGeneratorsNeverLoseABlock(t *testing.T) {
 	if wired == 0 {
 		t.Fatal("no generator ran")
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".forge")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(dir, ".forge", "generate.lock")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the generate lock was left behind: %v", err)
 	}
 	// A lock left in place refuses, and writes nothing.
@@ -537,5 +538,84 @@ func TestPublicWarningFitsTheApplication(t *testing.T) {
 		if !strings.Contains(output, "WARNING: --public") || !strings.Contains(output, want) {
 			t.Errorf("%s:\n%s", database, output)
 		}
+	}
+}
+
+// Seam names cannot name a resource, plural or controller.
+func TestSeamNamesAreReserved(t *testing.T) {
+	t.Parallel()
+	dir := seamApplication(t, "sqlite")
+	before := fileTree(t, dir)
+	for _, args := range [][]string{
+		{"resource", "protect", "name:string", "--global"},
+		{"scaffold", "thing", "name:string", "--global", "--plural", "protect"},
+		{"scaffold", "thing", "name:string", "--global", "--plural", "protect_platform_write"},
+		{"resource", "renderer", "name:string", "--global"},
+		{"controller", "public", "index"},
+		{"controller", "middleware", "index"},
+		{"model", "repository", "name:string", "--global"},
+	} {
+		var out bytes.Buffer
+		if err := runGenerateEnv(args, &out, dir, withoutDatabaseURL(), seamNow); err == nil || !strings.Contains(err.Error(), "is reserved: app/bootstrap/routes_gen.go uses the names") {
+			t.Errorf("forge generate %v: %v", args, err)
+		}
+	}
+	if !maps.Equal(fileTree(t, dir), before) {
+		t.Fatal("a refused generator changed the application")
+	}
+}
+
+// The guard references are built into the wiring, never substituted into
+// its text: a global resource whose plural reads like a guard keeps its
+// writes behind protectPlatformWrite. (The plural is reserved now; the
+// wiring must be right regardless.)
+func TestGuardReferencesNeverRewriteTheWiringText(t *testing.T) {
+	t.Parallel()
+	for _, plural := range []string{"protect", "protect_cookie", "things"} {
+		spec := resourceSpec{
+			resourceRequest: resourceRequest{Name: "thing", Plural: plural, Scaffold: true},
+			Module:          "example.com/shop", Database: "postgres", Identity: true, Seam: true, BrowserPipeline: true, I18nMiddleware: true,
+		}
+		usage := buildResourceWiring(spec).Usage
+		if strings.Count(usage, fmt.Sprintf("if permission == %q {", plural+":write")) != 2 || strings.Count(usage, "return protectPlatformWrite(permission, next)") != 2 ||
+			!strings.Contains(usage, "return protect(repository, middleware)(permission, next)") || !strings.Contains(usage, "return protectCookie(repository, middleware)(permission, next)") {
+			t.Errorf("plural %s:\n%s", plural, usage)
+		}
+	}
+}
+
+// The lock directory must be a plain directory, an interrupted seam write is
+// refused before any file is written, and the seam keeps its permissions.
+func TestSeamLockAndWriteSafety(t *testing.T) {
+	t.Parallel()
+	dir := seamApplication(t, "sqlite")
+	seam := filepath.Join(dir, scaffold.RoutesFile)
+	if err := os.Chmod(seam, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seamGenerate(t, dir, "controller", "pages", "home", "--public")
+	if info, err := os.Stat(seam); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("the seam's mode changed: %v %v", info.Mode(), err)
+	}
+	writeFile(t, seam+".tmp", "partial")
+	before := fileTree(t, dir)
+	var out bytes.Buffer
+	if err := runGenerateEnv([]string{"scaffold", "post", "title:string", "--global", "--public"}, &out, dir, withoutDatabaseURL(), seamNow); err == nil || !strings.Contains(err.Error(), "routes_gen.go.tmp exists") {
+		t.Fatalf("a stale temporary seam: %v", err)
+	}
+	if !maps.Equal(fileTree(t, dir), before) {
+		t.Fatal("a refused generator wrote files")
+	}
+	if err := os.Remove(seam + ".tmp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, ".forge")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(dir, ".forge")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGenerateEnv([]string{"scaffold", "post", "title:string", "--global", "--public"}, &out, dir, withoutDatabaseURL(), seamNow); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("a symlinked .forge: %v", err)
 	}
 }

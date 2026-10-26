@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -249,28 +248,34 @@ var seamGuards = map[string]string{
 	platformWriteGuard: seamPlatformWriteGuard,
 }
 
-// seamIdentityGuardReference matches the references of the usage to the
-// guards that, in the seam, are functions taking the session store:
-// protect and protectCookie, as values or called with (permission, next).
-var seamIdentityGuardReference = regexp.MustCompile(`\b(protectCookie|protect)\b`)
-
-// seamIdentityGuardCalls makes the references call the seam's guard
-// functions with the session store.
-func seamIdentityGuardCalls(usage string) string {
-	return seamIdentityGuardReference.ReplaceAllString(usage, "${1}(repository, middleware)")
+// guardReference is how wiring refers to the guard named name: in the seam
+// of an application with Forge identity, protect and protectCookie are
+// functions of the session store, called as protect(repository, middleware);
+// a --public seam uses public in place of protect. The reference is built
+// into the code as it is generated, never substituted into its text, so a
+// resource or permission named like a guard cannot change it.
+func guardReference(seam, identity, public bool, name string) string {
+	switch {
+	case seam && identity && (name == "protect" || name == "protectCookie"):
+		return name + "(repository, middleware)"
+	case seam && public && !identity && name == "protect":
+		return "public"
+	}
+	return name
 }
 
-// toSeam turns printed wiring into the seam's: package-level guard
-// functions, and, with Forge identity, the usage calling them with the
-// session store.
-func toSeam(parts *resourceWiringParts, identity bool) {
+// guard is guardReference for this resource.
+func (spec resourceSpec) guard(name string) string {
+	return guardReference(spec.Seam, spec.Identity, spec.Public, name)
+}
+
+// toSeam turns the printed guards into the seam's package-level guard
+// functions. The usage already refers to them (guardReference).
+func toSeam(parts *resourceWiringParts) {
 	for _, guard := range []*string{&parts.Guard, &parts.PlatformGuard, &parts.CookieGuard} {
 		if declared, ok := seamGuards[*guard]; ok {
 			*guard = declared
 		}
-	}
-	if identity {
-		parts.Usage = seamIdentityGuardCalls(parts.Usage)
 	}
 }
 
@@ -293,7 +298,7 @@ func buildResourceWiring(spec resourceSpec) resourceWiringParts {
 		addScaffoldWiring(spec, &parts)
 	}
 	if spec.Seam {
-		toSeam(&parts, spec.Identity)
+		toSeam(&parts)
 	}
 	return parts
 }
@@ -313,10 +318,10 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 	if err != nil {
 		return err
 	}
-	if err := httpapi.Register%[3]s(app, %[1]sService, protect); err != nil {
+	if err := httpapi.Register%[3]s(app, %[1]sService, %[4]s); err != nil {
 		return err
 	}
-`, lowerCamel(spec.Name), title, plural),
+`, lowerCamel(spec.Name), title, plural, spec.guard("protect")),
 	}
 	if spec.Identity {
 		parts.Where = "inside identityRoutes, after the `middleware, err := auth.NewMiddleware(repository)` statement and its error check"
@@ -341,11 +346,11 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 		if permission == %[4]q {
 			return protectPlatformWrite(permission, next)
 		}
-		return protect(permission, next)
+		return %[5]s(permission, next)
 	}); err != nil {
 		return err
 	}
-`, lowerCamel(spec.Name), title, plural, spec.Plural+":write")
+`, lowerCamel(spec.Name), title, plural, spec.Plural+":write", spec.guard("protect"))
 			parts.Notes = append(parts.Notes, fmt.Sprintf("%s is global: its read route uses %s:read, but its write routes stay denied until protectPlatformWrite authorizes platform operators.", spec.Plural, spec.Plural))
 		}
 		return parts
@@ -369,7 +374,6 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 		}
 		if spec.Public {
 			parts.Guard = publicGuard
-			parts.Usage = strings.Replace(parts.Usage, ", protect); err != nil {", ", public); err != nil {", 1)
 			parts.Notes = []string{publicNote(spec.Database)}
 		}
 	}
@@ -406,12 +410,9 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 	if spec.Broadcast {
 		addBroadcastWiring(spec, parts)
 	}
-	guard := "protect"
-	if spec.Public && spec.Seam {
-		guard = "public"
-	}
+	guard := spec.guard("protect")
 	if spec.Identity {
-		guard = "protectCookie"
+		guard = spec.guard("protectCookie")
 		parts.CookieGuard = identityPagesGuard
 		parts.Notes = append(parts.Notes, "The pages authenticate the session cookie the sign-in page (/session/new) sets (as does POST /auth/cookie/login in applications created with --api-auth); a signed-out browser is redirected to /session/new and back, while API clients get the 401 JSON error. forge new generates the sign-in page; run `forge generate authentication` in an application that lacks it. Their forms are protected by the CSRF middleware that bootstrap.go installs.")
 	}
@@ -420,11 +421,11 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 		if permission == %[3]q {
 			return protectPlatformWrite(permission, next)
 		}
-		return protectCookie(permission, next)
+		return %[4]s(permission, next)
 	}); err != nil {
 		return err
 	}
-`, plural, lowerCamel(spec.Name), spec.Plural+":write")
+`, plural, lowerCamel(spec.Name), spec.Plural+":write", spec.guard("protectCookie"))
 		parts.Notes = append(parts.Notes, fmt.Sprintf("The %s pages follow the JSON routes: reads use %s:read, while the new, edit, create, update and delete routes stay denied until protectPlatformWrite authorizes platform operators.", spec.Plural, spec.Plural))
 	} else {
 		parts.Usage += fmt.Sprintf(`	if err := htmlui.Register%[1]s(app, %[2]sService, renderer, %[3]s); err != nil {
