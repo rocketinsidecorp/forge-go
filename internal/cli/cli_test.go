@@ -105,7 +105,8 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 				Variables []string `json:"variables"`
 			} `json:"environment"`
 			ExitCodes []struct {
-				Code int `json:"code"`
+				Code    int    `json:"code"`
+				Meaning string `json:"meaning"`
 			} `json:"exit_codes"`
 			Flags []struct {
 				Name        string `json:"name"`
@@ -142,9 +143,15 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		}
 		commandExitCodesSeen := make(map[int]bool, len(command.ExitCodes))
 		for _, exitCode := range command.ExitCodes {
+			if commandExitCodesSeen[exitCode.Code] {
+				t.Errorf("command %s documents exit code %d twice", command.Name, exitCode.Code)
+			}
 			commandExitCodesSeen[exitCode.Code] = true
+			if exitCode.Code == 1 && strings.Contains(exitCode.Meaning, "invalid arguments") {
+				t.Errorf("command %s: exit code 1 must not describe usage errors, which exit 2: %q", command.Name, exitCode.Meaning)
+			}
 		}
-		if !commandExitCodesSeen[0] || !commandExitCodesSeen[1] {
+		if !commandExitCodesSeen[0] || !commandExitCodesSeen[1] || !commandExitCodesSeen[2] {
 			t.Errorf("command %s has incomplete exit-code documentation: %v", command.Name, commandExitCodesSeen)
 		}
 		if !strings.HasPrefix(command.Examples[0], "forge ") {

@@ -348,10 +348,15 @@ func currentCommandCatalog() commandCatalog {
 		if commands[i].Environment.Variables == nil {
 			commands[i].Environment.Variables = []string{}
 		}
-		commands[i].ExitCodes = append([]exitCodeDetail{
+		codes := []exitCodeDetail{
 			{Code: 0, Meaning: "The command completed successfully."},
-			{Code: 1, Meaning: "The command failed, its arguments or configuration were invalid, or delegated application work failed."},
-		}, commands[i].ExitCodes...)
+			{Code: 1, Meaning: "The command, or a tool or application it runs (go, gofmt, golangci-lint, the database client, the application's own commands), failed, or the configuration was invalid."},
+		}
+		// help documents its own, narrower code 2.
+		if !slices.ContainsFunc(commands[i].ExitCodes, func(c exitCodeDetail) bool { return c.Code == 2 }) {
+			codes = append(codes, exitCodeDetail{Code: 2, Meaning: "Usage error: an unknown flag or subcommand, an invalid flag value, or a missing or extra argument; nothing ran."})
+		}
+		commands[i].ExitCodes = append(codes, commands[i].ExitCodes...)
 	}
 	return commandCatalog{
 		SchemaVersion: 1,
@@ -360,7 +365,7 @@ func currentCommandCatalog() commandCatalog {
 		GlobalOptions: []flagDetail{{Name: jsonErrorFormatFlag, Description: "Emit schema-versioned, secret-safe errors on stderr when a command fails."}},
 		ProcessExitCodes: append([]exitCodeDetail{
 			{Code: 0, Meaning: "The requested command completed successfully."},
-			{Code: 1, Meaning: "A command failed or its arguments/configuration were invalid."},
+			{Code: 1, Meaning: "A command, or a tool or application it runs, failed, or the configuration was invalid."},
 			{Code: 2, Meaning: "No command was supplied, the top-level command is unknown, forge help was given an unknown command or invalid arguments, a command got an unknown flag or an invalid flag value, or forge deploy, logs or app got an unknown subcommand or a missing or extra argument."},
 		}, deployExitCodes...),
 		Commands: commands,
