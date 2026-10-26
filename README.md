@@ -896,11 +896,28 @@ Server-Sent Events, with signed, tenant-scoped channel names, and PostgreSQL
 
 ```sh
 export FORGE_STREAMS_KEY=$(openssl rand -base64 32)     # required in staging and production
-# Rotating it without breaking open pages: the old key verifies for 24 hours (up to 3 keys, comma-separated)
-export FORGE_STREAMS_PREVIOUS_KEYS=$OLD_STREAMS_KEY
 forge generate scaffold post title:string body:text --tenant-scoped --broadcast
 forge migrate
 forge test                                              # includes an end-to-end event stream test on PostgreSQL
+```
+
+Rotating the key without breaking open pages takes two redeploys, with the old
+key kept for verification only (`FORGE_STREAMS_PREVIOUS_KEYS`, up to 3 keys,
+comma-separated; why two steps:
+[docs/VIEWS.md](docs/VIEWS.md#rotating-the-stream-signing-key)).
+`OLD_STREAMS_KEY` is the key in use now; `NEW_STREAMS_KEY=$(openssl rand -base64 32)`
+creates the new one.
+
+```sh
+# step 1: every replica learns the new key, but still signs with the old one
+export FORGE_STREAMS_KEY=$OLD_STREAMS_KEY
+export FORGE_STREAMS_PREVIOUS_KEYS=$NEW_STREAMS_KEY
+# redeploy every replica, then
+# step 2: sign with the new key; the old one keeps verifying pages already open
+export FORGE_STREAMS_KEY=$NEW_STREAMS_KEY
+export FORGE_STREAMS_PREVIOUS_KEYS=$OLD_STREAMS_KEY
+# redeploy every replica; after the token lifetime (24 hours by default)
+# unset FORGE_STREAMS_PREVIOUS_KEYS and redeploy
 ```
 
 Release note: the generated `htmlstreams.NewSigner` now takes the previous

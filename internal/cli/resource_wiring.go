@@ -357,6 +357,6 @@ func addBroadcastWiring(spec resourceSpec, parts *resourceWiringParts) {
 		parts.Notes = append(parts.Notes, "Live updates: define streamSigner and streams once, streamSigner before the view renderer and streams before the pages that publish.")
 	}
 	parts.Notes = append(parts.Notes,
-		"Set FORGE_STREAMS_KEY to `openssl rand -base64 32` (the same value on every replica) before running in staging or production; development and tests fall back to a random per-process key. To rotate it without breaking open pages, move the old value to FORGE_STREAMS_PREVIOUS_KEYS (comma-separated, at most 3) for 24 hours. The in-memory broker serves one process: for several replicas, build the broker with forge-go's broadcast/postgres package (docs/VIEWS.md).",
+		"Set FORGE_STREAMS_KEY to `openssl rand -base64 32` (the same value on every replica) before running in staging or production; development and tests fall back to a random per-process key. To rotate it without breaking open pages, redeploy twice: first FORGE_STREAMS_KEY=old with FORGE_STREAMS_PREVIOUS_KEYS=new, then the two swapped (previous keys, comma-separated, at most 3, only verify); unset FORGE_STREAMS_PREVIOUS_KEYS after the token lifetime (24 hours by default), see docs/VIEWS.md. The in-memory broker serves one process: for several replicas, build the broker with forge-go's broadcast/postgres package (docs/VIEWS.md).",
 	)
 }

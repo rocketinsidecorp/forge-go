@@ -813,13 +813,28 @@ Changing `FORGE_STREAMS_KEY` alone invalidates the stream name of every page
 that is already open: its next reconnect gets `403 stream_invalid` and stops
 updating until the page is reloaded. To rotate without that, move the old key
 to `FORGE_STREAMS_PREVIOUS_KEYS` (comma-separated, at most 3, same format).
-Previous keys only verify, never sign:
+Previous keys only verify, never sign; the current key signs. Do it in two
+steps. `OLD_STREAMS_KEY` is the key in use now.
+
+`NEW_STREAMS_KEY=$(openssl rand -base64 32)` creates the new key.
 
 ```sh
-export FORGE_STREAMS_PREVIOUS_KEYS=$OLD_STREAMS_KEY      # the key being retired
-export FORGE_STREAMS_KEY=$(openssl rand -base64 32)      # the new key, on every replica
-# redeploy every replica; after 24 hours (the token lifetime) unset FORGE_STREAMS_PREVIOUS_KEYS
+# step 1: every replica learns the new key, but still signs with the old one
+export FORGE_STREAMS_KEY=$OLD_STREAMS_KEY
+export FORGE_STREAMS_PREVIOUS_KEYS=$NEW_STREAMS_KEY
+# redeploy every replica, then
+# step 2: sign with the new key; the old one keeps verifying pages already open
+export FORGE_STREAMS_KEY=$NEW_STREAMS_KEY
+export FORGE_STREAMS_PREVIOUS_KEYS=$OLD_STREAMS_KEY
+# redeploy every replica; after the token lifetime (24 hours by default, up to
+# 7 days with broadcast.SignerOptions.TTL) unset FORGE_STREAMS_PREVIOUS_KEYS and redeploy
 ```
+
+Two steps keep a rolling redeploy safe: after step 1 every replica already
+accepts the new key, so a page whose stream name was signed by a replica that
+finished step 2 keeps updating when it reconnects to one that has not. Going
+straight to step 2 would make the replicas still on the old configuration
+answer `403 stream_invalid` to those pages.
 
 The generated `htmlstreams.NewSigner` reads both variables
 (`broadcast.DecodePreviousKeys` parses the list); neither value is ever echoed in an error.
