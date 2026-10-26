@@ -3,6 +3,8 @@ package cache
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -387,7 +389,10 @@ func TestJSONHelpersTreatUndecodableEntriesAsMisses(t *testing.T) {
 func TestUndecodableEntriesAreCountedAndLoggedOncePerKey(t *testing.T) {
 	m, _ := NewMemory(MemoryOptions{})
 	var logs bytes.Buffer
-	ctx := web.WithLogger(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)))
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	ctx := context.Background()
 	key := "profiles:" + t.Name()
 	_ = m.Set(ctx, key, []byte(`{"name": "secret-value-12345", "age": "old"}`), time.Minute)
 	before := DecodeFailures()
@@ -407,11 +412,16 @@ func TestUndecodableEntriesAreCountedAndLoggedOncePerKey(t *testing.T) {
 	if n := strings.Count(output, "cached value does not decode"); n != 1 {
 		t.Fatalf("logged %d times, want once per key:\n%s", n, output)
 	}
-	if !strings.Contains(output, "level=WARN") || !strings.Contains(output, "key_sha256=") {
-		t.Errorf("the log line lacks the level or the key hash:\n%s", output)
+	if !strings.Contains(output, "level=WARN") || !strings.Contains(output, "key_hmac=") {
+		t.Errorf("the log line lacks the level or the keyed key hash:\n%s", output)
 	}
 	if strings.Contains(output, key) || strings.Contains(output, "secret-value-12345") {
 		t.Errorf("the log line leaks the key or the value:\n%s", output)
+	}
+	// Not an unkeyed hash of the key, which a guess could be checked against.
+	plain := sha256.Sum256([]byte(key))
+	if strings.Contains(output, hex.EncodeToString(plain[:8])) {
+		t.Errorf("the log line holds an unkeyed SHA-256 of the key:\n%s", output)
 	}
 	// The replaced entry decodes again: no new failure.
 	if _, ok, _ := GetJSON[profile](ctx, m, key); !ok {

@@ -32,9 +32,11 @@ price, err := cache.FetchJSON(ctx, c, cache.Key("price", sku), 10*time.Minute,
   struct changed in a deploy, or an entry written by something else) is a miss
   and is recomputed. It is not silent: every such value is counted
   (`cache.DecodeFailures()`, for the process) and the first one of each key is
-  logged at warn level as `cached value does not decode`, with `key_sha256`
-  (a SHA-256 prefix of the key, never the key or the value), through the
-  request's logger or `slog.Default()` outside a request. A growing count
+  logged at warn level through `slog.Default()` as `cached value does not
+  decode`, with `key_hmac`: an HMAC-SHA256 prefix of the key under a random
+  per-process secret, never the key or the value, so a low-entropy key such
+  as an email address cannot be recovered by hashing guesses (the same key
+  logs a different `key_hmac` in each process). A growing count
   after a deploy means a type changed without a new key version: put a
   version in the key (`cache.Key("price", "v2", sku)`).
 - `ttl == 0` means the store's `DefaultTTL`; a negative or over-a-year ttl is an

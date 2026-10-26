@@ -2,6 +2,8 @@ package cache
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,8 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 // GetJSON decodes the value under key into a T. A value that no longer
@@ -48,7 +48,17 @@ var decodeFailures atomic.Uint64
 // and so the memory the log-once set holds.
 const maxLoggedDecodeKeys = 1024
 
-// loggedDecodeKeys holds the hashes of the keys whose decode failure was
+// keyHashSecret keys the HMAC that names a key in the decode-failure log.
+// It is random per process, so a low-entropy key (an email address, a user
+// ID) cannot be recovered from the log by hashing guesses; the same key
+// therefore logs a different key_hmac in each process.
+var keyHashSecret = func() []byte {
+	secret := make([]byte, 32)
+	_, _ = rand.Read(secret) // crypto/rand.Read never returns an error (Go 1.24+): it crashes the program instead.
+	return secret
+}()
+
+// loggedDecodeKeys holds the HMACs of the keys whose decode failure was
 // already logged.
 var loggedDecodeKeys = struct {
 	sync.Mutex
@@ -58,17 +68,18 @@ var loggedDecodeKeys = struct {
 // DecodeFailures reports how many cached values GetJSON and FetchJSON found
 // that no longer decoded into the requested type since the process started.
 // Each was treated as a miss. The first failure of each key (up to 1024
-// keys per process) is also logged at warn level, with the key's SHA-256
-// prefix (key_sha256), never the key or the value, through the request's
-// logger (web.Logger) or, outside a request, slog.Default. A growing count
+// keys per process) is also logged at warn level through slog.Default, with
+// an HMAC-SHA256 prefix of the key under a random per-process secret
+// (key_hmac), never the key or the value. A growing count
 // means a type changed without a new key version (see docs/CACHING.md) or
 // an entry was written by something else.
 func DecodeFailures() uint64 { return decodeFailures.Load() }
 
 func recordDecodeFailure(ctx context.Context, key string) {
 	decodeFailures.Add(1)
-	sum := sha256.Sum256([]byte(key))
-	hashed := hex.EncodeToString(sum[:8])
+	mac := hmac.New(sha256.New, keyHashSecret)
+	mac.Write([]byte(key))
+	hashed := hex.EncodeToString(mac.Sum(nil)[:8])
 	loggedDecodeKeys.Lock()
 	_, logged := loggedDecodeKeys.seen[hashed]
 	if !logged && len(loggedDecodeKeys.seen) < maxLoggedDecodeKeys {
@@ -80,11 +91,7 @@ func recordDecodeFailure(ctx context.Context, key string) {
 	if logged {
 		return
 	}
-	logger := web.Logger(ctx)
-	if !logger.Enabled(ctx, slog.LevelWarn) {
-		logger = slog.Default()
-	}
-	logger.WarnContext(ctx, "cached value does not decode; treated as a miss (logged once per key)", "key_sha256", hashed)
+	slog.Default().WarnContext(ctx, "cached value does not decode; treated as a miss (logged once per key)", "key_hmac", hashed)
 }
 
 // SetJSON stores value as JSON under key for ttl.
