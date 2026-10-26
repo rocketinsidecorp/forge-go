@@ -47,6 +47,11 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Locale path prefix removed before every middleware (no path-guard bypass in any order) | — | In review (`httpserver.Rewriter`, forge-go#56) | Done (`Middleware::rewrite`, forge-rust#69) |
 | OpenAPI from typed routes | — | Done (`openapi.Describe`, `openapi.Typed`, `GET /openapi.json`, `forge openapi [--output\|--check]`, `FORGE_OPENAPI_ENABLED`, [ADR 0043](adr/0043-openapi-from-typed-routes.md)) | Done (`#[derive(OpenApiSchema)]`, `forge::openapi::typed`/`describe`, `GET /openapi.json`, `FORGE_OPENAPI_ENABLED`, `forge openapi`, Forge-Rust ADR 0039) |
 | Controller, model, mailer and job generators, `destroy` | `rails g`, `rails d` | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, [ADR 0041](adr/0041-generators-and-destroy.md)) | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, Forge-Rust ADR 0038) |
+| Generators mount their own routes, no paste (routes seam) | `rails g scaffold` edits `config/routes.rb` | Done (`app/bootstrap/routes_gen.go`: one `// forge:KIND NAME` block per generator, package-level guards, checksum refusal of hand edits, `destroy` unwires, same arguments again is a no-op; [GENERATORS.md](GENERATORS.md#the-routes-seam)) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
+| `g` and `d` command aliases | `rails g`, `rails d` | Done (`forge g`, `forge d`, also in `forge help`) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
+| Inferred add/remove column migrations | `rails g migration AddSkuToProducts sku:string` | Done (`forge g migration add_COLUMNS_to_TABLE field:type...` and `remove_COLUMNS_from_TABLE`, per dialect; other names stay blank with a warning) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
+| Explicitly public generated routes without Forge identity | — | Done (`--public` on `generate resource\|scaffold` with `--global`, refused with Forge identity; deny-all otherwise) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
+| README quickstart run end to end in CI | Rails Guides "Getting Started" | Done (the generated README's Quickstart block run as written by a real `forge`, then sign-in and CRUD over HTTP, PostgreSQL and SQLite: `TestGeneratedApplication/readme_quickstart_*`, CI job `generated`) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
 | Continuous fuzzing, SBOM, signed images | — | Done (every fuzz target per PR and nightly, `scripts/fuzz.sh`; CycloneDX/SPDX SBOMs; keyless cosign-signed images from `v*` tags; [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), [ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)) | Done (`scripts/fuzz.sh`, `scripts/sbom.sh`, signed forge-proxy image, SHA/digest pins enforced by `crates/forge/tests/supply_chain.rs`, Forge-Rust ADR 0043) |
 | Published benchmarks | — | In review (`go test -bench`, `scripts/bench.sh`, [BENCHMARKS.md](BENCHMARKS.md)) | Done (`cargo bench -p forge-bench`, `scripts/bench.sh`) |
 | Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Done (`docs/getting-started.md`) |
@@ -88,9 +93,11 @@ the work is finished and waiting for its review; **Planned** means not started.
   generated bootstrap starts its scheduler and recovery queue only when
   serving and opens its pool lazily otherwise (`postgres.Lazy`, `mysql.Lazy`;
   a lazy PostgreSQL pool checks each connection's role); skips stale
-  scheduler ticks (`MaxLateness`); wires generated JSON routes closed in an
-  application without bearer sign-in (Rust's `DenyAll`, adopted from
-  forge-rust#83); pins the generated `Dockerfile` bases by digest; generates
+  scheduler ticks (`MaxLateness`); guards generated JSON routes, in an
+  application without bearer sign-in, with the session cookie, the CSRF token
+  and the permission (it wired them closed like Rust's `DenyAll`, from
+  forge-rust#83, until the end-to-end quickstart, decision D21, needed JSON as
+  the signed-in owner); pins the generated `Dockerfile` bases by digest; generates
   identity IDs in Go with no `DEFAULT uuidv7()`; counts and logs cache values
   that no longer decode (`cache.DecodeFailures`). Forge-Rust adopts: the
   `TRUNCATE`/`REFERENCES`/`TRIGGER` rule (column `REFERENCES` included) and

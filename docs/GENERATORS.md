@@ -10,7 +10,9 @@
   a symlink, and writes nothing at all when it refuses. `--dry-run` prints the
   exact files without creating anything.
 - **Never edit your composition root.** `app/bootstrap/bootstrap.go` is yours.
-  A generator prints the imports and the lines to paste, and says where.
+  `forge generate scaffold`, `resource` and `controller` mount their routes in
+  `app/bootstrap/routes_gen.go` instead (see "The routes seam" below); the
+  mailer and job generators print the lines to paste, and say where.
 - **Never public by accident.** Anything that serves data needs a guard you
   supply, and with Forge identity it comes with its permission.
 - **Validated names.** Names and fields become Go identifiers, file names,
@@ -21,7 +23,7 @@
 
 | Command | Creates | Rails |
 | ------- | ------- | ----- |
-| `forge generate migration NAME` | an empty up/down migration pair | `rails g migration` |
+| `forge generate migration NAME [field:type...]` | an up/down migration pair: `ALTER TABLE` statements for `add_COLUMNS_to_TABLE` and `remove_COLUMNS_from_TABLE` with fields, else blank (with a warning to fill it in) | `rails g migration` |
 | `forge generate model NAME field:type...` | migration, domain entity, repository port and use cases, persistence adapter, tests | `rails g model` |
 | `forge generate controller NAME ACTION...` | HTTP handlers, routes, views, tests; no persistence | `rails g controller` |
 | `forge generate mailer NAME METHOD...` | a mailer with text and HTML templates, previews, tests | `rails g mailer` |
@@ -30,6 +32,46 @@
 | `forge generate resource` / `scaffold` | model plus JSON API / plus HTML CRUD | `rails g scaffold` |
 | `forge generate view`, `authentication` | one page; the sign-in pages | |
 | `forge destroy GENERATOR ARGUMENTS...` | removes what a generator created | `rails d` |
+
+`forge g` is short for `forge generate` and `forge d` for `forge destroy`, as
+in Rails (`forge g scaffold post title:string --global`).
+
+## Migration
+
+```sh
+forge g migration add_sku_to_products sku:string stock:int 'released_at:time?'
+forge g migration remove_sku_from_products sku:string
+forge g migration backfill_prices
+```
+
+`add_COLUMNS_to_TABLE` with fields writes one `ALTER TABLE TABLE ADD COLUMN`
+per field in the application's dialect (the same column types, constraints
+and quoting as a generated table), and `DROP COLUMN` in the down migration;
+`remove_COLUMNS_from_TABLE` is the reverse (its down brings the columns back,
+not their values). Rows that already exist need a value, so a required
+column gets its type's zero value as default (`''`, `0`, false); a required
+`time` or `uuid` column has none and is refused: declare it optional
+(`released_at:time?`). Any other name, or no fields, writes the blank pair and
+warns: fill in both files before `forge migrate` or `forge test`, because the
+migrator refuses a migration with no statements. Fields with a name that
+infers no table are refused (for a new table use `forge generate model`).
+The table is everything after the first `_to_` (or `_from_`), so
+`add_x_to_y_to_z` adds to the table `y_to_z`; the columns come from the
+fields, never from the name. Running `remove_...` prints a data-loss warning.
+
+Generators and `forge destroy` take `.forge/generate.lock` while they run, so
+two of them in one application never interleave their edits of the routes
+seam; a second one is refused until the first finishes, and so is any run
+that cannot take the lock (`.forge` a symlink or a file, for example). The
+seam is written through `app/bootstrap/routes_gen.go.tmp`, synced and renamed
+over it, keeping its permissions; a leftover temporary file (an interrupted
+write) is refused before anything is generated. The generated `.gitignore`
+ignores both files.
+
+The names the seam uses cannot name a resource, plural or controller:
+`protect`, `public`, `protect_cookie`, `protect_platform_write`, `renderer`,
+`signer`, `stream_signer`, `streams`, `generated_routes`, `repository` and
+`middleware`.
 
 ## Model
 
@@ -114,16 +156,16 @@ the same way.
 `Register<Name>Controller` mounts every route behind a guard you pass:
 
 - Without `--public` it needs a `protect(permission, next)` function and asks
-  it for `NAME:read`. With Forge identity the printed wiring authenticates the
-  session cookie (HTML; signed-out browsers go to `/session/new` and back) or
-  the bearer token (`--api`; in an application without the bearer login
-  `POST /auth/login` of `--api-auth` the printed guard refuses every request
-  instead, as forge-rust's `DenyAll` does), and the migration registers the permission and
+  it for `NAME:read`. With Forge identity the guard authenticates the
+  session cookie (HTML; signed-out browsers go to `/session/new` and back) or,
+  for `--api`, the bearer token of `POST /auth/login` (`--api-auth`) or, in an
+  application without that login, the session cookie plus the CSRF token in
+  the `X-CSRF-Token` header of every change, and the migration registers the permission and
   grants it to the `owner` role. When a migration already registers
   `NAME:read` (a model, resource or scaffold whose plural is `NAME`), the
-  controller reuses it and generates no migration; the printed wiring names
-  the migration that owns it. Without identity the printed guard denies
-  every request until you write the real one.
+  controller reuses it and generates no migration; the output names
+  the migration that owns it. Without identity the guard denies
+  every request until you replace `protect` with your own (below).
 - `--public` mounts the routes with no guard, prints a warning, and registers
   no permission. Use it for pages anyone may read.
 
@@ -310,8 +352,48 @@ therefore be exact, and it works for code generated by any earlier version.
   they become empty and were the generator's.
 - `--dry-run` lists what would be removed. Nothing is removed through a
   symlink.
-- `app/bootstrap/bootstrap.go` is not edited: destroy prints the wiring to
-  take out.
+- `app/bootstrap/bootstrap.go` is not edited: destroy takes the generator's
+  block out of `app/bootstrap/routes_gen.go` (and the guards nothing else
+  uses), or, for the mailer and job generators, prints the wiring to take
+  out. It refuses, removing nothing, while another block of the seam uses
+  what this one declares.
+
+## The routes seam
+
+`forge new` generates `app/bootstrap/routes_gen.go` with an empty
+`generatedRoutes` function, and `bootstrap.go` calls it once (inside
+`identityRoutes` in a PostgreSQL application, after `routes` otherwise).
+`forge generate scaffold`, `resource` and `controller` rewrite that file
+whole and `go/format` it:
+
+- Each generator adds one block, opened by a `// forge:KIND NAME` comment
+  (`// forge:scaffold products`), in the order they ran. Before them come the
+  shared blocks the generated ones use, each defined once and dropped when
+  nothing uses it any more: the guards (`protect`, `public`,
+  `protectPlatformWrite`, `protectCookie`), the view renderer, and the
+  live-update signer and stream of `--broadcast`. Imports follow from the code.
+- Running a generator again with the same arguments is a no-op: every file,
+  and the block, is reported `identical`. Other arguments for an existing name
+  are refused, as before.
+- A `// forge:checksum` line records what the generator wrote. A file edited
+  by hand is refused by every generator and by destroy, which then write
+  nothing; move the change into `bootstrap.go` and restore the file.
+- The guards (`protect`, `public`, `protectPlatformWrite`, `protectCookie`)
+  are package-level functions after `generatedRoutes`; with Forge identity
+  `protect` and `protectCookie` take the session store
+  (`protect(repository, middleware)`). To replace one, copy it into another
+  file of `app/bootstrap`, change it there, and run any `forge generate`
+  command again (repeating the last one is enough). Until then the build
+  fails with `protect redeclared`, so an override is never silently ignored;
+  afterwards the generators leave theirs out and use yours.
+- Without Forge identity (SQLite, MySQL, MariaDB, API-only applications) the
+  guard refuses every request; `--public` (resources and scaffolds with
+  `--global`, and controllers) uses a pass-through `public` guard instead and
+  prints a warning. With Forge identity `--public` is refused for resources
+  and scaffolds: their routes need sign-in and the permissions the migration
+  grants to the `owner` role.
+- An application generated before the seam (its `bootstrap.go` does not call
+  `generatedRoutes`) still gets the wiring printed to paste.
 
 Supported generators: `model`, `resource`, `scaffold`, `controller`, `mailer`,
 `job` (both kinds) and `view`. Migrations are kept unless `--migrations` is

@@ -172,8 +172,10 @@ generates (the views package, `layouts/application.gohtml`,
 `app/views/pages/welcome.gohtml` (or `DIR/NAME`), to the same tree.
 
 Like every generator it refuses to overwrite a file and does not edit
-`app/bootstrap/bootstrap.go`; it prints the wiring. For a PostgreSQL
-application (Forge identity) the HTML part is:
+`app/bootstrap/bootstrap.go`; it mounts the routes in
+`app/bootstrap/routes_gen.go` (docs/GENERATORS.md, "The routes seam"), or
+prints the wiring in an application generated before that file existed. For
+a PostgreSQL application (Forge identity) the HTML part is:
 
 ```go
 protectCookie := func(permission string, next http.Handler) (http.Handler, error) {

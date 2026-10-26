@@ -18,6 +18,78 @@ translations, sign-in pages or browser middleware.
 A [Forge](https://github.com/rocketinsidecorp/forge-go) application.
 {{- end}}
 
+{{- if and .DB (not .API)}}
+
+## Quickstart
+
+From an empty directory to a working CRUD at `/products`, with no code to
+edit: the generators mount their routes in `app/bootstrap/routes_gen.go`.
+
+```bash
+forge new {{.Name}}{{if ne .Database "postgresql"}} -d {{if eq .Database "sqlite"}}sqlite3{{else}}{{.Database}}{{end}}{{end}}{{if .APIAuth}} --api-auth{{end}}{{if ne .Locale "en"}} --locale {{.Locale}}{{end}}
+cd {{.Name}}
+{{- if .DB.Server}}
+docker compose up -d --wait {{.DB.Service}}
+{{- end}}
+forge migrate
+{{- if .DB.Identity}}
+forge setup --tenant acme --email you@example.com --organization "Acme Inc"
+forge generate scaffold product name:string price:int --tenant-scoped
+{{- else}}
+forge generate scaffold product name:string price:int --global --public
+{{- end}}
+forge migrate
+forge dev
+```
+
+{{- if .DB.Identity}}
+
+`forge setup` asks for the owner's password twice (or reads
+`FORGE_SETUP_PASSWORD`). Then open `http://localhost:8080/session/new`, sign
+in with organization `acme`, and manage products at
+`http://localhost:8080/products`: the pages and the JSON API at
+`/v1/products` need sign-in and the `products:read` and `products:write`
+permissions, which the scaffold's migration grants to the owner role. The JSON
+API authenticates the same session cookie{{if .APIAuth}} or a bearer token from `POST /auth/login`{{end}};
+changes send the CSRF token in the `X-CSRF-Token` header:
+
+```bash
+jar=$(mktemp)
+token=$(curl -s -c "$jar" -H 'Accept: text/html' http://localhost:8080/session/new | sed -n 's/.*name="authenticity_token" value="\([^"]*\)".*/\1/p' | head -n 1)
+read -rsp 'Password: ' password; echo
+curl -s -o /dev/null -b "$jar" -c "$jar" -H 'Accept: text/html' --data-urlencode "authenticity_token=$token" --data-urlencode tenant=acme --data-urlencode email=you@example.com --data-urlencode "password=$password" http://localhost:8080/session
+curl -s -b "$jar" http://localhost:8080/v1/products
+curl -s -b "$jar" -H "X-CSRF-Token: $(awk '$6 == "__Host-forge_csrf" {print $7}' "$jar")" -H 'Content-Type: application/json' -d '{"name":"Lamp","price":1999}' http://localhost:8080/v1/products
+```
+{{- else}}
+
+Then open `http://localhost:8080/products`, and call the JSON API at
+`/v1/products`:
+
+```bash
+curl -s http://localhost:8080/v1/products
+curl -s -H 'Content-Type: application/json' -d '{"name":"Lamp","price":1999}' http://localhost:8080/v1/products
+```
+
+Forge identity (sign-in pages, `forge setup`) is PostgreSQL-only, so in this
+application the generated routes are closed unless generated with
+`--public`, which serves them to anyone who can reach the server, without
+sign-in (forms still need their CSRF token). Use it for prototypes on your
+machine. To put your own authentication in front, copy the `public`
+function of `app/bootstrap/routes_gen.go` into another file of
+`app/bootstrap`, change it there, and run any `forge generate` command again
+(repeating the last one is enough): until then the build fails with `public
+redeclared`, afterwards the generators use yours. Without `--public` the
+routes answer `403` until you replace `protect` the same way.
+{{- end}}
+
+Generated routes live in `app/bootstrap/routes_gen.go`, which `forge generate
+scaffold`, `resource` and `controller` rewrite and `forge destroy` takes their
+blocks back out of; do not edit it (they refuse to touch it once its
+checksum no longer matches). Running a generator again with the same
+arguments changes nothing.
+{{- end}}
+
 ## Run
 
 With Docker (the default):
@@ -121,7 +193,9 @@ forge generate resource post title:string --tenant-scoped # a JSON API under /v1
 {{- end}}
 forge generate model post title:string --tenant-scoped # migration, domain, application and persistence layers
 forge generate migration create_widgets --dry-run # preview exact migration files
-forge generate migration create_widgets  # new db/migrations/<timestamp>_create_widgets.{up,down}.sql
+forge generate migration create_widgets  # new db/migrations/<timestamp>_create_widgets.{up,down}.sql, blank: fill both in
+forge g migration add_sku_to_products sku:string # g is short for generate: ALTER TABLE ... ADD COLUMN, and DROP COLUMN in down
+forge d model post title:string --tenant-scoped # d is short for destroy
 forge migrate                            # apply pending migrations
 forge migrate status
 forge rollback                           # revert the latest migration

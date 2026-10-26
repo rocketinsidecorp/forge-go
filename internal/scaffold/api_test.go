@@ -26,6 +26,7 @@ var apiOnlyFiles = []string{
 	"README.md",
 	"app/bootstrap/bootstrap.go",
 	"app/bootstrap/bootstrap_test.go",
+	"app/bootstrap/routes_gen.go",
 	"app/bootstrap/welcome.go",
 	"app/bootstrap/welcome_test.go",
 	"cmd/shop/main.go",

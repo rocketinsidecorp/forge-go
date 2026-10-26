@@ -193,6 +193,23 @@ func TestOwnerSignsInAndReachesTheScaffoldPages(t *testing.T) {
 	if page := do(http.MethodGet, "/products", nil); !strings.Contains(page.Body.String(), "Products") {
 		t.Errorf("the products page did not render:\n%s", page.Body)
 	}
+	// Global rows are read by every tenant: the owner of one tenant can write
+	// them neither through the JSON API (with the session cookie and the CSRF
+	// token) nor through the form.
+	write := httptest.NewRequest(http.MethodPost, "/v1/categories", strings.NewReader("{\"name\":\"Lamps\"}"))
+	write.Header.Set("Content-Type", "application/json")
+	write.Header.Set("X-CSRF-Token", cookies[csrf.CookieName].Value)
+	for _, cookie := range cookies {
+		write.AddCookie(cookie)
+	}
+	written := httptest.NewRecorder()
+	app.Handler().ServeHTTP(written, write)
+	if written.Code != http.StatusForbidden {
+		t.Errorf("the owner's POST /v1/categories = %d, want 403: %s", written.Code, written.Body)
+	}
+	if form := do(http.MethodPost, "/categories", url.Values{"name": {"Lamps"}}); form.Code != http.StatusForbidden {
+		t.Errorf("the owner's POST /categories = %d, want 403", form.Code)
+	}
 	if signedOut := do(http.MethodPost, "/session", url.Values{"_method": {"DELETE"}}); signedOut.Code != http.StatusSeeOther {
 		t.Fatalf("sign out status=%d", signedOut.Code)
 	}

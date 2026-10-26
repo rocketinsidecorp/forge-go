@@ -193,6 +193,9 @@ func snapshotTree(t *testing.T, root string) []string {
 			return err
 		}
 		relative, _ := filepath.Rel(root, path)
+		if relative == ".forge" {
+			return nil // the generate lock's directory, which generators keep
+		}
 		entries = append(entries, relative)
 		return nil
 	})
@@ -603,15 +606,22 @@ func TestResourceWiringNeverOpensTheRoutes(t *testing.T) {
 			if strings.Contains(wiring, "return next, nil") {
 				t.Errorf("%+v: the wiring passes requests through:\n%s", test, wiring)
 			}
-			// The JSON guard authenticates bearer tokens only where the
-			// application issues them (--api-auth); otherwise it refuses
-			// every request, as forge-rust's DenyAll does.
-			if authenticates := strings.Contains(parts.Guard, "auth.RequireAudited(required, next, repository)"); authenticates != (test.identity && test.bearer) {
+			// With Forge identity the JSON guard checks the permission behind
+			// the bearer token where the application issues them
+			// (--api-auth), else behind the session cookie plus the CSRF
+			// token of every change. Without identity it refuses everyone.
+			if authenticates := strings.Contains(parts.Guard, "auth.RequireAudited(required, next, repository)"); authenticates != test.identity {
 				t.Errorf("%+v: the JSON guard authenticates = %v:\n%s", test, authenticates, parts.Guard)
 			}
-			if test.identity && !test.bearer && (!strings.Contains(parts.Guard, "web.Error(w, r, auth.ErrPermissionDenied)") ||
+			if test.identity && !test.bearer && (!strings.Contains(parts.Guard, "auth.RequireCSRF(guarded)") || !strings.Contains(parts.Guard, "middleware.AuthenticateCookie(checked)") ||
 				!strings.Contains(wiring, "forge generate authentication --api-auth")) {
-				t.Errorf("%+v: the JSON routes of an application without bearer sign-in are not closed, or the way to open them is not said:\n%s", test, wiring)
+				t.Errorf("%+v: the JSON routes of an application without bearer sign-in do not use the session cookie and CSRF token, or bearer tokens are not explained:\n%s", test, wiring)
+			}
+			if test.identity && test.bearer && (!strings.Contains(parts.Guard, "middleware.Authenticate(guarded)") || strings.Contains(parts.Guard, "AuthenticateCookie")) {
+				t.Errorf("%+v: the JSON routes of an application with bearer sign-in do not authenticate the bearer token:\n%s", test, parts.Guard)
+			}
+			if !test.identity && !strings.Contains(parts.Guard, "web.Error(w, r, fault.New(\"permission_denied\"") {
+				t.Errorf("%+v: the guard of an application without identity does not refuse everyone:\n%s", test, parts.Guard)
 			}
 			if !strings.Contains(wiring, "httpapi.RegisterProducts(app, productService, protect)") {
 				t.Errorf("%+v: wiring does not register the routes with a guard:\n%s", test, wiring)

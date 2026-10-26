@@ -23,6 +23,7 @@ type commandCatalog struct {
 
 type commandDetail struct {
 	Name        string           `json:"name"`
+	Aliases     []string         `json:"aliases,omitempty"`
 	Usage       string           `json:"usage"`
 	Summary     string           `json:"summary"`
 	SideEffects []string         `json:"side_effects"`
@@ -124,6 +125,9 @@ func commandHelpRequested(args []string) bool {
 }
 
 func commandDetailNamed(name string) *commandDetail {
+	if canonical, ok := commandAliases[name]; ok {
+		name = canonical
+	}
 	catalog := currentCommandCatalog()
 	for i := range catalog.Commands {
 		if catalog.Commands[i].Name == name {
@@ -141,7 +145,11 @@ func writeCommandHelp(output io.Writer, name string) error {
 		return usageError{fmt.Sprintf("unknown command %q: run `forge help` to list the commands", name)}
 	}
 	var text strings.Builder
-	fmt.Fprintf(&text, "usage: %s\n\n%s\n", command.Usage, command.Summary)
+	fmt.Fprintf(&text, "usage: %s\n", command.Usage)
+	for _, alias := range command.Aliases {
+		fmt.Fprintf(&text, "alias: forge %s (forge %s %s)\n", alias, alias, strings.TrimPrefix(command.Usage, "forge "+command.Name+" "))
+	}
+	fmt.Fprintf(&text, "\n%s\n", command.Summary)
 	if len(command.Flags) > 0 {
 		text.WriteString("\nflags:\n")
 		for _, f := range command.Flags {
@@ -253,11 +261,12 @@ func currentCommandCatalog() commandCatalog {
 		},
 		{Name: "seed", Usage: "forge seed", Summary: "Load the application's idempotent seed data (db.Seed) in one transaction.", SideEffects: []string{"database_write", "subprocess"}, Examples: []string{"forge seed"}, Environment: runtimeEnvironment()},
 		{
-			Name: "generate", Usage: "forge generate <migration|view|job|model|controller|mailer|resource|scaffold|authentication> NAME [arguments...] [flags]",
+			Name: "generate", Aliases: []string{"g"}, Usage: "forge generate <migration|view|job|model|controller|mailer|resource|scaffold|authentication> NAME [arguments...] [flags]",
 			Summary:     "Generate or preview migrations, auto-escaped HTML views, cancellation-aware job stubs, typed queue jobs, models (migration, domain, application and persistence layers), controllers (handlers, routes and views without persistence), mailers (typed methods, text and HTML templates, previews), a complete resource (migration, domain, application, persistence, JSON API and tests), or a scaffold: that resource plus server-rendered HTML CRUD pages (forms, validation errors at 422, flash notices, CSRF), without overwriting files.",
 			SideEffects: []string{"filesystem_read", "filesystem_write"},
 			Examples: []string{
-				"forge generate migration create_widgets --dry-run", "forge generate view welcome", "forge generate job cleanup --dry-run",
+				"forge generate migration create_widgets --dry-run", "forge g migration add_sku_to_products sku:string stock:int",
+				"forge g scaffold product name:string price:int --tenant-scoped", "forge generate view welcome", "forge generate job cleanup --dry-run",
 				"forge generate resource product name:string 'summary:text?' price_cents:int --tenant-scoped --dry-run",
 				"forge generate resource category name:string --global --plural categories",
 				"forge generate scaffold post title:string body:text published:bool --global --dry-run",
@@ -270,7 +279,7 @@ func currentCommandCatalog() commandCatalog {
 				"forge generate mailer user welcome:name,url password_reset:name,reset_url",
 				"forge generate job send_welcome user_id:uuid --queue",
 			},
-			Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Reads go.mod and relevant generator paths; --dry-run does not create files or directories. `generate resource` reads FORGE_DATABASE_URL (process environment over env files, as forge inspect does) only to choose the database dialect; the value is never printed. Field types: string (up to 255 characters), text, int (64-bit), bool, time (UTC), uuid (UUIDv7); a trailing ? makes a field optional (quote it in shells that expand ?). `generate scaffold` takes the same arguments as `generate resource` and adds app/adapters/htmlui/NAME.go and its tests, app/views/PLURAL/{index,show,new,edit,_form,not_found}.gohtml and, when the application has none, the views base `forge new` generates (app/views/views.go, layouts/application.gohtml, shared/_flash.gohtml); the pages are served at /PLURAL, the JSON API at /v1/PLURAL (with Forge identity it authenticates bearer tokens; an application without the bearer login of --api-auth gets a guard that refuses every JSON request until forge generate authentication --api-auth adds it, as forge-rust's DenyAll). `generate view NAME` or DIR/NAME adds app/views/DIR/NAME.gohtml (DIR defaults to pages). `generate authentication` (PostgreSQL applications only; others are refused because Forge persists identities only in PostgreSQL) adds app/adapters/htmlauth and app/views/{sessions,passwords}, the sign-in, sign-out, two-factor and password-reset pages forge new generates, and prints their wiring; with --api-auth the wiring also mounts the JSON authentication APIs that `forge new --api-auth` mounts (in an application that already has every page file it writes nothing and prints only that JSON wiring), and without it the command points out JSON authentication routes bootstrap.go still mounts. `generate model` takes the arguments of `generate resource` and creates the migration, domain, application and persistence layers with their tests, without the HTTP layer. `generate controller NAME ACTION...` adds app/adapters/htmlui/NAME_controller.go (or app/adapters/httpapi with --api), its test, one view per action in app/views/NAME (HTML only) and, for a guarded controller in an application with Forge identity, a migration that registers the NAME:read permission; actions are read-only GET routes. `generate mailer NAME METHOD[:field,field]...` adds app/mailers/NAME_mailer.go with typed methods, its preview and tests, and app/mailers/templates/NAME/METHOD.{subject.tmpl,text.tmpl,html.gohtml}. `generate job NAME [field:type...] --queue` adds a typed handler for the persistent job queue and its test (app/jobs/NAME.go); without --queue it generates the recurring job stub. Exactly one of --tenant-scoped or --global is required for models, resources and scaffolds. Resources, scaffolds and guarded controllers are never public: the printed wiring requires an application-supplied guard, and nothing edits app/bootstrap/bootstrap.go. In an API-only application (`forge new --api`) `generate view`, `generate scaffold`, `generate authentication` and `generate controller` without --api refuse and write nothing, as in Forge-Rust; the other generators write no view, asset or translation."},
+			Environment: environmentInfo{Files: []string{".env.development", ".env.local"}, Variables: []string{"FORGE_DATABASE_URL"}, Notes: "Reads go.mod and relevant generator paths; --dry-run does not create files or directories. `generate resource` reads FORGE_DATABASE_URL (process environment over env files, as forge inspect does) only to choose the database dialect; the value is never printed. Field types: string (up to 255 characters), text, int (64-bit), bool, time (UTC), uuid (UUIDv7); a trailing ? makes a field optional (quote it in shells that expand ?). `generate scaffold` takes the same arguments as `generate resource` and adds app/adapters/htmlui/NAME.go and its tests, app/views/PLURAL/{index,show,new,edit,_form,not_found}.gohtml and, when the application has none, the views base `forge new` generates (app/views/views.go, layouts/application.gohtml, shared/_flash.gohtml); the pages are served at /PLURAL, the JSON API at /v1/PLURAL (with Forge identity it authenticates the bearer tokens of --api-auth, or else the session cookie plus the X-CSRF-Token header on changes). `generate view NAME` or DIR/NAME adds app/views/DIR/NAME.gohtml (DIR defaults to pages). `generate authentication` (PostgreSQL applications only; others are refused because Forge persists identities only in PostgreSQL) adds app/adapters/htmlauth and app/views/{sessions,passwords}, the sign-in, sign-out, two-factor and password-reset pages forge new generates, and prints their wiring; with --api-auth the wiring also mounts the JSON authentication APIs that `forge new --api-auth` mounts (in an application that already has every page file it writes nothing and prints only that JSON wiring), and without it the command points out JSON authentication routes bootstrap.go still mounts. `generate model` takes the arguments of `generate resource` and creates the migration, domain, application and persistence layers with their tests, without the HTTP layer. `generate controller NAME ACTION...` adds app/adapters/htmlui/NAME_controller.go (or app/adapters/httpapi with --api), its test, one view per action in app/views/NAME (HTML only) and, for a guarded controller in an application with Forge identity, a migration that registers the NAME:read permission; actions are read-only GET routes. `generate mailer NAME METHOD[:field,field]...` adds app/mailers/NAME_mailer.go with typed methods, its preview and tests, and app/mailers/templates/NAME/METHOD.{subject.tmpl,text.tmpl,html.gohtml}. `generate job NAME [field:type...] --queue` adds a typed handler for the persistent job queue and its test (app/jobs/NAME.go); without --queue it generates the recurring job stub. Exactly one of --tenant-scoped or --global is required for models, resources and scaffolds. `generate migration NAME [field:type...]` writes db/migrations/<version>_NAME.{up,down}.sql: add_COLUMNS_to_TABLE with fields adds them with ALTER TABLE ... ADD COLUMN (down drops them), remove_COLUMNS_from_TABLE does the reverse, in the application's SQL dialect; required columns get the type's zero value as default for existing rows (a required time or uuid column is refused: make it optional); any other name, or no fields, writes blank files and a warning to fill them in, since an empty migration is refused. `forge g` is short for `forge generate`. Resources, scaffolds and controllers mount their routes in app/bootstrap/routes_gen.go, which they own (bootstrap.go calls its generatedRoutes; a hand edit is detected by its checksum and refused; running a generator again with the same arguments is a no-op; destroy takes the routes back out); applications whose bootstrap.go predates it get the wiring printed instead. Nothing edits app/bootstrap/bootstrap.go. Routes are never public by accident: with Forge identity they need sign-in and the permission the migration grants to the owner role; without it the guard refuses everyone unless --public (resources and scaffolds need --global with it), and to replace a generated guard (a package-level func in routes_gen.go) the owner copies it into another file of package bootstrap and runs a generator again: until then the build fails with redeclared, never silently. In an API-only application (`forge new --api`) `generate view`, `generate scaffold`, `generate authentication` and `generate controller` without --api refuse and write nothing, as in Forge-Rust; the other generators write no view, asset or translation."},
 			Flags: []flagDetail{
 				{Name: "--dry-run", Description: "Read-only: print exact planned paths without creating directories or files."},
 				{Name: "--tenant-scoped", Description: "resource and scaffold: rows belong to one tenant (tenant_id bound in every statement; PostgreSQL also enables row-level security)."},
@@ -278,7 +287,7 @@ func currentCommandCatalog() commandCatalog {
 				{Name: "--broadcast", Description: "scaffold only: publish created, updated and deleted rows to open index pages as Turbo Streams over Server-Sent Events (adds app/adapters/htmlstreams, the _item partial and the live-update wiring)."},
 				{Name: "--plural", Value: "PLURAL", Description: "model, resource and scaffold: snake_case plural used for the table and routes (default: built-in English rules)."},
 				{Name: "--api", Description: "controller only: generate JSON handlers under /v1 in app/adapters/httpapi instead of HTML pages."},
-				{Name: "--public", Description: "controller only: mount the routes without a guard. Without it the controller needs an application-supplied guard and the NAME:read permission."},
+				{Name: "--public", Description: "controller: mount the routes without a guard (without it the controller needs the NAME:read permission). resource and scaffold, only in applications without Forge identity and with --global: serve the routes to anyone through a pass-through public guard instead of the deny-all one."},
 				{Name: "--queue", Description: "job only: generate a typed handler for the persistent job queue instead of the recurring job stub."},
 			},
 		},
@@ -417,7 +426,7 @@ func configEnvironment(notes string) environmentInfo {
 
 func destroyCommandDetail() commandDetail {
 	return commandDetail{
-		Name: "destroy", Usage: "forge destroy <model|resource|scaffold|controller|mailer|job|view> ARGUMENTS... [--force] [--migrations] [--dry-run]",
+		Name: "destroy", Aliases: []string{"d"}, Usage: "forge destroy <model|resource|scaffold|controller|mailer|job|view> ARGUMENTS... [--force] [--migrations] [--dry-run]",
 		Summary:     "Remove the files a generator created, found by regenerating them from the same arguments; a file that differs from what the generator would write, or that a bigger generation still needs, is never removed without --force, and migrations are kept unless --migrations.",
 		SideEffects: []string{"filesystem_read", "filesystem_write"},
 		Examples: []string{

@@ -19,7 +19,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/migrate"
 )
 
-const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate job NAME [field:type...] --queue [--dry-run]\n       forge generate model NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate controller NAME ACTION... [--api] [--public] [--dry-run]\n       forge generate mailer NAME METHOD[:field,field...]... [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate authentication [--api-auth] [--dry-run]"
+const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate migration NAME [field:type...] [--dry-run]\n       forge generate job NAME [field:type...] --queue [--dry-run]\n       forge generate model NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate controller NAME ACTION... [--api] [--public] [--dry-run]\n       forge generate mailer NAME METHOD[:field,field...]... [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate authentication [--api-auth] [--dry-run]"
 
 var migrationName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,99}$`)
 var viewName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -48,7 +48,7 @@ func runGenerateAtTime(args []string, stdout io.Writer, root string, now time.Ti
 // framework packages the vendor directory does not hold yet, so a successful
 // run is followed by go mod vendor.
 func runGenerateEnv(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
-	if err := generateFiles(args, stdout, root, env, now); err != nil {
+	if err := withGenerateLock(root, func() error { return generateFiles(args, stdout, root, env, now) }); err != nil {
 		return err
 	}
 	return revendor(context.Background(), root, args, stdout, os.Stderr)
@@ -97,6 +97,9 @@ func generateFiles(args []string, stdout io.Writer, root string, env []string, n
 	}
 	if len(args) > 0 && args[0] == "authentication" {
 		return runGenerateAuthentication(args[1:], stdout, root, env)
+	}
+	if len(args) > 0 && args[0] == "migration" {
+		return runGenerateMigration(args[1:], stdout, root, env, now)
 	}
 	dryRun := len(args) == 3 && args[2] == "--dry-run"
 	if (len(args) != 2 && !dryRun) || (len(args) == 3 && !dryRun) {
@@ -171,6 +174,10 @@ type generatedFile struct {
 	// differs from what the generator writes, `forge destroy` keeps it
 	// instead of refusing the whole run.
 	translation bool
+	// identical marks a file that already exists with exactly this content
+	// (the generator run again with the same arguments): it is reported and
+	// left alone.
+	identical bool
 }
 
 // generatedView is a page of the application's view tree (app/views): it
@@ -457,6 +464,77 @@ func exportedJobName(name string) string {
 	return strings.Join(parts, "")
 }
 
+const migrationUsage = "usage: forge generate migration NAME [field:type...] [--dry-run]"
+
+// runGenerateMigration is `forge generate migration`: the up/down pair, with
+// the ALTER TABLE statements an add_X_to_TABLE or remove_X_from_TABLE name
+// and its fields infer, or blank with a warning.
+func runGenerateMigration(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
+	flags, positional, err := splitFlags(args, migrationUsage, "--dry-run")
+	if err != nil {
+		return err
+	}
+	if len(positional) == 0 {
+		return usageError{migrationUsage}
+	}
+	name := positional[0]
+	if !migrationName.MatchString(name) {
+		return errors.New("migration name must be snake_case: lowercase letters, digits and underscores, starting with a letter")
+	}
+	var fields []resourceField
+	seen := make(map[string]bool)
+	for _, declaration := range positional[1:] {
+		field, err := parseResourceField(declaration)
+		if err != nil {
+			return err
+		}
+		if seen[field.Name] {
+			return fmt.Errorf("field %q is declared twice", field.Name)
+		}
+		seen[field.Name] = true
+		fields = append(fields, field)
+	}
+	change, inferred, err := inferColumnChange(name, fields)
+	if err != nil {
+		return err
+	}
+	files, err := planMigration(root, name, now)
+	if err != nil {
+		return err
+	}
+	if inferred {
+		adapter, err := databaseAdapter(root, env)
+		if err != nil {
+			return errors.New("environment files could not be loaded: check .env.development and .env.local syntax")
+		}
+		switch adapter {
+		case "postgres", "mysql", "sqlite":
+		default:
+			return errMigrationDatabase
+		}
+		up, down, err := renderColumnMigration(adapter, name, change)
+		if err != nil {
+			return err
+		}
+		files[0].content, files[1].content = up, down
+	}
+	if !flags["--dry-run"] {
+		if err := applyGeneratedFiles(root, []string{"db/migrations"}, files); err != nil {
+			return err
+		}
+	}
+	if err := reportFiles(stdout, flags["--dry-run"], files, ""); err != nil {
+		return err
+	}
+	switch {
+	case !inferred:
+		_, err = io.WriteString(stdout, blankMigrationWarning(filepath.ToSlash(files[0].path)))
+	case change.remove:
+		_, err = io.WriteString(stdout, removeColumnsWarning(change))
+	}
+	return err
+}
+
 // generateMigration writes an empty up/down pair under db/migrations. The
 // version is the UTC timestamp, bumped past any existing version so two
 // migrations generated in the same second stay ordered.
@@ -523,6 +601,17 @@ func nextMigrationVersion(projectRoot *os.Root, now time.Time) (dir, version str
 	return dir, stamp.Format("20060102150405"), nil
 }
 
+// newFiles drops the files that already exist with the planned content.
+func newFiles(files []generatedFile) []generatedFile {
+	var result []generatedFile
+	for _, file := range files {
+		if !file.identical {
+			result = append(result, file)
+		}
+	}
+	return result
+}
+
 func applyGeneratedFiles(rootPath string, directories []string, files []generatedFile) error {
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
@@ -551,6 +640,9 @@ func applyGeneratedFiles(rootPath string, directories []string, files []generate
 		}
 	}
 	for _, planned := range files {
+		if planned.identical {
+			continue
+		}
 		file, err := root.OpenFile(planned.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			return rollback(err)

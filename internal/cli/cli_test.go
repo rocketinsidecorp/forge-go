@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
@@ -388,6 +389,15 @@ func TestGeneratedApplication(t *testing.T) {
 		return dir
 	}
 
+	// The README quickstart, run as written by a real forge binary, then
+	// driven over HTTP like a person in a browser (readme_quickstart_test.go).
+	for _, database := range []string{"postgresql", "sqlite"} {
+		t.Run("readme quickstart "+database, func(t *testing.T) {
+			t.Parallel()
+			testReadmeQuickstart(t, frameworkPath, database)
+		})
+	}
+
 	t.Run("without database", func(t *testing.T) {
 		t.Parallel()
 		dir := generate(t, "edge", "--skip-database")
@@ -660,7 +670,29 @@ func wireResources(t *testing.T, dir string, specs []resourceSpec) {
 	for _, spec := range specs {
 		parts = append(parts, buildResourceWiring(spec))
 	}
-	wireParts(t, dir, parts)
+	wireRoutes(t, dir, parts)
+}
+
+// wireRoutes is wireParts for the generators that wire their routes
+// themselves (resource, scaffold, controller): an application whose
+// bootstrap.go calls the routes seam needs no paste, and the seam must then
+// hold every usage.
+func wireRoutes(t *testing.T, dir string, partsList []resourceWiringParts) {
+	t.Helper()
+	if !strings.Contains(readFile(t, filepath.Join(dir, "app", "bootstrap", "bootstrap.go")), scaffold.RoutesFunction+"(") {
+		wireParts(t, dir, partsList)
+		return
+	}
+	// With Forge identity the seam's guards take the session store: compare
+	// the printed wiring with the seam's calls of them left out.
+	seam := strings.ReplaceAll(readFile(t, filepath.Join(dir, scaffold.RoutesFile)), "(repository, middleware)", "")
+	for _, parts := range partsList {
+		for _, line := range strings.Split(strings.TrimSpace(parts.Usage), "\n") {
+			if line = strings.TrimSpace(line); line != "" && !strings.Contains(seam, line) {
+				t.Fatalf("the generators did not wire %q into %s:\n%s", line, scaffold.RoutesFile, seam)
+			}
+		}
+	}
 }
 
 // declaredName is the variable a printed wiring block declares first
