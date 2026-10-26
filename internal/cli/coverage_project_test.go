@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"io"
@@ -118,13 +119,45 @@ func TestRunNewRefusesConflictingOrUnusableArguments(t *testing.T) {
 	}
 }
 
+func buildInfoOf(path, version, sum string) func() (*debug.BuildInfo, bool) {
+	return func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Main: debug.Module{Path: path, Version: version, Sum: sum}}, true
+	}
+}
+
 func TestFrameworkTargetPinsTheVersionTheCLIWasBuiltFrom(t *testing.T) {
 	t.Parallel()
-	info := func(path, version string) func() (*debug.BuildInfo, bool) {
-		return func() (*debug.BuildInfo, bool) {
-			return &debug.BuildInfo{Main: debug.Module{Path: path, Version: version}}, true
+	const module = "github.com/rocketinsidecorp/forge-go"
+	const pseudo = "v0.0.0-20261024123456-0123456789ab"
+	const sum = "h1:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG="
+	for name, tc := range map[string]struct {
+		ldflags string
+		build   func() (*debug.BuildInfo, bool)
+		want    string
+	}{
+		"ldflags release wins":              {"v1.2.3", buildInfoOf(module, pseudo, sum), "v1.2.3"},
+		"ldflags prerelease":                {"v1.2.3-rc.1", buildInfoOf(module, "", ""), "v1.2.3-rc.1"},
+		"proxy install of a pseudo":         {"dev", buildInfoOf(module, pseudo, sum), pseudo},
+		"proxy install of a tag":            {"dev", buildInfoOf(module, "v0.4.0", sum), "v0.4.0"},
+		"checkout build, VCS pseudo":        {"dev", buildInfoOf(module, pseudo, ""), "latest"},
+		"checkout build, VCS tag":           {"dev", buildInfoOf(module, "v0.4.0", ""), "latest"},
+		"build of a working tree":           {"dev", buildInfoOf(module, "(devel)", ""), "latest"},
+		"devel even with a sum":             {"dev", buildInfoOf(module, "(devel)", sum), "latest"},
+		"dirty vcs stamp":                   {"dev", buildInfoOf(module, pseudo+"+dirty", sum), "latest"},
+		"empty module version":              {"dev", buildInfoOf(module, "", sum), "latest"},
+		"another main module":               {"dev", buildInfoOf("example.com/fork", pseudo, sum), "latest"},
+		"no build info":                     {"dev", func() (*debug.BuildInfo, bool) { return nil, false }, "latest"},
+		"nil build info":                    {"dev", func() (*debug.BuildInfo, bool) { return nil, true }, "latest"},
+		"unknown ldflags ignore build info": {"nightly", buildInfoOf(module, pseudo, sum), "latest"},
+	} {
+		if got := frameworkTarget(tc.ldflags, tc.build); got != tc.want {
+			t.Errorf("%s: frameworkTarget(%q) = %q, want %q", name, tc.ldflags, got, tc.want)
 		}
 	}
+}
+
+func TestEffectiveVersionReportsTheProxyVersionOnlyForUnstampedBuilds(t *testing.T) {
+	t.Parallel()
 	const module = "github.com/rocketinsidecorp/forge-go"
 	const pseudo = "v0.0.0-20261024123456-0123456789ab"
 	for name, tc := range map[string]struct {
@@ -132,21 +165,27 @@ func TestFrameworkTargetPinsTheVersionTheCLIWasBuiltFrom(t *testing.T) {
 		build   func() (*debug.BuildInfo, bool)
 		want    string
 	}{
-		"ldflags release wins":              {"v1.2.3", info(module, pseudo), "v1.2.3"},
-		"ldflags prerelease":                {"v1.2.3-rc.1", info(module, ""), "v1.2.3-rc.1"},
-		"go install of a pseudo":            {"dev", info(module, pseudo), pseudo},
-		"go install of a tag":               {"dev", info(module, "v0.4.0"), "v0.4.0"},
-		"build of a working tree":           {"dev", info(module, "(devel)"), "latest"},
-		"dirty vcs stamp":                   {"dev", info(module, pseudo+"+dirty"), "latest"},
-		"empty module version":              {"dev", info(module, ""), "latest"},
-		"another main module":               {"dev", info("example.com/fork", pseudo), "latest"},
-		"no build info":                     {"dev", func() (*debug.BuildInfo, bool) { return nil, false }, "latest"},
-		"nil build info":                    {"dev", func() (*debug.BuildInfo, bool) { return nil, true }, "latest"},
-		"unknown ldflags ignore build info": {"nightly", info(module, pseudo), "latest"},
+		"stamped release":       {"v1.2.3", buildInfoOf(module, pseudo, "h1:x="), "v1.2.3"},
+		"proxy install":         {"dev", buildInfoOf(module, pseudo, "h1:x="), pseudo},
+		"checkout build":        {"dev", buildInfoOf(module, pseudo, ""), "dev"},
+		"working tree":          {"dev", buildInfoOf(module, "(devel)", ""), "dev"},
+		"no build info":         {"dev", func() (*debug.BuildInfo, bool) { return nil, false }, "dev"},
+		"custom stamp is shown": {"nightly", buildInfoOf(module, pseudo, "h1:x="), "nightly"},
 	} {
-		if got := frameworkTarget(tc.ldflags, tc.build); got != tc.want {
-			t.Errorf("%s: frameworkTarget(%q) = %q, want %q", name, tc.ldflags, got, tc.want)
+		if got := effectiveVersion(tc.ldflags, tc.build); got != tc.want {
+			t.Errorf("%s: effectiveVersion(%q) = %q, want %q", name, tc.ldflags, got, tc.want)
 		}
+	}
+}
+
+func TestVersionCommandPrintsTheBuildInfoVersion(t *testing.T) {
+	// Not parallel: readBuildInfo is replaced.
+	previous := readBuildInfo
+	t.Cleanup(func() { readBuildInfo = previous })
+	readBuildInfo = buildInfoOf("github.com/rocketinsidecorp/forge-go", "v0.3.1", "h1:x=")
+	var stdout bytes.Buffer
+	if err := runVersion(nil, &stdout); err != nil || !strings.HasPrefix(stdout.String(), "forge v0.3.1 (") {
+		t.Errorf("runVersion = %q, %v", stdout.String(), err)
 	}
 }
 
@@ -155,7 +194,7 @@ func TestResolveDependenciesPinsTheBuildInfoVersionButNotALocalCheckout(t *testi
 	previous := readBuildInfo
 	t.Cleanup(func() { readBuildInfo = previous })
 	readBuildInfo = func() (*debug.BuildInfo, bool) {
-		return &debug.BuildInfo{Main: debug.Module{Path: "github.com/rocketinsidecorp/forge-go", Version: "v0.0.0-20261024123456-0123456789ab"}}, true
+		return &debug.BuildInfo{Main: debug.Module{Path: "github.com/rocketinsidecorp/forge-go", Version: "v0.0.0-20261024123456-0123456789ab", Sum: "h1:x="}}, true
 	}
 	var out strings.Builder
 	_ = resolveDependencies(context.Background(), t.TempDir(), "", &out, io.Discard)

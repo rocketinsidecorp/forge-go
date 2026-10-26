@@ -297,7 +297,7 @@ func currentCommandCatalog() commandCatalog {
 	return commandCatalog{
 		SchemaVersion: 1,
 		Name:          "forge",
-		Version:       version.Version,
+		Version:       effectiveVersion(version.Version, readBuildInfo),
 		GlobalOptions: []flagDetail{{Name: jsonErrorFormatFlag, Description: "Emit schema-versioned, secret-safe errors on stderr when a command fails."}},
 		ProcessExitCodes: append([]exitCodeDetail{
 			{Code: 0, Meaning: "The requested command completed successfully."},

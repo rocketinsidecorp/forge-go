@@ -23,21 +23,40 @@ var releaseVersion = regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$`)
 // readBuildInfo is replaced by tests.
 var readBuildInfo = debug.ReadBuildInfo
 
-// frameworkTarget is the framework version `forge new` pins. A release build
-// stamps version.Version through ldflags. A CLI installed with
-// `go install ...forge-go/cmd/forge@VERSION` carries no ldflags ("dev") but
-// records the module version it was built from, which is then pinned so the
-// generated application uses the framework its templates came from. Anything
-// else (a build of a working tree is "(devel)", a dirty one ends in "+dirty")
-// is not fetchable and resolves to "latest".
-func frameworkTarget(ldflagsVersion string, build func() (*debug.BuildInfo, bool)) string {
-	if releaseVersion.MatchString(ldflagsVersion) {
-		return ldflagsVersion
+// builtVersion is the framework version recorded in the CLI's build info, or
+// "" when there is none worth trusting. Only a CLI fetched from the module
+// proxy or cache (`go install ...forge-go/cmd/forge@VERSION`) qualifies: Go
+// records a checksum (Main.Sum) for it, and the version is one `go get` can
+// resolve. A build of a checkout has no Sum even when Go stamps a VCS
+// pseudo-version, which may name a commit that was never published; a working
+// tree is "(devel)" and a dirty one ends in "+dirty".
+func builtVersion(build func() (*debug.BuildInfo, bool)) string {
+	info, ok := build()
+	if !ok || info == nil || info.Main.Path != scaffold.FrameworkModule || info.Main.Sum == "" || !releaseVersion.MatchString(info.Main.Version) {
+		return ""
 	}
+	return info.Main.Version
+}
+
+// effectiveVersion is the version this CLI reports: the release stamped
+// through ldflags or, when those left "dev", builtVersion.
+func effectiveVersion(ldflagsVersion string, build func() (*debug.BuildInfo, bool)) string {
 	if ldflagsVersion == "dev" {
-		if info, ok := build(); ok && info != nil && info.Main.Path == scaffold.FrameworkModule && releaseVersion.MatchString(info.Main.Version) {
-			return info.Main.Version
+		if built := builtVersion(build); built != "" {
+			return built
 		}
+	}
+	return ldflagsVersion
+}
+
+// frameworkTarget is the framework version `forge new` pins. A release build
+// stamps version.Version through ldflags. A CLI installed from the module
+// proxy carries no ldflags ("dev") but records the module version it was built
+// from (builtVersion), which is then pinned so the generated application uses
+// the framework its templates came from. Anything else resolves to "latest".
+func frameworkTarget(ldflagsVersion string, build func() (*debug.BuildInfo, bool)) string {
+	if version := effectiveVersion(ldflagsVersion, build); releaseVersion.MatchString(version) {
+		return version
 	}
 	return "latest"
 }

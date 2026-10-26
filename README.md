@@ -658,9 +658,12 @@ Flags for `forge new`:
   `go mod vendor` so the Docker build context is self-contained. Without it,
   `forge new` runs `go get github.com/rocketinsidecorp/forge-go@<cli version or
   latest>` followed by `go mod tidy`. The CLI version is the release stamped at
-  build time or, for a CLI installed with `go install ...@VERSION`, the module
-  (pseudo-)version recorded in its build info; a build of a working tree
-  (`(devel)`) resolves `latest`.
+  build time or, for a CLI installed from the module proxy with
+  `go install github.com/rocketinsidecorp/forge-go/cmd/forge@VERSION`, the
+  module (pseudo-)version recorded in its build info (`forge version` reports
+  it too). A CLI built from a checkout (`go build`, or `go install` run in it)
+  resolves `latest`, even when Go stamps a VCS pseudo-version, because that
+  commit may not be published.
 
 `forge generate migration NAME` requires `NAME` to match
 `^[a-z][a-z0-9_]{0,99}$` and `db/migrations` to exist. If a migration with the
