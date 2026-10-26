@@ -62,7 +62,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "inspect":
 		err = runInspect(args[1:], stdout)
 	case "routes":
-		err = runRoutes(args[1:], stdout)
+		err = runRoutes(args[1:], stdout, commandStderr)
 	case "openapi":
 		err = runOpenAPI(args[1:], stdout, commandStderr)
 	case "new":
@@ -371,7 +371,7 @@ commands:
                       and keys no template or Go code references
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
-  routes              list the registered routes, as a table
+  routes [NAME]       list the registered routes, as a table
   openapi [--output FILE | --check FILE]
                       print or write the OpenAPI 3.1 document of the described
                       routes; --check fails when FILE is out of date

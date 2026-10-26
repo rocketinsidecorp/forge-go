@@ -81,8 +81,8 @@ func discoverRoutes(fileSet *token.FileSet, file *ast.File) []discoveredRoute {
 	return routes
 }
 
-func runRoutes(args []string, output io.Writer) error {
-	return runRoutesAt(args, output, ".")
+func runRoutes(args []string, output, stderr io.Writer) error {
+	return runRoutesAt(args, output, stderr, ".")
 }
 
 type routeRow struct {
@@ -98,10 +98,13 @@ type routeRow struct {
 // when the application cannot be run (no cmd/, an application built with a
 // framework version that predates the routes command, a Configure that
 // fails) does it fall back to scanning the source, say why, and print what the
-// scan can find.
-func runRoutesAt(args []string, output io.Writer, rootPath string) error {
-	if len(args) != 0 {
-		return errors.New("usage: forge routes")
+// scan can find. That explanation goes to stderr, so stdout carries only the
+// table and a pipe such as `forge routes | grep /v1` stays clean.
+//
+// An optional NAME picks the cmd/NAME binary when the application has several.
+func runRoutesAt(args []string, output, stderr io.Writer, rootPath string) error {
+	if len(args) > 1 || (len(args) == 1 && strings.HasPrefix(args[0], "-")) {
+		return errors.New(routesUsage)
 	}
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
@@ -111,20 +114,35 @@ func runRoutesAt(args []string, output io.Writer, rootPath string) error {
 	if _, err := root.Stat("go.mod"); err != nil {
 		return errors.New("go.mod not found: run this inside a Forge application")
 	}
-	table, runErr := applicationRoutes(rootPath)
+	table, runErr := applicationRoutes(rootPath, args)
 	if runErr == nil {
 		_, err := output.Write(table)
 		return err
 	}
-	return scanRoutes(root, output, runErr)
+	if len(args) == 1 {
+		// The user named a binary: not finding it is an error, not a reason
+		// to list something else.
+		var missing *commandNotFoundError
+		if errors.As(runErr, &missing) {
+			return missing.err
+		}
+	}
+	return scanRoutes(root, output, stderr, runErr)
 }
+
+const routesUsage = "usage: forge routes [NAME]"
+
+// commandNotFoundError marks a failure to choose the application binary.
+type commandNotFoundError struct{ err error }
+
+func (e *commandNotFoundError) Error() string { return e.err.Error() }
 
 // applicationRoutes runs the application's routes command and returns its
 // output.
-func applicationRoutes(rootPath string) ([]byte, error) {
-	name, err := resolveCommand(rootPath, nil)
+func applicationRoutes(rootPath string, nameArgs []string) ([]byte, error) {
+	name, err := resolveCommand(rootPath, nameArgs)
 	if err != nil {
-		return nil, err
+		return nil, &commandNotFoundError{err}
 	}
 	env, err := developmentEnvironment(rootPath)
 	if err != nil {
@@ -151,8 +169,9 @@ func firstLine(text string) string {
 }
 
 // scanRoutes prints the routes found by scanning the source, after explaining
-// why the application itself could not list them.
-func scanRoutes(root *os.Root, output io.Writer, runErr error) error {
+// why the application itself could not list them on stderr.
+func scanRoutes(root *os.Root, output, stderr io.Writer, runErr error) error {
+	fmt.Fprintf(stderr, "note: the application could not list its routes (%v), so the table comes from a scan of the source. It misses routes whose paths are built from constants or loops, such as the /v1/<plural> routes of generated resources. Fix that error, or build the application with a current Forge, to list every route.\n", runErr)
 	report := projectInspection{Complete: true}
 	var rows []routeRow
 	fileCount := 0
@@ -189,7 +208,6 @@ func scanRoutes(root *os.Root, output io.Writer, runErr error) error {
 	}
 	fmt.Fprintf(output, "\nScope: %s.\n", routeScope)
 	fmt.Fprintln(output, "Resources routes are listed for every action; only the actions the handler implements are registered.")
-	fmt.Fprintf(output, "note: the application could not list its routes (%v), so this table comes from a scan of the source. It misses routes whose paths are built from constants or loops, such as the /v1/<plural> routes of generated resources. Fix the error above, or build the application with a current Forge, to list every route.\n", runErr)
 	for _, diagnostic := range report.Diagnostics {
 		fmt.Fprintf(output, "warning: %s %s\n", diagnostic.Summary, diagnostic.Remediation)
 	}

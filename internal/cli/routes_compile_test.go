@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -33,13 +34,13 @@ func TestRoutesListsTheJSONRoutesOfGeneratedScaffolds(t *testing.T) {
 	}
 	wireResources(t, dir, specs)
 
-	var output bytes.Buffer
-	if err := runRoutesAt(nil, &output, dir); err != nil {
+	var output, stderr bytes.Buffer
+	if err := runRoutesAt(nil, &output, &stderr, dir); err != nil {
 		t.Fatalf("forge routes: %v\n%s", err, output.String())
 	}
 	table := output.String()
-	if strings.Contains(table, "note: the application could not list its routes") {
-		t.Fatalf("forge routes fell back to the source scan:\n%s", table)
+	if stderr.Len() != 0 {
+		t.Fatalf("forge routes fell back to the source scan:\n%s\n%s", stderr.String(), table)
 	}
 	// Columns are padded to the longest cell: compare the cells only.
 	var rows []string
@@ -64,22 +65,73 @@ func TestRoutesListsTheJSONRoutesOfGeneratedScaffolds(t *testing.T) {
 			t.Errorf("the table has no row starting %q:\n%s", want, table)
 		}
 	}
+
+	// With a second binary, forge routes needs a NAME to choose one; without
+	// it, it says so on stderr and lists what a source scan finds.
+	writeFile(t, filepath.Join(dir, "cmd", "worker", "main.go"), readFile(t, filepath.Join(dir, "cmd", "mx", "main.go")))
+	var ambiguousOut, ambiguousErr bytes.Buffer
+	if err := runRoutesAt(nil, &ambiguousOut, &ambiguousErr, dir); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ambiguousErr.String(), "several commands found (mx, worker): pass one name") || strings.Contains(ambiguousOut.String(), "several commands") {
+		t.Errorf("without a NAME: stdout=%s stderr=%s", ambiguousOut.String(), ambiguousErr.String())
+	}
+	for _, name := range []string{"mx", "worker"} {
+		var named, namedErr bytes.Buffer
+		if err := runRoutesAt([]string{name}, &named, &namedErr, dir); err != nil {
+			t.Fatalf("forge routes %s: %v", name, err)
+		}
+		if namedErr.Len() != 0 || !strings.Contains(strings.Join(strings.Fields(named.String()), " "), "GET /v1/products - app/adapters/httpapi/product.go:") {
+			t.Errorf("forge routes %s: stderr=%q\n%s", name, namedErr.String(), named.String())
+		}
+	}
 }
 
 // TestRoutesFallsBackToTheSourceScanWhenTheApplicationCannotRun keeps
 // forge routes useful, and honest about what it misses, for an application that
-// does not build or does not configure.
+// does not build or does not configure. The explanation goes to stderr, so
+// stdout is only the table and `forge routes | grep /v1` stays clean.
 func TestRoutesFallsBackToTheSourceScanWhenTheApplicationCannotRun(t *testing.T) {
 	t.Parallel()
 	root := writeRoutesProject(t)
 	writeFile(t, root+"/cmd/shop/main.go", "package main\n\nfunc main() { undefined() }\n")
-	var output bytes.Buffer
-	if err := runRoutesAt(nil, &output, root); err != nil {
+	var stdout, stderr bytes.Buffer
+	if err := runRoutesAt(nil, &stdout, &stderr, root); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"/posts", "/webhooks", "note: the application could not list its routes (build: ", "misses routes whose paths are built from constants or loops"} {
-		if !strings.Contains(output.String(), want) {
-			t.Errorf("the output lacks %q:\n%s", want, output.String())
+	for _, want := range []string{"/posts", "/webhooks", "METHOD", "Scope:"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout lacks %q:\n%s", want, stdout.String())
 		}
+	}
+	if strings.Contains(stdout.String(), "note:") || strings.Contains(stdout.String(), "could not list its routes") {
+		t.Errorf("the fallback note is on stdout:\n%s", stdout.String())
+	}
+	for _, want := range []string{"note: the application could not list its routes (build: ", "misses routes whose paths are built from constants or loops", "Fix that error, or"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, stderr.String())
+		}
+	}
+	if strings.Contains(stderr.String(), "METHOD") {
+		t.Errorf("the table is on stderr:\n%s", stderr.String())
+	}
+}
+
+func TestRoutesNameMustBeAPlainArgumentForAnExistingCommand(t *testing.T) {
+	t.Parallel()
+	root := writeRoutesProject(t)
+	writeFile(t, root+"/cmd/shop/main.go", "package main\n\nfunc main() {}\n")
+	var stdout, stderr bytes.Buffer
+	for _, args := range [][]string{{"--json"}, {"shop", "worker"}} {
+		if err := runRoutesAt(args, &stdout, &stderr, root); err == nil || !strings.Contains(err.Error(), "usage: forge routes [NAME]") {
+			t.Errorf("forge routes %v: %v", args, err)
+		}
+	}
+	// A name that does not exist is an error, not a reason to scan the source.
+	if err := runRoutesAt([]string{"nope"}, &stdout, &stderr, root); err == nil || !strings.Contains(err.Error(), "cmd/nope/main.go not found") {
+		t.Errorf("a missing command: %v", err)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("a rejected command wrote output: %q %q", stdout.String(), stderr.String())
 	}
 }
