@@ -150,8 +150,12 @@ func TestFinishReportPrintsWarningsFailuresAndEncodingErrors(t *testing.T) {
 	if err := finishReport(&commonFlags{json: true}, brokenWriter{}, report, failure, "x"); !errors.Is(err, failure) {
 		t.Errorf("an unwritable report hid the failure: %v", err)
 	}
+	out.Reset()
 	if err := finishReport(&commonFlags{}, &out, report, failure, "x"); !errors.Is(err, failure) {
 		t.Errorf("a failure without --json: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "warning: old image kept") || strings.Contains(got, "(1.5s)") {
+		t.Errorf("a failure prints its warnings and no summary, got %q", got)
 	}
 	if err := finishReport(&commonFlags{}, &out, nil, nil, "x"); err != nil {
 		t.Errorf("no report, no error: %v", err)

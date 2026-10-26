@@ -198,7 +198,8 @@ func runRollback(ctx context.Context, args []string, stdout, stderr io.Writer) e
 }
 
 // finishReport prints the report (always in --json mode, also on failure)
-// and passes err through.
+// and passes err through. In text mode the warnings are printed either way;
+// the summary only on success.
 func finishReport(common *commonFlags, stdout io.Writer, report *Report, err error, summary string) error {
 	if common.json && report != nil {
 		type output struct {
@@ -216,13 +217,18 @@ func finishReport(common *commonFlags, stdout io.Writer, report *Report, err err
 		}
 		return err
 	}
-	if err != nil {
-		return err
-	}
+	// Warnings print on failure too: one may name a file the operator must
+	// delete by hand (a migrate env file that could not be removed), and a
+	// failed deploy is the likeliest case.
 	if report != nil {
 		for _, warning := range report.Warnings {
 			fmt.Fprintf(stdout, "warning: %s\n", warning)
 		}
+	}
+	if err != nil {
+		return err
+	}
+	if report != nil {
 		if common.dryRun {
 			summary = "dry run: nothing was changed"
 		}
