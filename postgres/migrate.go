@@ -3,13 +3,14 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 
 	forge "github.com/rocketinsidecorp/forge-go"
@@ -28,29 +29,8 @@ func NewMigrator(cfg config.Database, migrations []migrate.Migration, logger *sl
 	if err != nil {
 		return nil, err
 	}
-	return migrate.New(stdlib.OpenDB(*poolConfig.ConnConfig), dialect{uuidv7: uuidv7Migrations(migrations)}, migrations, logger)
+	return migrate.New(stdlib.OpenDB(*poolConfig.ConnConfig), dialect{}, migrations, logger)
 }
-
-// uuidv7Call matches a call of PostgreSQL 18's uuidv7() function.
-var (
-	uuidv7Call  = regexp.MustCompile(`(?i)\buuidv7\s*\(`)
-	sqlComments = regexp.MustCompile(`(?s)--[^\n]*|/\*.*?\*/`)
-)
-
-// uuidv7Migrations names the migrations whose up script calls uuidv7(),
-// comments aside: Forge's identity tables use it as a column default.
-func uuidv7Migrations(migrations []migrate.Migration) []string {
-	var names []string
-	for _, migration := range migrations {
-		if uuidv7Call.MatchString(sqlComments.ReplaceAllString(migration.Up.SQL, "")) {
-			names = append(names, fmt.Sprintf("%d_%s", migration.Version, migration.Name))
-		}
-	}
-	return names
-}
-
-// uuidv7Version is server_version_num of PostgreSQL 18, which added uuidv7().
-const uuidv7Version = 180000
 
 // Commands returns the migrate and rollback subcommands for an application
 // binary with one migration set; see migrate.Commands.
@@ -67,38 +47,31 @@ func CommandsFromSets(migrationSets ...fs.FS) []forge.Command {
 }
 
 // dialect is PostgreSQL for the migration engine.
-type dialect struct {
-	// uuidv7 names the migrations that need PostgreSQL 18's uuidv7().
-	uuidv7 []string
-}
+type dialect struct{}
 
 func (dialect) Placeholder(n int) string { return "$" + strconv.Itoa(n) }
 
-func (d dialect) PrepareSession(ctx context.Context, conn *sql.Conn) error {
-	if _, err := conn.ExecContext(ctx, "SET statement_timeout = 0"); err != nil {
-		return err
-	}
-	if len(d.uuidv7) == 0 {
-		return nil
-	}
-	// Refused before anything is applied, instead of failing midway with
-	// "function uuidv7() does not exist" (SQLSTATE 42883).
-	var version int
-	var name string
-	if err := conn.QueryRowContext(ctx, "SELECT current_setting('server_version_num')::int, current_setting('server_version')").Scan(&version, &name); err != nil {
-		return err
-	}
-	return requireUUIDv7(version, name, d.uuidv7)
+func (dialect) PrepareSession(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, "SET statement_timeout = 0")
+	return err
 }
 
-// requireUUIDv7 fails when migrations call uuidv7() and the server, of
-// server_version_num version, predates it.
-func requireUUIDv7(version int, name string, migrations []string) error {
-	if len(migrations) == 0 || version >= uuidv7Version {
-		return nil
+// ExplainScriptError makes a migration that calls uuidv7() on a server
+// without it (PostgreSQL 17 and older) say so: SQLSTATE 42883
+// (undefined_function) naming uuidv7 gets the server version and the two
+// ways out. The failed migration's transaction has been rolled back.
+func (dialect) ExplainScriptError(ctx context.Context, q migrate.Queryer, err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42883" || !strings.Contains(strings.ToLower(pgErr.Message), "uuidv7") {
+		return err
 	}
-	return fmt.Errorf("migrations %s call uuidv7(), which needs PostgreSQL 18 or later, and this server is PostgreSQL %s: "+
-		"upgrade the server (Forge's identity migrations need PostgreSQL 18)", strings.Join(migrations, ", "), name)
+	version := "unknown"
+	var name string
+	if q.QueryRowContext(ctx, "SELECT current_setting('server_version')").Scan(&name) == nil {
+		version = name
+	}
+	return fmt.Errorf("%w (this server is PostgreSQL %s: uuidv7() needs PostgreSQL 18, "+
+		"or a uuidv7() function defined by an earlier migration)", err, version)
 }
 
 func (dialect) TryLock(ctx context.Context, conn *sql.Conn) (bool, error) {

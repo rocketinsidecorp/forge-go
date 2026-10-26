@@ -46,6 +46,14 @@ type Dialect interface {
 	TableExists(ctx context.Context, conn *sql.Conn, table string) (bool, error)
 }
 
+// ScriptErrorExplainer is implemented by dialects that can make a failed
+// migration script's error clearer, for example when the server is too old
+// for a function the script calls. q is the migration session, outside any
+// transaction; the result should wrap err.
+type ScriptErrorExplainer interface {
+	ExplainScriptError(ctx context.Context, q Queryer, err error) error
+}
+
 // Queryer runs a single-row query on a migration session or transaction.
 type Queryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
@@ -123,7 +131,7 @@ func (m *Migrator) Up(ctx context.Context) ([]Migration, error) {
 				return err
 			}
 			if err := m.run(ctx, conn, identity, migration.Up, record); err != nil {
-				return fmt.Errorf("apply migration %d_%s: %w", migration.Version, migration.Name, err)
+				return fmt.Errorf("apply migration %d_%s: %w", migration.Version, migration.Name, m.explain(ctx, conn, err))
 			}
 			m.logger.Info("applied migration", "version", migration.Version, "name", migration.Name, "duration", time.Since(started))
 			done = append(done, migration)
@@ -225,7 +233,7 @@ func (m *Migrator) down(ctx context.Context, steps int, scope revertScope) ([]Mi
 				return err
 			}
 			if err := m.run(ctx, conn, identity, migration.Down, record); err != nil {
-				return fmt.Errorf("revert migration %d_%s: %w", migration.Version, migration.Name, err)
+				return fmt.Errorf("revert migration %d_%s: %w", migration.Version, migration.Name, m.explain(ctx, conn, err))
 			}
 			m.logger.Info("reverted migration", "version", migration.Version, "name", migration.Name)
 			reverted = append(reverted, migration)
@@ -409,6 +417,14 @@ func (m *Migrator) run(ctx context.Context, conn *sql.Conn, identity string, scr
 		return err
 	}
 	return tx.Commit()
+}
+
+// explain lets the dialect clarify a failed script's error.
+func (m *Migrator) explain(ctx context.Context, q Queryer, err error) error {
+	if explainer, ok := m.dialect.(ScriptErrorExplainer); ok {
+		return explainer.ExplainScriptError(ctx, q, err)
+	}
+	return err
 }
 
 func (m *Migrator) sessionIdentity(ctx context.Context, q Queryer) (string, error) {
