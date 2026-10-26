@@ -1,7 +1,9 @@
 // Package jobs provides an in-process scheduler for recurring background
-// work. Each replica runs its own scheduler; job authors must use advisory
-// locks or idempotent outbox events for exactly-once semantics across
-// replicas.
+// work. Each replica runs its own scheduler. With SchedulerOptions.Lock
+// (postgres.NewSchedulerLock, mysql.NewSchedulerLock) the replicas agree on
+// one of them per tick of each job; without it every replica runs every
+// tick, and job authors need their own advisory locks or idempotent outbox
+// events.
 package jobs
 
 import (
@@ -88,8 +90,8 @@ func (s ScheduleSpec) nextRun(after time.Time) (time.Time, error) {
 }
 
 // Scheduler runs jobs on a schedule. It is not a distributed scheduler;
-// each replica runs its own instance. Jobs that must run exactly once per
-// schedule tick across replicas should use postgres.TryAdvisoryXactLock.
+// each replica runs its own instance. Set SchedulerOptions.Lock so that each
+// tick of a job runs on one replica only.
 type Scheduler struct {
 	jobs       map[string]scheduledJob
 	opts       SchedulerOptions
@@ -124,7 +126,41 @@ type SchedulerOptions struct {
 	// (succeeded, failed, timeout). Error messages are never recorded. Nil
 	// disables it.
 	Telemetry *telemetry.Telemetry
+	// Lock, when set, makes the replicas sharing it run each tick of a job
+	// on one of them: a replica runs a tick only if it takes the tick's lock
+	// (keyed on the job name and the tick time, which every replica
+	// computes alike), and the winner holds it for LockWindow after the tick
+	// so that replicas whose clocks or timers lag behind find it taken. A
+	// tick is skipped, not run, when the lock cannot be checked (the error
+	// goes to OnError) or when this replica reaches it more than LockWindow
+	// late. Use postgres.NewSchedulerLock or mysql.NewSchedulerLock; nil
+	// runs every tick on every replica.
+	Lock Lock
+	// LockWindow is how far apart the replicas' clocks and timers may be: a
+	// tick's lock is held at least this long after the tick, never more than
+	// half the job's interval, so a lock is never held into the next tick.
+	// Default 5 seconds (zero), at most one hour. Keep replica clocks in
+	// sync (NTP) well within it. Used only with Lock.
+	LockWindow time.Duration
 }
+
+// Lock lets the replicas of one application agree on which of them runs a
+// tick of a scheduled job. Implementations are in packages postgres and
+// mysql (NewSchedulerLock).
+type Lock interface {
+	// TryLock takes the lock of one tick of one job without waiting, or
+	// reports false when another replica holds it. The scheduler calls
+	// unlock exactly once when acquired is true, with a context that is not
+	// canceled by shutdown; unlock must release the lock even when its
+	// context ends (for example by closing the connection that holds it).
+	TryLock(ctx context.Context, job string, tick time.Time) (unlock func(context.Context) error, acquired bool, err error)
+}
+
+const (
+	defaultLockWindow = 5 * time.Second
+	maxLockWindow     = time.Hour
+	unlockTimeout     = 5 * time.Second
+)
 
 // maxConcurrentJobs is the largest MaxConcurrentJobs; defaultConcurrentJobs
 // is what zero means.
@@ -135,19 +171,26 @@ const (
 
 // Validate reports options NewScheduler would silently change: a negative
 // MaxConcurrentJobs, or one above 256 (zero is valid and means the default,
-// 4). Call it where the options are built to refuse a misconfigured scheduler
+// 4), a LockWindow outside 0 to one hour, or a LockWindow without a Lock. Call it where the options are built to refuse a misconfigured scheduler
 // at startup, like the other constructors that return an error; NewScheduler
 // itself keeps clamping, so existing callers are unaffected.
 func (o SchedulerOptions) Validate() error {
 	if o.MaxConcurrentJobs < 0 || o.MaxConcurrentJobs > maxConcurrentJobs {
 		return fmt.Errorf("jobs: MaxConcurrentJobs must be between 0 (the default, %d) and %d, got %d", defaultConcurrentJobs, maxConcurrentJobs, o.MaxConcurrentJobs)
 	}
+	if o.LockWindow < 0 || o.LockWindow > maxLockWindow {
+		return fmt.Errorf("jobs: LockWindow must be between 0 (the default, %s) and %s, got %s", defaultLockWindow, maxLockWindow, o.LockWindow)
+	}
+	if o.LockWindow != 0 && o.Lock == nil {
+		return errors.New("jobs: LockWindow is set but Lock is nil")
+	}
 	return nil
 }
 
 // NewScheduler creates a scheduler with the given options. Zero or negative
 // MaxConcurrentJobs uses the default and a value above 256 is lowered to 256;
-// SchedulerOptions.Validate reports both instead.
+// likewise a LockWindow of zero or less is the default and one above an hour
+// is an hour. SchedulerOptions.Validate reports these instead.
 func NewScheduler(opts SchedulerOptions) *Scheduler {
 	if opts.MaxConcurrentJobs < 1 {
 		opts.MaxConcurrentJobs = defaultConcurrentJobs
@@ -155,6 +198,10 @@ func NewScheduler(opts SchedulerOptions) *Scheduler {
 	if opts.MaxConcurrentJobs > maxConcurrentJobs {
 		opts.MaxConcurrentJobs = maxConcurrentJobs
 	}
+	if opts.LockWindow <= 0 {
+		opts.LockWindow = defaultLockWindow
+	}
+	opts.LockWindow = min(opts.LockWindow, maxLockWindow)
 	if opts.OnError == nil {
 		opts.OnError = func(name string, err error) {
 			slog.Default().Error("scheduled job failed", "job", name, "error", err)
@@ -351,21 +398,84 @@ func (s *Scheduler) runJob(name string, sj scheduledJob) {
 			return
 		case <-timer.C:
 		}
-		select {
-		case <-s.ctx.Done():
-			return
-		case s.concurrent <- struct{}{}:
-		}
-		if s.ctx.Err() != nil {
-			<-s.concurrent
+		if !s.tick(name, sj, nextRun) {
 			return
 		}
-		jobCtx, cancel := context.WithTimeout(s.ctx, jobTimeout(sj.spec))
-		if err := s.run(jobCtx, name, sj.job); err != nil {
-			s.opts.OnError(name, err)
+	}
+}
+
+// tick runs one tick of a job: it takes the tick's lock when the scheduler
+// has one, waits for a concurrency slot and runs the job. It reports false
+// once the scheduler is stopping.
+func (s *Scheduler) tick(name string, sj scheduledJob, at time.Time) bool {
+	if s.opts.Lock != nil {
+		window := s.lockWindow(sj, at)
+		if late := time.Since(at); late > window {
+			s.opts.OnError(name, fmt.Errorf("jobs: skipped the %s tick: reached %s late, past the %s lock window", at.Format(time.RFC3339), late.Round(time.Millisecond), window))
+			return s.ctx.Err() == nil
 		}
+		lockCtx, cancel := context.WithTimeout(s.ctx, window)
+		unlock, acquired, err := s.opts.Lock.TryLock(lockCtx, name, at)
 		cancel()
-		<-s.concurrent
+		switch {
+		case err != nil:
+			// Fail closed: without the lock another replica may run it.
+			s.opts.OnError(name, fmt.Errorf("jobs: skipped the %s tick: lock: %w", at.Format(time.RFC3339), err))
+			return s.ctx.Err() == nil
+		case !acquired:
+			return s.ctx.Err() == nil // another replica runs this tick
+		}
+		// Deferred, so a panicking job or a shutdown never leaks the lock.
+		defer s.unlock(name, unlock, at.Add(window))
+	}
+	select {
+	case <-s.ctx.Done():
+		return false
+	case s.concurrent <- struct{}{}:
+	}
+	defer func() { <-s.concurrent }()
+	if s.ctx.Err() != nil {
+		return false
+	}
+	jobCtx, cancel := context.WithTimeout(s.ctx, jobTimeout(sj.spec))
+	defer cancel()
+	if err := s.run(jobCtx, name, sj.job); err != nil {
+		s.opts.OnError(name, err)
+	}
+	return s.ctx.Err() == nil
+}
+
+// lockWindow is LockWindow, capped to half the job's interval at this tick
+// so a lock never outlives its tick.
+func (s *Scheduler) lockWindow(sj scheduledJob, at time.Time) time.Duration {
+	var next time.Time
+	var err error
+	if sj.cron != nil {
+		next, err = sj.cron.nextRun(at)
+	} else {
+		next, err = sj.spec.nextRun(at)
+	}
+	if err != nil || !next.After(at) {
+		return s.opts.LockWindow
+	}
+	return min(s.opts.LockWindow, next.Sub(at)/2)
+}
+
+// unlock keeps the lock until holdUntil (unless the scheduler is stopping,
+// which must stay prompt) and releases it with a context of its own.
+func (s *Scheduler) unlock(name string, unlock func(context.Context) error, holdUntil time.Time) {
+	if wait := time.Until(holdUntil); wait > 0 {
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+		case <-s.ctx.Done():
+			timer.Stop()
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), unlockTimeout)
+	defer cancel()
+	if err := unlock(ctx); err != nil {
+		s.opts.OnError(name, fmt.Errorf("jobs: release the tick lock: %w", err))
 	}
 }
 
