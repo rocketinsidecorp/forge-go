@@ -50,34 +50,63 @@ var frameworkMigrations = []FrameworkMigration{
 	{Version: 20261026120000, Name: "job_schedules", Owner: "jobs"},
 }
 
-// supersededChecksums lists, per framework migration version, the checksums
-// of up scripts Forge shipped before an edit made while the migration was
-// unreleased (no version tag included it). A database that applied such an
-// earlier text is still accepted: Forge wrote both, and the edit changed
-// nothing a database that already ran the old text needs. Never add a
-// released migration here: released history only grows (add a migration).
-var supersededChecksums = map[int64][]string{
+// supersededScript pins, for a framework migration edited while it was
+// unreleased (no version tag included it), the checksum of the up script
+// Forge now ships (current) and of the texts it shipped before (old). A
+// database row recorded under an old checksum is accepted only while the
+// build carries exactly the current script: a build whose text differs from
+// both is still a modified migration.
+type supersededScript struct {
+	current string
+	old     []string
+}
+
+// supersededChecksums lists the framework migrations edited before any
+// release, by version. A database that applied an earlier text is still
+// accepted: Forge wrote both, and the edit changed nothing a database that
+// already ran the old text needs. Never add a released migration here:
+// released history only grows (add a migration).
+var supersededChecksums = map[int64]supersededScript{
 	// The identity tables declared DEFAULT uuidv7(), which PostgreSQL 16 and
 	// 17 lack; the application has always been able to supply the IDs, and
 	// now always does (forge-go QG9). A database migrated before keeps the
 	// unused defaults.
-	20260927090000: {"97b2e99f3157ead576f950a2dbb031e3d7df41d559afd884fe9e69023481efde"},
-	20260927142000: {"943bc72bacf06d89a307c50835d79fab308c8051802af6bf60e3b8777a55b917"},
-	20260927200000: {"d0d4b601e34a2f6d9bf2275a63d97eea1c3300aba116f2171bbaaba4321622a0"},
-	20260927203000: {"af1ae8e3bdfc8cadb3a4ffb8b2ccc01d551a3b9473cf0e9052e96bdb3a43b443"},
-	20260928004500: {"b0e756ab61753decd2b31205375ca607fab8faa1beab1f88fc7bb3940696f79e"},
+	20260927090000: {
+		current: "da89667ae1aec4fdb3cea32b30eca71646ba278faf613ff5ac664f77b2d4e83c",
+		old:     []string{"97b2e99f3157ead576f950a2dbb031e3d7df41d559afd884fe9e69023481efde"},
+	},
+	20260927142000: {
+		current: "d5c8b501d651dfa7621c42982ef03573d45e65d81cbc841ce9dfdec060da1687",
+		old:     []string{"943bc72bacf06d89a307c50835d79fab308c8051802af6bf60e3b8777a55b917"},
+	},
+	20260927200000: {
+		current: "93d700f21f7fb368c47ddb390a5a13fdc57927e3817e7f419060fc4b7ceee661",
+		old:     []string{"d0d4b601e34a2f6d9bf2275a63d97eea1c3300aba116f2171bbaaba4321622a0"},
+	},
+	20260927203000: {
+		current: "952786be96ffc614a0a4b283832a592138bf0dc80b68e1771c5d6cf47059ed4c",
+		old:     []string{"af1ae8e3bdfc8cadb3a4ffb8b2ccc01d551a3b9473cf0e9052e96bdb3a43b443"},
+	},
+	20260928004500: {
+		current: "779fe82ac020a94db9a3e73c49837bf88cc5059888035b82aa8ed839f5ea22e8",
+		old:     []string{"b0e756ab61753decd2b31205375ca607fab8faa1beab1f88fc7bb3940696f79e"},
+	},
 }
 
 // checksumMatches reports whether a database row recorded with checksum
-// applied migration: the current script, or for a framework migration
-// recorded under its own name, an earlier text in supersededChecksums.
+// applied migration: the current script, or, for a framework migration
+// recorded under its own name whose build carries exactly the pinned
+// current script, an earlier text in supersededChecksums.
 func checksumMatches(migration Migration, recordedName, checksum string) bool {
 	if checksum == migration.Checksum {
 		return true
 	}
 	framework, reserved := frameworkMigration(migration.Version)
-	return reserved && framework.Name == migration.Name && recordedName == framework.Name &&
-		slices.Contains(supersededChecksums[migration.Version], checksum)
+	if !reserved || framework.Name != migration.Name || recordedName != framework.Name {
+		return false
+	}
+	superseded, ok := supersededChecksums[migration.Version]
+	return ok && migration.Checksum == superseded.current && slices.Contains(superseded.old, checksum)
 }
 
 // FrameworkMigrations returns every registered framework migration in

@@ -1,6 +1,8 @@
 package migrate
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
@@ -119,9 +121,10 @@ func TestFrameworkMigrationOnlyErrorNamesTheWayOut(t *testing.T) {
 }
 
 // Superseded checksums are accepted only for the framework migration they
-// belong to, recorded under its own name, and never equal the shipped
-// script's: an entry for a migration whose text did not change, or one
-// outside the registry, is a mistake.
+// belong to, recorded under its own name, and only while the build carries
+// exactly the pinned current script; they never equal it: an entry for a
+// migration whose text did not change, one outside the registry, or a stale
+// pin is a mistake.
 func TestSupersededChecksumsBelongToShippedFrameworkMigrations(t *testing.T) {
 	t.Parallel()
 	shipped, err := LoadMigrations(os.DirFS("../auth/postgres/migrations"))
@@ -132,7 +135,7 @@ func TestSupersededChecksumsBelongToShippedFrameworkMigrations(t *testing.T) {
 	for _, migration := range shipped {
 		byVersion[migration.Version] = migration
 	}
-	for version, checksums := range supersededChecksums {
+	for version, superseded := range supersededChecksums {
 		framework, ok := frameworkMigration(version)
 		if !ok {
 			t.Errorf("%d has superseded checksums but is no framework migration", version)
@@ -143,7 +146,13 @@ func TestSupersededChecksumsBelongToShippedFrameworkMigrations(t *testing.T) {
 			t.Errorf("%d_%s is not shipped by auth/postgres", version, framework.Name)
 			continue
 		}
-		for _, checksum := range checksums {
+		if superseded.current != migration.Checksum {
+			t.Errorf("%d_%s: the pinned current checksum is not the shipped script's (%s)", version, framework.Name, migration.Checksum)
+		}
+		if len(superseded.old) == 0 {
+			t.Errorf("%d_%s lists no earlier checksum", version, framework.Name)
+		}
+		for _, checksum := range superseded.old {
 			if checksum == migration.Checksum {
 				t.Errorf("%d_%s lists its current checksum as superseded", version, framework.Name)
 			}
@@ -157,6 +166,15 @@ func TestSupersededChecksumsBelongToShippedFrameworkMigrations(t *testing.T) {
 			application.Version = 20990101000000
 			if checksumMatches(application, framework.Name, checksum) {
 				t.Errorf("%d_%s: the checksum is accepted for an application migration", version, framework.Name)
+			}
+			// A build whose script was tampered with matches neither the
+			// row nor the pin: the earlier checksum no longer excuses it.
+			tampered := migration
+			tampered.Up.SQL += "\nDROP TABLE forge_users;"
+			sum := sha256.Sum256([]byte(tampered.Up.SQL))
+			tampered.Checksum = hex.EncodeToString(sum[:])
+			if checksumMatches(tampered, framework.Name, checksum) {
+				t.Errorf("%d_%s: an earlier checksum excuses a tampered build", version, framework.Name)
 			}
 		}
 		if checksumMatches(migration, framework.Name, strings.Repeat("0", 64)) {

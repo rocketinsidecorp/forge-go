@@ -3,8 +3,11 @@ package postgres_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -129,6 +132,24 @@ func TestIdentityMigrationsAppliedWithTheUUIDv7DefaultsStillVerify(t *testing.T)
 		if status.State != migrate.StateApplied {
 			t.Errorf("%d_%s is %s, want applied", status.Version, status.Name, status.State)
 		}
+	}
+	// The earlier checksum excuses only the script Forge ships now: a build
+	// whose identity migration was tampered with is still refused.
+	tampered := slices.Clone(loaded)
+	for i := range tampered {
+		if tampered[i].Version == 20260927090000 {
+			tampered[i].Up.SQL += "\nCREATE TABLE forge_backdoor (id int);"
+			sum := sha256.Sum256([]byte(tampered[i].Up.SQL))
+			tampered[i].Checksum = hex.EncodeToString(sum[:])
+		}
+	}
+	forged, err := postgres.NewMigrator(cfg, tampered, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = forged.Close() }()
+	if _, err := forged.Up(ctx); err == nil || !strings.Contains(err.Error(), "was modified after it was applied") {
+		t.Fatalf("a tampered build over a database with the earlier checksum: err = %v, want the modified-migration refusal", err)
 	}
 	record(strings.Repeat("0", 64))
 	if _, err := m.Up(ctx); err == nil || !strings.Contains(err.Error(), "was modified after it was applied") {
