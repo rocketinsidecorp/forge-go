@@ -58,14 +58,67 @@ principal and its validated tenant in the request context.
 
 ## Password hashing
 
-`auth.HashPassword` uses the Go 1.27 standard-library `crypto/pbkdf2`
-implementation with HMAC-SHA-256, a random 128-bit salt, a 256-bit derived key,
-and a default work factor of 600,000 iterations. The encoded form carries a
-version and work factor so future releases can identify hashes that should be
-upgraded after successful authentication.
+`auth.HashPassword` (`auth.DefaultPasswordHasher`) writes Argon2id v19
+(RFC 9106, `golang.org/x/crypto/argon2`) with Forge-Rust's parameters: 19,456
+KiB of memory, 2 passes, 1 lane, a random 16-byte salt from `crypto/rand` and a
+32-byte key, as a PHC string in unpadded standard base64:
 
-Forge never trims or normalizes passwords before hashing. Malformed hashes are
-rejected fail-closed and comparisons use constant-time equality.
+```text
+$argon2id$v=19$m=19456,t=2,p=1$<salt>$<key>
+```
+
+Either framework verifies the other's hashes (a test verifies a hash written
+by Forge-Rust). Verification uses the cost the stored hash names, within
+bounds that cap what one stored hash can demand: only version 19; `m`, `t`
+and `p` in that order as canonical decimals; `m` from `8p` to 65,536 KiB, `t`
+from 1 to 10, `p` from 1 to 8; a salt of 8 to 64 bytes; a 32-byte key; no
+padding, other alphabet or extra parameter; at most 1,024 characters.
+Anything else is `ErrPasswordHashInvalid`, decided before any hashing.
+
+**Upgrading from PBKDF2.** Hashes written before ([ADR
+0048](adr/0048-argon2id-password-hashing.md)), `$pbkdf2-sha256$v=1$i=…`
+(PBKDF2-HMAC-SHA256, 100,000 to 5,000,000 iterations), still verify. When a
+sign-in succeeds with a hash that is not Argon2id with the current parameters
+(PBKDF2, or Argon2id with any other cost), `LoginService` hashes the password
+again and stores it through `PasswordStore.ReplacePasswordHash`, which
+replaces it only if the stored hash is still the one verified; if it changed
+concurrently, no session is issued. Nothing needs to be migrated by hand:
+each account moves to Argon2id at its next sign-in.
+
+**Bounded work.** Each hash holds about 19 MiB while it runs, so every hash and
+verification (unknown accounts included) runs through one process-wide
+`auth.PasswordWorkLimiter`, as Forge-Rust's `PasswordWorkLimiter`: one slot per
+CPU (`GOMAXPROCS`), at most `auth.MaxDefaultPasswordWork` (16), and an attempt
+that waits `auth.DefaultPasswordWorkWait` (2 s) for a slot fails with
+`auth.ErrPasswordHashingUnavailable`: `503 authentication_unavailable` with
+`Retry-After: 5` from the JSON handlers and `auth.Browser` (the generated
+pages answer it through `web.Error`). The slot is held by the hashing
+itself. Applications that need another bound build their own:
+
+```go
+limiter, err := auth.NewPasswordWorkLimiter(4, time.Second)
+hasher, err := auth.NewPasswordHasher(auth.WithPasswordWorkLimiter(limiter))
+login, err := auth.NewLoginService(repository, repository, auth.WithLoginPasswordHasher(hasher))
+recovery, err := auth.NewRecoveryService(repository, delivery, auth.WithRecoveryPasswordHasher(hasher))
+```
+
+`auth.Browser` checks step-up passwords with its login service's hasher.
+
+**FIPS 140.** Argon2id is not a FIPS-approved algorithm. Build the
+application with the `forge_pbkdf2` tag to write PBKDF2-HMAC-SHA256 (600,000
+iterations, the Go standard library's FIPS module) instead:
+
+```sh
+go build -tags forge_pbkdf2 -o bin/myapp ./cmd/myapp
+```
+
+Such a build still verifies Argon2id hashes, and rewrites them as PBKDF2 at
+the next sign-in. `auth.WithPasswordAlgorithm(auth.PasswordAlgorithmPBKDF2SHA256)`
+chooses PBKDF2 for one `PasswordHasher` only; the tag also covers `forge setup`
+and every service left on the default hasher.
+
+Forge never trims or normalizes passwords before hashing. Comparisons use
+constant-time equality (`crypto/subtle`).
 
 ## PostgreSQL identity schema
 
@@ -191,7 +244,8 @@ disabled organization/tenant, or inactive membership all produce the same
 public `credentials_invalid` result and the same work: the attempt is
 throttled, the credential store is queried (with random identifiers when the
 login or tenant is malformed, so malformed input is not cheaper than a miss)
-and PBKDF2 runs against a dummy hash.
+and the password is verified against a dummy hash with the current algorithm
+and cost (Argon2id, m=19456, t=2, p=1), through the same limiter.
 
 **Upgrading existing data.** An account stored before this rule with a
 non-ASCII `email_normalized` can no longer sign in or receive a reset (a

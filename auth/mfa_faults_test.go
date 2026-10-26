@@ -16,7 +16,7 @@ import (
 
 var errInjected = errors.New("injected store failure")
 
-// A password hash costs 600,000 PBKDF2 rounds; the fixtures share one.
+// A password hash costs one production Argon2id hash; the fixtures share one.
 var mfaTestPasswordHash = sync.OnceValues(func() (string, error) { return HashPassword(mfaTestPassword) })
 
 func cachedPasswordHash(t *testing.T) string {
@@ -941,25 +941,25 @@ func TestVerifySubjectPasswordFailsClosed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := newFaultMFA(t)
-	if _, ok, err := verifySubjectPassword(ctx, f.store, f.subject, ""); ok || err != nil {
+	if _, ok, err := verifySubjectPassword(ctx, DefaultPasswordHasher(), f.store, f.subject, ""); ok || err != nil {
 		t.Errorf("empty password: ok=%v err=%v", ok, err)
 	}
-	if _, ok, err := verifySubjectPassword(ctx, f.store, f.subject, strings.Repeat("x", maxPasswordBytes+1)); ok || err != nil {
+	if _, ok, err := verifySubjectPassword(ctx, DefaultPasswordHasher(), f.store, f.subject, strings.Repeat("x", maxPasswordBytes+1)); ok || err != nil {
 		t.Errorf("oversized password: ok=%v err=%v", ok, err)
 	}
 	f.store.fail["LookupSubjectPassword"] = errInjected
-	if _, _, err := verifySubjectPassword(ctx, f.store, f.subject, mfaTestPassword); !errors.Is(err, errInjected) {
+	if _, _, err := verifySubjectPassword(ctx, DefaultPasswordHasher(), f.store, f.subject, mfaTestPassword); !errors.Is(err, errInjected) {
 		t.Errorf("lookup failure: %v", err)
 	}
 	delete(f.store.fail, "LookupSubjectPassword")
-	if _, ok, err := verifySubjectPassword(ctx, f.store, uuid.MustNew(), mfaTestPassword); ok || err != nil {
+	if _, ok, err := verifySubjectPassword(ctx, DefaultPasswordHasher(), f.store, uuid.MustNew(), mfaTestPassword); ok || err != nil {
 		t.Errorf("unknown account: ok=%v err=%v", ok, err)
 	}
-	login, ok, err := verifySubjectPassword(ctx, f.store, f.subject, mfaTestPassword)
+	login, ok, err := verifySubjectPassword(ctx, DefaultPasswordHasher(), f.store, f.subject, mfaTestPassword)
 	if !ok || err != nil || login != "ada@example.com" {
 		t.Errorf("right password: login=%q ok=%v err=%v", login, ok, err)
 	}
-	if _, ok, err := verifySubjectPassword(ctx, f.store, f.subject, "wrong password"); ok || err != nil {
+	if _, ok, err := verifySubjectPassword(ctx, DefaultPasswordHasher(), f.store, f.subject, "wrong password"); ok || err != nil {
 		t.Errorf("wrong password: ok=%v err=%v", ok, err)
 	}
 }

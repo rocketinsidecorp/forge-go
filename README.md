@@ -416,6 +416,17 @@ forge generate authentication             # app/adapters/htmlauth, app/views/{se
 forge generate authentication --api-auth  # the same, and the wiring of the JSON authentication APIs
 ```
 
+Passwords are stored as Argon2id (`m=19456,t=2,p=1`, the same hashes
+Forge-Rust writes); PBKDF2 hashes from earlier releases are upgraded at the
+next sign-in, and at most one hash per CPU (16 at most) runs at once, beyond
+which sign-ins answer `503` with `Retry-After`. A FIPS 140 build writes
+PBKDF2-HMAC-SHA256 instead
+([docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#password-hashing)):
+
+```sh
+go build -tags forge_pbkdf2 -o bin/myapp ./cmd/myapp
+```
+
 MySQL, MariaDB and SQLite applications are refused: Forge persists identities
 only in PostgreSQL. They still get `db/seeds.go` and `forge seed`. See
 [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#server-rendered-sign-in-pages).

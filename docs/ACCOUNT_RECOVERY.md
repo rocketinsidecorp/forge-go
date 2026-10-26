@@ -147,8 +147,8 @@ app.Handle("POST /auth/reset-password", reset)
 ```
 
 Malformed, expired, unknown, consumed, or superseded tokens all return the same
-`400 recovery_invalid` response. Reset attempts are throttled before PBKDF2
-password hashing to bound CPU abuse, and a store that implements
+`400 recovery_invalid` response. Reset attempts are throttled before Argon2id
+password hashing to bound CPU and memory abuse, and a store that implements
 `auth.RecoveryTokenChecker` (`auth/postgres.Repository` does) is asked whether
 the token exists, is unused and has not expired before the new password is
 hashed, so a request with a made-up token costs one lookup, not a hash. A store

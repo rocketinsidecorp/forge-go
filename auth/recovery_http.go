@@ -92,6 +92,7 @@ func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
 			if errors.As(err, &throttled) {
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 			}
+			setPasswordWorkRetryAfter(w, err)
 			web.Error(w, r, err)
 			return
 		}
@@ -203,6 +204,7 @@ func newPasswordResetHandler(service *RecoveryService, auditor SecurityAuditor) 
 			if errors.As(err, &throttled) {
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 			}
+			setPasswordWorkRetryAfter(w, err)
 			if auditor != nil {
 				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
 					Kind:    SecurityPasswordReset,

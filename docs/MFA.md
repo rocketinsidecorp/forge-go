@@ -17,8 +17,8 @@ authenticator applications:
 - verification window of the current period plus one period before/after.
 
 SHA-1 here is the HMAC algorithm required for broad TOTP interoperability; it
-is not used for password hashing. Passwords continue to use the versioned
-PBKDF2-HMAC-SHA256 format documented in [AUTHENTICATION.md](AUTHENTICATION.md).
+is not used for password hashing. Passwords use the Argon2id format documented
+in [AUTHENTICATION.md](AUTHENTICATION.md#password-hashing).
 
 Every accepted TOTP counter is persisted. A code from the same or an older
 counter is rejected, preventing replay even when requests race.

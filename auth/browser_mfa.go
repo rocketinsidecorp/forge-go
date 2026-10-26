@@ -297,8 +297,9 @@ func (b *Browser) stepUp(w http.ResponseWriter, r *http.Request, action Security
 			return verifiedStepUp{}, ErrMFAAlreadyEnabled
 		}
 	}
-	login, ok, err := verifySubjectPassword(ctx, b.passwords, subject, proof.Password)
+	login, ok, err := verifySubjectPassword(ctx, b.login.hasher, b.passwords, subject, proof.Password)
 	if err != nil {
+		setPasswordWorkRetryAfter(w, err)
 		return verifiedStepUp{}, err
 	}
 	if !ok {

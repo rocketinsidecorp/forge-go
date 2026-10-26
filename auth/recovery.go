@@ -201,6 +201,7 @@ type RecoveryService struct {
 	auditor      SecurityAuditor
 	dispatcher   RecoveryDispatcher
 	logger       *slog.Logger
+	hasher       *PasswordHasher
 	now          func() time.Time
 	ttl          time.Duration
 	responseTime time.Duration
@@ -295,6 +296,18 @@ func WithRecoveryResponseTime(d time.Duration) RecoveryOption {
 	}
 }
 
+// WithRecoveryPasswordHasher sets the hasher that writes the new password;
+// the default is DefaultPasswordHasher.
+func WithRecoveryPasswordHasher(hasher *PasswordHasher) RecoveryOption {
+	return func(service *RecoveryService) error {
+		if hasher == nil {
+			return errors.New("password hasher is required")
+		}
+		service.hasher = hasher
+		return nil
+	}
+}
+
 // DefaultRecoveryThrottleConfig is the password-recovery policy: in one hour,
 // 3 requests per login and source, 10 per login (so a victim's mailbox cannot
 // be flooded from many sources) and 30 per source, with at most 20,000
@@ -324,6 +337,7 @@ func NewRecoveryService(store RecoveryStore, sender RecoverySender, options ...R
 		sender:       sender,
 		throttler:    throttler,
 		logger:       slog.Default(),
+		hasher:       DefaultPasswordHasher(),
 		now:          time.Now,
 		ttl:          defaultRecoveryTTL,
 		responseTime: DefaultRecoveryResponseTime,
@@ -492,7 +506,7 @@ func (s *RecoveryService) Reset(ctx context.Context, reset PasswordReset) error 
 			return errors.Join(ErrRecoveryInvalid, auditErr)
 		}
 	}
-	nextHash, err := HashPassword(reset.NewPassword)
+	nextHash, err := s.hasher.Hash(ctx, reset.NewPassword)
 	if err != nil {
 		if errors.Is(err, ErrPasswordRequired) || errors.Is(err, ErrPasswordTooLong) {
 			auditErr := s.recordPasswordResetEvent(ctx, SecurityOutcomeDenied, key, token.Digest(), false)

@@ -300,7 +300,7 @@ func deriveMFAStepUpThrottleKey(subjectID uuid.UUID, source string) LoginThrottl
 
 // verifySubjectPassword checks password against the stored credential of
 // subjectID. An unknown account still costs one password hash.
-func verifySubjectPassword(ctx context.Context, store SubjectPasswordStore, subjectID uuid.UUID, password string) (login string, ok bool, err error) {
+func verifySubjectPassword(ctx context.Context, hasher *PasswordHasher, store SubjectPasswordStore, subjectID uuid.UUID, password string) (login string, ok bool, err error) {
 	if password == "" || len(password) > maxPasswordBytes {
 		return "", false, nil
 	}
@@ -309,12 +309,12 @@ func verifySubjectPassword(ctx context.Context, store SubjectPasswordStore, subj
 		return "", false, err
 	}
 	if !found || credential.SubjectID != subjectID {
-		if _, _, err := VerifyPassword(dummyPasswordHash, password); err != nil {
+		if err := hasher.verifyDummy(ctx, password); err != nil {
 			return "", false, err
 		}
 		return "", false, nil
 	}
-	match, _, err := VerifyPassword(credential.PasswordHash, password)
+	match, _, err := hasher.Verify(ctx, credential.PasswordHash, password)
 	if err != nil || !match {
 		return "", false, err
 	}

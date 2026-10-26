@@ -2,7 +2,9 @@
 
 - **Status:** Accepted; amended by [ADR 0007](0007-postgresql-adapter-with-pgx.md);
   [ADR 0034](0034-dependency-free-telemetry.md) implements OpenTelemetry
-  protocols in the core without a dependency
+  protocols in the core without a dependency; amended by
+  [ADR 0048](0048-argon2id-password-hashing.md) (`golang.org/x/crypto/argon2`
+  for password hashing)
 - **Date:** 2026-09-26
 
 ## Context

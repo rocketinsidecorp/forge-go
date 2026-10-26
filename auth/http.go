@@ -63,6 +63,7 @@ func NewLoginHandler(service *LoginService) (http.Handler, error) {
 			case errors.Is(err, ErrCredentialsInvalid):
 				unauthorized(w, r, ErrCredentialsInvalid)
 			default:
+				setPasswordWorkRetryAfter(w, err)
 				web.Error(w, r, err)
 			}
 			return

@@ -60,6 +60,18 @@ var corePackages = []string{
 	modulePath + "/web",
 }
 
+// coreThirdPartyPackages are the only packages outside the standard library
+// and the core that the core may link, each admitted by its own ADR as ADR
+// 0006 requires. Packages, not modules: the rest of golang.org/x/crypto stays
+// out.
+var coreThirdPartyPackages = []string{
+	// ADR 0048: auth's Argon2id password hashing (golang.org/x/crypto,
+	// Go team, BSD-3-Clause) and what it imports.
+	"golang.org/x/crypto/argon2",
+	"golang.org/x/crypto/blake2b",
+	"golang.org/x/sys/cpu",
+}
+
 func TestCorePackagesDependOnlyOnStandardLibraryAndCore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs go list")
@@ -71,7 +83,7 @@ func TestCorePackagesDependOnlyOnStandardLibraryAndCore(t *testing.T) {
 			t.Fatalf("go list %s: %v\n%s", pkg, err, output)
 		}
 		for _, dep := range strings.Fields(string(output)) {
-			if !slices.Contains(corePackages, dep) {
+			if !slices.Contains(corePackages, dep) && !slices.Contains(coreThirdPartyPackages, dep) {
 				t.Errorf("core package %s depends on %s; core may import only the standard library and core packages", pkg, dep)
 			}
 		}

@@ -25,6 +25,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Batch claims, `LISTEN/NOTIFY` wake-up, one replica per scheduled tick | Solid Queue (`batch_size`, `polling_interval`, recurring tasks run once) | Done (`WorkerOptions.BatchSize`, `queuepostgres.WithNotify`, `DispatcherOptions.BatchSize`, `jobs.SchedulerOptions.Ticks` with `forge_job_schedules`, wired by `forge new`; [ADR 0047](adr/0047-batch-claims-notify-and-recorded-ticks.md)) | Partial (jobs claim up to the free slots, outbox `DispatcherSettings::batch` 50, ticks recorded once in a table; no wake-up; see Parity follow-ups) |
 | Mailer with previews | Action Mailer | Done | Done (`forge::mail`, password-reset emails, `/_mail` previews, `forge generate mailer`; Forge-Rust ADR 0035 and 0038) |
 | Rate limiting | `rate_limit` | Done | Done |
+| Argon2id password hashing, bounded concurrent hashing | (`has_secure_password` uses bcrypt) | Done (Argon2id `m=19456,t=2,p=1` with Forge-Rust's encoding, PBKDF2 hashes rehashed at sign-in, `auth.PasswordWorkLimiter`: one hash per CPU, at most 16, then `503` with `Retry-After`; `-tags forge_pbkdf2` for FIPS builds; [ADR 0048](adr/0048-argon2id-password-hashing.md)) | Done (Argon2id `m=19456,t=2,p=1`, `forge::auth::PasswordWorkLimiter`; no PBKDF2 verification, FIPS option or `Retry-After`, see Parity follow-ups) |
 | Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | Done (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Done (`FORGE_HTTP_TRUSTED_PROXIES`, Forge-Rust ADR 0032; `forge deploy` sets it for the proxied role, Forge-Rust ADR 0042) |
 | Cache | Solid Cache | Done | Done |
 | File storage with signed URLs | Active Storage | Done (disk) | Done (disk) |
@@ -51,6 +52,18 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Done (`docs/getting-started.md`) |
 
 ## Parity follow-ups
+
+- Argon2id password hashing (forge-go QG13, audit S-9 and P-7, [ADR
+  0048](adr/0048-argon2id-password-hashing.md)). Both frameworks write the same
+  `$argon2id$v=19$m=19456,t=2,p=1$…` hashes and verify each other's. Forge-Rust
+  still lacks: a bound on the cost a stored hash may name (its verifier takes
+  any `m`, `t`, `p` the `argon2` crate allows, and versions other than 19);
+  verification and sign-in rehash of Forge-Go's PBKDF2 hashes, for databases
+  that move between the frameworks; a PBKDF2 option for FIPS builds;
+  `Retry-After` on the `503 authentication_unavailable` of a saturated
+  `PasswordWorkLimiter`. Forge-Go rehashes a hash with a salt shorter than 16
+  bytes, Forge-Rust only on other parameters. To be tracked in a Forge-Rust
+  issue.
 
 - RLS, environment and lifecycle hardening (forge-go QG9, audit items #14,
   #15 and #20; tracked for Forge-Rust in

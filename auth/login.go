@@ -15,11 +15,6 @@ const (
 	defaultSessionTTL = 24 * time.Hour
 	minSessionTTL     = 5 * time.Minute
 	maxSessionTTL     = 30 * 24 * time.Hour
-
-	// A syntactically valid hash with an impossible all-zero derived key.
-	// Missing identities still execute PBKDF2 so account/tenant misses do not
-	// take a dramatically cheaper path than a wrong password.
-	dummyPasswordHash = "$pbkdf2-sha256$v=1$i=600000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" // #nosec G101 -- an all-zero derived key is a public timing-equalizer, not a credential
 )
 
 var tenantSlugPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}$`)
@@ -87,6 +82,7 @@ type LoginService struct {
 	throttler LoginThrottler
 	mfa       MFAChallengeIssuer
 	auditor   SecurityAuditor
+	hasher    *PasswordHasher
 	now       func() time.Time
 	ttl       time.Duration
 }
@@ -151,6 +147,19 @@ func WithSecurityAuditor(auditor SecurityAuditor) LoginOption {
 	}
 }
 
+// WithLoginPasswordHasher sets the hasher that verifies passwords, rehashes
+// outdated ones and does the equal work of unknown accounts; the default is
+// DefaultPasswordHasher. The step-up of auth.Browser uses it too.
+func WithLoginPasswordHasher(hasher *PasswordHasher) LoginOption {
+	return func(service *LoginService) error {
+		if hasher == nil {
+			return errors.New("password hasher is required")
+		}
+		service.hasher = hasher
+		return nil
+	}
+}
+
 // NewLoginService builds the password sign-in use case. Without
 // WithLoginThrottler it counts attempts in a MemoryLoginThrottler, per
 // process; with FORGE_ENV=production it then logs a warning through
@@ -168,6 +177,7 @@ func NewLoginService(passwords PasswordStore, sessions CredentialSessionCreator,
 		passwords: passwords,
 		sessions:  sessions,
 		throttler: throttler,
+		hasher:    DefaultPasswordHasher(),
 		now:       time.Now,
 		ttl:       defaultSessionTTL,
 	}
@@ -224,8 +234,9 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, err
 	}
 	if !found || !wellFormed {
-		_, _, verifyErr := VerifyPassword(dummyPasswordHash, input.Password)
-		if verifyErr != nil {
+		// A miss verifies against a hash of the current cost that nothing
+		// matches, so it costs what a known account costs.
+		if verifyErr := s.hasher.verifyDummy(ctx, input.Password); verifyErr != nil {
 			return LoginResult{}, verifyErr
 		}
 		auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, uuid.UUID{}, uuid.UUID{}, throttleKey)
@@ -237,7 +248,7 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, errors.New("password store returned an invalid identity")
 	}
 
-	match, needsRehash, err := VerifyPassword(identity.PasswordHash, input.Password)
+	match, needsRehash, err := s.hasher.Verify(ctx, identity.PasswordHash, input.Password)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -246,7 +257,9 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, errors.Join(ErrCredentialsInvalid, auditErr)
 	}
 	if needsRehash {
-		nextHash, err := HashPassword(input.Password)
+		// An older algorithm (PBKDF2) or older parameters: store the
+		// password in the current ones, only if the credential is unchanged.
+		nextHash, err := s.hasher.Hash(ctx, input.Password)
 		if err != nil {
 			return LoginResult{}, err
 		}
