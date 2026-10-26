@@ -102,6 +102,7 @@ type Scheduler struct {
 	duration   *telemetry.Histogram
 	started    bool
 	stopped    bool
+	drained    chan struct{} // closed when every job goroutine has returned; set by StopContext
 }
 
 type scheduledJob struct {
@@ -241,14 +242,46 @@ func (s *Scheduler) Start() {
 }
 
 // Stop cancels the scheduler context and waits for all in-flight jobs to
-// complete. It is safe to call more than once.
+// complete, however long that takes. It is safe to call more than once. Prefer
+// StopContext when a shutdown budget applies.
 func (s *Scheduler) Stop() error {
+	return s.StopContext(context.Background())
+}
+
+// StopContext stops scheduling, cancels the context every job receives and
+// waits for running jobs to return until ctx is done. It returns nil once all
+// jobs have returned and ctx.Err() when ctx ended first, in which case jobs
+// that ignore cancellation keep running; the scheduler starts nothing new and
+// owns no goroutine beyond those jobs and one that waits for them, which
+// returns when the last of them does. It is safe to call more than once and
+// concurrently, and a later call may wait again for the same jobs.
+func (s *Scheduler) StopContext(ctx context.Context) error {
 	s.mu.Lock()
 	s.stopped = true
 	s.cancel()
+	if s.drained == nil {
+		drained := make(chan struct{})
+		s.drained = drained
+		// No Add can follow: Start and Register refuse once stopped is set.
+		go func() {
+			s.wg.Wait()
+			close(drained)
+		}()
+	}
+	drained := s.drained
 	s.mu.Unlock()
-	s.wg.Wait()
-	return nil
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		// Finishing together with the deadline is not a timeout.
+		select {
+		case <-drained:
+			return nil
+		default:
+			return ctx.Err()
+		}
+	}
 }
 
 func (s *Scheduler) runJob(name string, sj scheduledJob) {
