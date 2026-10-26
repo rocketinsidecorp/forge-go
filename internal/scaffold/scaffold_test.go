@@ -36,7 +36,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 	port := string(match[1])
 	assertContains(t, dir, map[string][]string{
 		"Dockerfile": {
-			"FROM gcr.io/distroless/static-debian12:nonroot",
+			"FROM gcr.io/distroless/static-debian12:nonroot@sha256:",
 			"USER nonroot:nonroot",
 			"./cmd/billing-api",
 			"FORGE_ENV=production",

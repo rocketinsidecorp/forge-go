@@ -1309,7 +1309,15 @@ jq -r '.components[] | "\(.name) \(.version)"' dist/sbom/forge.cdx.json
 Applications from `forge new` keep an SBOM of their image as the `sbom`
 artifact of every CI run, and get an opt-in `.github/workflows/release.yml`
 (enable it with `gh variable set FORGE_RELEASE_IMAGES --body true`, then push
-a `v*` tag); their README shows how to verify the result.
+a `v*` tag); their README shows how to verify the result. Their `Dockerfile`
+pins both base images by digest, the same ones Forge builds with
+(`TestDockerfilesPinBaseImagesByDigest`), and Dependabot proposes new
+digests. To move to another Go release, replace the whole reference:
+
+```sh
+docker buildx imagetools inspect golang:1.27.4-alpine --format '{{ .Manifest.Digest }}'
+# then in Dockerfile: FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine@sha256:<that digest> AS build
+```
 
 ## Benchmarks
 

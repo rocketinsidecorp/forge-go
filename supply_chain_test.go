@@ -441,3 +441,62 @@ func TestGeneratedGitHubWalkGatesEveryFile(t *testing.T) {
 		t.Error("an unpinned, unlisted action in a new generated workflow was accepted")
 	}
 }
+
+// dockerfileImages returns the image of every FROM line of a Dockerfile,
+// without its --platform flag and stage name.
+func dockerfileImages(text string) []string {
+	var images []string
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.EqualFold(fields[0], "FROM") {
+			continue
+		}
+		fields = fields[1:]
+		for len(fields) > 0 && strings.HasPrefix(fields[0], "--") {
+			fields = fields[1:]
+		}
+		if len(fields) > 0 {
+			images = append(images, fields[0])
+		}
+	}
+	return images
+}
+
+// TestDockerfilesPinBaseImagesByDigest: a moved tag must not change what an
+// image is built from. Forge's own Dockerfiles and the one `forge new`
+// generates, for every database, pin each base image by digest, and the
+// generated one uses exactly the images Forge builds with, so one reviewed
+// update (Dependabot, docker) covers both.
+func TestDockerfilesPinBaseImagesByDigest(t *testing.T) {
+	t.Parallel()
+	framework := map[string]bool{}
+	for _, path := range []string{"Dockerfile", filepath.Join("cmd", "forge-proxy", "Dockerfile")} {
+		images := dockerfileImages(readText(t, path))
+		if len(images) == 0 {
+			t.Fatalf("%s has no FROM line", path)
+		}
+		for _, image := range images {
+			if !digestRef.MatchString(image) {
+				t.Errorf("%s: base image %q must be pinned by digest", path, image)
+			}
+			framework[image] = true
+		}
+	}
+	for _, database := range append([]string{""}, scaffold.Databases...) {
+		dir := filepath.Join(t.TempDir(), "shop")
+		if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: database}); err != nil {
+			t.Fatalf("%q: %v", database, err)
+		}
+		images := dockerfileImages(readText(t, filepath.Join(dir, "Dockerfile")))
+		if len(images) != 2 {
+			t.Fatalf("database %q: generated Dockerfile has images %v, want a build and a runtime stage", database, images)
+		}
+		for _, image := range images {
+			if !digestRef.MatchString(image) {
+				t.Errorf("database %q: generated base image %q must be pinned by digest", database, image)
+			} else if !framework[image] {
+				t.Errorf("database %q: generated base image %q is not one Forge's own Dockerfiles pin", database, image)
+			}
+		}
+	}
+}
