@@ -124,3 +124,13 @@ func TestStopContextWithNoRunningJobsSucceedsWithAnExpiredContext(t *testing.T) 
 		}
 	}
 }
+
+// A nil context is not a panic: it waits without a deadline.
+func TestStopContextTreatsANilContextAsBackground(t *testing.T) {
+	t.Parallel()
+	s := NewScheduler(SchedulerOptions{})
+	//nolint:staticcheck // SA1012: the nil context is the case under test.
+	if err := s.StopContext(nil); err != nil {
+		t.Fatalf("StopContext(nil) = %v, want nil", err)
+	}
+}

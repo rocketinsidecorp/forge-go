@@ -255,8 +255,11 @@ func (s *Scheduler) Stop() error {
 // that ignore cancellation keep running: the scheduler starts nothing new and
 // owns no goroutine beyond those jobs' own, which end when the jobs return. It
 // is safe to call more than once and concurrently, and a later call may wait
-// again for the same jobs.
+// again for the same jobs. A nil ctx waits without a deadline.
 func (s *Scheduler) StopContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.Lock()
 	s.stopped = true
 	s.cancel()
