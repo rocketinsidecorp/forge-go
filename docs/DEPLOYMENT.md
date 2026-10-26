@@ -352,14 +352,24 @@ forge deploy
 blocks; secrets come from `.forge/secrets` like every other secret, and a
 missing one stops the deploy before any remote command. The migrate
 container's environment is the global `env`, plus the env of `migrate.role`,
-plus `migrate.env`; where a name appears in more than one, `migrate.env`
-wins (including turning a clear value into a secret or back). That merged
-environment is written to its own file,
+plus `migrate.env`. A name in `migrate.env` may not also be in the global
+`env` or in any `servers.*.env`, clear or secret: that is a configuration
+error ("FORGE_MIGRATION_DATABASE_URL is in migrate.env and in env.secret:
+remove it from env.secret, so only the migrate step receives it"), because
+the containers of that block would receive it too. An explicit `env:` with no
+value (`null`, `~`) is an error like an empty block. The merged environment
+is written to its own file,
 `~/.forge/SERVICE/env/migrate.step.env` (mode `0600`, `umask 077`, atomic
 rename, content over stdin, as for the role files), on the first host of the
-migrate role only, used by the `migrate` container alone, and deleted when the
-step ends, whether it succeeded or failed. If the delete fails the deploy
-continues with a warning naming the file, and you remove it by hand. The
+migrate role only, used by the `migrate` container alone, and deleted, with
+its temporary `.tmp` copy, when the step ends: after success, a failed
+migration, a failed or interrupted upload, and a cancelled deploy. If the
+delete fails the deploy continues with a warning naming the file, and you
+remove it by hand. A deploy that is killed outright (`kill -9`, the machine
+losing power) cannot clean up, so the file stays until the next deploy that
+uses `migrate.env`; if you remove `migrate.env` from the configuration
+afterwards, delete `~/.forge/SERVICE/env/migrate.step.env` on the migrate host
+by hand, because deploys without `migrate.env` never touch it. The
 role env files, and so the serving containers, are written exactly as before.
 Without a `migrate.env` block nothing changes: the container gets the env
 file of `migrate.role`, which is the runtime role's, and the migration fails

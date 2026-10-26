@@ -187,7 +187,7 @@ migrate:
 ```sh
 # .forge/secrets: FORGE_MIGRATION_DATABASE_URL=$FORGE_MIGRATION_DATABASE_URL
 export FORGE_DATABASE_URL="$RUNTIME_DATABASE_URL" FORGE_MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL"
-forge deploy --dry-run     # values stay hidden; the migrate env file is written, used and removed
+forge deploy --dry-run     # prints the upload, run and rm commands for the migrate env file; values stay hidden, nothing runs
 forge deploy
 ```
 
@@ -859,7 +859,7 @@ migrate step alone (`migrate.env`, see
 
 ```sh
 $EDITOR config/deploy.yml .forge/secrets   # uncomment migrate.env and the FORGE_MIGRATION_DATABASE_URL line
-forge deploy --dry-run                     # the migrate container gets env/migrate.step.env; no value is printed
+forge deploy --dry-run                     # prints the migrate env upload, run and rm commands; no value is printed, nothing runs
 ```
 
 Release note: `retain: 1` in `config/deploy.yml` is now refused (`retain`
