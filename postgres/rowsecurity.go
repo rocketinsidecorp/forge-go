@@ -39,13 +39,21 @@ var ErrRowSecurityBypass = errors.New("the database role bypasses row-level secu
 //   - owns, or is a member of the owner of, a table of this database with
 //     row-level security enabled (an owner can ALTER TABLE ... NO FORCE ROW
 //     LEVEL SECURITY), or
-//   - holds TRUNCATE, REFERENCES or TRIGGER on such a table, itself, through
-//     PUBLIC or through a role it is a member of (none of the three is
-//     subject to row-level security: TRUNCATE empties every tenant's rows, a
-//     foreign key probes them and a trigger sees them; the usual cause is a
-//     GRANT ALL),
+//   - holds TRUNCATE, REFERENCES (on the table or on any of its columns) or
+//     TRIGGER on such a table, itself, through PUBLIC or through a role it
+//     is a member of (none of the three is subject to row-level security:
+//     TRUNCATE empties every tenant's rows, a foreign key probes them and a
+//     trigger sees them; the usual cause is a GRANT ALL), or
+//   - holds any privilege on a partition that has no row-level security of
+//     its own but belongs to a partitioned table with it (querying the
+//     partition directly skips the parent's policies).
 //
-// or when the two differ: a role setting (`options=-c role=...`, ALTER ROLE
+// Membership counts whatever its INHERIT and SET options: a role granted
+// WITH INHERIT FALSE, SET FALSE cannot use the other role's privileges, and
+// is refused all the same. That over-refusal is deliberate (it fails closed)
+// and has a simple fix: do not grant the serving role such memberships.
+//
+// It also fails when the two differ: a role setting (`options=-c role=...`, ALTER ROLE
 // ... SET role) makes the session act as another role, and `SET ROLE NONE`
 // returns it to the login role, so only the login role counts and it must be
 // the serving role itself. Tenant isolation through RLS policies is otherwise
@@ -96,7 +104,11 @@ func Lazy(lazy bool) Option {
 // TABLE; pg_has_role(u, u) is true, so direct ownership counts too); and
 // whether it, or a role it is a member of, holds TRUNCATE, REFERENCES or
 // TRIGGER on such a table (has_table_privilege counts PUBLIC and inherited
-// grants; the membership join adds roles it can only SET ROLE to). It runs with
+// grants; the membership join adds roles it can only SET ROLE to, and
+// has_any_column_privilege adds a column-level REFERENCES grant); and whether
+// it, or a role it is a member of, holds any privilege on a partition without
+// row-level security whose ancestors (pg_partition_ancestors) include a
+// table with it. It runs with
 // search_path pinned to pg_catalog (see refuseRowSecurityBypass), so the
 // operators (=, IN, <>) and catalog names resolve to PostgreSQL's own, never
 // to a function, operator or view a search_path setting would put first;
@@ -117,7 +129,17 @@ SELECT u.rolname, u.rolname = session_user, u.rolsuper, u.rolbypassrls, u.rolcre
        EXISTS (SELECT 1 FROM pg_catalog.pg_class c, pg_catalog.pg_roles r
                WHERE c.relrowsecurity
                  AND pg_catalog.pg_has_role(u.oid, r.oid, 'MEMBER')
-                 AND pg_catalog.has_table_privilege(r.oid, c.oid, 'TRUNCATE, REFERENCES, TRIGGER'))
+                 AND (pg_catalog.has_table_privilege(r.oid, c.oid, 'TRUNCATE, REFERENCES, TRIGGER')
+                      OR pg_catalog.has_any_column_privilege(r.oid, c.oid, 'REFERENCES'))),
+       EXISTS (SELECT 1 FROM pg_catalog.pg_class c, pg_catalog.pg_roles r
+               WHERE c.relispartition AND NOT c.relrowsecurity
+                 AND EXISTS (SELECT 1 FROM pg_catalog.pg_partition_ancestors(c.oid) a
+                             JOIN pg_catalog.pg_class p ON p.oid = a.relid
+                             WHERE p.relrowsecurity)
+                 AND pg_catalog.pg_has_role(u.oid, r.oid, 'MEMBER')
+                 AND (pg_catalog.has_table_privilege(r.oid, c.oid,
+                          'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+                      OR pg_catalog.has_any_column_privilege(r.oid, c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')))
 FROM pg_catalog.pg_roles u
 WHERE u.rolname IN (session_user, current_user)
 ORDER BY u.rolname = session_user DESC`
@@ -149,9 +171,9 @@ func refuseRowSecurityBypass(ctx context.Context, db txStarter) error {
 	refusal := ""
 	for rows.Next() {
 		var role string
-		var isLogin, superuser, bypass, createRole, replication, member, serverFiles, ownsRLS, unconfined bool
+		var isLogin, superuser, bypass, createRole, replication, member, serverFiles, ownsRLS, unconfined, partition bool
 		if err := rows.Scan(&role, &isLogin, &superuser, &bypass, &createRole, &replication,
-			&member, &serverFiles, &ownsRLS, &unconfined); err != nil {
+			&member, &serverFiles, &ownsRLS, &unconfined, &partition); err != nil {
 			return fmt.Errorf("check the database role's row-level security: %w", err)
 		}
 		if isLogin {
@@ -179,6 +201,10 @@ func refuseRowSecurityBypass(ctx context.Context, db txStarter) error {
 			reason = "holds TRUNCATE, REFERENCES or TRIGGER, which row-level security does not confine, " +
 				"on a table with row-level security, itself, through PUBLIC or through a role it belongs to " +
 				"(REVOKE TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public FROM each of them)"
+		case partition:
+			reason = "holds a privilege on a partition without row-level security of a table with row-level security, " +
+				"so querying the partition directly skips the parent's policies " +
+				"(ENABLE and FORCE ROW LEVEL SECURITY with the same policies on every partition, or revoke the privileges on it)"
 		}
 		if reason != "" && refusal == "" {
 			refusal = fmt.Sprintf("PostgreSQL role %q, which %s", role, reason)

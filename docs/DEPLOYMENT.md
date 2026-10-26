@@ -325,7 +325,8 @@ logs in as, or acts as, is a superuser, has `BYPASSRLS`, `CREATEROLE` or
 or of `pg_execute_server_program`, `pg_write_server_files` or
 `pg_read_server_files`, owns (or can `SET ROLE` to the owner of) a table
 with row-level security or holds `TRUNCATE`, `REFERENCES` or `TRIGGER` on
-one, and when the URL makes the
+one or any privilege on a partition of one that lacks its own, and when the
+URL makes the
 session act as another role than its login (`options=-c role=...`), with an
 error that wraps `postgres.ErrRowSecurityBypass`. [Database
 roles](DATABASE.md#database-roles-postgresql) has the SQL to provision both

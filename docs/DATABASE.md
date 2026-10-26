@@ -265,10 +265,17 @@ role (it could `SET ROLE` to it), is a member of `pg_execute_server_program`,
 `pg_write_server_files` or `pg_read_server_files` (paths to superuser or to
 the data files), or owns, or could `SET ROLE` to the owner of, a table with
 row-level security enabled (an owner can run `ALTER TABLE ... NO FORCE ROW
-LEVEL SECURITY`), or holds `TRUNCATE`, `REFERENCES` or `TRIGGER` on such a
-table, itself, through `PUBLIC` or through a role it belongs to (none of the
-three is subject to row-level security: `TRUNCATE` empties every tenant's
-rows; the usual cause is a `GRANT ALL`). It also fails when the two differ: a role setting
+LEVEL SECURITY`), holds `TRUNCATE`, `REFERENCES` (also on a single column)
+or `TRIGGER` on such a table, itself, through `PUBLIC` or through a role it
+belongs to (none of the three is subject to row-level security: `TRUNCATE`
+empties every tenant's rows; the usual cause is a `GRANT ALL`), or holds any
+privilege on a partition that lacks row-level security of its own under a
+partitioned table that has it (querying the partition directly skips the
+parent's policies: enable and force row-level security, with the same
+policies, on every partition). Membership counts whatever its `INHERIT` and
+`SET` options, so even a `WITH INHERIT FALSE, SET FALSE` grant, which cannot
+use the other role's privileges, is refused: a deliberate, fail-closed
+over-refusal. It also fails when the two differ: a role setting
 (`?options=-c%20role=...`, `ALTER ROLE ... SET role`) makes the session act
 as another role, and `SET ROLE NONE` turns it back into the login role, so
 the URL must log in as the serving role itself. The error wraps

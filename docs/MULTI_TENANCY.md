@@ -47,8 +47,10 @@ as or acts as is a superuser, has `BYPASSRLS`, `CREATEROLE` or `REPLICATION`,
 is a member of a superuser, `BYPASSRLS` or `REPLICATION` role or of
 `pg_execute_server_program`, `pg_write_server_files` or `pg_read_server_files`,
 or owns (or can `SET ROLE` to the owner of) a table with row-level security,
-or holds `TRUNCATE`, `REFERENCES` or `TRIGGER` on one (none of them is
-subject to row-level security; `TRUNCATE` empties every tenant's rows),
+or holds `TRUNCATE`, `REFERENCES` (also per column) or `TRIGGER` on one
+(none of them is subject to row-level security; `TRUNCATE` empties every
+tenant's rows), or can use a partition without row-level security of a
+partitioned table with it,
 or when the URL switches the session to another role. The only opt-out is
 `postgres.AllowRowSecurityBypass()`, passed in code to a pool that must use
 such a role on purpose and never serves tenants (see [Database

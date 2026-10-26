@@ -292,6 +292,10 @@ func TestRequireRowSecurityRefusesBypassingRolesOutsideDevelopmentAndTest(t *tes
 		exec("REVOKE " + privilege + " ON notes FROM " + db.RuntimeRole)
 		exec("GRANT SELECT, INSERT, UPDATE, DELETE ON notes TO " + db.RuntimeRole)
 	}
+	// A column-level REFERENCES grant probes the rows as well.
+	exec("GRANT REFERENCES (tenant_id) ON notes TO " + db.RuntimeRole)
+	refused("column REFERENCES on an RLS table", open(db.RuntimeConfig, config.Production), unconfined)
+	exec("REVOKE REFERENCES (tenant_id) ON notes FROM " + db.RuntimeRole)
 	exec("GRANT TRUNCATE ON notes TO PUBLIC")
 	refused("TRUNCATE through PUBLIC", open(db.RuntimeConfig, config.Production), unconfined)
 	exec("REVOKE TRUNCATE ON notes FROM PUBLIC")
@@ -318,6 +322,35 @@ func TestRequireRowSecurityRefusesBypassingRolesOutsideDevelopmentAndTest(t *tes
 		t.Errorf("ALL on a table without row-level security in production: %v", err)
 	}
 	exec("DROP TABLE plain_truncated")
+
+	// A partition without row-level security of a partitioned table with it:
+	// querying the partition directly skips the parent's policies, so any
+	// privilege on it is refused; with its own row-level security it is an
+	// ordinary RLS table.
+	const partition = "holds a privilege on a partition without row-level security"
+	exec(`CREATE TABLE events (tenant_id uuid NOT NULL, at timestamptz NOT NULL) PARTITION BY RANGE (at)`)
+	exec("ALTER TABLE events ENABLE ROW LEVEL SECURITY")
+	exec("ALTER TABLE events FORCE ROW LEVEL SECURITY")
+	exec(`CREATE POLICY events_tenant ON events USING (tenant_id::text = current_setting('forge.tenant_id', true))`)
+	exec(`CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')`)
+	exec("GRANT SELECT ON events TO " + db.RuntimeRole)
+	if err := open(db.RuntimeConfig, config.Production); err != nil {
+		t.Errorf("SELECT on the partitioned parent only: %v", err)
+	}
+	for _, grant := range []string{"SELECT", "INSERT", "DELETE", "SELECT (tenant_id)"} {
+		on := " ON events_2026 "
+		exec("GRANT " + grant + on + "TO " + db.RuntimeRole)
+		refused(grant+" on an unprotected partition", open(db.RuntimeConfig, config.Production), partition)
+		exec("REVOKE " + grant + on + "FROM " + db.RuntimeRole)
+	}
+	exec("GRANT SELECT ON events_2026 TO " + db.RuntimeRole)
+	exec("ALTER TABLE events_2026 ENABLE ROW LEVEL SECURITY")
+	exec("ALTER TABLE events_2026 FORCE ROW LEVEL SECURITY")
+	exec(`CREATE POLICY events_2026_tenant ON events_2026 USING (tenant_id::text = current_setting('forge.tenant_id', true))`)
+	if err := open(db.RuntimeConfig, config.Production); err != nil {
+		t.Errorf("SELECT on a partition with its own row-level security: %v", err)
+	}
+	exec("DROP TABLE events")
 
 	// Two unprivileged roles, but the session acts as another role than the
 	// one it logged in as: only a login as the serving role itself passes.
