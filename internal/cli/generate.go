@@ -44,7 +44,7 @@ func runGenerateAtTime(args []string, stdout io.Writer, root string, now time.Ti
 
 // runGenerateEnv is runGenerateAtTime with the process environment passed in,
 // for generators that read FORGE_DATABASE_URL. In an application that vendors
-// its dependencies (forge new --framework-path), what was generated may import
+// its dependencies (forge new --forge-path), what was generated may import
 // framework packages the vendor directory does not hold yet, so a successful
 // run is followed by go mod vendor.
 func runGenerateEnv(args []string, stdout io.Writer, root string, env []string, now time.Time) error {

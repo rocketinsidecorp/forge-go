@@ -668,7 +668,7 @@ response against the document. Details, type mapping and tags:
 
 | Command | Description |
 | ------- | ----------- |
-| `forge new NAME [--database DB] [--locale LOCALE] [--api-auth] [--module PATH] [--dir DIR] [--framework-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
+| `forge new NAME [--database DB] [--locale LOCALE] [--api-auth] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
 | `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
@@ -724,7 +724,7 @@ Flags for `forge new`:
   login and logout, MFA completion, JSON password recovery,
   `GET /v1/auth/session`) beside the HTML sign-in pages; PostgreSQL only.
   Without it the pages are the only way to sign in.
-- `--framework-path DIR` is for framework contributors: it adds a `replace`
+- `--forge-path DIR` is for framework contributors: it adds a `replace`
   directive pointing at a local checkout, then runs `go mod tidy` and
   `go mod vendor` so the Docker build context is self-contained. In such an
   application (any with a `vendor/` directory) every `forge generate ...` that
@@ -739,6 +739,9 @@ Flags for `forge new`:
   it too). A CLI built from a checkout (`go build`, or `go install` run in it)
   resolves `latest`, even when Go stamps a VCS pseudo-version, because that
   commit may not be published.
+- `--framework-path DIR` is the deprecated former name of `--forge-path`. It
+  still works for one more minor version and prints one deprecation line to
+  stderr; passing both flags with different directories is a usage error.
 
 `forge generate migration NAME` requires `NAME` to match
 `^[a-z][a-z0-9_]{0,99}$` and `db/migrations` to exist. If a migration with the
@@ -893,11 +896,27 @@ Server-Sent Events, with signed, tenant-scoped channel names, and PostgreSQL
 
 ```sh
 export FORGE_STREAMS_KEY=$(openssl rand -base64 32)     # required in staging and production
-# Rotating it without breaking open pages: the old key verifies for 24 hours (up to 3 keys, comma-separated)
-export FORGE_STREAMS_PREVIOUS_KEYS=$OLD_STREAMS_KEY
 forge generate scaffold post title:string body:text --tenant-scoped --broadcast
 forge migrate
 forge test                                              # includes an end-to-end event stream test on PostgreSQL
+```
+
+Rotating the key without breaking open pages takes two redeploys, with the old
+key kept for verification only (`FORGE_STREAMS_PREVIOUS_KEYS`, up to 3 keys,
+comma-separated; why two steps:
+[docs/VIEWS.md](docs/VIEWS.md#rotating-the-stream-signing-key)).
+```sh
+OLD_STREAMS_KEY="$FORGE_STREAMS_KEY"              # the key every replica uses now
+NEW_STREAMS_KEY="$(openssl rand -base64 32)"      # keep both somewhere safe
+# step 1: every replica learns the new key, but still signs with the old one
+export FORGE_STREAMS_KEY=$OLD_STREAMS_KEY
+export FORGE_STREAMS_PREVIOUS_KEYS=$NEW_STREAMS_KEY
+# redeploy every replica, then
+# step 2: sign with the new key; the old one keeps verifying pages already open
+export FORGE_STREAMS_KEY=$NEW_STREAMS_KEY
+export FORGE_STREAMS_PREVIOUS_KEYS=$OLD_STREAMS_KEY
+# redeploy every replica; after the token lifetime (24 hours by default)
+# unset FORGE_STREAMS_PREVIOUS_KEYS and redeploy
 ```
 
 Release note: the generated `htmlstreams.NewSigner` now takes the previous

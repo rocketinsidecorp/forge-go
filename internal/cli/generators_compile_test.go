@@ -47,7 +47,7 @@ func testGeneratedApp(t *testing.T, dir string, packages, wantPass, allowedSkips
 	}
 	golangciLint.Lock()
 	defer golangciLint.Unlock()
-	runGo(t, dir, lint, "run", "./app/...")
+	runGo(t, dir, lint, "run", "--allow-parallel-runners", "./app/...")
 }
 
 // TestGeneratedModelHasNoHTTPLayerAndPasses generates models (every field
@@ -100,7 +100,7 @@ func TestGeneratedModelFieldMatrix(t *testing.T) {
 	}
 	golangciLint.Lock()
 	defer golangciLint.Unlock()
-	runGo(t, dir, lint, "run", "./app/...")
+	runGo(t, dir, lint, "run", "--allow-parallel-runners", "./app/...")
 }
 
 // controllerWiredTest is added to the generated application after the printed

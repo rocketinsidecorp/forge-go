@@ -303,7 +303,7 @@ func TestGeneratedScaffoldBuildsWiresAndPasses(t *testing.T) {
 			}
 			golangciLint.Lock()
 			defer golangciLint.Unlock()
-			runGo(t, dir, lint, "run", "./app/...")
+			runGo(t, dir, lint, "run", "--allow-parallel-runners", "./app/...")
 		})
 	}
 }
@@ -326,7 +326,7 @@ func TestGeneratedScaffoldFieldMatrix(t *testing.T) {
 	}
 	golangciLint.Lock()
 	defer golangciLint.Unlock()
-	runGo(t, dir, lint, "run", "./app/domain/...", "./app/application/...", "./app/adapters/...", "./app/views/...")
+	runGo(t, dir, lint, "run", "--allow-parallel-runners", "./app/domain/...", "./app/application/...", "./app/adapters/...", "./app/views/...")
 }
 
 // TestGeneratedViewJoinsTheScaffoldLayout checks that `generate view`,

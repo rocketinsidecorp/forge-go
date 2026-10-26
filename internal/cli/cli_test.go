@@ -297,7 +297,7 @@ func TestRunNewRejectsInvalidInput(t *testing.T) {
 		{"new"},
 		{"new", "Bad_Name", "--skip-deps"},
 		{"new", "one", "two"},
-		{"new", "app", "--dir", filepath.Join(dir, "app"), "--framework-path", dir},
+		{"new", "app", "--dir", filepath.Join(dir, "app"), "--forge-path", dir},
 		{"new", "app2", "--skip-deps", "--database", "oracle"},
 		{"new", "app3", "--skip-deps", "--database", "mysql", "--skip-database"},
 	}
@@ -352,7 +352,7 @@ func TestGeneratedApplication(t *testing.T) {
 	generate := func(t *testing.T, name string, extra ...string) string {
 		t.Helper()
 		dir := filepath.Join(t.TempDir(), name)
-		args := append([]string{"new", name, "--module", "example.com/acme/" + name, "--dir", dir, "--framework-path", frameworkPath}, extra...)
+		args := append([]string{"new", name, "--module", "example.com/acme/" + name, "--dir", dir, "--forge-path", frameworkPath}, extra...)
 		var stdout, stderr bytes.Buffer
 		if code := Run(args, &stdout, &stderr); code != 0 {
 			t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())

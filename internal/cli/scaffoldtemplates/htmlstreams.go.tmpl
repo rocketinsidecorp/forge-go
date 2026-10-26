@@ -43,9 +43,10 @@ const PreviousKeysEnvironment = "FORGE_STREAMS_PREVIOUS_KEYS"
 // replica. previousKeys is a comma-separated list of at most
 // broadcast.MaxPreviousKeys older keys (FORGE_STREAMS_PREVIOUS_KEYS): they
 // still verify the stream names of pages that are open, never sign, so a key
-// can be rotated without breaking those pages. Move the old key there, set the
-// new one in FORGE_STREAMS_KEY, and remove the old one after 24 hours (the
-// token lifetime). Neither variable is ever echoed in an error. Production and
+// can be rotated without breaking those pages. Rotate in two redeploys (docs/VIEWS.md
+// in forge-go): first add the new key as a previous key while the old one still
+// signs, then swap them, and unset the previous key after the token lifetime
+// (24 hours by default). Neither variable is ever echoed in an error. Production and
 // staging refuse an empty key. In development and tests an empty key makes a
 // random one for this process, so streams work without setup but do not
 // survive a restart or reach another replica.
