@@ -632,8 +632,8 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0046](adr/0046-postgresql-runtime-and-migration-roles.md) | PostgreSQL runtime and migration roles; staging and production refuse a serving role that could bypass row-level security |
 
 ADR numbers 0027 and 0028 are unassigned: the rate limiting, cache and file
-storage ADRs were drafted as 0026-0028, found those numbers taken by other work
-and were renumbered 0031-0033. [ADR 0022](adr/0022-openapi-from-typed-routes.md)
+storage ADRs were drafted as 0026-0028, 0026 turned out to be taken by other
+work, and all three were renumbered 0031-0033 (0027 and 0028 were left empty). [ADR 0022](adr/0022-openapi-from-typed-routes.md)
 is superseded by [ADR 0043](adr/0043-openapi-from-typed-routes.md), which
 carries the decision forward. ADRs not listed above (0013-0016, 0029, 0030 and
 0035) exist in `docs/adr/` but are missing from this table.
