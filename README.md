@@ -885,6 +885,19 @@ Binaries built with `forge.Main` accept:
 | `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database); `rollback` reverts application migrations only |
 | `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |
 | `setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | Added by `authpostgres.SetupCommand()` (PostgreSQL): the first tenant and owner, once |
+| `jobs status`, `jobs dead [-queue Q] [-kind K] [-limit N]`, `jobs show ID`, `jobs retry ID`, `jobs discard ID`, `jobs prune [-older D]` | Added by `queuepostgres.Commands()` (`queuemysql`, `queuesqlite` for the other databases) once the persistent job queue is wired ([JOBS](docs/JOBS.md)): inspect and repair the queue; payloads are never printed |
+
+The `jobs` commands ship inside the production image, so operators need no
+extra tooling:
+
+```sh
+docker compose run --rm app jobs status                # jobs per queue and state
+docker compose run --rm app jobs dead                  # dead jobs; also -queue Q, -kind K, -limit N
+docker compose run --rm app jobs show JOB_ID           # one job's metadata
+docker compose run --rm app jobs retry JOB_ID          # move a dead job back to pending
+docker compose run --rm app jobs discard JOB_ID        # delete a dead job permanently
+docker compose run --rm app jobs prune -older 24h      # delete finished jobs
+```
 
 Exit status is `0` on success, `1` on failure (including invalid
 configuration), and `2` for an unknown command or invalid arguments.
