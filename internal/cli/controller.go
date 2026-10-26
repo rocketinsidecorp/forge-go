@@ -207,7 +207,7 @@ func planController(root string, request controllerRequest, env []string, now ti
 		return controllerSpec{}, nil, errors.New("environment files could not be loaded: check .env.development and .env.local syntax")
 	}
 	spec := controllerSpec{controllerRequest: request, Module: module}
-	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot)
+	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot) && !apiOnlyApplication(projectRoot)
 	spec.NoDatabase = adapter == "none"
 	if !request.API {
 		spec.ViewRenderer = hasViewRenderer(projectRoot)

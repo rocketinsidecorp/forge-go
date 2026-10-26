@@ -138,6 +138,13 @@ adds `/health`, `/health/live` and `/health/ready`. Errors are JSON too. There
 is no `app/views`, `app/assets`, `app/javascript` or `config/locales`, and
 `app/bootstrap` installs no CSRF, method-override, flash or locale middleware:
 authenticate API clients with a header (a bearer token), never a cookie.
+{{- if and .DB (eq .DB.Adapter "postgres")}}
+
+`migrate` still applies Forge's identity, audit and session tables
+(`authpostgres.Migrations()` in `cmd/{{.Name}}/main.go`), the schema of a
+full-stack application, so authentication can be added later without
+rewriting migrations. Nothing serves them, and there is no `setup` command.
+{{- end}}
 
 The generators that write pages refuse this application: `forge generate
 view`, `forge generate scaffold`, `forge generate authentication` and

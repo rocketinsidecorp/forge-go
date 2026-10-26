@@ -760,7 +760,10 @@ Flags for `forge new`:
   routes and the OpenAPI document stay, and there is no `app/views`,
   `app/assets`, `app/javascript`, `config/locales`, `app/adapters/htmlauth`,
   `setup` command or browser middleware (CSRF, method override, flash,
-  locale negotiation). The database flags are unchanged. `--api-auth` and
+  locale negotiation). On PostgreSQL `migrate` still applies Forge's
+  identity, audit and session schema (`authpostgres.Migrations()`), as
+  Forge-Rust's `--api` applications do, so authentication can be added
+  later without rewriting migrations. The database flags are unchanged. `--api-auth` and
   `--locale` cannot be combined with it (usage error, exit 2), as in
   Forge-Rust. In such an application `forge generate view`, `scaffold`,
   `authentication` and `controller` without `--api` refuse and write

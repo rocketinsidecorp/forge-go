@@ -232,8 +232,10 @@ forge generate view about                                     # refused
 
 The printed wiring goes into `Configure`, after the `routes(ctx, app)` call
 (`routes`, before its final `return nil`, without a database). An API-only
-application has no Forge identity, so the guard is the deny-all placeholder
-you replace with the authentication of your API clients. Forge-Go recognizes
+application has no Forge identity wiring (on PostgreSQL it has the identity,
+audit and session tables, but no sign-in or auth middleware), so the guard
+is the deny-all placeholder you replace with the authentication of your API
+clients, and no permission migration is generated. Forge-Go recognizes
 the application by the phrase `API-only application (forge new --api)` in the
 package comment of `app/bootstrap/bootstrap.go`; without it, `generate view`
 and `scaffold` add the views base as they do in any application that lacks

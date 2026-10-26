@@ -408,7 +408,7 @@ func TestGeneratedApplication(t *testing.T) {
 	} {
 		t.Run("api "+database.name, func(t *testing.T) {
 			t.Parallel()
-			database.config(t)
+			cfg := database.config(t)
 			dir := filepath.Join(t.TempDir(), "ledger")
 			var stdout, stderr bytes.Buffer
 			args := []string{"new", "ledger", "--api", "--module", "example.com/acme/ledger", "--dir", dir, "--forge-path", frameworkPath, "-d", database.name}
@@ -423,6 +423,31 @@ func TestGeneratedApplication(t *testing.T) {
 			}
 			generateAndWireResources(t, dir, database.adapter, false)
 			assertNoBrowserFiles(t, dir)
+			// The binary migrates: on PostgreSQL Forge's identity, audit and
+			// session schema comes first, as in Forge-Rust's --api
+			// applications (decision D15); there is no setup command.
+			writeFile(t, filepath.Join(dir, ".env.local"), "FORGE_DATABASE_URL="+cfg.URL.Reveal()+"\nFORGE_MIGRATION_DATABASE_URL="+cfg.URL.Reveal()+"\n")
+			env, err := environment(dir, os.Environ())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var migrated bytes.Buffer
+			if err := runApp(context.Background(), dir, "ledger", []string{"migrate"}, env, &migrated, &migrated); err != nil {
+				t.Fatalf("ledger migrate: %v\n%s", err, migrated.String())
+			}
+			want := []string{"_create_products", "_create_categories"}
+			if database.adapter == "postgres" {
+				want = append(want, "_identity", "_security_audit", "_session_idle_timeout")
+			}
+			for _, name := range want {
+				if !strings.Contains(migrated.String(), name) {
+					t.Fatalf("ledger migrate did not apply %s:\n%s", name, migrated.String())
+				}
+			}
+			var setup bytes.Buffer
+			if err := runApp(context.Background(), dir, "ledger", []string{"setup"}, env, &setup, &setup); err == nil || !strings.Contains(setup.String(), `unknown command "setup"`) {
+				t.Fatalf("an API-only application has a setup command: %v\n%s", err, setup.String())
+			}
 			command := exec.Command("go", "test", "-count=1", "-v", "./app/bootstrap")
 			command.Dir = dir
 			output, err := command.CombinedOutput()

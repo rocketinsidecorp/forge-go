@@ -5,6 +5,14 @@
 // {{.Name}} is an API-only application (forge new --api): JSON handlers
 // only, with no views, assets, translations or browser middleware (CSRF,
 // method override, flash). The generators that write pages refuse it.
+{{- if and .DB (eq .DB.Adapter "postgres")}}
+//
+// migrate applies Forge's identity, audit and session schema
+// (authpostgres.Migrations in cmd/{{.Name}}/main.go), as in a full-stack
+// application; nothing here serves it. When the application authenticates
+// its API clients, authpostgres.New(database) is the session and audit
+// store over those tables.
+{{- end}}
 {{- end}}
 package bootstrap
 

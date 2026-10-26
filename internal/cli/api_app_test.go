@@ -153,6 +153,13 @@ func TestGeneratorsInAnAPIOnlyApplication(t *testing.T) {
 				if err := runGenerateEnv(args, &output, dir, env, now); err != nil {
 					t.Fatalf("forge generate %v: %v\n%s", args, err, output.String())
 				}
+				// The identity schema exists on PostgreSQL (decision D15),
+				// but nothing wires identity: no identityRoutes, no auth
+				// middleware, no permission migration. (The mailer's wiring
+				// names identityRoutes only for full-stack applications.)
+				if args[0] != "mailer" && (strings.Contains(output.String(), "identityRoutes") || strings.Contains(output.String(), "_permissions.up.sql") || strings.Contains(output.String(), "auth.NewMiddleware")) {
+					t.Errorf("forge generate %v prints identity wiring an API-only application lacks:\n%s", args, output.String())
+				}
 				if strings.Contains(output.String(), "useBrowserPipeline") || strings.Contains(output.String(), "views.New") {
 					t.Errorf("forge generate %v prints browser wiring:\n%s", args, output.String())
 				}

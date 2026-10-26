@@ -441,6 +441,8 @@ func render(opts Options) (map[string][]byte, error) {
 	if data.DB = profileFor(opts.Database, data.DBUser, data.DBName); data.DB != nil {
 		// An API-only application has no sign-in pages, so no Forge
 		// identity wiring either (Forge-Rust's --api has no authentication).
+		// On PostgreSQL it still composes the identity, audit and session
+		// schema (main.go.tmpl), as Forge-Rust's --api applications do.
 		data.DB.Identity = hasIdentity(opts)
 		data.AppDatabaseURL, data.DevDatabaseURL, data.TestDatabaseURL = databaseURLs(data.DB, data.DBUser, data.DBName, data.DBHostPort)
 		data.AppMigrationURL, data.DevMigrationURL = migrationURLs(data.DB, data.DBName, data.DBHostPort)
