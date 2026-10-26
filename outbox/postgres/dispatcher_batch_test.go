@@ -183,17 +183,21 @@ func TestShutdownReleasesTheUnstartedRestOfABatch(t *testing.T) {
 
 // Events waiting behind a handler slower than the lease keep their leases:
 // another dispatcher cannot take them, and each is delivered once.
+//
+// Not parallel: renewals time out after Lease/3, so this timing test runs
+// apart from the package's parallel load.
 func TestWaitingEventsKeepTheirLeasesDuringASlowHandler(t *testing.T) {
-	t.Parallel()
 	db := postgrestest.NewMigrated(t, Migrations())
 	created := insertEvents(t, db, 3)
 	var calls atomic.Int32
+	started := make(chan struct{})
 	slow, err := NewDispatcher(db.Pool(), func(context.Context, events.Event) error {
 		if calls.Add(1) == 1 {
-			time.Sleep(time.Second)
+			close(started)
+			time.Sleep(4500 * time.Millisecond) // over two leases
 		}
 		return nil
-	}, DispatcherOptions{BatchSize: 3, Lease: 300 * time.Millisecond})
+	}, DispatcherOptions{BatchSize: 3, Lease: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +210,8 @@ func TestWaitingEventsKeepTheirLeasesDuringASlowHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for range 10 {
+	<-started // the slow dispatcher holds the batch
+	for range 35 {
 		time.Sleep(100 * time.Millisecond)
 		batch, _, err := other.claimBatch(context.Background(), 3)
 		if err != nil {
@@ -231,8 +236,9 @@ func TestWaitingEventsKeepTheirLeasesDuringASlowHandler(t *testing.T) {
 
 // An event of the batch that another dispatcher reclaimed before its turn is
 // skipped, not delivered twice, and the batch goes on.
+//
+// Not parallel, for the same reason as the test above.
 func TestAnEventReclaimedBeforeItsTurnIsSkipped(t *testing.T) {
-	t.Parallel()
 	db := postgrestest.NewMigrated(t, Migrations())
 	created := insertEvents(t, db, 3)
 	reclaimed := created[1].ID
@@ -246,10 +252,10 @@ func TestAnEventReclaimedBeforeItsTurnIsSkipped(t *testing.T) {
 			if _, err := db.Exec(ctx, `UPDATE forge_outbox_events SET lease_token = $2 WHERE id = $1`, reclaimed, uuid.MustNew()); err != nil {
 				t.Error(err)
 			}
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(2 * time.Second)
 		})
 		return nil
-	}, DispatcherOptions{BatchSize: 3, Lease: 300 * time.Millisecond})
+	}, DispatcherOptions{BatchSize: 3, Lease: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
