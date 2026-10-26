@@ -67,26 +67,29 @@ func expectQuiet(t *testing.T, changes <-chan Change, wait time.Duration) {
 
 func TestWatchDebouncesBurstsIntoOneBatch(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	write(t, root, "app/a.go", "package app\n")
-	write(t, root, "app/views/index.gohtml", "<p>1</p>\n")
-	changes := startWatch(t, root)
+	// A bubble: the writes of one burst land at the same fake instant, so a loaded runner cannot stretch them past the debounce and split the batch.
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "app/a.go", "package app\n")
+		write(t, root, "app/views/index.gohtml", "<p>1</p>\n")
+		changes := startWatch(t, root)
 
-	write(t, root, "app/a.go", "package app // 1\n")
-	write(t, root, "app/views/index.gohtml", "<p>22</p>\n")
-	write(t, root, "db/migrations/20260101000000_x.up.sql", "SELECT 1;\n")
+		write(t, root, "app/a.go", "package app // 1\n")
+		write(t, root, "app/views/index.gohtml", "<p>22</p>\n")
+		write(t, root, "db/migrations/20260101000000_x.up.sql", "SELECT 1;\n")
 
-	change := expectChange(t, changes)
-	if change.Count != 3 || change.EnvOnly {
-		t.Fatalf("change = %+v, want one batch of 3 files", change)
-	}
-	want := []string{"app/a.go", "app/views/index.gohtml", "db/migrations/20260101000000_x.up.sql"}
-	for i, name := range want {
-		if change.Paths[i] != name {
-			t.Fatalf("paths = %v, want %v", change.Paths, want)
+		change := expectChange(t, changes)
+		if change.Count != 3 || change.EnvOnly {
+			t.Fatalf("change = %+v, want one batch of 3 files", change)
 		}
-	}
-	expectQuiet(t, changes, 5*testDebounce)
+		want := []string{"app/a.go", "app/views/index.gohtml", "db/migrations/20260101000000_x.up.sql"}
+		for i, name := range want {
+			if change.Paths[i] != name {
+				t.Fatalf("paths = %v, want %v", change.Paths, want)
+			}
+		}
+		expectQuiet(t, changes, 5*testDebounce)
+	})
 }
 
 func TestWatchKeepsExtendingTheBatchWhileFilesKeepChanging(t *testing.T) {
@@ -143,27 +146,30 @@ func TestWatchIgnoresUnwatchedFilesAndDirectories(t *testing.T) {
 
 func TestWatchReportsEnvFilesAsRestartOnly(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	write(t, root, ".env.development", "A=1\n")
-	write(t, root, "main.go", "package main\n")
-	changes := startWatch(t, root)
+	// A bubble: the writes of one batch land at the same fake instant, so a loaded runner cannot stretch them past the debounce and split the batch.
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, ".env.development", "A=1\n")
+		write(t, root, "main.go", "package main\n")
+		changes := startWatch(t, root)
 
-	write(t, root, ".env.development", "A=22\n")
-	write(t, root, ".env.local", "B=1\n")
-	change := expectChange(t, changes)
-	if !change.EnvOnly || change.Count != 2 {
-		t.Fatalf("change = %+v, want env-only batch of 2", change)
-	}
+		write(t, root, ".env.development", "A=22\n")
+		write(t, root, ".env.local", "B=1\n")
+		change := expectChange(t, changes)
+		if !change.EnvOnly || change.Count != 2 {
+			t.Fatalf("change = %+v, want env-only batch of 2", change)
+		}
 
-	write(t, root, ".env.development", "A=333\n")
-	write(t, root, "main.go", "package main // changed\n")
-	if change := expectChange(t, changes); change.EnvOnly {
-		t.Fatalf("a source change in the batch must force a rebuild: %+v", change)
-	}
+		write(t, root, ".env.development", "A=333\n")
+		write(t, root, "main.go", "package main // changed\n")
+		if change := expectChange(t, changes); change.EnvOnly {
+			t.Fatalf("a source change in the batch must force a rebuild: %+v", change)
+		}
 
-	// Env files below the root are not the application's.
-	write(t, root, "sub/.env.local", "C=1\n")
-	expectQuiet(t, changes, 6*testDebounce)
+		// Env files below the root are not the application's.
+		write(t, root, "sub/.env.local", "C=1\n")
+		expectQuiet(t, changes, 6*testDebounce)
+	})
 }
 
 func TestWatchSeesDeletions(t *testing.T) {
