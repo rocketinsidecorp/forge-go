@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -159,5 +160,48 @@ func TestErrorDoesNotLogClientDisconnects(t *testing.T) {
 	web.Error(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx), failure)
 	if strings.Contains(logs.String(), `"level":"ERROR"`) {
 		t.Fatalf("client disconnect logged as an error: %s", logs.String())
+	}
+}
+
+type failingJSON struct{}
+
+func (failingJSON) MarshalJSON() ([]byte, error) { return nil, errors.New("boom: secret detail") }
+
+func TestJSONEncodingFailureSends500WithoutPartialBody(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	for name, value := range map[string]any{
+		"marshal error": failingJSON{},
+		"nan":           map[string]any{"ok": "x", "n": math.NaN()},
+		"channel":       make(chan int),
+	} {
+		logs.Reset()
+		recorder := httptest.NewRecorder()
+		web.JSON(recorder, http.StatusCreated, value)
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("%s: status=%d want 500", name, recorder.Code)
+		}
+		var body web.ErrorBody
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body.Error.Code != "internal_error" {
+			t.Fatalf("%s: body=%q err=%v", name, recorder.Body.String(), err)
+		}
+		if strings.Contains(recorder.Body.String(), "secret") || strings.Contains(recorder.Body.String(), `"ok"`) {
+			t.Fatalf("%s: partial or internal content leaked: %s", name, recorder.Body.String())
+		}
+		if !strings.Contains(logs.String(), "json response encoding failed") {
+			t.Fatalf("%s: encoding failure not logged: %s", name, logs.String())
+		}
+	}
+}
+
+func TestJSONSuccessKeepsStatusAndBody(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	web.JSON(recorder, http.StatusCreated, map[string]string{"a": "b"})
+	if recorder.Code != http.StatusCreated || recorder.Body.String() != "{\"a\":\"b\"}\n" || recorder.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("code=%d body=%q header=%v", recorder.Code, recorder.Body.String(), recorder.Header())
 	}
 }
