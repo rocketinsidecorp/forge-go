@@ -416,7 +416,7 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 		parts.Notes = append(parts.Notes, "This application has no Forge identity, so the guard is yours to write; the generator never opens the routes to the public (use --public to say that is what you want).")
 		if spec.Seam {
 			parts.Guard = seamDenyAllGuard
-			parts.Notes[len(parts.Notes)-1] = "This application has no Forge identity, so the routes are mounted closed: protect refuses every request until you write it (declare func protect in another file of package bootstrap). Generate the controller with --public to serve it without sign-in."
+			parts.Notes[len(parts.Notes)-1] = "This application has no Forge identity, so the routes are mounted closed: protect refuses every request until you write it (copy func protect from app/bootstrap/routes_gen.go into another file of package bootstrap, change it, and run a generator again). Generate the controller with --public to serve it without sign-in."
 		}
 		arguments += ", protect"
 	}
@@ -430,6 +430,9 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 		parts.Notes = append(parts.Notes, "The pages authenticate the session cookie: a signed-out browser is redirected to /session/new and back, while API clients get the 401 JSON error.")
 	}
 	parts.Usage = fmt.Sprintf("\tif err := %s.Register%sController(%s); err != nil {\n\t\treturn err\n\t}\n", adapterPackage, title, arguments)
+	if spec.Seam {
+		toSeam(&parts, spec.Identity)
+	}
 	var routes []string
 	for _, action := range newControllerView(spec).Actions {
 		routes = append(routes, action.Pattern)

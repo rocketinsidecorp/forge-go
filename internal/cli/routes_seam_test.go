@@ -5,7 +5,9 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -74,13 +76,14 @@ func TestScaffoldWiresItselfIntoTheSeamAndDestroyUnwiresIt(t *testing.T) {
 	if !strings.Contains(output, "wire  app/bootstrap/routes_gen.go") || strings.Contains(output, "Forge did not edit") {
 		t.Fatalf("the scaffold printed wiring to paste instead of wiring itself:\n%s", output)
 	}
-	if got, want := strings.Join(seamBlocks(t, dir), ","), "renderer renderer,guard protect,guard protectCookie,scaffold products"; got != want {
+	if got, want := strings.Join(seamBlocks(t, dir), ","), "renderer renderer,scaffold products,guard protect,guard protectCookie"; got != want {
 		t.Fatalf("seam blocks = %s, want %s", got, want)
 	}
 	seam := readFile(t, filepath.Join(dir, scaffold.RoutesFile))
 	for _, want := range []string{
-		"httpapi.RegisterProducts(app, productService, protect)",
-		"htmlui.RegisterProducts(app, productService, renderer, protectCookie)",
+		"httpapi.RegisterProducts(app, productService, protect(repository, middleware))",
+		"htmlui.RegisterProducts(app, productService, renderer, protectCookie(repository, middleware))",
+		"\nfunc protect(repository *authpostgres.Repository, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {",
 		"auth.RequireCSRF(guarded)", "middleware.AuthenticateCookie(checked)", `middleware.AuthenticateBrowser("/session/new", guarded)`,
 		"\"example.com/shop/app/adapters/htmlui\"",
 	} {
@@ -117,7 +120,7 @@ func TestScaffoldWiresItselfIntoTheSeamAndDestroyUnwiresIt(t *testing.T) {
 
 	// A global resource adds the platform guard its writes need.
 	seamGenerate(t, dir, "resource", "category", "name:string", "--global")
-	if got, want := strings.Join(seamBlocks(t, dir), ","), "renderer renderer,guard protect,guard protectPlatformWrite,guard protectCookie,scaffold products,resource categories"; got != want {
+	if got, want := strings.Join(seamBlocks(t, dir), ","), "renderer renderer,scaffold products,resource categories,guard protect,guard protectPlatformWrite,guard protectCookie"; got != want {
 		t.Fatalf("seam blocks = %s, want %s", got, want)
 	}
 
@@ -127,7 +130,7 @@ func TestScaffoldWiresItselfIntoTheSeamAndDestroyUnwiresIt(t *testing.T) {
 	if !strings.Contains(output, "unwire") || strings.Contains(output, "Forge does not edit") {
 		t.Fatalf("destroy did not unwire:\n%s", output)
 	}
-	if got, want := strings.Join(seamBlocks(t, dir), ","), "guard protect,guard protectPlatformWrite,resource categories"; got != want {
+	if got, want := strings.Join(seamBlocks(t, dir), ","), "resource categories,guard protect,guard protectPlatformWrite"; got != want {
 		t.Fatalf("after destroying the scaffold, seam blocks = %s, want %s", got, want)
 	}
 	seamDestroy(t, dir, "resource", "category", "name:string", "--global")
@@ -205,7 +208,7 @@ func TestSeamWithoutIdentityIsClosedUnlessPublic(t *testing.T) {
 	// A guard the application declares itself replaces the seam's.
 	writeFile(t, filepath.Join(dir, "app", "bootstrap", "guards.go"), "package bootstrap\n\nimport \"net/http\"\n\nfunc protect(_ string, next http.Handler) (http.Handler, error) { return next, nil }\n")
 	seamGenerate(t, dir, "controller", "pages", "home")
-	if blocks := strings.Join(seamBlocks(t, dir), ","); strings.Contains(blocks, "guard protect,") || !strings.Contains(blocks, "controller pages") {
+	if blocks := seamBlocks(t, dir); slices.Contains(blocks, "guard protect") || !slices.Contains(blocks, "controller pages") {
 		t.Fatalf("the application's own protect did not replace the seam's: %s", blocks)
 	}
 }
@@ -377,5 +380,162 @@ func TestSeamRefusesSymlinksAndOddFiles(t *testing.T) {
 	}
 	if err := writeRoutes(filepath.Join(dir, "missing"), nil); err == nil {
 		t.Fatal("writeRoutes outside an application succeeded")
+	}
+}
+
+// publicOverride is the guard an application owner declares, as the seam's
+// documentation says, to put authentication in front of --public routes.
+const publicOverride = `package bootstrap
+
+import "net/http"
+
+// public is the application's own guard: here it refuses everyone.
+func public(_ string, _ http.Handler) (http.Handler, error) {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "sign in first", http.StatusUnauthorized)
+	}), nil
+}
+`
+
+const publicOverrideTest = `package bootstrap
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
+)
+
+func TestTheApplicationsPublicGuardIsUsed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Database = sqlitetest.Config(t)
+	app, err := forge.New(forge.WithConfig(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Configure(context.Background(), app); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = app.Close(context.Background()) })
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/v1/products", nil),
+		httptest.NewRequest(http.MethodPost, "/v1/products", strings.NewReader(` + "`" + `{"name":"x"}` + "`" + `)),
+		httptest.NewRequest(http.MethodGet, "/products", nil),
+	} {
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		app.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s = %d, want the application's guard (401)", request.Method, request.URL.Path, recorder.Code)
+		}
+	}
+}
+`
+
+// TestAGuardOverrideIsNeverSilentlyIgnored is the regression test of a
+// fail-open: the seam declared its guards inside generatedRoutes, so an
+// application's own func public (as documented) compiled and was shadowed,
+// leaving the routes public. The seam's guards are package-level functions
+// now: the override breaks the build ("redeclared") until a generator runs
+// again, which then leaves the seam's out and mounts the routes behind the
+// application's guard.
+func TestAGuardOverrideIsNeverSilentlyIgnored(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the go toolchain on a generated project")
+	}
+	t.Parallel()
+	scaffoldArgs := []string{"product", "name:string", "--global", "--public"}
+	dir := matrixApplicationFor(t, "sqlite", "scaffold", [][]string{scaffoldArgs})
+	writeFile(t, filepath.Join(dir, "app", "bootstrap", "auth.go"), publicOverride)
+	vet := exec.Command("go", "vet", "./app/bootstrap")
+	vet.Dir = dir
+	vet.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off")
+	output, err := vet.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "public redeclared") {
+		t.Fatalf("the application's own public compiled next to the seam's, so one of them is silently ignored: %v\n%s", err, output)
+	}
+	// Any generator run (here the same command again) leaves the seam's
+	// guard out and uses the application's.
+	var out bytes.Buffer
+	if err := runGenerateEnv(append([]string{"scaffold"}, scaffoldArgs...), &out, dir, withoutDatabaseURL(), seamNow); err != nil || !strings.Contains(out.String(), "wire  app/bootstrap/routes_gen.go") {
+		t.Fatalf("generating again: %v\n%s", err, out.String())
+	}
+	if seam := readFile(t, filepath.Join(dir, scaffold.RoutesFile)); strings.Contains(seam, "func public(") {
+		t.Fatalf("the seam still declares public:\n%s", seam)
+	}
+	writeFile(t, filepath.Join(dir, "app", "bootstrap", "public_override_test.go"), publicOverrideTest)
+	runGo(t, dir, "go", "test", "-count=1", "-run", "TestTheApplicationsPublicGuardIsUsed", "./app/bootstrap")
+}
+
+// Generators running at the same time in one application never lose a
+// block: each either wires its routes, or is refused by the generate lock.
+func TestConcurrentGeneratorsNeverLoseABlock(t *testing.T) {
+	t.Parallel()
+	dir := seamApplication(t, "sqlite")
+	names := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot"}
+	errs := make([]error, len(names))
+	done := make(chan int)
+	for i, name := range names {
+		go func() {
+			var out bytes.Buffer
+			errs[i] = runGenerateEnv([]string{"resource", name, "title:string", "--global", "--public"}, &out, dir, withoutDatabaseURL(), seamNow.Add(time.Duration(i)*time.Minute))
+			done <- i
+		}()
+	}
+	for range names {
+		<-done
+	}
+	blocks := strings.Join(seamBlocks(t, dir), ",")
+	wired := 0
+	for i, name := range names {
+		switch {
+		case errs[i] == nil:
+			wired++
+			if !strings.Contains(blocks, "resource "+pluralize(name)) {
+				t.Errorf("%s reported success but its block is missing: %s", name, blocks)
+			}
+		case !errors.Is(errs[i], errGenerateLocked):
+			t.Errorf("%s: %v", name, errs[i])
+		}
+	}
+	if wired == 0 {
+		t.Fatal("no generator ran")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".forge")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the generate lock was left behind: %v", err)
+	}
+	// A lock left in place refuses, and writes nothing.
+	writeFile(t, filepath.Join(dir, ".forge", "generate.lock"), "")
+	before := fileTree(t, dir)
+	var out bytes.Buffer
+	if err := runGenerateEnv([]string{"resource", "golf", "title:string", "--global", "--public"}, &out, dir, withoutDatabaseURL(), seamNow); !errors.Is(err, errGenerateLocked) || !strings.Contains(err.Error(), ".forge/generate.lock") {
+		t.Fatalf("a held lock: %v", err)
+	}
+	if err := runDestroyEnv([]string{"resource", "alpha", "title:string", "--global"}, &out, dir, withoutDatabaseURL(), seamNow); !errors.Is(err, errGenerateLocked) {
+		t.Fatalf("destroy under a held lock: %v", err)
+	}
+	if !maps.Equal(fileTree(t, dir), before) {
+		t.Fatal("a refused generator changed the application")
+	}
+}
+
+// The --public warning says why the routes are open: no Forge identity, or,
+// in an API-only PostgreSQL application, no sign-in at all.
+func TestPublicWarningFitsTheApplication(t *testing.T) {
+	t.Parallel()
+	for database, want := range map[string]string{
+		"sqlite":     "whose sign-in pages and `forge setup` are PostgreSQL-only",
+		"postgresql": "this API-only application (forge new --api) signs nobody in",
+	} {
+		dir := seamApplication(t, database, "--api")
+		output := seamGenerate(t, dir, "resource", "post", "title:string", "--global", "--public")
+		if !strings.Contains(output, "WARNING: --public") || !strings.Contains(output, want) {
+			t.Errorf("%s:\n%s", database, output)
+		}
 	}
 }

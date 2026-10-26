@@ -209,9 +209,7 @@ forge dev
 
 Then open `http://localhost:8080/products`, or
 `curl -s http://localhost:8080/v1/products`. To put your own authentication in
-front, declare `func public(permission string, next http.Handler)
-(http.Handler, error)` (or `protect`, for routes generated without
-`--public`) in another file of `app/bootstrap`; the generators then use yours.
+front, copy the guard function (`public`, or `protect` for routes generated without `--public`) from `app/bootstrap/routes_gen.go` into another file of `app/bootstrap`, change it there, and run any `forge generate` command again (repeating the last one is enough): until then the build fails with `public redeclared`, never silently; afterwards the generators leave their own out and use yours.
 CI runs both sequences as written, with a real `forge` binary, and drives
 them over HTTP (`TestGeneratedApplication/readme_quickstart_*`).
 
@@ -1023,15 +1021,17 @@ forge generate authentication --api-auth   # paste the JSON authentication wirin
 The guard `protect` in `routes_gen.go` is written by the first generator that
 needs it and kept as it is, so adding `--api-auth` later does not change the
 routes already generated: once no route uses the cookie guard (destroy them),
-the next generator writes the bearer one, or declare your own `protect` in
-`app/bootstrap`.
+the next generator writes the bearer one, or replace `protect` with your own
+(copy it out of `routes_gen.go` into another file of `app/bootstrap`, then run
+a generator again).
 
 A global resource's
 write routes additionally stay behind a deny-all `protectPlatformWrite` you replace
 with operator-level authorization (tenant roles must not be able to change rows every
 tenant reads); on other databases the
-guard denies every request until you declare your own `protect` in
-`app/bootstrap` (or generate the routes with `--public`, which needs
+guard denies every request until you replace `protect` with your own (copy
+it out of `routes_gen.go` into another file of `app/bootstrap`, then run a
+generator again) (or generate the routes with `--public`, which needs
 `--global` and serves them to anyone). The generated integration tests need the test
 database (`FORGE_TEST_DATABASE_URL`, set by `.env.development`) and fail instead
 of skipping when `FORGE_TEST_REQUIRE_DATABASE=true`.

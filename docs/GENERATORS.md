@@ -55,6 +55,14 @@ column gets its type's zero value as default (`''`, `0`, false); a required
 warns: fill in both files before `forge migrate` or `forge test`, because the
 migrator refuses a migration with no statements. Fields with a name that
 infers no table are refused (for a new table use `forge generate model`).
+The table is everything after the first `_to_` (or `_from_`), so
+`add_x_to_y_to_z` adds to the table `y_to_z`; the columns come from the
+fields, never from the name. Running `remove_...` prints a data-loss warning.
+
+Generators and `forge destroy` take `.forge/generate.lock` while they run, so
+two of them in one application never interleave their edits of the routes
+seam; a second one is refused until the first finishes. The seam is written
+through a temporary file renamed over it.
 
 ## Model
 
@@ -148,7 +156,7 @@ the same way.
   `NAME:read` (a model, resource or scaffold whose plural is `NAME`), the
   controller reuses it and generates no migration; the output names
   the migration that owns it. Without identity the guard denies
-  every request until you declare your own `protect` in `app/bootstrap`.
+  every request until you replace `protect` with your own (below).
 - `--public` mounts the routes with no guard, prints a warning, and registers
   no permission. Use it for pages anyone may read.
 
@@ -361,10 +369,14 @@ whole and `go/format` it:
 - A `// forge:checksum` line records what the generator wrote. A file edited
   by hand is refused by every generator and by destroy, which then write
   nothing; move the change into `bootstrap.go` and restore the file.
-- To replace a guard, declare a package-level function of that name in
-  another file of `app/bootstrap`
-  (`func protect(permission string, next http.Handler) (http.Handler, error)`):
-  the generators then leave theirs out.
+- The guards (`protect`, `public`, `protectPlatformWrite`, `protectCookie`)
+  are package-level functions after `generatedRoutes`; with Forge identity
+  `protect` and `protectCookie` take the session store
+  (`protect(repository, middleware)`). To replace one, copy it into another
+  file of `app/bootstrap`, change it there, and run any `forge generate`
+  command again (repeating the last one is enough). Until then the build
+  fails with `protect redeclared`, so an override is never silently ignored;
+  afterwards the generators leave theirs out and use yours.
 - Without Forge identity (SQLite, MySQL, MariaDB, API-only applications) the
   guard refuses every request; `--public` (resources and scaffolds with
   `--global`, and controllers) uses a pass-through `public` guard instead and

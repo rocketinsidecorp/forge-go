@@ -38,7 +38,7 @@ func TestRoutesRoundTripAndChecksum(t *testing.T) {
 	t.Parallel()
 	app := scaffold.RoutesApp{Module: "example.com/shop", Adapter: "sqlite"}
 	blocks := []scaffold.RouteBlock{
-		{Kind: "guard", Name: "public", Body: "\tpublic := func(_ string, next http.Handler) (http.Handler, error) {\n\t\treturn next, nil\n\t}\n"},
+		{Kind: "guard", Name: "public", Body: "func public(_ string, next http.Handler) (http.Handler, error) {\n\treturn next, nil\n}\n"},
 		{Kind: "controller", Name: "pages", Body: "\tif err := htmlui.RegisterPagesController(app, nil, public); err != nil {\n\t\treturn err\n\t}\n"},
 	}
 	source, err := scaffold.RenderRoutes(app, blocks)
@@ -48,7 +48,7 @@ func TestRoutesRoundTripAndChecksum(t *testing.T) {
 	text := string(source)
 	for _, want := range []string{
 		"import (\n\t\"context\"\n\t\"net/http\"\n\n\t\"example.com/shop/app/adapters/htmlui\"\n\tforge \"github.com/rocketinsidecorp/forge-go\"\n\t\"github.com/rocketinsidecorp/forge-go/i18n\"\n\t\"github.com/rocketinsidecorp/forge-go/sqldb\"\n)",
-		"\t// forge:guard public\n", "\t// forge:controller pages\n", "// forge:checksum ",
+		"\n// forge:guard public\nfunc public(", "\t// forge:controller pages\n", "// forge:checksum ",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("rendered seam lacks %q:\n%s", want, text)
@@ -58,7 +58,8 @@ func TestRoutesRoundTripAndChecksum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed) != 2 || parsed[0] != blocks[0] || parsed[1] != blocks[1] || !parsed[0].Shared() || parsed[1].Shared() {
+	// Statements of generatedRoutes first, then the package-level guards.
+	if len(parsed) != 2 || parsed[0] != blocks[1] || parsed[1] != blocks[0] || !parsed[1].Shared() || !parsed[1].TopLevel() || parsed[0].Shared() || parsed[0].TopLevel() {
 		t.Fatalf("parsed %+v", parsed)
 	}
 	again, err := scaffold.RenderRoutes(app, parsed)
@@ -73,7 +74,7 @@ func TestRoutesRoundTripAndChecksum(t *testing.T) {
 		"a truncated file":     text[:sum+30],
 		"no function":          strings.Replace(text, "func generatedRoutes(", "func otherRoutes(", 1),
 		"no return":            strings.Replace(text, "\treturn nil\n}", "\treturn errors.New(\"x\")\n}", 1),
-		"text before a marker": strings.Replace(text, "\t// forge:guard public\n", "\tx := 1\n\t// forge:guard public\n", 1),
+		"text before a marker": strings.Replace(text, "\t// forge:controller pages\n", "\tx := 1\n\t// forge:controller pages\n", 1),
 	} {
 		if _, err := scaffold.ParseRoutes([]byte(edited)); !errors.Is(err, scaffold.ErrRoutesEdited) {
 			t.Errorf("%s: %v", name, err)

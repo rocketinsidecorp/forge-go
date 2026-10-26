@@ -75,10 +75,12 @@ Forge identity (sign-in pages, `forge setup`) is PostgreSQL-only, so in this
 application the generated routes are closed unless generated with
 `--public`, which serves them to anyone who can reach the server, without
 sign-in (forms still need their CSRF token). Use it for prototypes on your
-machine; to put your own authentication in front, declare
-`func public(permission string, next http.Handler) (http.Handler, error)` in
-another file of `app/bootstrap`. Without `--public` the routes answer `403`
-until you declare `protect` the same way.
+machine. To put your own authentication in front, copy the `public`
+function of `app/bootstrap/routes_gen.go` into another file of
+`app/bootstrap`, change it there, and run any `forge generate` command again
+(repeating the last one is enough): until then the build fails with `public
+redeclared`, afterwards the generators use yours. Without `--public` the
+routes answer `403` until you replace `protect` the same way.
 {{- end}}
 
 Generated routes live in `app/bootstrap/routes_gen.go`, which `forge generate

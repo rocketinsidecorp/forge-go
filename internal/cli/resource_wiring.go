@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -119,35 +120,170 @@ func denyAllGuard(permissions, tenantNote string) string {
 `, permissions, tenantNote)
 }
 
+// The guards of the routes seam are package-level functions, so that an
+// application declaring its own guard of the same name gets a compile error
+// ("redeclared") rather than a silently shadowed one, until a generator runs
+// again and leaves the seam's out (bootstrapDeclarations). Guards that need
+// the session store take it as arguments: protect(repository, middleware).
+
 // seamDenyAllGuard is denyAllGuard as the routes seam defines it, once for
 // every generated resource and controller of the application.
-const seamDenyAllGuard = `	// This application has no Forge identity, so protect refuses every
-	// request: authenticating callers and checking the permission each route
-	// asks for ("products:read", "products:write", ...) are yours to write.
-	// Declare func protect(permission string, next http.Handler)
-	// (http.Handler, error) in another file of package bootstrap and the
-	// generators use yours instead. Tenant-scoped routes also need the
-	// caller's tenant: attach it with tenancy.WithContext.
-	protect := func(_ string, _ http.Handler) (http.Handler, error) {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			web.Error(w, r, fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0))
-		}), nil
-	}
+const seamDenyAllGuard = `// protect refuses every request: this application has no Forge identity,
+// so authenticating callers and checking the permission each route asks for
+// ("products:read", "products:write", ...) are yours to write. Copy this
+// function into another file of package bootstrap, change it there, and run
+// a generator again: it then uses yours. Tenant-scoped routes also need the
+// caller's tenant: attach it with tenancy.WithContext.
+func protect(_ string, _ http.Handler) (http.Handler, error) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		web.Error(w, r, fault.New("permission_denied", "permission denied", fault.CategoryForbidden, 0))
+	}), nil
+}
 `
 
 // publicGuard is the guard of the routes generated with --public in an
 // application without Forge identity: it lets every request through.
-const publicGuard = `	// Generated with --public: these routes are served to anyone who can
-	// reach the server, with no sign-in and no permission check. Declare
-	// func public(permission string, next http.Handler) (http.Handler, error)
-	// in another file of package bootstrap to put authentication in front.
-	public := func(_ string, next http.Handler) (http.Handler, error) {
-		return next, nil
+const publicGuard = `// public lets every request through: the routes generated with --public are
+// served to anyone who can reach the server, with no sign-in and no
+// permission check. To put authentication in front, copy this function into
+// another file of package bootstrap, change it there, and run a generator
+// again: it then uses yours.
+func public(_ string, next http.Handler) (http.Handler, error) {
+	return next, nil
+}
+`
+
+// seamCookieJSONGuard is cookieJSONGuard as the seam declares it.
+const seamCookieJSONGuard = `// protect guards the JSON routes with the session cookie the sign-in page
+// sets (this application issues no bearer tokens: forge new --api-auth adds
+// them), the CSRF token in the X-CSRF-Token header of every change (the
+// csrf-token meta tag of a page, or the __Host-forge_csrf cookie), and the
+// permission.
+func protect(repository *authpostgres.Repository, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
+	return func(permission string, next http.Handler) (http.Handler, error) {
+		required, err := auth.NewPermission(permission)
+		if err != nil {
+			return nil, err
+		}
+		guarded, err := auth.RequireAudited(required, next, repository)
+		if err != nil {
+			return nil, err
+		}
+		checked, err := auth.RequireCSRF(guarded)
+		if err != nil {
+			return nil, err
+		}
+		return middleware.AuthenticateCookie(checked), nil
+	}
+}
+`
+
+// seamBearerJSONGuard is identityJSONGuard as the seam declares it.
+const seamBearerJSONGuard = `// protect guards the JSON routes with the bearer token of POST /auth/login
+// and the permission.
+func protect(repository *authpostgres.Repository, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
+	return func(permission string, next http.Handler) (http.Handler, error) {
+		required, err := auth.NewPermission(permission)
+		if err != nil {
+			return nil, err
+		}
+		guarded, err := auth.RequireAudited(required, next, repository)
+		if err != nil {
+			return nil, err
+		}
+		return middleware.Authenticate(guarded), nil
+	}
+}
+`
+
+// seamPagesGuard is identityPagesGuard as the seam declares it.
+const seamPagesGuard = `// protectCookie guards the HTML pages with the session cookie and the
+// permission. Signed-out browsers go to the sign-in page and come back; API
+// clients get the 401 JSON error.
+func protectCookie(repository *authpostgres.Repository, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
+	return func(permission string, next http.Handler) (http.Handler, error) {
+		required, err := auth.NewPermission(permission)
+		if err != nil {
+			return nil, err
+		}
+		guarded, err := auth.RequireAudited(required, next, repository)
+		if err != nil {
+			return nil, err
+		}
+		return middleware.AuthenticateBrowser("/session/new", guarded)
+	}
+}
+`
+
+// platformWriteGuard is the deny-all guard of writes to global rows in an
+// application with Forge identity.
+const platformWriteGuard = `	// Global rows are read by every tenant, but roles are per tenant: a tenant
+	// administrator could grant itself the write permission and change data
+	// that every other tenant sees. Writes therefore stay closed until you
+	// implement platform-level (operator) authorization here.
+	protectPlatformWrite := func(_ string, _ http.Handler) (http.Handler, error) {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			web.Error(w, r, auth.ErrPermissionDenied)
+		}), nil
 	}
 `
 
-// publicNote is the warning printed for --public routes.
-const publicNote = "WARNING: --public serves these routes to anyone who can reach the server, with no sign-in and no permission check (this application has no Forge identity, whose sign-in pages and `forge setup` are PostgreSQL-only). CSRF protection still applies to the forms."
+// seamPlatformWriteGuard is platformWriteGuard as the seam declares it.
+const seamPlatformWriteGuard = `// protectPlatformWrite refuses writes to global rows: they are read by every
+// tenant, but roles are per tenant, so a tenant administrator could grant
+// itself the write permission and change data every other tenant sees.
+// Copy this function into another file of package bootstrap to authorize
+// platform operators there, and run a generator again: it then uses yours.
+func protectPlatformWrite(_ string, _ http.Handler) (http.Handler, error) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		web.Error(w, r, auth.ErrPermissionDenied)
+	}), nil
+}
+`
+
+// seamGuards maps the printed guards to their seam declarations.
+var seamGuards = map[string]string{
+	cookieJSONGuard:    seamCookieJSONGuard,
+	identityJSONGuard:  seamBearerJSONGuard,
+	identityPagesGuard: seamPagesGuard,
+	platformWriteGuard: seamPlatformWriteGuard,
+}
+
+// seamIdentityGuardReference matches the references of the usage to the
+// guards that, in the seam, are functions taking the session store:
+// protect and protectCookie, as values or called with (permission, next).
+var seamIdentityGuardReference = regexp.MustCompile(`\b(protectCookie|protect)\b`)
+
+// seamIdentityGuardCalls makes the references call the seam's guard
+// functions with the session store.
+func seamIdentityGuardCalls(usage string) string {
+	return seamIdentityGuardReference.ReplaceAllString(usage, "${1}(repository, middleware)")
+}
+
+// toSeam turns printed wiring into the seam's: package-level guard
+// functions, and, with Forge identity, the usage calling them with the
+// session store.
+func toSeam(parts *resourceWiringParts, identity bool) {
+	for _, guard := range []*string{&parts.Guard, &parts.PlatformGuard, &parts.CookieGuard} {
+		if declared, ok := seamGuards[*guard]; ok {
+			*guard = declared
+		}
+	}
+	if identity {
+		parts.Usage = seamIdentityGuardCalls(parts.Usage)
+	}
+}
+
+// publicNote is the warning printed for --public routes. On PostgreSQL the
+// application is API-only (forge new --api): Forge identity exists there but
+// nothing signs callers in.
+func publicNote(database string) string {
+	why := "this application has no Forge identity, whose sign-in pages and `forge setup` are PostgreSQL-only"
+	if database == "postgres" {
+		why = "this API-only application (forge new --api) signs nobody in: it has no sign-in pages, `forge setup` or bearer login"
+	}
+	return "WARNING: --public serves these routes to anyone who can reach the server, with no sign-in and no permission check (" + why + "). CSRF protection still applies to the forms of full-stack applications."
+}
 
 // buildResourceWiring is what `forge generate resource` and `forge generate
 // scaffold` print: the JSON routes, and for a scaffold the HTML pages too.
@@ -155,6 +291,9 @@ func buildResourceWiring(spec resourceSpec) resourceWiringParts {
 	parts := buildResourceRoutesWiring(spec)
 	if spec.Scaffold {
 		addScaffoldWiring(spec, &parts)
+	}
+	if spec.Seam {
+		toSeam(&parts, spec.Identity)
 	}
 	return parts
 }
@@ -193,16 +332,7 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 			// Roles belong to tenants, so a tenant administrator can grant
 			// itself any permission. Writes to rows every tenant reads need
 			// authorization above the tenant.
-			parts.PlatformGuard = `	// Global rows are read by every tenant, but roles are per tenant: a tenant
-	// administrator could grant itself the write permission and change data
-	// that every other tenant sees. Writes therefore stay closed until you
-	// implement platform-level (operator) authorization here.
-	protectPlatformWrite := func(_ string, _ http.Handler) (http.Handler, error) {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			web.Error(w, r, auth.ErrPermissionDenied)
-		}), nil
-	}
-`
+			parts.PlatformGuard = platformWriteGuard
 			parts.Usage = fmt.Sprintf(`	%[1]sService, err := application.New%[2]sService(persistence.New%[2]sRepository(database), time.Now, uuid.New)
 	if err != nil {
 		return err
@@ -235,12 +365,12 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 	if spec.Seam {
 		parts.Guard = seamDenyAllGuard
 		parts.Notes = []string{
-			"This application has no Forge identity, so the routes are mounted closed: protect refuses every request until you write it (declare func protect in another file of package bootstrap). To serve them without sign-in instead, generate them with --public (global resources only).",
+			"This application has no Forge identity, so the routes are mounted closed: protect refuses every request until you write it (copy func protect from app/bootstrap/routes_gen.go into another file of package bootstrap, change it, and run a generator again). To serve them without sign-in instead, generate them with --public (global resources only).",
 		}
 		if spec.Public {
 			parts.Guard = publicGuard
 			parts.Usage = strings.Replace(parts.Usage, ", protect); err != nil {", ", public); err != nil {", 1)
-			parts.Notes = []string{publicNote}
+			parts.Notes = []string{publicNote(spec.Database)}
 		}
 	}
 	return parts

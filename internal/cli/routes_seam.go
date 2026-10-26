@@ -187,10 +187,11 @@ func planRoutes(projectRoot *os.Root, seam routesSeam, change routesChange) ([]b
 // resources) must be destroyed first, or the seam would not compile.
 func rejectDependents(removed scaffold.RouteBlock, remaining []scaffold.RouteBlock) error {
 	for _, match := range sharedDeclaration.FindAllStringSubmatch(removed.Body, -1) {
-		uses := regexp.MustCompile(`\b` + regexp.QuoteMeta(match[1]) + `\b`)
+		name := match[1] + match[2]
+		uses := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
 		for _, block := range remaining {
 			if uses.MatchString(block.Body) {
-				return fmt.Errorf("refusing to destroy: the %s block of %s uses %s, which the %s block declares; destroy %s first", block.ID(), filepath.ToSlash(scaffold.RoutesFile), match[1], removed.ID(), block.ID())
+				return fmt.Errorf("refusing to destroy: the %s block of %s uses %s, which the %s block declares; destroy %s first", block.ID(), filepath.ToSlash(scaffold.RoutesFile), name, removed.ID(), block.ID())
 			}
 		}
 	}
@@ -254,11 +255,74 @@ func writeRoutes(root string, content []byte) error {
 	if err := rejectExistingSymlinkPaths(projectRoot, []string{scaffold.RoutesFile}); err != nil {
 		return err
 	}
-	return projectRoot.WriteFile(scaffold.RoutesFile, content, 0o600)
+	return writeRootFileAtomic(projectRoot, scaffold.RoutesFile, content)
+}
+
+// writeRootFileAtomic replaces path with content through a temporary file in the
+// same directory, synced and renamed over it, so a crash or a full disk never
+// leaves a half-written seam.
+func writeRootFileAtomic(root *os.Root, path string, content []byte) error {
+	temporary := path + ".tmp"
+	file, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("write %s: %w (remove %s if no generator is running)", path, err, temporary)
+	}
+	_, writeErr := file.Write(content)
+	syncErr := file.Sync()
+	if err := errors.Join(writeErr, syncErr, file.Close()); err != nil {
+		return errors.Join(err, root.Remove(temporary))
+	}
+	if err := root.Rename(temporary, path); err != nil {
+		return errors.Join(err, root.Remove(temporary))
+	}
+	return nil
+}
+
+// generateLock is the file that keeps two generators (or destroys) from
+// running in one application at once: both would read the seam, each add
+// its block, and the second write would drop the first's.
+var generateLock = filepath.Join(".forge", "generate.lock")
+
+// errGenerateLocked refuses a generator while another one holds the lock.
+var errGenerateLocked = fmt.Errorf("another forge generate or forge destroy is running in this application (%s exists): wait for it to finish, or remove the file if none is running", filepath.ToSlash(generateLock))
+
+// withGenerateLock runs fn holding the application's generate lock, created
+// exclusively and removed afterwards (with the .forge directory, when this
+// call created it). A root that cannot be opened is left to fn to report.
+func withGenerateLock(root string, fn func() error) error {
+	projectRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return fn()
+	}
+	defer func() { _ = projectRoot.Close() }()
+	createdDirectory := false
+	if err := projectRoot.Mkdir(filepath.Dir(generateLock), 0o750); err == nil {
+		createdDirectory = true
+	} else if !errors.Is(err, fs.ErrExist) {
+		return fn() // not an application directory we can write: fn reports why
+	}
+	lock, err := projectRoot.OpenFile(generateLock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return errGenerateLocked
+	}
+	if err != nil {
+		if createdDirectory {
+			_ = projectRoot.Remove(filepath.Dir(generateLock))
+		}
+		return fn()
+	}
+	_ = lock.Close()
+	defer func() {
+		_ = projectRoot.Remove(generateLock)
+		if createdDirectory {
+			_ = projectRoot.Remove(filepath.Dir(generateLock))
+		}
+	}()
+	return fn()
 }
 
 // sharedDeclaration finds the variable a shared block declares.
-var sharedDeclaration = regexp.MustCompile(`(?m)^\t(\w+)(?:, err)? := `)
+var sharedDeclaration = regexp.MustCompile(`(?m)^(?:\t(\w+)(?:, err)? := |func (\w+)\()`)
 
 // sharedFromParts lists the shared blocks a generator's wiring defines, by
 // the ID of the variable each declares.
@@ -267,7 +331,7 @@ func sharedFromParts(parts resourceWiringParts) map[string]string {
 	for _, body := range []string{parts.Guard, parts.PlatformGuard, parts.CookieGuard, parts.StreamSigner, parts.StreamsRegister} {
 		for _, match := range sharedDeclaration.FindAllStringSubmatch(body, -1) {
 			for _, block := range sharedBlocks {
-				if block.Name == match[1] {
+				if block.Name == match[1]+match[2] {
 					shared[block.ID()] = body
 				}
 			}

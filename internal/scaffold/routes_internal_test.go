@@ -21,16 +21,19 @@ func TestParseRoutesRefusesAStructureItDidNotWrite(t *testing.T) {
 	t.Parallel()
 	head := "//\n" + checksumPrefix + checksumPlaceholder + "\n\npackage bootstrap\n\n"
 	for name, body := range map[string]string{
-		"no function":          "func other() error {\n\treturn nil\n}\n",
-		"text before a marker": "func generatedRoutes() error {\n\tx := 1\n\t// forge:guard x\n\treturn nil\n}\n",
-		"no return":            "func generatedRoutes() error {\n\t// forge:guard x\n\tpanic(1)\n}\n",
+		"no function":               "func other() error {\n\treturn nil\n}\n",
+		"text before a marker":      "func generatedRoutes() error {\n\tx := 1\n\t// forge:guard x\n\treturn nil\n}\n",
+		"no return":                 "func generatedRoutes() error {\n\t// forge:resource x\n\tpanic(1)\n}\n",
+		"no closing brace":          "func generatedRoutes() error {\n\treturn nil\n",
+		"text after":                "func generatedRoutes() error {\n\treturn nil\n}\n\nvar x = 1\n",
+		"a statement block outside": "func generatedRoutes() error {\n\treturn nil\n}\n\n// forge:resource x\nvar x = 1\n",
 	} {
 		if _, err := ParseRoutes(withChecksum(head + body)); !errors.Is(err, ErrRoutesEdited) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	blocks, err := ParseRoutes(withChecksum(head + "func generatedRoutes() error {\n\t// forge:guard x\n\tx := 1\n\treturn nil\n}\n"))
-	if err != nil || len(blocks) != 1 || blocks[0].Body != "\tx := 1\n" {
+	blocks, err := ParseRoutes(withChecksum(head + "func generatedRoutes() error {\n\t// forge:resource x\n\tx := 1\n\treturn nil\n}\n\n// forge:guard g\nfunc g() {}\n\n// forge:guard h\nfunc h() {}\n"))
+	if err != nil || len(blocks) != 3 || blocks[0].Body != "\tx := 1\n" || blocks[1].Body != "func g() {}\n" || blocks[2].ID() != "guard h" {
 		t.Fatalf("a valid seam: %+v %v", blocks, err)
 	}
 }

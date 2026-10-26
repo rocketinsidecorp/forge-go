@@ -64,6 +64,14 @@ type RouteBlock struct {
 	Body string
 }
 
+// TopLevel reports whether the block is a package-level declaration (a
+// guard function) rather than statements of RoutesFunction. Guards are
+// package-level so that an application declaring its own guard of the same
+// name in another file of package bootstrap gets a compile error
+// ("redeclared") instead of having it silently shadowed, until a generator
+// runs again and leaves the seam's out.
+func (b RouteBlock) TopLevel() bool { return b.Kind == "guard" }
+
 // ID is "KIND NAME", the text of the block's marker after "forge:".
 func (b RouteBlock) ID() string { return b.Kind + " " + b.Name }
 
@@ -80,7 +88,7 @@ func (b RouteBlock) Shared() bool {
 // ErrRoutesEdited reports a routes_gen.go whose checksum does not match its
 // content: someone edited it after a generator wrote it.
 var ErrRoutesEdited = errors.New("app/bootstrap/routes_gen.go was edited by hand since a generator last wrote it (its forge:checksum no longer matches), so nothing was written. " +
-	"Generators own that file: move your change into bootstrap.go (or, to replace a guard such as protect, declare a function of that name in another file of package bootstrap), then restore the file with `git checkout app/bootstrap/routes_gen.go` and run the command again")
+	"Generators own that file: move your change into bootstrap.go (or, to replace a guard such as protect, copy its function into another file of package bootstrap and run a generator again), then restore the file with `git checkout app/bootstrap/routes_gen.go` and run the command again")
 
 const (
 	checksumPrefix      = "// forge:checksum "
@@ -161,14 +169,18 @@ func RoutesCall(app RoutesApp) string {
 // RenderRoutes renders routes_gen.go with blocks, in the order given,
 // formatted and with its checksum.
 func RenderRoutes(app RoutesApp, blocks []RouteBlock) ([]byte, error) {
-	var body strings.Builder
+	var body, declarations strings.Builder
 	for _, block := range blocks {
 		if !markerLine.MatchString("\t// forge:" + block.ID()) {
 			return nil, fmt.Errorf("invalid routes block %q", block.ID())
 		}
+		if block.TopLevel() {
+			fmt.Fprintf(&declarations, "\n// forge:%s\n%s", block.ID(), block.Body)
+			continue
+		}
 		fmt.Fprintf(&body, "\t// forge:%s\n%s", block.ID(), block.Body)
 	}
-	code := fmt.Sprintf("func %s(%s) error {\n%s\treturn nil\n}\n", RoutesFunction, RoutesParameters(app), body.String())
+	code := fmt.Sprintf("func %s(%s) error {\n%s\treturn nil\n}\n%s", RoutesFunction, RoutesParameters(app), body.String(), declarations.String())
 	imports, err := routesImports(app, code)
 	if err != nil {
 		return nil, err
@@ -199,9 +211,11 @@ func RenderRoutes(app RoutesApp, blocks []RouteBlock) ([]byte, error) {
 const routesHeader = `// Routes the generators add. ` + "`forge generate scaffold`, `forge generate\n// resource` and `forge generate controller` write this file and `forge\n// destroy`" + ` takes their blocks back out; each block starts with a
 // "forge:" comment. Do not edit it: the generators refuse to change it once
 // its checksum no longer matches. Change bootstrap.go instead. To replace a
-// guard (protect, protectCookie, protectPlatformWrite, public), declare a
-// function of that name in another file of package bootstrap: the generators
-// then leave it out of this file.
+// guard function below (protect, protectCookie, protectPlatformWrite,
+// public), copy it into another file of package bootstrap and change it there:
+// the build then fails with "redeclared" until you run any forge generate
+// command again (the last one, repeated, is enough), which leaves the seam's
+// own out and uses yours.
 //
 `
 
@@ -313,9 +327,13 @@ func ParseRoutes(source []byte) ([]RouteBlock, error) {
 		return nil, ErrRoutesEdited
 	}
 	var blocks []RouteBlock
-	for _, line := range lines[opening+1:] {
+	for i, line := range lines[opening+1:] {
 		if line == "\treturn nil\n" {
-			return blocks, nil
+			rest := lines[opening+2+i:]
+			if len(rest) == 0 || rest[0] != "}\n" {
+				return nil, ErrRoutesEdited
+			}
+			return parseDeclarations(blocks, rest[1:])
 		}
 		if match := markerLine.FindStringSubmatch(strings.TrimSuffix(line, "\n")); match != nil {
 			blocks = append(blocks, RouteBlock{Kind: match[1], Name: match[2]})
@@ -327,6 +345,35 @@ func ParseRoutes(source []byte) ([]RouteBlock, error) {
 		blocks[len(blocks)-1].Body += line
 	}
 	return nil, ErrRoutesEdited
+}
+
+var declarationMarker = regexp.MustCompile(`^// forge:([a-z]+) ([A-Za-z_][A-Za-z0-9_]*)$`)
+
+// parseDeclarations reads the package-level blocks after RoutesFunction:
+// each a marker, its declaration, and a blank line before the next.
+func parseDeclarations(blocks []RouteBlock, lines []string) ([]RouteBlock, error) {
+	first := len(blocks)
+	for _, line := range lines {
+		if match := declarationMarker.FindStringSubmatch(strings.TrimSuffix(line, "\n")); match != nil {
+			block := RouteBlock{Kind: match[1], Name: match[2]}
+			if !block.TopLevel() {
+				return nil, ErrRoutesEdited
+			}
+			blocks = append(blocks, block)
+			continue
+		}
+		if len(blocks) == first {
+			if line != "\n" && line != "" {
+				return nil, ErrRoutesEdited
+			}
+			continue
+		}
+		blocks[len(blocks)-1].Body += line
+	}
+	for i := first; i < len(blocks); i++ {
+		blocks[i].Body = strings.TrimRight(blocks[i].Body, "\n") + "\n"
+	}
+	return blocks, nil
 }
 
 // routesFile renders the empty seam `forge new` generates.

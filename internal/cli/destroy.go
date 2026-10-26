@@ -44,11 +44,13 @@ func runDestroyEnv(args []string, stdout io.Writer, root string, env []string, n
 			rest = append(rest, arg)
 		}
 	}
-	plan, err := planDestroy(generator, rest, root, env, now)
-	if err != nil {
-		return err
-	}
-	return applyDestroy(stdout, root, plan, force, migrations)
+	return withGenerateLock(root, func() error {
+		plan, err := planDestroy(generator, rest, root, env, now)
+		if err != nil {
+			return err
+		}
+		return applyDestroy(stdout, root, plan, force, migrations)
+	})
 }
 
 // destroyPlan is what a generator would create, found where it is.
@@ -350,7 +352,7 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 			if err := rejectExistingSymlinkPaths(root, []string{scaffold.RoutesFile}); err != nil {
 				return err
 			}
-			if err := root.WriteFile(scaffold.RoutesFile, plan.routes, 0o600); err != nil {
+			if err := writeRootFileAtomic(root, scaffold.RoutesFile, plan.routes); err != nil {
 				return err
 			}
 		}

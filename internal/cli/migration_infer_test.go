@@ -61,7 +61,10 @@ func TestGenerateMigrationInfersAddAndRemoveColumns(t *testing.T) {
 			if !strings.Contains(up, want[database.adapter][0]) || !strings.Contains(down, want[database.adapter][1]) || strings.Contains(output, "WARNING") {
 				t.Errorf("add:\n%s\n%s\n%s", output, up, down)
 			}
-			_, up, down = generateMigrationFiles(t, root, "remove_sku_from_products", "sku:string")
+			removal, up, down := generateMigrationFiles(t, root, "remove_sku_from_products", "sku:string")
+			if !strings.Contains(removal, "WARNING: this migration drops sku from products: their data is lost") {
+				t.Errorf("remove printed no data-loss warning:\n%s", removal)
+			}
 			if !strings.Contains(up, want[database.adapter][1]) || !strings.Contains(down, strings.SplitN(want[database.adapter][0], "\n", 2)[0]) {
 				t.Errorf("remove:\n%s\n%s", up, down)
 			}

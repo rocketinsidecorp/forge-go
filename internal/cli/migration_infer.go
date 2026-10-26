@@ -97,6 +97,18 @@ func renderColumnMigration(database, name string, change columnChange) (up, down
 	return fmt.Sprintf("-- %s\n%s", name, adds.String()), fmt.Sprintf("-- Reverts %s.\n%s", name, drops.String()), nil
 }
 
+// removeColumnsWarning is printed after a remove_COLUMNS_from_TABLE
+// migration: running it destroys data that its down migration cannot bring
+// back.
+func removeColumnsWarning(change columnChange) string {
+	names := make([]string, 0, len(change.fields))
+	for _, field := range change.fields {
+		names = append(names, field.Name)
+	}
+	return fmt.Sprintf("\n  WARNING: this migration drops %s from %s: their data is lost when it runs, and rolling it back restores the columns (empty, or with their type's default), not the values. Back up the table first.\n",
+		strings.Join(names, ", "), change.table)
+}
+
 // blankMigrationWarning is printed after a migration with no statements.
 func blankMigrationWarning(up string) string {
 	return fmt.Sprintf("\n  WARNING: fill in %s and %s before forge migrate or forge test; an empty migration is refused.\n  (add_COLUMNS_to_TABLE and remove_COLUMNS_from_TABLE with field:type arguments write the statements.)\n",

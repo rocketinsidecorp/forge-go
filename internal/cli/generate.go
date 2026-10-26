@@ -48,7 +48,7 @@ func runGenerateAtTime(args []string, stdout io.Writer, root string, now time.Ti
 // framework packages the vendor directory does not hold yet, so a successful
 // run is followed by go mod vendor.
 func runGenerateEnv(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
-	if err := generateFiles(args, stdout, root, env, now); err != nil {
+	if err := withGenerateLock(root, func() error { return generateFiles(args, stdout, root, env, now) }); err != nil {
 		return err
 	}
 	return revendor(context.Background(), root, args, stdout, os.Stderr)
@@ -526,8 +526,11 @@ func runGenerateMigration(args []string, stdout io.Writer, root string, env []st
 	if err := reportFiles(stdout, flags["--dry-run"], files, ""); err != nil {
 		return err
 	}
-	if !inferred {
+	switch {
+	case !inferred:
 		_, err = io.WriteString(stdout, blankMigrationWarning(filepath.ToSlash(files[0].path)))
+	case change.remove:
+		_, err = io.WriteString(stdout, removeColumnsWarning(change))
 	}
 	return err
 }
