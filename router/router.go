@@ -93,7 +93,8 @@ func (r *Router) handle(pattern string, handler http.Handler, action Action) (er
 var frameworkPackage = strings.TrimSuffix(reflect.TypeOf(Router{}).PkgPath(), "/router")
 
 // registrationSource returns the file and line of the nearest caller outside
-// the framework, or "" when only the framework itself registered the route.
+// the framework and the standard library, or "" when only they registered the
+// route.
 func registrationSource() string {
 	var pcs [16]uintptr
 	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs[:])])
@@ -109,8 +110,14 @@ func registrationSource() string {
 }
 
 // frameworkFunction reports whether a fully qualified function name belongs
-// to the framework's own packages; examples and tests are application code.
+// to the framework's own packages or to the standard library and the runtime
+// (sync.Once, runtime.goexit, testing.tRunner): neither is the application
+// code that registered a route. Examples and tests of the framework are
+// application code.
 func frameworkFunction(function string) bool {
+	if standardLibraryFunction(function) {
+		return true
+	}
 	rest, ok := strings.CutPrefix(function, frameworkPackage)
 	if !ok || rest == "" || (rest[0] != '/' && rest[0] != '.') {
 		return false
@@ -122,6 +129,19 @@ func frameworkFunction(function string) bool {
 		return false
 	}
 	return true
+}
+
+// standardLibraryFunction reports whether function is in a package whose
+// import path has no dot in its first element, which Go reserves for the
+// standard library and the runtime. Package main is the application.
+func standardLibraryFunction(function string) bool {
+	first := function
+	if i := strings.IndexByte(first, '/'); i >= 0 {
+		first = first[:i]
+	} else if i := strings.IndexByte(first, '.'); i >= 0 {
+		first = first[:i]
+	}
+	return first != "main" && !strings.Contains(first, ".")
 }
 
 // Registrations returns every registered route with its resource action and
