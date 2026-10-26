@@ -60,6 +60,13 @@ func TestGeneratedJobsConfigureExampleCompiles(t *testing.T) {
 			if !strings.Contains(source, "app.OnShutdown(scheduler.StopContext)") {
 				t.Error("the shutdown hook does not use StopContext")
 			}
+			adapter := map[string]string{"postgresql": "postgres", "mysql": "mysql"}[database]
+			if !strings.Contains(source, "return JobsConfigure(app, "+adapter+".NewSchedulerLock(database))") || !strings.Contains(source, "\t\tLock: lock,\n") {
+				t.Error("the scheduler is not given the database's tick lock, so every replica would run every tick")
+			}
+			if main := readFile(t, filepath.Join(dir, "cmd", filepath.Base(dir), "main.go")); strings.Contains(main, "JobsConfigure") {
+				t.Error("main.go calls JobsConfigure besides Configure")
+			}
 			runGo(t, dir, "go", "vet", "./app/bootstrap/")
 
 			enabled := uncommentJobExample(t, source)

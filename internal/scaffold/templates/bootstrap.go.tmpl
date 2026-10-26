@@ -75,8 +75,15 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := routes(ctx, app, translator); err != nil {
 		return err
 	}
-{{- if and .DB .DB.Identity}}
-	return identityRoutes(ctx, app, database, translator)
+{{- if .DB.Identity}}
+	if err := identityRoutes(ctx, app, database, translator); err != nil {
+		return err
+	}
+{{- end}}
+{{- if .DB.Jobs}}
+	// Recurring jobs. The tick lock lives in the database, so with several
+	// replicas each tick of a job runs on one of them only.
+	return JobsConfigure(app, {{.DB.Adapter}}.NewSchedulerLock(database))
 {{- else}}
 	return nil
 {{- end}}
@@ -96,14 +103,20 @@ func Configure(_ context.Context, app *forge.App) error {
 {{ if and .DB .DB.Jobs}}
 // JobsConfigure starts the in-process scheduler for recurring jobs and stops
 // it, waiting for running jobs within the shutdown budget, when the application
-// shuts down. Register application jobs on the scheduler below.
-func JobsConfigure(app *forge.App) error {
+// shuts down. Register application jobs on the scheduler below. Configure
+// calls it with a lock in the database ({{.DB.Adapter}}.NewSchedulerLock), so
+// every replica runs the scheduler but each tick of a job runs on one replica:
+// the one that takes the tick's lock first. A tick a replica reaches more than
+// the lock window (5s) late, or whose lock it cannot check, is skipped and
+// reported through OnError.
+func JobsConfigure(app *forge.App, lock jobs.Lock) error {
 	options := jobs.SchedulerOptions{
 		MaxConcurrentJobs: 4,
 		Telemetry:         app.Telemetry(),
 		OnError: func(name string, err error) {
 			app.Logger().Error("scheduled job failed", "job", name, "error", err)
 		},
+		Lock: lock,
 	}
 	// NewScheduler would silently clamp a bad value: refuse it at startup.
 	if err := options.Validate(); err != nil {
@@ -119,7 +132,8 @@ func JobsConfigure(app *forge.App) error {
 	//	return err
 	// }
 	// A job that needs the database uses the handle Configure opened: pass it
-	// to the job's constructor and call database.InTx(ctx, func(tx ...) error).
+	// to JobsConfigure and on to the job's constructor, and call
+	// database.InTx(ctx, func(tx ...) error).
 	if err := app.OnShutdown(scheduler.StopContext); err != nil {
 		_ = scheduler.Stop()
 		return err
