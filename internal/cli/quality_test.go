@@ -123,35 +123,35 @@ func TestQualityCommandsNeedAnApplicationAndTakeNoArguments(t *testing.T) {
 }
 
 func TestFormatListsAndRewritesOnlyTheApplicationsGoFiles(t *testing.T) {
-	calls := toolsOnPath(t, map[string]string{"gofmt": `echo "$3"; exit 0`})
+	calls := toolsOnPath(t, map[string]string{"gofmt": `echo "$4"; exit 0`})
 	t.Chdir(qualityProject(t))
 	var stdout, stderr strings.Builder
 	if code := Run([]string{"format"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 	got := recorded(t, calls)
-	if len(got) != 1 || !strings.HasPrefix(got[0], "gofmt -l -w ") {
+	if len(got) != 1 || !strings.HasPrefix(got[0], "gofmt -l -w -- ") {
 		t.Fatalf("gofmt was run as %v", got)
 	}
-	files := strings.Fields(strings.TrimPrefix(got[0], "gofmt -l -w "))
+	files := strings.Fields(strings.TrimPrefix(got[0], "gofmt -l -w -- "))
 	want := []string{"app/app.go", "app/app_test.go", "cmd/shop/main.go", "main.go"}
 	if strings.Join(files, " ") != strings.Join(want, " ") {
 		t.Errorf("gofmt formatted %v, want %v (vendor, testdata, hidden, underscore and nested-module directories are skipped)", files, want)
 	}
-	// The fake lists its third argument, the first file, as rewritten.
+	// The fake lists its fourth argument, the first file after "--", as rewritten.
 	if strings.TrimSpace(stdout.String()) != "app/app.go" {
 		t.Errorf("rewritten files %q", stdout.String())
 	}
 }
 
 func TestFormatCheckListsFilesWritesNothingAndFails(t *testing.T) {
-	calls := toolsOnPath(t, map[string]string{"gofmt": `echo "$2"; exit 0`})
+	calls := toolsOnPath(t, map[string]string{"gofmt": `echo "$3"; exit 0`})
 	t.Chdir(qualityProject(t))
 	var stdout, stderr strings.Builder
 	if code := Run([]string{"format", "--check"}, &stdout, &stderr); code != 1 {
 		t.Fatalf("exit %d, want 1, stderr %q", code, stderr.String())
 	}
-	if got := recorded(t, calls); len(got) != 1 || !strings.HasPrefix(got[0], "gofmt -l app/") || strings.Contains(got[0], "-w") {
+	if got := recorded(t, calls); len(got) != 1 || !strings.HasPrefix(got[0], "gofmt -l -- app/") || strings.Contains(got[0], "-w") {
 		t.Errorf("--check must list without writing: %v", got)
 	}
 	if strings.TrimSpace(stdout.String()) != "app/app.go" || !strings.Contains(stderr.String(), "1 file(s) need formatting: run `forge format`") {
@@ -215,24 +215,32 @@ func TestFormatWithTheRealGofmt(t *testing.T) {
 	if err := os.WriteFile(messy, []byte("package app\nfunc  F( ) { }\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A file named like a flag is a file: gofmt is told where its options end.
+	dashed := filepath.Join(root, "-x.go")
+	if err := os.WriteFile(dashed, []byte("package main\nfunc  X( ) { }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	vendored := filepath.Join(root, "vendor", "dep", "dep.go")
 	if err := os.WriteFile(vendored, []byte("package dep\nfunc  G( ) { }\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(root)
 	var stdout, stderr strings.Builder
-	if code := Run([]string{"format", "--check"}, &stdout, &stderr); code != 1 || strings.TrimSpace(stdout.String()) != "app/app.go" {
+	if code := Run([]string{"format", "--check"}, &stdout, &stderr); code != 1 || strings.Join(strings.Fields(stdout.String()), " ") != "-x.go app/app.go" {
 		t.Fatalf("--check: exit %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
 	if data, _ := os.ReadFile(messy); !strings.Contains(string(data), "func  F") {
 		t.Fatalf("--check rewrote the file: %q", data)
 	}
 	stdout.Reset()
-	if code := Run([]string{"format"}, &stdout, &stderr); code != 0 || strings.TrimSpace(stdout.String()) != "app/app.go" {
+	if code := Run([]string{"format"}, &stdout, &stderr); code != 0 || strings.Join(strings.Fields(stdout.String()), " ") != "-x.go app/app.go" {
 		t.Fatalf("format: exit %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
 	if data, _ := os.ReadFile(messy); string(data) != "package app\n\nfunc F() {}\n" {
 		t.Errorf("formatted file %q", data)
+	}
+	if data, _ := os.ReadFile(dashed); string(data) != "package main\n\nfunc X() {}\n" {
+		t.Errorf("the file named -x.go was not formatted: %q", data)
 	}
 	if data, _ := os.ReadFile(vendored); !strings.Contains(string(data), "func  G") {
 		t.Errorf("vendored code was reformatted: %q", data)

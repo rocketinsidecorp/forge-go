@@ -88,6 +88,7 @@ func runFormat(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// "--" ends the flags: a file named -x.go is a file, not an option.
 	flags := []string{"-l", "-w"}
 	if check {
 		flags = []string{"-l"}
@@ -95,7 +96,7 @@ func runFormat(args []string, stdout, stderr io.Writer) error {
 	var changed []string
 	for batch := range slices.Chunk(files, gofmtBatch) {
 		var listed bytes.Buffer
-		command := exec.CommandContext(context.Background(), gofmt, append(slices.Clone(flags), batch...)...) // #nosec G204 -- the gofmt found on PATH, no shell, file paths found by forge itself
+		command := exec.CommandContext(context.Background(), gofmt, slices.Concat(flags, []string{"--"}, batch)...) // #nosec G204 -- the gofmt found on PATH, no shell, file paths found by forge itself
 		command.Stdout = &listed
 		command.Stderr = stderr
 		if err := command.Run(); err != nil {
