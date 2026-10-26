@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rocketinsidecorp/forge-go/config"
@@ -49,8 +50,11 @@ func RequireRowSecurity(environment config.Environment) Option {
 // roleEscapeQuery describes the login role (session_user) and the role in
 // effect (current_user), login role first: their own SUPERUSER, BYPASSRLS and
 // CREATEROLE attributes, and membership in a role with SUPERUSER or BYPASSRLS
-// (attributes are not inherited, but a member can SET ROLE). Catalog names
-// are qualified, so a search_path setting cannot substitute a pg_roles view.
+// (attributes are not inherited, but a member can SET ROLE). It runs with
+// search_path pinned to pg_catalog (see refuseRowSecurityBypass), so the
+// operators (=, IN, <>) and catalog names resolve to PostgreSQL's own, never
+// to a function, operator or view a search_path setting would put first;
+// the catalog names are also qualified, as defense in depth.
 const roleEscapeQuery = `
 SELECT u.rolname, u.rolname = session_user, u.rolsuper, u.rolbypassrls, u.rolcreaterole,
        EXISTS (SELECT 1 FROM pg_catalog.pg_roles r
@@ -60,8 +64,20 @@ FROM pg_catalog.pg_roles u
 WHERE u.rolname IN (session_user, current_user)
 ORDER BY u.rolname = session_user DESC`
 
+// refuseRowSecurityBypass runs roleEscapeQuery in a read-only transaction
+// whose search_path is pg_catalog alone; the connection's own search_path,
+// which the URL can set, is back after the rollback. Any failure, including
+// starting the transaction or pinning the path, refuses.
 func refuseRowSecurityBypass(ctx context.Context, pool *pgxpool.Pool) error {
-	rows, err := pool.Query(ctx, roleEscapeQuery)
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return fmt.Errorf("check the database role's row-level security: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, "SET LOCAL search_path = pg_catalog"); err != nil {
+		return fmt.Errorf("check the database role's row-level security: %w", err)
+	}
+	rows, err := tx.Query(ctx, roleEscapeQuery)
 	if err != nil {
 		return fmt.Errorf("check the database role's row-level security: %w", err)
 	}

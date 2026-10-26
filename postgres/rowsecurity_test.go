@@ -265,3 +265,44 @@ func TestRequireRowSecurityIgnoresAShadowingPgRolesView(t *testing.T) {
 		t.Fatalf("superuser behind a shadowing pg_roles view: err = %v, want it refused as a superuser", err)
 	}
 }
+
+// A user-defined = operator for name, earlier on a search_path setting, does
+// not make the superuser look like a harmless role: the check pins
+// search_path to pg_catalog, so its operators are PostgreSQL's own.
+func TestRequireRowSecurityIgnoresAShadowingOperator(t *testing.T) {
+	admin, cfg := postgrestest.NewWithConfig(t)
+	ctx := context.Background()
+	var superuser bool
+	if err := admin.QueryRow(ctx, "SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user").Scan(&superuser); err != nil {
+		t.Fatal(err)
+	}
+	if !superuser {
+		t.Skip("the test server's user is not a superuser")
+	}
+	// The harmless role every comparison would match. Roles are cluster-wide.
+	harmless := "forge_test_harmless_" + strings.ReplaceAll(uuid.MustNew().String(), "-", "")
+	t.Cleanup(func() {
+		_, _ = admin.Exec(context.Background(), "DROP ROLE IF EXISTS "+pgx.Identifier{harmless}.Sanitize())
+	})
+	for _, statement := range []string{
+		"CREATE ROLE " + pgx.Identifier{harmless}.Sanitize() + " NOLOGIN",
+		"CREATE FUNCTION public.fake_eq(name, name) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$ SELECT $1::text = '" + harmless + "' $$",
+		"CREATE OPERATOR public.= (LEFTARG = name, RIGHTARG = name, FUNCTION = public.fake_eq)",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, cfg := range map[string]config.Database{
+		"default search_path":            cfg,
+		"search_path=public, pg_catalog": withSetting(t, cfg, "search_path=public,pg_catalog"),
+	} {
+		pool, err := postgres.Open(ctx, cfg, postgres.RequireRowSecurity(config.Production))
+		if err == nil {
+			pool.Close()
+		}
+		if !errors.Is(err, postgres.ErrRowSecurityBypass) || !strings.Contains(err.Error(), "is a superuser") {
+			t.Errorf("%s: err = %v, want the superuser refused", name, err)
+		}
+	}
+}
