@@ -524,6 +524,9 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 	if !request.Model {
 		spec.seam = openRoutesSeam(projectRoot, module, adapter, spec.Identity)
 		spec.Seam = spec.seam.wired
+		if request.Public && !spec.Seam {
+			return resourceSpec{}, nil, errors.New("--public needs the routes seam (app/bootstrap/routes_gen.go, called from bootstrap.go), which this application predates: paste the printed wiring and write the guard yourself")
+		}
 	}
 
 	rendered, err := renderResource(spec)

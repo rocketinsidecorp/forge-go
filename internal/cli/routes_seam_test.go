@@ -195,6 +195,13 @@ func TestSeamWithoutIdentityIsClosedUnlessPublic(t *testing.T) {
 			t.Errorf("forge generate %v: %v", args, err)
 		}
 	}
+	// An application without the seam cannot take --public: its printed
+	// wiring would still be the deny-all guard.
+	legacy := resourceProject(t, "sqlite:storage/development.db")
+	var legacyOut bytes.Buffer
+	if err := runGenerateEnv([]string{"resource", "post", "title:string", "--global", "--public"}, &legacyOut, legacy, nil, seamNow); err == nil || !strings.Contains(err.Error(), "--public needs the routes seam") {
+		t.Errorf("--public without the seam: %v", err)
+	}
 	// A guard the application declares itself replaces the seam's.
 	writeFile(t, filepath.Join(dir, "app", "bootstrap", "guards.go"), "package bootstrap\n\nimport \"net/http\"\n\nfunc protect(_ string, next http.Handler) (http.Handler, error) { return next, nil }\n")
 	seamGenerate(t, dir, "controller", "pages", "home")
