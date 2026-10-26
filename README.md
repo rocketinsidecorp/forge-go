@@ -630,6 +630,7 @@ response against the document. Details, type mapping and tags:
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes` | Read-only table of the routes found in the source (including `Resources` routes) and Forge's health routes |
 | `forge openapi [--output FILE \| --check FILE]` | Build the application and run its `openapi` command with the development environment: print or write the OpenAPI 3.1 document of the described routes, list undescribed ones on stderr; `--check` exits 1 when FILE is out of date. See [OpenAPI](#openapi) |
+| `forge help COMMAND`, `forge COMMAND --help` (or `-h`) | Print one command's usage, flags, examples and notes, and exit 0; for example `forge help new` or `forge generate --help` |
 | `forge help --json` | Emit the versioned command catalog with per-command flags, examples, environment inputs, exit codes and side effects |
 | `forge uuid [--count N]` | Print N UUIDv7 values (1-1000) |
 | `forge version` | Print CLI version, commit, and build date |
@@ -656,7 +657,10 @@ Flags for `forge new`:
   directive pointing at a local checkout, then runs `go mod tidy` and
   `go mod vendor` so the Docker build context is self-contained. Without it,
   `forge new` runs `go get github.com/rocketinsidecorp/forge-go@<cli version or
-  latest>` followed by `go mod tidy`.
+  latest>` followed by `go mod tidy`. The CLI version is the release stamped at
+  build time or, for a CLI installed with `go install ...@VERSION`, the module
+  (pseudo-)version recorded in its build info; a build of a working tree
+  (`(devel)`) resolves `latest`.
 
 `forge generate migration NAME` requires `NAME` to match
 `^[a-z][a-z0-9_]{0,99}$` and `db/migrations` to exist. If a migration with the
