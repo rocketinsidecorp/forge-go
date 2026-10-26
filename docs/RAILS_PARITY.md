@@ -57,6 +57,18 @@ the work is finished and waiting for its review; **Planned** means not started.
   three in its next pull request that touches `/mfa`, tracked in
   [forge-rust#36](https://github.com/rocketinsidecorp/forge-rust/issues/36).
 
+- Stream signing key rotation (forge-go QG4b, forge-rust#14): Forge-Go's
+  generated `htmlstreams.NewSigner` now also reads `FORGE_STREAMS_PREVIOUS_KEYS`
+  (comma-separated base64 keys, at most `broadcast.MaxPreviousKeys` = 3, never
+  echoed in an error), the name Forge-Rust's parity doc already proposes, so
+  rotating `FORGE_STREAMS_KEY` no longer breaks open pages. Forge-Rust's
+  `Signer::new(key, previous)` already verifies previous keys, but its
+  generated applications read `FORGE_STREAMS_KEY` only: it adds the variable
+  with the same name, separator, limit and redaction (tracked in
+  [forge-rust#14](https://github.com/rocketinsidecorp/forge-rust/issues/14)).
+  Until then the Rust rotation procedure is in its
+  [deployment](https://github.com/rocketinsidecorp/forge-rust/blob/main/docs/deployment.md#rotating-the-stream-signing-key).
+
 - Benchmarks: [BENCHMARKS.md](BENCHMARKS.md) defines the scenario names, the
   variants and the output format of both suites; Forge-Rust adopts them in
   its own benchmark pull request (tracked in

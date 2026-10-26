@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/broadcast"
@@ -32,16 +33,32 @@ const Path = "/streams"
 // key from.
 const KeyEnvironment = "FORGE_STREAMS_KEY"
 
+// PreviousKeysEnvironment names the environment variable bootstrap reads the
+// previous signing keys from while FORGE_STREAMS_KEY is rotated: up to
+// broadcast.MaxPreviousKeys base64 keys, separated by commas.
+const PreviousKeysEnvironment = "FORGE_STREAMS_PREVIOUS_KEYS"
+
 // NewSigner builds the signer for channel names. key is the base64 encoding
 // of at least 32 random bytes (`openssl rand -base64 32`), the same on every
-// replica; rotate it by adding the old one to PreviousKeys of a
-// broadcast.SignerOptions. Production and staging refuse an empty key. In
-// development and tests an empty key makes a random one for this process, so
-// streams work without setup but do not survive a restart or reach another
-// replica.
-func NewSigner(environment config.Environment, key string, logger interface{ Warn(string, ...any) }) (*broadcast.Signer, error) {
+// replica. previousKeys is a comma-separated list of at most
+// broadcast.MaxPreviousKeys older keys (FORGE_STREAMS_PREVIOUS_KEYS): they
+// still verify the stream names of pages that are open, never sign, so a key
+// can be rotated without breaking those pages. Move the old key there, set the
+// new one in FORGE_STREAMS_KEY, and remove the old one after 24 hours (the
+// token lifetime). Neither variable is ever echoed in an error. Production and
+// staging refuse an empty key. In development and tests an empty key makes a
+// random one for this process, so streams work without setup but do not
+// survive a restart or reach another replica.
+func NewSigner(environment config.Environment, key, previousKeys string, logger interface{ Warn(string, ...any) }) (*broadcast.Signer, error) {
+	previous, err := broadcast.DecodePreviousKeys(previousKeys)
+	if err != nil {
+		return nil, errors.New(PreviousKeysEnvironment + " is not valid: " + strings.TrimPrefix(err.Error(), "broadcast: "))
+	}
 	if key != "" {
-		return broadcast.NewSignerFromBase64(key, broadcast.SignerOptions{})
+		return broadcast.NewSignerFromBase64(key, broadcast.SignerOptions{PreviousKeys: previous})
+	}
+	if previous != nil {
+		return nil, errors.New(PreviousKeysEnvironment + " needs " + KeyEnvironment + ": the previous keys only verify, the current key signs")
 	}
 	if environment == config.Production || environment == config.Staging {
 		return nil, errors.New(KeyEnvironment + " is required: set it to `openssl rand -base64 32` so every replica signs stream names alike")

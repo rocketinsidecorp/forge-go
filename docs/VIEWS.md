@@ -807,6 +807,23 @@ request. The printed wiring defines the signer and mounts `/streams` behind
 them. Set `FORGE_STREAMS_KEY` (`openssl rand -base64 32`) in staging and
 production; development falls back to a random per-process key.
 
+### Rotating the stream signing key
+
+Changing `FORGE_STREAMS_KEY` alone invalidates the stream name of every page
+that is already open: its next reconnect gets `403 stream_invalid` and stops
+updating until the page is reloaded. To rotate without that, move the old key
+to `FORGE_STREAMS_PREVIOUS_KEYS` (comma-separated, at most 3, same format).
+Previous keys only verify, never sign:
+
+```sh
+export FORGE_STREAMS_PREVIOUS_KEYS=$OLD_STREAMS_KEY      # the key being retired
+export FORGE_STREAMS_KEY=$(openssl rand -base64 32)      # the new key, on every replica
+# redeploy every replica; after 24 hours (the token lifetime) unset FORGE_STREAMS_PREVIOUS_KEYS
+```
+
+The generated `htmlstreams.NewSigner` reads both variables
+(`broadcast.DecodePreviousKeys` parses the list); neither value is ever echoed in an error.
+
 Rows are prepended, so a person on page two of the list sees new rows at the
 top of that page; reload to page.
 

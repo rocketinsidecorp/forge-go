@@ -118,6 +118,41 @@ func DecodeKey(key string) ([]byte, error) {
 	return nil, errors.New("broadcast: the signing key is not valid base64")
 }
 
+// MaxPreviousKeys is how many previous keys DecodePreviousKeys accepts: a
+// rotation needs the old key for one token lifetime, so more than a few means
+// retired keys were left in place.
+const MaxPreviousKeys = 3
+
+// DecodePreviousKeys decodes a comma-separated list of base64 keys, the
+// format of a generated application's FORGE_STREAMS_PREVIOUS_KEYS, for
+// SignerOptions.PreviousKeys. An empty list is no keys. At most
+// MaxPreviousKeys are accepted and an empty entry is refused. Errors name the
+// entry's position, never its content.
+func DecodePreviousKeys(list string) ([][]byte, error) {
+	if strings.TrimSpace(list) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(list, ",")
+	if len(entries) > MaxPreviousKeys {
+		return nil, fmt.Errorf("broadcast: at most %d previous signing keys are accepted, got %d", MaxPreviousKeys, len(entries))
+	}
+	keys := make([][]byte, 0, len(entries))
+	for i, entry := range entries {
+		if strings.TrimSpace(entry) == "" {
+			return nil, fmt.Errorf("broadcast: previous signing key %d is empty", i+1)
+		}
+		key, err := DecodeKey(entry)
+		if err != nil {
+			return nil, fmt.Errorf("broadcast: previous signing key %d is not valid base64", i+1)
+		}
+		if len(key) < MinKeyBytes {
+			return nil, fmt.Errorf("broadcast: previous signing key %d must be at least %d bytes", i+1, MinKeyBytes)
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
 type claims struct {
 	Tenant  string `json:"t,omitempty"`
 	Name    string `json:"n"`

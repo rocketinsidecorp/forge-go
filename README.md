@@ -848,6 +848,8 @@ Server-Sent Events, with signed, tenant-scoped channel names, and PostgreSQL
 
 ```sh
 export FORGE_STREAMS_KEY=$(openssl rand -base64 32)     # required in staging and production
+# Rotating it without breaking open pages: the old key verifies for 24 hours (up to 3 keys, comma-separated)
+export FORGE_STREAMS_PREVIOUS_KEYS=$OLD_STREAMS_KEY
 forge generate scaffold post title:string body:text --tenant-scoped --broadcast
 forge migrate
 forge test                                              # includes an end-to-end event stream test on PostgreSQL
