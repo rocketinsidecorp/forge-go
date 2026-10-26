@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// NoTransactionDirective, as the first line of a migration file, runs that
+// NoTransactionDirective as the first line of a migration file runs that
 // file outside a transaction. PostgreSQL requires this for statements such as
 // CREATE INDEX CONCURRENTLY. Keep such files to a single statement: a failure
 // part-way cannot be rolled back.
@@ -47,6 +47,7 @@ type Migration struct {
 // MigrationState is the status of one migration.
 type MigrationState string
 
+// The states of a migration; see each constant.
 const (
 	StateApplied MigrationState = "applied"
 	StatePending MigrationState = "pending"
@@ -61,6 +62,7 @@ const (
 	StateDisabled MigrationState = "disabled"
 )
 
+// MigrationStatus is one row of the migration status report.
 type MigrationStatus struct {
 	Version   int64
 	Name      string

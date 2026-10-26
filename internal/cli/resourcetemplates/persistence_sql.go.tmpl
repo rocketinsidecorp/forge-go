@@ -53,10 +53,12 @@ type [[.Title]]Repository struct {
 
 var _ application.[[.Title]]Repository = (*[[.Title]]Repository)(nil)
 
+// New[[.Title]]Repository returns the repository on db.
 func New[[.Title]]Repository(db sqldb.DBTX) *[[.Title]]Repository {
 	return &[[.Title]]Repository{db: db}
 }
 
+// Create stores entity[[if .Tenant]] in the context's tenant[[end]] and returns it.
 func (r *[[.Title]]Repository) Create(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
 [[- if .Tenant]]
 	tenant, err := tenancy.Require(ctx)
@@ -71,6 +73,7 @@ func (r *[[.Title]]Repository) Create(ctx context.Context, entity domain.[[.Titl
 	return entity, nil
 }
 
+// Get returns the [[.Name]] with id, or domain.Err[[.Title]]NotFound.
 func (r *[[.Title]]Repository) Get(ctx context.Context, id uuid.UUID) (domain.[[.Title]], error) {
 [[- if .Tenant]]
 	tenant, err := tenancy.Require(ctx)
@@ -89,6 +92,8 @@ func (r *[[.Title]]Repository) Get(ctx context.Context, id uuid.UUID) (domain.[[
 	return entity, nil
 }
 
+// List returns up to limit [[.Plural]], newest first, starting after the one with ID after
+// (the zero UUID for the first page).
 func (r *[[.Title]]Repository) List(ctx context.Context, after uuid.UUID, limit int) ([]domain.[[.Title]], error) {
 [[- if .Tenant]]
 	tenant, err := tenancy.Require(ctx)
@@ -124,6 +129,9 @@ func (r *[[.Title]]Repository) List(ctx context.Context, after uuid.UUID, limit 
 	return entities, nil
 }
 
+// Update writes entity only if its version is still the stored one (optimistic locking) and
+// returns it with the version advanced. It returns domain.Err[[.Title]]NotFound for a missing
+// [[.Name]] and domain.ErrStale[[.Title]]Version when someone wrote it first.
 func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
 [[- if .Tenant]]
 	tenant, err := tenancy.Require(ctx)
@@ -148,6 +156,8 @@ func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Titl
 	return entity, nil
 }
 
+// Delete removes the [[.Name]] with id if its version is still the given one, with the same
+// errors as Update.
 func (r *[[.Title]]Repository) Delete(ctx context.Context, id uuid.UUID, version int) error {
 [[- if .Tenant]]
 	tenant, err := tenancy.Require(ctx)

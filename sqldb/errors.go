@@ -18,6 +18,8 @@ import (
 // database produces the same public error codes.
 type Kind int
 
+// The kinds of failure. KindUnknown is any error an adapter does not classify; it is never exposed
+// to clients.
 const (
 	KindUnknown Kind = iota
 	KindNotFound

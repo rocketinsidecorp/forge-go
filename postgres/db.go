@@ -171,14 +171,17 @@ func matchesValidatedURL(raw string, parsed pgconn.Config) error {
 	return nil
 }
 
+// Exec runs a statement without returning rows, on the pool.
 func (db *DB) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
 	return db.pool.Exec(ctx, sql, arguments...)
 }
 
+// Query runs a query that returns rows, on the pool. The caller must close the rows.
 func (db *DB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	return db.pool.Query(ctx, sql, args...)
 }
 
+// QueryRow runs a query that returns at most one row, on the pool.
 func (db *DB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	return db.pool.QueryRow(ctx, sql, args...)
 }

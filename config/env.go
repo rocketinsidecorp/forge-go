@@ -7,8 +7,11 @@ import (
 	"time"
 )
 
+// Load reads the configuration from the process environment, over Default, and validates it.
 func Load() (Config, error) { return LoadWithLookup(os.LookupEnv) }
 
+// LoadWithLookup is Load with lookup in place of the process environment. It returns an error for
+// an unparsable or invalid setting.
 func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 	if lookup == nil {
 		return Config{}, fmt.Errorf("environment lookup is required")

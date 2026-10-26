@@ -9,14 +9,18 @@ import (
 	"time"
 )
 
+// Check reports whether one dependency is ready: nil means healthy. It receives a context bounded
+// by the registry's check timeout.
 type Check func(context.Context) error
 
+// Status is the result of one named check.
 type Status struct {
 	Name    string        `json:"name"`
 	Healthy bool          `json:"healthy"`
 	Latency time.Duration `json:"-"`
 }
 
+// Result is the readiness of the application: healthy only when every check is.
 type Result struct {
 	Healthy bool     `json:"healthy"`
 	Checks  []Status `json:"checks"`
@@ -33,12 +37,14 @@ func (Result) OpenAPIName() string { return "HealthReport" }
 // probe until the orchestrator gives up.
 const DefaultCheckTimeout = 2 * time.Second
 
+// Registry holds named readiness checks.
 type Registry struct {
 	mu      sync.RWMutex
 	checks  map[string]Check
 	timeout time.Duration
 }
 
+// New returns a Registry whose checks time out after DefaultCheckTimeout.
 func New() *Registry { return NewWithTimeout(DefaultCheckTimeout) }
 
 // NewWithTimeout is New with a custom per-check timeout.
@@ -49,6 +55,8 @@ func NewWithTimeout(timeout time.Duration) *Registry {
 	return &Registry{checks: make(map[string]Check), timeout: timeout}
 }
 
+// Register adds a named check. It returns an error for an empty name, a nil check or a name that is
+// already registered.
 func (r *Registry) Register(name string, check Check) error {
 	if name == "" || check == nil {
 		return errors.New("health check name and function are required")
@@ -62,6 +70,8 @@ func (r *Registry) Register(name string, check Check) error {
 	return nil
 }
 
+// Ready runs every check, in name order, each with the registry's timeout, and reports their
+// status. With no checks the result is healthy.
 func (r *Registry) Ready(ctx context.Context) Result {
 	r.mu.RLock()
 	names := make([]string, 0, len(r.checks))

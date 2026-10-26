@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"go/parser"
 	"go/token"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,16 +13,16 @@ import (
 func TestRoutesNeedAnApplicationAndAWritableOutput(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	if err := runRoutesAt([]string{"--json"}, &out, t.TempDir()); err == nil || !strings.Contains(err.Error(), "usage: forge routes") {
+	if err := runRoutesAt([]string{"--json"}, &out, io.Discard, t.TempDir()); err == nil || !strings.Contains(err.Error(), "usage: forge routes") {
 		t.Errorf("arguments: %v", err)
 	}
-	if err := runRoutesAt(nil, &out, filepath.Join(t.TempDir(), "gone")); err == nil || !strings.Contains(err.Error(), "go.mod not found") {
+	if err := runRoutesAt(nil, &out, io.Discard, filepath.Join(t.TempDir(), "gone")); err == nil || !strings.Contains(err.Error(), "go.mod not found") {
 		t.Errorf("a missing directory: %v", err)
 	}
-	if err := runRoutesAt(nil, &out, t.TempDir()); err == nil || !strings.Contains(err.Error(), "go.mod not found") {
+	if err := runRoutesAt(nil, &out, io.Discard, t.TempDir()); err == nil || !strings.Contains(err.Error(), "go.mod not found") {
 		t.Errorf("no go.mod: %v", err)
 	}
-	if err := runRoutesAt(nil, failingWriter{}, writeRoutesProject(t)); err != errBrokenPipe {
+	if err := runRoutesAt(nil, failingWriter{}, io.Discard, writeRoutesProject(t)); err != errBrokenPipe {
 		t.Errorf("a failing output: %v", err)
 	}
 }

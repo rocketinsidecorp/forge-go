@@ -169,3 +169,35 @@ func TestResourceRoutesOrder(t *testing.T) {
 		t.Fatalf("routes = %s", got)
 	}
 }
+
+func TestRegistrationsRecordTheActionAndTheRegisteringCode(t *testing.T) {
+	t.Parallel()
+	r := router.New()
+	if err := r.Resources("/posts", fullResource{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.HandleFunc("POST /webhooks", func(http.ResponseWriter, *http.Request) {}); err != nil {
+		t.Fatal(err)
+	}
+	registrations := r.Registrations()
+	if len(registrations) != 9 {
+		t.Fatalf("registrations = %v", registrations)
+	}
+	actions := map[string]router.Action{}
+	for _, registration := range registrations {
+		// The nearest caller outside the framework is this test file; the
+		// framework's own frames (router.Resources, router.Handle) are skipped.
+		if !strings.Contains(registration.Source, "resources_test.go:") {
+			t.Errorf("%s %s registered at %q", registration.Method, registration.Pattern, registration.Source)
+		}
+		actions[registration.Method+" "+registration.Pattern] = registration.Action
+	}
+	for pattern, want := range map[string]router.Action{
+		"GET /posts": router.ActionIndex, "POST /posts": router.ActionCreate, "PUT /posts/{id}": router.ActionUpdate,
+		"DELETE /posts/{id}": router.ActionDestroy, "POST /webhooks": "",
+	} {
+		if got, ok := actions[pattern]; !ok || got != want {
+			t.Errorf("%s: action %q (registered %v), want %q", pattern, got, ok, want)
+		}
+	}
+}

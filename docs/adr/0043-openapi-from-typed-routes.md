@@ -118,9 +118,9 @@ worse than none; the document must be stable enough to commit and diff.
    document to stdout (logs go to stderr) or FILE, lists undescribed routes
    on stderr, and `--check` exits 1 when FILE differs (for CI). `forge
    openapi` builds `cmd/NAME` and runs that command with the development
-   environment, like `forge migrate`. `forge routes` stays static (it never
-   runs application code): types can only be known by running the
-   application, so the document cannot come from source analysis.
+   environment, like `forge migrate`. `forge routes` was static at the
+   time (superseded: see the addendum): types can only be known by running
+   the application, so the document cannot come from source analysis.
 9. **Generated applications describe their JSON endpoints.** `forge new`
    calls `app.SetAPIInfo` with the application's name, serves `GET
    /v1/status` through `openapi.Typed`, and describes `GET /v1/auth/session`;
@@ -217,3 +217,22 @@ Planned ([forge-rust#25](https://github.com/rocketinsidecorp/forge-rust/issues/2
   same operation IDs (`createPost`, `listPosts`, `getPost`, `updatePost`,
   `deletePost`), and contract tests that validate every handler response
   (the counterparts of `ValidateResponse` and `CheckResponses`).
+
+## Addendum (2026-10-26): `forge routes` runs the application, `routes` is reserved
+
+`forge routes` no longer scans the source. The routes of `generate resource`
+and `generate scaffold` are registered from package constants inside a loop, so
+no scan could list them. Like `openapi`, the application binary now answers a
+reserved `routes` command that runs `Configure` without listening and prints
+the registered routes (METHOD, PATH, ACTION, SOURCE); `forge routes [NAME]`
+builds `cmd/NAME` and runs it with the development environment. When the
+application cannot be built or configured, `forge routes` explains why on
+stderr and prints what a scan of the source finds.
+
+**Breaking change.** `routes` joins `serve`, `healthcheck`, `openapi` and
+`help` as a reserved command name. An application that registers its own
+`forge.Command{Name: "routes"}` now exits with status 2 at startup ("command
+name "routes" is reserved"). Rename that command before upgrading. As with
+`openapi`, an application built with a framework version that predates the
+command answers `unknown command "routes"`, which `forge routes` reports before
+falling back to the scan.

@@ -20,6 +20,8 @@ type ErrorBody struct {
 	Error ErrorDetail `json:"error"`
 }
 
+// ErrorDetail is the content of an ErrorBody: a stable code, a safe message and the request ID for
+// correlation.
 type ErrorDetail struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`

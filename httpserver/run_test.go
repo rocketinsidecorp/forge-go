@@ -271,3 +271,72 @@ func TestRunClosesConnectionsWhenTheDrainDeadlinePasses(t *testing.T) {
 		t.Fatal("the stuck handler's request context was never canceled")
 	}
 }
+
+// A request still in flight when the context is canceled is answered: the
+// graceful drain waits for it, and Run returns nil because the deadline was
+// not reached.
+func TestRunDrainsAnInFlightRequestBeforeTheDeadline(t *testing.T) {
+	t.Parallel()
+	cfg := config.Default()
+	cfg.HTTP.Address = loopbackAddress(t)
+	cfg.HTTP.ShutdownTimeout = 20 * time.Second
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server, err := httpserver.New(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		_, _ = w.Write([]byte("finished"))
+	}), quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- server.Run(ctx) }()
+	type reply struct {
+		body string
+		err  error
+	}
+	replies := make(chan reply, 1)
+	go func() {
+		client := &http.Client{}
+		for {
+			response, err := get(t, client, "http://"+cfg.HTTP.Address+"/")
+			if err != nil {
+				select {
+				case <-started:
+					replies <- reply{err: err}
+					return
+				case <-t.Context().Done():
+					return
+				case <-time.After(5 * time.Millisecond):
+					continue
+				}
+			}
+			body, readErr := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			replies <- reply{body: string(body), err: readErr}
+			return
+		}
+	}()
+	select {
+	case <-started:
+	case err := <-result:
+		t.Fatalf("the server stopped before the request: %v", err)
+	case <-time.After(20 * time.Second):
+		t.Fatal("the request never reached the handler")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		t.Fatalf("Run returned %v while a request was still in flight", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-result; err != nil {
+		t.Errorf("a drained stop = %v", err)
+	}
+	if got := <-replies; got.err != nil || got.body != "finished" {
+		t.Errorf("the in-flight request got %q, %v", got.body, got.err)
+	}
+}

@@ -48,6 +48,7 @@ type [[.Title]]Repository struct {
 	db *postgres.DB
 }
 
+// New[[.Title]]Repository returns the repository on db.
 func New[[.Title]]Repository(db *postgres.DB) *[[.Title]]Repository {
 	return &[[.Title]]Repository{db: db}
 }
@@ -67,6 +68,7 @@ type [[.Title]]Repository struct {
 	db postgres.DBTX
 }
 
+// New[[.Title]]Repository returns the repository on db.
 func New[[.Title]]Repository(db postgres.DBTX) *[[.Title]]Repository {
 	return &[[.Title]]Repository{db: db}
 }
@@ -78,6 +80,7 @@ func (r *[[.Title]]Repository) run(_ context.Context, fn func(q postgres.DBTX) e
 
 var _ application.[[.Title]]Repository = (*[[.Title]]Repository)(nil)
 
+// Create stores entity[[if .Tenant]] in the context's tenant[[end]] and returns it.
 func (r *[[.Title]]Repository) Create(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
 	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], tenantID uuid.UUID[[end]]) error {
 		_, err := q.Exec(ctx, insert[[.Title]], [[.SQL.Insert.ArgList]])
@@ -89,6 +92,7 @@ func (r *[[.Title]]Repository) Create(ctx context.Context, entity domain.[[.Titl
 	return entity, nil
 }
 
+// Get returns the [[.Name]] with id, or domain.Err[[.Title]]NotFound.
 func (r *[[.Title]]Repository) Get(ctx context.Context, id uuid.UUID) (domain.[[.Title]], error) {
 	var entity domain.[[.Title]]
 	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], tenantID uuid.UUID[[end]]) error {
@@ -105,6 +109,8 @@ func (r *[[.Title]]Repository) Get(ctx context.Context, id uuid.UUID) (domain.[[
 	return entity, nil
 }
 
+// List returns up to limit [[.Plural]], newest first, starting after the one with ID after
+// (the zero UUID for the first page).
 func (r *[[.Title]]Repository) List(ctx context.Context, after uuid.UUID, limit int) ([]domain.[[.Title]], error) {
 	var entities []domain.[[.Title]]
 	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], tenantID uuid.UUID[[end]]) error {
@@ -127,6 +133,9 @@ func (r *[[.Title]]Repository) List(ctx context.Context, after uuid.UUID, limit 
 	return entities, nil
 }
 
+// Update writes entity only if its version is still the stored one (optimistic locking) and
+// returns it with the version advanced. It returns domain.Err[[.Title]]NotFound for a missing
+// [[.Name]] and domain.ErrStale[[.Title]]Version when someone wrote it first.
 func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error) {
 	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], tenantID uuid.UUID[[end]]) error {
 		tag, err := q.Exec(ctx, update[[.Title]], [[.SQL.Update.ArgList]])
@@ -146,6 +155,8 @@ func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Titl
 	return entity, nil
 }
 
+// Delete removes the [[.Name]] with id if its version is still the given one, with the same
+// errors as Update.
 func (r *[[.Title]]Repository) Delete(ctx context.Context, id uuid.UUID, version int) error {
 	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], tenantID uuid.UUID[[end]]) error {
 		tag, err := q.Exec(ctx, delete[[.Title]], [[.SQL.Delete.ArgList]])

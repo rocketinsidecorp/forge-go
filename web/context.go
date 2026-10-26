@@ -20,6 +20,8 @@ const (
 
 var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
+// WithRequestID returns a context that carries the request ID; the server sets it for every
+// request.
 func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestIDKey, id)
 }
@@ -30,6 +32,7 @@ func RequestID(ctx context.Context) string {
 	return id
 }
 
+// WithLogger returns a context that carries the request-scoped logger.
 func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
 	return context.WithValue(ctx, loggerKey, logger)
 }

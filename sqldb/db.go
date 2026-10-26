@@ -49,18 +49,22 @@ func New(db *sql.DB, cfg config.Database, classify Classifier) (*DB, error) {
 	return &DB{db: db, classify: classify}, nil
 }
 
+// ExecContext runs a statement without returning rows, on the wrapped *sql.DB.
 func (d *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	return d.db.ExecContext(ctx, query, args...)
 }
 
+// PrepareContext prepares a statement on the wrapped *sql.DB.
 func (d *DB) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
 	return d.db.PrepareContext(ctx, query)
 }
 
+// QueryContext runs a query that returns rows, on the wrapped *sql.DB.
 func (d *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	return d.db.QueryContext(ctx, query, args...)
 }
 
+// QueryRowContext runs a query that returns at most one row, on the wrapped *sql.DB.
 func (d *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return d.db.QueryRowContext(ctx, query, args...)
 }

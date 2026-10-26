@@ -797,7 +797,7 @@ The rest of the toolbox:
 forge test                  # go test ./... with .env.development loaded; arguments pass through
 forge test -run Post ./app/...
 forge doctor                # validate FORGE_* configuration (secrets redacted); --json for tools
-forge routes                # every route found in the source, with its action and file:line
+forge routes                # every registered route, with its action and file:line (builds and composes the app)
 forge inspect --json        # versioned inventory: commands, migrations, routes, modules
 forge build                 # static binary in bin/blog
 forge db status             # applied and pending migrations

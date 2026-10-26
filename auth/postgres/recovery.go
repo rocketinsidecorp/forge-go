@@ -13,11 +13,15 @@ import (
 )
 
 var (
+	// ErrRecoveryIdentityRequired is returned when the account a recovery token is created for is
+	// missing or not active.
 	ErrRecoveryIdentityRequired                           = errors.New("active recovery identity is required")
 	_                           auth.RecoveryStore        = (*Repository)(nil)
 	_                           auth.RecoveryTokenChecker = (*Repository)(nil)
 )
 
+// LookupRecovery returns the active account with the normalized email that has an active membership
+// in the tenant with slug tenantSlug. found is false otherwise.
 func (r *Repository) LookupRecovery(ctx context.Context, emailNormalized, tenantSlug string) (auth.RecoveryIdentity, bool, error) {
 	var identity auth.RecoveryIdentity
 	err := r.db.QueryRow(ctx, `
@@ -64,6 +68,8 @@ func (r *Repository) RecoveryTokenUsable(ctx context.Context, digest auth.Digest
 	return usable, nil
 }
 
+// CreateRecovery stores the digest of a recovery token that expires at expiresAt. Earlier unused
+// tokens of the account are superseded in the same transaction.
 func (r *Repository) CreateRecovery(ctx context.Context, subjectID uuid.UUID, digest auth.Digest, expiresAt time.Time) error {
 	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
 		return errors.New("user ID must be a UUIDv7")
@@ -101,6 +107,8 @@ func (r *Repository) CreateRecovery(ctx context.Context, subjectID uuid.UUID, di
 	})
 }
 
+// InvalidateRecovery marks the token with digest used without changing the password; it does
+// nothing for an unknown token and keeps the time of an already used one.
 func (r *Repository) InvalidateRecovery(ctx context.Context, digest auth.Digest) error {
 	return r.db.InTx(ctx, func(tx pgx.Tx) error {
 		var subjectID uuid.UUID
@@ -139,6 +147,9 @@ func (r *Repository) InvalidateRecovery(ctx context.Context, digest auth.Digest)
 	})
 }
 
+// ConsumeRecovery uses the unexpired, unused token with digest, replaces the account's password
+// hash with nextPasswordHash and revokes its sessions, all in one transaction. It reports false
+// when the token does not qualify.
 func (r *Repository) ConsumeRecovery(ctx context.Context, digest auth.Digest, nextPasswordHash string) (bool, error) {
 	if nextPasswordHash == "" {
 		return false, errors.New("next password hash is required")

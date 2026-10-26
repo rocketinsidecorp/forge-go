@@ -21,6 +21,9 @@ const jsonErrorFormatFlag = "--error-format=json"
 
 var errDoctorUnhealthy = errors.New("doctor found invalid configuration")
 
+// Run executes the forge command line in args, writing to stdout and stderr, and returns the
+// process exit code: 0 on success, 1 on failure, 2 on misuse. With --error-format=json as the first
+// argument, failures are written to stderr as JSON.
 func Run(args []string, stdout, stderr io.Writer) int {
 	jsonErrors := len(args) > 0 && args[0] == jsonErrorFormatFlag
 	if jsonErrors {
@@ -59,7 +62,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "inspect":
 		err = runInspect(args[1:], stdout)
 	case "routes":
-		err = runRoutes(args[1:], stdout)
+		err = runRoutes(args[1:], stdout, commandStderr)
 	case "openapi":
 		err = runOpenAPI(args[1:], stdout, commandStderr)
 	case "new":
@@ -368,7 +371,7 @@ commands:
                       and keys no template or Go code references
   doctor [--json]     validate the FORGE_* configuration
   inspect --json      inspect app structure without executing it
-  routes              list the routes found in the source, as a table
+  routes [NAME]       list the registered routes, as a table
   openapi [--output FILE | --check FILE]
                       print or write the OpenAPI 3.1 document of the described
                       routes; --check fails when FILE is out of date

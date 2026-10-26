@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,7 +47,7 @@ func TestGenerateWrappersWorkInTheCurrentDirectory(t *testing.T) {
 	if err := runDestroy([]string{"migration", "x"}, &out); err == nil {
 		t.Error("runDestroy accepted a malformed command")
 	}
-	if err := runRoutes(nil, &out); err != nil {
+	if err := runRoutes(nil, &out, io.Discard); err != nil {
 		t.Errorf("runRoutes: %v", err)
 	}
 	out.Reset()

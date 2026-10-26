@@ -30,12 +30,16 @@ type mfaCompletionRequest struct {
 	Code           string `json:"code" doc:"A current authenticator code, or an unused backup code."`
 }
 
+// MFAEnrollmentAuthorizer is the application's step-up check before TOTP enrollment starts, such as
+// asking for the password again. A non-nil error refuses the request.
 type MFAEnrollmentAuthorizer interface {
 	AuthorizeMFAEnrollment(ctx context.Context, principal Principal) error
 }
 
+// MFAEnrollmentAuthorizerFunc adapts a function to MFAEnrollmentAuthorizer.
 type MFAEnrollmentAuthorizerFunc func(context.Context, Principal) error
 
+// AuthorizeMFAEnrollment calls fn.
 func (fn MFAEnrollmentAuthorizerFunc) AuthorizeMFAEnrollment(ctx context.Context, principal Principal) error {
 	return fn(ctx, principal)
 }
@@ -155,12 +159,16 @@ func NewMFACompletionHandler(service *MFAService) (http.Handler, error) {
 	}), mfaCompletionOperation), nil
 }
 
+// MFAChangeAuthorizer is the application's step-up check before an active factor is rotated or
+// disabled. A non-nil error refuses the request.
 type MFAChangeAuthorizer interface {
 	AuthorizeMFAChange(ctx context.Context, principal Principal) error
 }
 
+// MFAChangeAuthorizerFunc adapts a function to MFAChangeAuthorizer.
 type MFAChangeAuthorizerFunc func(context.Context, Principal) error
 
+// AuthorizeMFAChange calls fn.
 func (fn MFAChangeAuthorizerFunc) AuthorizeMFAChange(ctx context.Context, principal Principal) error {
 	return fn(ctx, principal)
 }

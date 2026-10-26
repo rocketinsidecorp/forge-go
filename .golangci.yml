@@ -5,8 +5,17 @@ linters:
   enable:
     - gosec
     - misspell
+    - revive
     - unconvert
   settings:
+    revive:
+      # Only the exported rule: every exported identifier carries a doc comment
+      # that starts with its name (audit D-6).
+      rules:
+        - name: exported
+          arguments:
+            # Renaming exported types to avoid stutter would break the public API.
+            - disableStutteringCheck
     errcheck:
       # Writes of CLI diagnostics and usage text: if the terminal is gone there
       # is nobody left to report the failure to.
@@ -16,6 +25,11 @@ linters:
         - fmt.Fprintln
   exclusions:
     rules:
+      # Packages another change is editing in parallel; their doc comments are
+      # added once that change lands.
+      - path: ^(queue|outbox|jobs)/
+        linters:
+          - revive
       # Tests read files they created in t.TempDir, run the go tool on
       # generated projects and echo input in fixture handlers; gosec guards
       # production code.

@@ -133,7 +133,10 @@ func NewSQLRewriter(db Queryer, spec SQLColumn) (*SQLRewriter, error) {
 	return &SQLRewriter{db: db, spec: spec}, nil
 }
 
-func (r *SQLRewriter) Table() string  { return r.spec.Table }
+// Table returns the table the rewriter visits.
+func (r *SQLRewriter) Table() string { return r.spec.Table }
+
+// Column returns the encrypted column the rewriter rewrites.
 func (r *SQLRewriter) Column() string { return r.spec.Column }
 
 // Page implements Rewriter.

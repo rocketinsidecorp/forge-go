@@ -27,8 +27,12 @@ const (
 )
 
 var (
-	ErrPasswordRequired    = errors.New("password is required")
-	ErrPasswordTooLong     = errors.New("password exceeds 4096 bytes")
+	// ErrPasswordRequired is returned for an empty password.
+	ErrPasswordRequired = errors.New("password is required")
+	// ErrPasswordTooLong is returned for a password longer than 4096 bytes.
+	ErrPasswordTooLong = errors.New("password exceeds 4096 bytes")
+	// ErrPasswordHashInvalid is returned for a stored hash that is malformed or uses parameters
+	// this package does not accept.
 	ErrPasswordHashInvalid = errors.New("invalid password hash")
 )
 

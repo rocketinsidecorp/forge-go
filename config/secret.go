@@ -18,6 +18,7 @@ const redacted = "[REDACTED]"
 // Secrets must be compared with Equal, not ==, which compares identity.
 type Secret struct{ value *string }
 
+// NewSecret wraps value. The empty string yields the zero Secret.
 func NewSecret(value string) Secret {
 	if value == "" {
 		return Secret{}
@@ -34,6 +35,7 @@ func (s Secret) Reveal() string {
 	return *s.value
 }
 
+// IsZero reports whether the Secret holds no value.
 func (s Secret) IsZero() bool { return s.value == nil }
 
 // Equal reports whether both secrets hold the same value, in constant time
@@ -44,8 +46,11 @@ func (s Secret) Equal(other Secret) bool {
 
 func (Secret) String() string { return redacted }
 
+// GoString prints [REDACTED] in %#v output.
 func (Secret) GoString() string { return redacted }
 
+// LogValue logs [REDACTED].
 func (Secret) LogValue() slog.Value { return slog.StringValue(redacted) }
 
+// MarshalText encodes [REDACTED], so JSON and other text encodings never carry the value.
 func (Secret) MarshalText() ([]byte, error) { return []byte(redacted), nil }

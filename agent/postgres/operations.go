@@ -15,17 +15,27 @@ import (
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
+// MaxReconciliationPageSize is the largest page of reconciliation candidates a call returns.
 const MaxReconciliationPageSize = 100
 
 var (
-	ErrReconciliationForbidden    = errors.New("agent reconciliation permission denied")
-	ErrInvalidReconciliation      = errors.New("agent reconciliation request is invalid")
+	// ErrReconciliationForbidden is returned when the principal lacks agent.PermissionReconcile.
+	ErrReconciliationForbidden = errors.New("agent reconciliation permission denied")
+	// ErrInvalidReconciliation is returned for a malformed reconciliation request, such as a bad
+	// page size or cursor.
+	ErrInvalidReconciliation = errors.New("agent reconciliation request is invalid")
+	// ErrNotReconciliationCandidate is returned for an execution that is not reserved or
+	// unresolved.
 	ErrNotReconciliationCandidate = errors.New("agent execution is not awaiting reconciliation")
-	ErrAlreadyReconciled          = errors.New("agent execution was already reconciled")
+	// ErrAlreadyReconciled is returned for an execution that was already reconciled.
+	ErrAlreadyReconciled = errors.New("agent execution was already reconciled")
 )
 
+// ReconciliationResult is what an operator found out about an execution left unresolved.
 type ReconciliationResult string
 
+// The reconciliation results an operator records for an execution that was left unresolved: its
+// effect was applied, or it was not.
 const (
 	ReconciliationEffectApplied    ReconciliationResult = "effect_applied"
 	ReconciliationEffectNotApplied ReconciliationResult = "effect_not_applied"

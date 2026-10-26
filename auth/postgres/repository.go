@@ -15,10 +15,13 @@ import (
 )
 
 var (
-	ErrMembershipRequired                               = errors.New("active membership is required")
-	ErrExpiryRequired                                   = errors.New("session expiry must be in the future")
-	_                     auth.SessionCreator           = (*Repository)(nil)
-	_                     auth.CredentialSessionCreator = (*Repository)(nil)
+	// ErrMembershipRequired is returned when the membership a session is created for is missing or
+	// not active.
+	ErrMembershipRequired = errors.New("active membership is required")
+	// ErrExpiryRequired is returned when the expiry of a new session is not in the future.
+	ErrExpiryRequired                               = errors.New("session expiry must be in the future")
+	_                 auth.SessionCreator           = (*Repository)(nil)
+	_                 auth.CredentialSessionCreator = (*Repository)(nil)
 )
 
 // Session idle timeout bounds and the default (config.Auth.SessionIdleTimeout,
@@ -33,6 +36,8 @@ const (
 	sessionTouchInterval = time.Minute
 )
 
+// Repository is the PostgreSQL identity store: password identities, sessions, password recovery,
+// MFA factors and challenges, and the security audit trail.
 type Repository struct {
 	db          *postgres.DB
 	now         func() time.Time
@@ -79,6 +84,9 @@ func New(db *postgres.DB, options ...Option) (*Repository, error) {
 // SessionIdleTimeout reports how long a session may go unused.
 func (r *Repository) SessionIdleTimeout() time.Duration { return r.idleTimeout }
 
+// LookupPassword returns the active account with the normalized email and its active membership in
+// the tenant with slug tenantSlug, with its password hash and whether MFA is enabled. found is
+// false otherwise.
 func (r *Repository) LookupPassword(ctx context.Context, emailNormalized, tenantSlug string) (auth.PasswordIdentity, bool, error) {
 	var identity auth.PasswordIdentity
 	err := r.db.QueryRow(ctx, `
@@ -104,6 +112,9 @@ func (r *Repository) LookupPassword(ctx context.Context, emailNormalized, tenant
 	return identity, true, nil
 }
 
+// ReplacePasswordHash is a compare-and-set: it stores nextHash only while the account is active and
+// still holds previousHash, and reports whether it did. A concurrent rehash, a password reset or a
+// disabled account makes it report false and change nothing.
 func (r *Repository) ReplacePasswordHash(ctx context.Context, subjectID uuid.UUID, previousHash, nextHash string) (bool, error) {
 	if subjectID.Version() != 7 || subjectID.Variant() != 2 {
 		return false, errors.New("user ID must be a UUIDv7")
@@ -124,6 +135,9 @@ func (r *Repository) ReplacePasswordHash(ctx context.Context, subjectID uuid.UUI
 	return tag.RowsAffected() == 1, nil
 }
 
+// CreateSession creates a session for an active membership that expires at expiresAt and returns
+// its bearer token; only the token's digest is stored. It returns auth.ErrCredentialsInvalid when
+// the membership is not active.
 func (r *Repository) CreateSession(ctx context.Context, membershipID uuid.UUID, expiresAt time.Time) (auth.Token, error) {
 	if membershipID.Version() != 7 || membershipID.Variant() != 2 {
 		return auth.Token{}, errors.New("membership ID must be a UUIDv7")
@@ -204,6 +218,8 @@ func (r *Repository) CreateSessionAtVersion(
 	return token, nil
 }
 
+// RevokeSession revokes the session with the token's digest; revoking an unknown or revoked session
+// is not an error.
 func (r *Repository) RevokeSession(ctx context.Context, token auth.Token) error {
 	digest := token.Digest()
 	_, err := r.db.Exec(ctx, `
@@ -217,6 +233,8 @@ func (r *Repository) RevokeSession(ctx context.Context, token auth.Token) error 
 	return nil
 }
 
+// RevokeUserSessions revokes every session of the user and increments its session version, which
+// also invalidates pending MFA challenges.
 func (r *Repository) RevokeUserSessions(ctx context.Context, userID uuid.UUID) error {
 	if userID.Version() != 7 || userID.Variant() != 2 {
 		return errors.New("user ID must be a UUIDv7")

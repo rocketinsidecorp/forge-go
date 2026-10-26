@@ -17,10 +17,13 @@ type Transactor struct {
 
 var _ application.Transactor = (*Transactor)(nil)
 
+// NewTransactor returns a Transactor on db.
 func NewTransactor(db *postgres.DB) *Transactor {
 	return &Transactor{db: db}
 }
 
+// InTx runs fn in one transaction with a task repository bound to it, committing when fn returns
+// nil and rolling back otherwise.
 func (t *Transactor) InTx(ctx context.Context, fn func(tasks application.TaskRepository) error) error {
 	err := t.db.InTx(ctx, func(tx pgx.Tx) error { return fn(NewTaskRepository(tx)) })
 	// Faults from fn pass through unchanged; this translates BEGIN and
