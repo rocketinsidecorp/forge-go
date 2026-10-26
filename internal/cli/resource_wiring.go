@@ -179,7 +179,9 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 		}
 		return parts
 	}
-	parts.Imports = append(parts.Imports, "github.com/rocketinsidecorp/forge-go/fault")
+	// The deny-all guard answers with web.Error; an API-only application's
+	// bootstrap.go (forge new --api) does not import web yet.
+	parts.Imports = append(parts.Imports, "github.com/rocketinsidecorp/forge-go/fault", "github.com/rocketinsidecorp/forge-go/web")
 	parts.Where = "inside Configure, after the `routes(ctx, app)` call and its error check"
 	tenantNote := ""
 	if spec.TenantScoped {

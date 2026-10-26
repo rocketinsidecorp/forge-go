@@ -14,7 +14,7 @@ package main
 
 import (
 	forge "github.com/rocketinsidecorp/forge-go"
-{{- if and .DB .DB.Identity}}
+{{- if and .DB (eq .DB.Adapter "postgres")}}
 	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
 {{- end}}
 {{- if and .DB .DB.Jobs}}
@@ -40,6 +40,14 @@ func main() {
 			postgres.SeedCommand(db.Seed),
 		)...,
 	)
+}
+{{- else if and .DB .API (eq .DB.Adapter "postgres") -}}
+// main composes Forge's identity, audit and session schema
+// (authpostgres.Migrations), the schema of a full-stack application, so
+// authentication can be added later without rewriting migrations. This
+// API-only application serves none of it and has no setup command.
+func main() {
+	forge.Main(bootstrap.Configure, append(postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations()), postgres.SeedCommand(db.Seed))...)
 }
 {{- else if and .DB .DB.Jobs -}}
 func main() {

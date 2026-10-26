@@ -1,3 +1,27 @@
+{{- if .API -}}
+package bootstrap
+
+import (
+	"net/http"
+
+	"github.com/rocketinsidecorp/forge-go/openapi"
+)
+
+// apiVersion is the version GET / and the OpenAPI document report.
+const apiVersion = "0.1.0"
+
+// welcomeResponse is what GET / answers: an API-only application (forge new
+// --api) has no welcome page, so its root names the service in JSON, like
+// Forge-Rust's --api applications.
+type welcomeResponse struct {
+	Application string `json:"application" example:"{{.Name}}"`
+	Version     string `json:"version" example:"0.1.0"`
+}
+
+func welcome(*http.Request, openapi.NoBody) (welcomeResponse, error) {
+	return welcomeResponse{Application: "{{.Name}}", Version: apiVersion}, nil
+}
+{{- else -}}
 package bootstrap
 
 import (
@@ -151,3 +175,4 @@ func welcomeHandler(logoPath string) http.HandlerFunc {
 		_, _ = w.Write(page.Bytes())
 	}
 }
+{{- end}}

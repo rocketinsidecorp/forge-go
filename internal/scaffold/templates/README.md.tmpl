@@ -1,10 +1,22 @@
 <p align="center">
+{{- if .API}}
+  <img src="https://github.com/rocketinsidecorp/forge-go/raw/main/internal/scaffold/templates/assets/forge-go-logo.png" alt="Forge Go — Go Framework" width="220">
+{{- else}}
   <img src="app/assets/forge-go-logo.png" alt="Forge Go — Go Framework" width="220">
+{{- end}}
 </p>
 
 # {{.Name}}
 
+{{- if .API}}
+
+An API-only [Forge](https://github.com/rocketinsidecorp/forge-go) application
+(`forge new --api`): JSON handlers, with no views, assets, JavaScript,
+translations, sign-in pages or browser middleware.
+{{- else}}
+
 A [Forge](https://github.com/rocketinsidecorp/forge-go) application.
+{{- end}}
 
 ## Run
 
@@ -14,12 +26,24 @@ With Docker (the default):
 docker compose up --build
 ```
 
+{{- if .API}}
+
+Then call the JSON endpoints:
+
+```bash
+curl http://127.0.0.1:8080/            # {"application":"{{.Name}}","version":"0.1.0"}
+curl http://127.0.0.1:8080/v1/status   # {"service":"{{.Name}}","status":"ok"}
+curl http://127.0.0.1:8080/health      # liveness and readiness checks
+```
+{{- else}}
+
 Then open `http://127.0.0.1:8080/` to see the Forge welcome screen, or check
 the JSON service endpoint:
 
 ```bash
 curl http://127.0.0.1:8080/v1/status
 ```
+{{- end}}
 {{- if .DB}}
 {{- if .DB.Server}}
 
@@ -74,16 +98,27 @@ forge format --check                     # list files that need gofmt; exit 1 if
 forge lint                               # golangci-lint run ./... (install it first when missing)
 forge build                              # static binary in bin/{{.Name}}
 docker build -t {{.Name}} .                  # production image
+{{- if not .API}}
 forge generate view welcome --dry-run     # preview files without writing
 forge generate view welcome              # a page in app/views/pages/, auto-escaped
+{{- end}}
 forge generate job cleanup --dry-run      # preview a job stub and its tests
 forge generate job cleanup               # create files under app/jobs/
 forge generate job send_welcome user_id:uuid --queue # a typed handler for the persistent job queue
+{{- if .API}}
+forge generate controller status_checks index --api --public # JSON endpoints under /v1/status_checks and their tests
+forge generate mailer user welcome:name  # a mailer with text and HTML templates, previews and tests
+forge destroy controller status_checks index --api --public # remove what a generator created, unless you edited it
+{{- else}}
 forge generate controller pages home --public # handlers, routes, views and tests for read-only pages
 forge generate mailer user welcome:name  # a mailer with text and HTML templates, previews and tests
 forge destroy controller pages home --public # remove what a generator created, unless you edited it
+{{- end}}
 forge routes                             # every route of the composed app (no database needed)
 {{- if .DB}}
+{{- if .API}}
+forge generate resource post title:string --tenant-scoped # a JSON API under /v1/posts through every layer
+{{- end}}
 forge generate model post title:string --tenant-scoped # migration, domain, application and persistence layers
 forge generate migration create_widgets --dry-run # preview exact migration files
 forge generate migration create_widgets  # new db/migrations/<timestamp>_create_widgets.{up,down}.sql
@@ -92,6 +127,32 @@ forge migrate status
 forge rollback                           # revert the latest migration
 {{- end}}
 ```
+
+{{- if .API}}
+
+## API only
+
+This application was created with `forge new --api`. It serves JSON only:
+`GET /` names the service, `GET /v1/status` is the example endpoint and Forge
+adds `/health`, `/health/live` and `/health/ready`. Errors are JSON too. There
+is no `app/views`, `app/assets`, `app/javascript` or `config/locales`, and
+`app/bootstrap` installs no CSRF, method-override, flash or locale middleware:
+authenticate API clients with a header (a bearer token), never a cookie.
+{{- if and .DB (eq .DB.Adapter "postgres")}}
+
+`migrate` still applies Forge's identity, audit and session tables
+(`authpostgres.Migrations()` in `cmd/{{.Name}}/main.go`), the schema of a
+full-stack application, so authentication can be added later without
+rewriting migrations. Nothing serves them, and there is no `setup` command.
+{{- end}}
+
+The generators that write pages refuse this application: `forge generate
+view`, `forge generate scaffold`, `forge generate authentication` and
+`forge generate controller` without `--api`. `forge generate resource`,
+`model`, `controller --api`, `mailer`, `job` and `migration` work as in a
+full-stack application. For pages, create a full-stack application with
+`forge new NAME` and move the code into it.
+{{- else}}
 
 ## HTML pages
 
@@ -161,6 +222,7 @@ and use it in a template with `data-controller="clipboard"`. Files in
 `controllers/` are embedded and pinned automatically; rebuild (`forge dev`
 does) to serve a change under its new digested URL. Real-time updates:
 `forge generate scaffold NAME ... --broadcast` (see `docs/VIEWS.md`).
+{{- end}}
 {{- if and .DB .DB.Identity}}
 
 ## Sign in
@@ -534,8 +596,12 @@ a TLS-terminating proxy){{if and .DB .DB.ProductionTLS}} and {{.DB.ProductionTLS
 `FORGE_DATABASE_URL`{{end}}.
 
 Behind a reverse proxy the application sees the proxy's address unless it
-trusts that proxy's `X-Forwarded-For`. List the proxy networks so sign-in
+trusts that proxy's `X-Forwarded-For`. List the proxy networks so
+{{- if .API}}
+rate limits and audit records count each client
+{{- else}} sign-in
 throttles, rate limits and audit records count each client
+{{- end}}
 (`forge deploy` sets this to the forge-proxy network automatically; empty
 trusts nobody):
 

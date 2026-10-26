@@ -12,7 +12,9 @@ import (
 	{{- if and .DB (eq .DB.Adapter "postgres")}}
 	"errors"
 	{{- end}}
+{{- if not .API}}
 	"io"
+{{- end}}
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,6 +22,7 @@ import (
 	"testing"
 
 	forge "github.com/rocketinsidecorp/forge-go"
+{{- if not .API}}
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/web"
 
@@ -27,6 +30,7 @@ import (
 
 {{- if not .DB}}
 	appassets "{{.Module}}/app/assets"
+{{- end}}
 {{- end}}
 {{- if .DB}}
 	"github.com/rocketinsidecorp/forge-go/config"
@@ -41,6 +45,16 @@ func TestRoutes(t *testing.T) {
 	t.Parallel()
 {{- if .DB}}
 	t.Skip("skipped for database apps; Configure tested in TestConfigureConnectsToDatabase")
+{{- else if .API}}
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Configure(context.Background(), app); err != nil {
+		t.Fatal(err)
+	}
+	assertJSONRoutes(t, app)
+	assertOpenAPI(t, app, "/", "/v1/status", "/health")
 {{- else}}
 	app, err := forge.New()
 	if err != nil {
@@ -145,7 +159,7 @@ func assertOpenAPI(t *testing.T, app *forge.App, paths ...string) {
 		t.Fatal(err)
 	}
 }
-{{- if not .DB}}
+{{- if and (not .DB) (not .API)}}
 
 func welcomeBody(t *testing.T, app *forge.App) string {
 	t.Helper()
@@ -159,6 +173,76 @@ func welcomeResponse(app *forge.App) *httptest.ResponseRecorder {
 }
 {{- end}}
 
+{{- if .API}}
+// assertJSONRoutes checks what every route of an API-only application
+// answers: JSON, no cookies, no page and no static files.
+func assertJSONRoutes(t *testing.T, app *forge.App) {
+	t.Helper()
+	for _, path := range []string{"/", "/v1/status", "/health"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Accept", "text/html")
+		app.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "application/json") || !json.Valid(recorder.Body.Bytes()) {
+			t.Fatalf("GET %s status=%d Content-Type=%q body=%s", path, recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
+		}
+		if cookies := recorder.Result().Cookies(); len(cookies) != 0 {
+			t.Fatalf("GET %s sets cookies %v; an API application sets none", path, cookies)
+		}
+	}
+	var welcome welcomeResponse
+	recorder := httptest.NewRecorder()
+	app.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if err := json.Unmarshal(recorder.Body.Bytes(), &welcome); err != nil || welcome.Application != "{{.Name}}" {
+		t.Fatalf("GET / = %s (%v)", recorder.Body.String(), err)
+	}
+	for _, path := range []string{"/assets/", "/assets/application.css", "/session/new", "/not-a-route"} {
+		missing := httptest.NewRecorder()
+		app.Handler().ServeHTTP(missing, httptest.NewRequest(http.MethodGet, path, nil))
+		if missing.Code != http.StatusNotFound {
+			t.Fatalf("GET %s status=%d, want 404", path, missing.Code)
+		}
+	}
+}
+
+// TestNoBrowserPipeline: an API-only application installs no browser
+// middleware, so a form POST from another origin reaches the handler (no
+// CSRF token is asked for: authenticate API clients with a header, never a
+// cookie) and _method does not turn a POST into a DELETE.
+func TestNoBrowserPipeline(t *testing.T) {
+	t.Parallel()
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := routes(context.Background(), app); err != nil {
+		t.Fatal(err)
+	}
+	for _, pattern := range []string{"POST /items", "DELETE /items/{id}"} {
+		if err := app.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Method", r.Method)
+			w.WriteHeader(http.StatusAccepted)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertJSONRoutes(t, app)
+	for _, target := range []string{"/items", "/items/1"} {
+		request := httptest.NewRequest(http.MethodPost, target, strings.NewReader(url.Values{"_method": {"DELETE"}}.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		request.Header.Set("Origin", "https://evil.example")
+		recorder := httptest.NewRecorder()
+		app.Handler().ServeHTTP(recorder, request)
+		want, method := http.StatusAccepted, http.MethodPost
+		if target == "/items/1" {
+			want, method = http.StatusMethodNotAllowed, ""
+		}
+		if recorder.Code != want || recorder.Header().Get("X-Method") != method {
+			t.Fatalf("POST %s status=%d method=%q, want %d %q", target, recorder.Code, recorder.Header().Get("X-Method"), want, method)
+		}
+	}
+}
+{{- else}}
 // TestBrowserPipelineRequiresCSRFToken drives the middleware Configure
 // installs: a form POST without the CSRF token is rejected, the same POST
 // with it succeeds and leaves a flash message, a cross-site POST is rejected
@@ -245,6 +329,7 @@ func TestBrowserPipelineRequiresCSRFToken(t *testing.T) {
 		t.Fatalf("overridden DELETE without token status=%d", rejected.Code)
 	}
 }
+{{- end}}
 {{- if .DB}}
 
 {{- if .DB.Server}}
@@ -279,7 +364,10 @@ func TestConfigureConnectsToDatabase(t *testing.T) {
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"database"`) {
 		t.Fatalf("readiness status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-{{- if and .DB.Identity .APIAuth}}
+{{- if .API}}
+	assertJSONRoutes(t, app)
+	assertOpenAPI(t, app, "/", "/v1/status", "/health")
+{{- else if and .DB.Identity .APIAuth}}
 	// The identity routes describe themselves: Forge's auth handlers carry
 	// their operations, so the routes registered above are documented.
 	assertOpenAPI(t, app, "/v1/status", "/health", "/v1/auth/session",
