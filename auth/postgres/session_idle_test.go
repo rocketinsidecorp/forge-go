@@ -218,11 +218,12 @@ func TestSessionUseIsWrittenAtMostOncePerMinute(t *testing.T) {
 		t.Fatalf("last use moved without a write: %s -> %s", created, seen)
 	}
 
-	lastSeen(t, db, token, 59*time.Second)
+	// Well inside the minute, so a slow run cannot cross it.
+	lastSeen(t, db, token, 45*time.Second)
 	writesBefore := writes()
 	resolveConcurrently(token)
 	if n := writes() - writesBefore; n != 0 {
-		t.Fatalf("a use 59s old was rewritten %d times", n)
+		t.Fatalf("a use 45s old was rewritten %d times", n)
 	}
 
 	stale := lastSeen(t, db, token, 61*time.Second)
