@@ -18,7 +18,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,18 +30,56 @@ import (
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-// loopbackAddress returns a free loopback address.
-func loopbackAddress(t *testing.T) string {
+// anyAddress asks the kernel for a port when Run binds it. A port found free
+// by a probe and released could be taken by another process before Run binds
+// it; port 0 leaves no such window. Run logs the address it bound, and
+// listenAddress reads it from there.
+const anyAddress = "127.0.0.1:0"
+
+// logBuffer is a slog output safe for Run's writes and a test's reads.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func newLogs() (*slog.Logger, *logBuffer) {
+	logs := &logBuffer{}
+	return slog.New(slog.NewTextHandler(logs, nil)), logs
+}
+
+var servingHTTP = regexp.MustCompile(`msg="serving HTTP" address=(\S+)`)
+
+// listenAddress waits until Run reports where it listens and returns that
+// address. A Run that fails first fails the test.
+func listenAddress(t *testing.T, logs *logBuffer, failed <-chan error) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if match := servingHTTP.FindStringSubmatch(logs.String()); match != nil {
+			return match[1]
+		}
+		select {
+		case err := <-failed:
+			t.Fatalf("the server stopped before it listened: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server never reported its address:\n%s", logs.String())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return address
 }
 
 // selfSigned writes a certificate for 127.0.0.1 and its key.
@@ -148,8 +188,9 @@ func TestRecovererLetsAnAbortedResponseThrough(t *testing.T) {
 func TestRunServesPlainHTTPAndStopsOnCancel(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
-	cfg.HTTP.Address = loopbackAddress(t)
-	server, err := httpserver.New(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("hello")) }), quiet)
+	cfg.HTTP.Address = anyAddress
+	logger, logs := newLogs()
+	server, err := httpserver.New(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("hello")) }), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +201,11 @@ func TestRunServesPlainHTTPAndStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { result <- server.Run(ctx) }()
-	response := waitServing(t, http.DefaultClient, "http://"+cfg.HTTP.Address+"/", result)
+	address := listenAddress(t, logs, result)
+	if address == anyAddress {
+		t.Errorf("the log reports the configured address %s, not the bound one", address)
+	}
+	response := waitServing(t, http.DefaultClient, "http://"+address+"/", result)
 	body, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
 	if string(body) != "hello" || response.Header.Get("Strict-Transport-Security") != "" {
@@ -175,11 +220,12 @@ func TestRunServesPlainHTTPAndStopsOnCancel(t *testing.T) {
 func TestRunServesTLSWithHSTS(t *testing.T) {
 	t.Parallel()
 	certFile, keyFile := selfSigned(t)
+	logger, logs := newLogs()
 	cfg := config.Default()
-	cfg.HTTP.Address = loopbackAddress(t)
+	cfg.HTTP.Address = anyAddress
 	cfg.HTTP.Transport = config.TransportTLS
 	cfg.HTTP.TLSCertFile, cfg.HTTP.TLSKeyFile = certFile, keyFile
-	server, err := httpserver.New(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("secure")) }), quiet)
+	server, err := httpserver.New(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("secure")) }), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +233,8 @@ func TestRunServesTLSWithHSTS(t *testing.T) {
 	result := make(chan error, 1)
 	go func() { result <- server.Run(ctx) }()
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}}} // #nosec G402 -- a self-signed loopback test certificate
-	response := waitServing(t, client, "https://"+cfg.HTTP.Address+"/", result)
+	address := listenAddress(t, logs, result)
+	response := waitServing(t, client, "https://"+address+"/", result)
 	_ = response.Body.Close()
 	if !strings.Contains(response.Header.Get("Strict-Transport-Security"), "max-age=") {
 		t.Errorf("headers = %v", response.Header)
@@ -196,6 +243,36 @@ func TestRunServesTLSWithHSTS(t *testing.T) {
 	if err := <-result; err != nil {
 		t.Errorf("a graceful stop = %v", err)
 	}
+}
+
+func TestRunReleasesTheListenerWhenTheCertificateCannotBeLoaded(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	for _, name := range []string{certFile, keyFile} {
+		if err := os.WriteFile(name, []byte("not PEM"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logger, logs := newLogs()
+	cfg := config.Default()
+	cfg.HTTP.Address = anyAddress
+	cfg.HTTP.Transport = config.TransportTLS
+	cfg.HTTP.TLSCertFile, cfg.HTTP.TLSKeyFile = certFile, keyFile
+	server, err := httpserver.New(cfg, http.NotFoundHandler(), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Run(t.Context()); err == nil || !strings.Contains(err.Error(), "serve HTTP") {
+		t.Fatalf("Run with an unreadable certificate = %v", err)
+	}
+	address := listenAddress(t, logs, nil)
+	// The bound port is free again: binding it succeeds.
+	again, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("the listener of a failed run still holds %s: %v", address, err)
+	}
+	_ = again.Close()
 }
 
 func TestRunReportsAnAddressThatCannotBeServed(t *testing.T) {
@@ -220,26 +297,27 @@ func TestRunReportsAnAddressThatCannotBeServed(t *testing.T) {
 func TestRunClosesConnectionsWhenTheDrainDeadlinePasses(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
-	cfg.HTTP.Address = loopbackAddress(t)
+	cfg.HTTP.Address = anyAddress
 	cfg.HTTP.ShutdownTimeout = 50 * time.Millisecond
+	logger, logs := newLogs()
 	started := make(chan struct{})
 	canceled := make(chan struct{})
 	server, err := httpserver.New(cfg, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(started)
 		<-r.Context().Done() // only closing the connection ends this request
 		close(canceled)
-	}), quiet)
+	}), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { result <- server.Run(ctx) }()
+	address := listenAddress(t, logs, result)
 	go func() {
-		// The server may not be listening yet: retry refused connections
-		// until the request is in the handler.
+		// Retry until the request is in the handler.
 		for {
-			response, err := get(t, &http.Client{}, "http://"+cfg.HTTP.Address+"/")
+			response, err := get(t, &http.Client{}, "http://"+address+"/")
 			if err == nil {
 				_ = response.Body.Close()
 				return
@@ -278,21 +356,23 @@ func TestRunClosesConnectionsWhenTheDrainDeadlinePasses(t *testing.T) {
 func TestRunDrainsAnInFlightRequestBeforeTheDeadline(t *testing.T) {
 	t.Parallel()
 	cfg := config.Default()
-	cfg.HTTP.Address = loopbackAddress(t)
+	cfg.HTTP.Address = anyAddress
 	cfg.HTTP.ShutdownTimeout = 20 * time.Second
+	logger, logs := newLogs()
 	started := make(chan struct{})
 	release := make(chan struct{})
 	server, err := httpserver.New(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		close(started)
 		<-release
 		_, _ = w.Write([]byte("finished"))
-	}), quiet)
+	}), logger)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() { result <- server.Run(ctx) }()
+	address := listenAddress(t, logs, result)
 	type reply struct {
 		body string
 		err  error
@@ -301,7 +381,7 @@ func TestRunDrainsAnInFlightRequestBeforeTheDeadline(t *testing.T) {
 	go func() {
 		client := &http.Client{}
 		for {
-			response, err := get(t, client, "http://"+cfg.HTTP.Address+"/")
+			response, err := get(t, client, "http://"+address+"/")
 			if err != nil {
 				select {
 				case <-started:

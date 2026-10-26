@@ -68,7 +68,7 @@ echo its value.
 | `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT` | `false` | Permit `http://` endpoints in `production` (sidecar or private network) |
 | `FORGE_TELEMETRY_SAMPLE_RATIO` | `1` | Fraction of new traces sampled, `0`-`1` |
 | `FORGE_TELEMETRY_TRUST_TRACEPARENT` | `false` | Continue traces from incoming `traceparent`/`tracestate` headers. Enable only behind a proxy or gateway that sets or sanitizes them. |
-| `FORGE_TELEMETRY_METRICS_ADDR` | (empty: off) | `host:port` of the Prometheus listener; must differ from `FORGE_HTTP_ADDR` |
+| `FORGE_TELEMETRY_METRICS_ADDR` | (empty: off) | `host:port` of the Prometheus listener; must differ from `FORGE_HTTP_ADDR`. Port `0` lets the kernel choose; the `serving metrics` record carries the address actually bound. |
 | `FORGE_TELEMETRY_METRICS_PUBLIC` | `false` | Confirms a non-loopback `FORGE_TELEMETRY_METRICS_ADDR` (such as `0.0.0.0:9464` in a container). Without it `production` refuses to start and other environments log a warning. |
 | `FORGE_TELEMETRY_METRICS_INTERVAL` | `1m` | OTLP metric push interval, at least `1s` |
 
