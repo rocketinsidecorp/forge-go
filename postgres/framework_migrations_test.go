@@ -44,6 +44,7 @@ func TestFrameworkMigrationOwnership(t *testing.T) {
 func TestRollbackKeepsIdentityTables(t *testing.T) {
 	t.Parallel()
 	db, cfg := postgrestest.NewWithConfig(t)
+	postgrestest.RequireUUIDv7(t, db) // the identity migrations use DEFAULT uuidv7()
 	lookup := func(key string) (string, bool) {
 		switch key {
 		case "FORGE_ENV":

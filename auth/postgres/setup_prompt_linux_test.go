@@ -56,6 +56,7 @@ func openPTY(t *testing.T) (master, slave *os.File) {
 // without echo, must be confirmed, and never reaches the output.
 func TestSetupCommandPromptsForThePasswordTwiceAtATerminal(t *testing.T) {
 	db, database := postgrestest.NewWithConfig(t)
+	postgrestest.RequireUUIDv7(t, db) // the identity migrations use DEFAULT uuidv7()
 	dbtest.Migrate(t, authpostgres.Migrations(), func(loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
 		return postgres.NewMigrator(database, loaded, logger)
 	})

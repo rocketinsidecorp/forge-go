@@ -52,19 +52,39 @@ func ServerURL(t testing.TB, adapter config.Adapter) string {
 			return raw
 		}
 	}
-	if raw := os.Getenv(EnvRequire); raw != "" {
-		// A value that does not parse must not silently turn required
-		// database tests back into skips.
-		required, err := strconv.ParseBool(raw)
-		if err != nil {
-			t.Fatalf("%s must be true or false", EnvRequire)
-		}
-		if required {
-			t.Fatalf("%s or %s is required when %s is set", EnvAdapterURL(adapter), EnvURL, EnvRequire)
-		}
+	if required(t) {
+		t.Fatalf("%s or %s is required when %s is set", EnvAdapterURL(adapter), EnvURL, EnvRequire)
 	}
 	t.Skipf("set %s to run %s tests", EnvAdapterURL(adapter), adapter)
 	return ""
+}
+
+// required reports whether EnvRequire turns skips into failures. A value that
+// does not parse must not silently turn required database tests back into
+// skips.
+func required(t testing.TB) bool {
+	t.Helper()
+	raw := os.Getenv(EnvRequire)
+	if raw == "" {
+		return false
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		t.Fatalf("%s must be true or false", EnvRequire)
+	}
+	return value
+}
+
+// Unsupported ends a test because the test server cannot run it, such as a
+// server older than the PostgreSQL 18 that uuidv7() needs. It skips with
+// reason, or fails with it when EnvRequire=true, so a CI job that requires
+// the database cannot silently stop running a suite.
+func Unsupported(t testing.TB, format string, args ...any) {
+	t.Helper()
+	if required(t) {
+		t.Fatalf(format+" (%s is set)", append(args, EnvRequire)...)
+	}
+	t.Skipf(format, args...)
 }
 
 // DatabaseName returns a fresh name safe to use as an unquoted identifier.

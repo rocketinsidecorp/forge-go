@@ -4,6 +4,14 @@
 // when it is a postgres:// URL. The user needs permission to create
 // databases (and roles, for NewRLS). Without a server tests are skipped, unless
 // FORGE_TEST_REQUIRE_DATABASE=true turns the skip into a failure (see dbtest).
+//
+// Forge generates UUIDv7 IDs in Rust, but its identity migrations and many
+// applications' tables use the uuidv7() function PostgreSQL 18 added. On an
+// older server a test that needs it is skipped with a "requires PostgreSQL 18"
+// reason, or fails with it when FORGE_TEST_REQUIRE_DATABASE=true, instead of
+// failing on an opaque undefined-function error: NewMigrated, NewMigratedSets
+// and NewRLS check the migrations they apply, and a test that calls uuidv7()
+// itself calls RequireUUIDv7.
 package postgrestest
 
 import (
@@ -12,6 +20,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -36,6 +45,9 @@ func New(t testing.TB) *postgres.DB {
 func NewMigrated(t testing.TB, migrations fs.FS) *postgres.DB {
 	t.Helper()
 	db, cfg := NewWithConfig(t)
+	if loaded, err := migrate.LoadMigrations(migrations); err == nil {
+		requireUUIDv7For(t, db, loaded)
+	}
 	dbtest.Migrate(t, migrations, func(loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
 		return postgres.NewMigrator(cfg, loaded, logger)
 	})
@@ -53,6 +65,7 @@ func NewMigratedSets(t testing.TB, sets ...fs.FS) *postgres.DB {
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}
+	requireUUIDv7For(t, db, loaded)
 	migrator, err := postgres.NewMigrator(cfg, loaded, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("open migrator: %v", err)
@@ -64,6 +77,60 @@ func NewMigratedSets(t testing.TB, sets ...fs.FS) *postgres.DB {
 		t.Fatalf("apply migrations: %v", err)
 	}
 	return db
+}
+
+// minUUIDv7Version is server_version_num of PostgreSQL 18, which added
+// uuidv7().
+const minUUIDv7Version = 180000
+
+// RequireUUIDv7 ends the test, skipped or (with FORGE_TEST_REQUIRE_DATABASE=true)
+// failed, with a "requires PostgreSQL 18" reason when db's server predates
+// uuidv7(). Call it first in a test that uses the function directly.
+func RequireUUIDv7(t testing.TB, db *postgres.DB) {
+	t.Helper()
+	var version int
+	var name string
+	if err := db.QueryRow(context.Background(), "SELECT current_setting('server_version_num')::int, current_setting('server_version')").Scan(&version, &name); err != nil {
+		t.Fatalf("read the server version: %v", err)
+	}
+	if reason := uuidv7Unsupported(version, name); reason != "" {
+		dbtest.Unsupported(t, "%s", reason)
+	}
+}
+
+// uuidv7Unsupported explains why a server of the given version cannot run
+// uuidv7(), or returns "" when it can.
+func uuidv7Unsupported(version int, name string) string {
+	if version >= minUUIDv7Version {
+		return ""
+	}
+	return "requires PostgreSQL 18 (uuidv7()): the test server is PostgreSQL " + name
+}
+
+var (
+	callsUUIDv7   = regexp.MustCompile(`(?i)\buuidv7\s*\(`)
+	definesUUIDv7 = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?function\s+(?:[a-z_][a-z0-9_$]*\.)?uuidv7\s*\(`)
+)
+
+// needsUUIDv7 reports whether the migrations call uuidv7() without defining
+// it themselves (an application may ship a polyfill for older servers).
+func needsUUIDv7(loaded []migrate.Migration) bool {
+	calls := false
+	for _, migration := range loaded {
+		script := migration.Up.SQL
+		if definesUUIDv7.MatchString(script) {
+			return false
+		}
+		calls = calls || callsUUIDv7.MatchString(script)
+	}
+	return calls
+}
+
+func requireUUIDv7For(t testing.TB, db *postgres.DB, loaded []migrate.Migration) {
+	t.Helper()
+	if needsUUIDv7(loaded) {
+		RequireUUIDv7(t, db)
+	}
 }
 
 // Config returns configuration for a fresh, empty database, for tests of
@@ -233,6 +300,7 @@ func NewRLS(t testing.TB, sets ...fs.FS) *RLS {
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}
+	requireUUIDv7For(t, admin, loaded)
 	m, err := postgres.NewMigrator(migratorCfg, loaded, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("open migrator: %v", err)
