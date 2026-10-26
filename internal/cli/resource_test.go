@@ -590,23 +590,61 @@ func TestResourceTenantScopeShapesTheGeneratedCode(t *testing.T) {
 func TestResourceWiringNeverOpensTheRoutes(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		database string
-		identity bool
-	}{{"postgres", true}, {"postgres", false}, {"mysql", false}, {"sqlite", false}} {
-		spec := resourceSpec{
-			resourceRequest: resourceRequest{Name: "product", Plural: "products", TenantScoped: true},
-			Module:          "example.com/shop", Database: test.database, Identity: test.identity,
+		database         string
+		identity, bearer bool
+	}{{"postgres", true, true}, {"postgres", true, false}, {"postgres", false, false}, {"mysql", false, false}, {"sqlite", false, false}} {
+		for _, scaffold := range []bool{false, true} {
+			spec := resourceSpec{
+				resourceRequest: resourceRequest{Name: "product", Plural: "products", TenantScoped: true, Scaffold: scaffold},
+				Module:          "example.com/shop", Database: test.database, Identity: test.identity, BearerSignIn: test.bearer,
+			}
+			parts := buildResourceWiring(spec)
+			wiring := resourceWiring(spec)
+			if strings.Contains(wiring, "return next, nil") {
+				t.Errorf("%+v: the wiring passes requests through:\n%s", test, wiring)
+			}
+			// The JSON guard authenticates bearer tokens only where the
+			// application issues them (--api-auth); otherwise it refuses
+			// every request, as forge-rust's DenyAll does.
+			if authenticates := strings.Contains(parts.Guard, "auth.RequireAudited(required, next, repository)"); authenticates != (test.identity && test.bearer) {
+				t.Errorf("%+v: the JSON guard authenticates = %v:\n%s", test, authenticates, parts.Guard)
+			}
+			if test.identity && !test.bearer && (!strings.Contains(parts.Guard, "web.Error(w, r, auth.ErrPermissionDenied)") ||
+				!strings.Contains(wiring, "forge generate authentication --api-auth")) {
+				t.Errorf("%+v: the JSON routes of an application without bearer sign-in are not closed, or the way to open them is not said:\n%s", test, wiring)
+			}
+			if !strings.Contains(wiring, "httpapi.RegisterProducts(app, productService, protect)") {
+				t.Errorf("%+v: wiring does not register the routes with a guard:\n%s", test, wiring)
+			}
+			if scaffold && test.identity && !strings.Contains(wiring, "middleware.AuthenticateBrowser(\"/session/new\", guarded)") {
+				t.Errorf("%+v: the scaffold's pages lost their cookie guard:\n%s", test, wiring)
+			}
 		}
-		wiring := resourceWiring(spec)
-		if strings.Contains(wiring, "return next, nil") {
-			t.Errorf("%+v: the wiring passes requests through:\n%s", test, wiring)
+	}
+}
+
+// The bearer login is detected from bootstrap.go: forge new --api-auth
+// mounts it, a default application does not.
+func TestBearerSignInFollowsTheMountedLoginRoute(t *testing.T) {
+	t.Parallel()
+	for _, apiAuth := range []bool{false, true} {
+		dir := filepath.Join(t.TempDir(), "shop")
+		args := []string{"new", "shop", "--dir", dir, "--database", "postgresql", "--skip-deps"}
+		if apiAuth {
+			args = append(args, "--api-auth")
 		}
-		if test.identity != strings.Contains(wiring, "auth.RequireAudited(required, next, repository)") {
-			t.Errorf("%+v: auth.Require presence does not follow Forge identity:\n%s", test, wiring)
+		var stdout, stderr bytes.Buffer
+		if code := Run(args, &stdout, &stderr); code != 0 {
+			t.Fatalf("forge new: %d %s", code, stderr.String())
 		}
-		if !strings.Contains(wiring, "httpapi.RegisterProducts(app, productService, protect)") {
-			t.Errorf("%+v: wiring does not register the routes with a guard:\n%s", test, wiring)
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatal(err)
 		}
+		if got := hasBearerSignIn(root); got != apiAuth {
+			t.Errorf("--api-auth=%v: hasBearerSignIn = %v", apiAuth, got)
+		}
+		_ = root.Close()
 	}
 }
 

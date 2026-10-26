@@ -17,8 +17,9 @@ FORGE_TEST_REQUIRE_SSHD=true go test ./internal/deploy/  # deploy over a real ss
 missing server or `sshd` into a failure instead of a skip; CI sets both, so
 these tests can never silently stop running there.
 
-The PostgreSQL tests that need `uuidv7()` (the identity migrations, and any
-application table with `DEFAULT uuidv7()`) require PostgreSQL 18. On an older
+The PostgreSQL tests that need `uuidv7()` (any application table with
+`DEFAULT uuidv7()`; Forge's identity migrations no longer use it) require
+PostgreSQL 18. On an older
 server they skip with `requires PostgreSQL 18 (uuidv7()): the test server is
 PostgreSQL 16.x`, or fail with that reason when `FORGE_TEST_REQUIRE_DATABASE=true`
 is set. A test of your own that calls `uuidv7()` starts with
@@ -57,9 +58,10 @@ how fast the machine is:
   waits to be killed, a negative check), or `fake-clock:` for a sleep inside a
   `synctest` bubble, where it costs no real time (the marker is refused
   anywhere else, and `real-clock:` is refused inside a bubble). The number of
-  real-clock sleeps has a budget in that file that only goes down. The tests of
-  `jobs/` and `cache/` are exempt, and counted, until their own changes convert
-  them.
+  real-clock sleeps has a budget in that file, `maxRealClockSleeps`, that
+  only goes down (no directory is exempt: the `jobs/` scheduler and tick
+  tests run in `synctest` bubbles, and the only real-clock sleeps left in `cache/` space the writes of
+  the database store tests so the stores' own clocks order them).
 - **Timeouts are explicit.** CI and `scripts/coverage.sh` run `go test
   -timeout 30m`: the default of ten minutes is shorter than the serial
   generated-application workflows of `internal/cli` on a slow runner, and a

@@ -8,15 +8,20 @@ This document covers running them. Database details are in
 
 ## The generated image
 
-- Multi-stage build on `golang:${GO_VERSION}-alpine` (`GO_VERSION` build
-  argument, default `1.27`) with BuildKit cache mounts for the module and
-  build caches. The build stage runs on the builder's platform and
+- Multi-stage build on `golang:1.27.3-alpine` with BuildKit cache mounts for
+  the module and build caches. Both base images are pinned by digest
+  (`image:tag@sha256:...`, the same digests as Forge's own `Dockerfile`), so
+  a moved tag cannot change what you build; the generated
+  `.github/dependabot.yml` proposes new digests weekly. To move to another
+  Go release, replace the whole `FROM` reference, digest included:
+  `docker buildx imagetools inspect golang:1.27.4-alpine` prints the new
+  index digest. The build stage runs on the builder's platform and
   cross-compiles (`TARGETOS`/`TARGETARCH`), so `--platform linux/arm64` (or
   `builder.platform` in `config/deploy.yml`) needs no emulator.
 - `CGO_ENABLED=0`, `-trimpath`: a static binary with no local paths embedded.
   This holds for SQLite too: its driver is pure Go.
-- Runtime image `gcr.io/distroless/static-debian12:nonroot`: no shell, no
-  package manager, runs as the `nonroot` user.
+- Runtime image `gcr.io/distroless/static-debian12:nonroot` (pinned by
+  digest): no shell, no package manager, runs as the `nonroot` user.
 - SQL migrations are embedded in the binary, so the same image serves HTTP
   and migrates its database.
 - Defaults baked into the image:
@@ -313,13 +318,15 @@ redacted in logs and formatted output.
 On PostgreSQL, serve as a runtime role that is `NOSUPERUSER NOBYPASSRLS
 NOCREATEROLE NOREPLICATION`, owns no table and holds only `SELECT, INSERT, UPDATE, DELETE`,
 and migrate as a separate role that owns the schema. In `staging` and
-`production` (every environment except `development` and `test`) the
-generated application refuses to start when the role `FORGE_DATABASE_URL`
+`production` (every environment except `development` and `test`)
+`postgres.Open`, so every application, refuses to start when the role `FORGE_DATABASE_URL`
 logs in as, or acts as, is a superuser, has `BYPASSRLS`, `CREATEROLE` or
 `REPLICATION`, is a member of a superuser, `BYPASSRLS` or `REPLICATION` role
 or of `pg_execute_server_program`, `pg_write_server_files` or
-`pg_read_server_files`, or owns (or can `SET ROLE` to the owner of) a table
-with row-level security, and when the URL makes the
+`pg_read_server_files`, owns (or can `SET ROLE` to the owner of) a table
+with row-level security or holds `TRUNCATE`, `REFERENCES` or `TRIGGER` on
+one or any privilege on a partition of one that lacks its own, and when the
+URL makes the
 session act as another role than its login (`options=-c role=...`), with an
 error that wraps `postgres.ErrRowSecurityBypass`. [Database
 roles](DATABASE.md#database-roles-postgresql) has the SQL to provision both
@@ -667,7 +674,7 @@ accessories:
     port: 5432                               # published on 127.0.0.1 only
     volumes: ["shop-postgres:/var/lib/postgresql"]
     env: {secret: [POSTGRES_PASSWORD]}
-builder: {context: ., dockerfile: Dockerfile, platform: linux/amd64, args: {GO_VERSION: "1.27"}}
+builder: {context: ., dockerfile: Dockerfile, platform: linux/amd64, args: {}}
 retain: 5                                    # versions kept per role (2 to 100; the running one counts)
 stop_timeout: 35s                            # > FORGE_HTTP_SHUTDOWN_TIMEOUT
 boot_timeout: 60s                            # readiness wait for non-proxied roles

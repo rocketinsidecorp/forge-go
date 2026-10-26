@@ -343,9 +343,12 @@ model: a bypass inside the lists' scope is a defect to fix in the gate.
 - The `sigstore/cosign-installer` pin chooses the cosign version (v3.0.6) and
   verifies its checksum; Syft inside BuildKit's scanner image is whatever that
   digest holds.
-- The generated application's Dockerfile and compose database images are
-  referenced by tag, not digest; their provenance attestation records the
-  digests that were used.
+- The generated application's Dockerfile base images and compose database
+  images are pinned by digest, the same digests as Forge's own Dockerfiles
+  and CI (`TestDockerfilesPinBaseImagesByDigest`,
+  `TestGeneratedWorkflowsPassTheGate`); they age until the application's
+  Dependabot (`docker`, `docker-compose`) or a maintainer moves them, and
+  the image's provenance attestation records them.
 - A maintainer who can push `v*` tags can publish a signed image from any
   commit: the default-branch guard runs from the tagged commit's own
   `release.yml`, so a tag on a commit that removed it skips it. Protect `v*`

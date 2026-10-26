@@ -1,5 +1,5 @@
 CREATE TABLE forge_password_recovery (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY,
     token_digest bytea NOT NULL CHECK (octet_length(token_digest) = 32),
     user_id uuid NOT NULL REFERENCES forge_users(id) ON DELETE CASCADE,
     expires_at timestamptz NOT NULL,

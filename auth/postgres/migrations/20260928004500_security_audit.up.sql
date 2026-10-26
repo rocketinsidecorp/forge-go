@@ -1,5 +1,5 @@
 CREATE TABLE forge_security_audit_events (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY,
     kind text NOT NULL CHECK (kind ~ '^[a-z][a-z0-9_.-]{2,95}$'),
     outcome text NOT NULL CHECK (outcome IN ('succeeded', 'denied', 'failed')),
     actor_id uuid,

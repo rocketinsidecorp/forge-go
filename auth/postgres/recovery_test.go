@@ -98,9 +98,9 @@ func TestPasswordRecoveryConcurrentTokensOnlyOneWins(t *testing.T) {
 	expires := time.Now().Add(time.Hour)
 	for _, digest := range []auth.Digest{tokenA.Digest(), tokenB.Digest()} {
 		if _, err := db.Exec(ctx, `
-			INSERT INTO forge_password_recovery (token_digest, user_id, expires_at)
-			VALUES ($1, $2, $3)
-		`, digest[:], userID, expires); err != nil {
+			INSERT INTO forge_password_recovery (id, token_digest, user_id, expires_at)
+			VALUES ($4, $1, $2, $3)
+		`, digest[:], userID, expires, uuid.MustNew()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -187,9 +187,9 @@ func TestPasswordRecoveryPrunesExpiredAndConsumedRows(t *testing.T) {
 		if consumed {
 			consumedSQL = "now()"
 		}
-		query := "INSERT INTO forge_password_recovery (token_digest, user_id, expires_at, consumed_at) VALUES ($1, $2, " + expires + ", " + consumedSQL + ")"
+		query := "INSERT INTO forge_password_recovery (id, token_digest, user_id, expires_at, consumed_at) VALUES ($3, $1, $2, " + expires + ", " + consumedSQL + ")"
 		digest := token.Digest()
-		if _, err := db.Exec(ctx, query, digest[:], userID); err != nil {
+		if _, err := db.Exec(ctx, query, digest[:], userID, uuid.MustNew()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -223,9 +223,9 @@ func TestPasswordRecoveryRejectsExpiredToken(t *testing.T) {
 	}
 	digest := token.Digest()
 	if _, err := db.Exec(ctx, `
-		INSERT INTO forge_password_recovery (token_digest, user_id, expires_at)
-		VALUES ($1, $2, now() - interval '1 second')
-	`, digest[:], userID); err != nil {
+		INSERT INTO forge_password_recovery (id, token_digest, user_id, expires_at)
+		VALUES ($3, $1, $2, now() - interval '1 second')
+	`, digest[:], userID, uuid.MustNew()); err != nil {
 		t.Fatal(err)
 	}
 	nextHash, err := auth.HashPassword("replacement password")
@@ -271,7 +271,7 @@ func TestRecoveryTokenUsableRequiresAnUnusedUnexpiredToken(t *testing.T) {
 
 	expired, _ := auth.NewRecoveryToken()
 	expiredDigest := expired.Digest()
-	if _, err := db.Exec(ctx, "INSERT INTO forge_password_recovery (token_digest, user_id, expires_at) VALUES ($1, $2, now() - interval '1 second')", expiredDigest[:], userID); err != nil {
+	if _, err := db.Exec(ctx, "INSERT INTO forge_password_recovery (id, token_digest, user_id, expires_at) VALUES ($3, $1, $2, now() - interval '1 second')", expiredDigest[:], userID, uuid.MustNew()); err != nil {
 		t.Fatal(err)
 	}
 	if usable(expired) {

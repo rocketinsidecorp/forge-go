@@ -78,7 +78,16 @@ roles.
    runtime role cannot run DDL; tenant-scoped ones a test that it sees only
    the transaction's tenant and nothing without one.
 6. **IDs from the application.** Generated resource tables have no
-   `DEFAULT uuidv7()`. The released identity migrations keep it. When a
+   `DEFAULT uuidv7()`. Amended in forge-go QG9: the identity migrations no
+   longer declare it either, so identity runs on PostgreSQL 16 and 17. They
+   had not been part of any release (no version tag existed), so they were
+   edited in place rather than followed by a new migration, which could not
+   have made them apply on PostgreSQL 16 or 17: a `CREATE TABLE` naming a
+   missing function fails. A database that applied the earlier text is
+   accepted through the earlier checksum, listed per migration in
+   `migrate` (`supersededChecksums`) next to the checksum of the script
+   Forge ships now, and only while the build carries exactly that script
+   (a tampered build is still refused); it keeps its unused defaults. When a
    migration fails with SQLSTATE 42883 naming `uuidv7` (PostgreSQL 17 and
    older), the dialect's `migrate.ScriptErrorExplainer` adds the server
    version and the two ways out (PostgreSQL 18, or a `uuidv7()` defined by

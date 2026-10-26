@@ -36,7 +36,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 	port := string(match[1])
 	assertContains(t, dir, map[string][]string{
 		"Dockerfile": {
-			"FROM gcr.io/distroless/static-debian12:nonroot",
+			"FROM gcr.io/distroless/static-debian12:nonroot@sha256:",
 			"USER nonroot:nonroot",
 			"./cmd/billing-api",
 			"FORGE_ENV=production",
@@ -84,7 +84,10 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations())",
 		},
 		"app/bootstrap/bootstrap.go": {
-			"postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),\n\t\tpostgres.RequireRowSecurity(app.Config().Environment))",
+			"postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),\n\t\tpostgres.Lazy(!app.Serving()))",
+			"\tif !app.Serving() {\n\t\t// `routes` and `openapi` only describe the application: no job",
+			"\tif app.Serving() {\n\t\tif err := recoveryQueue.Start(recoveryService); err != nil {",
+			"Open refuses a role that could bypass\n\t// row-level security",
 			`app.Readiness("database", database.Ping)`,
 			"authpostgres.New(database, authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))",
 			"authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())",
@@ -368,7 +371,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"compose.yaml":                    {"image: mysql:8.4", "MYSQL_DATABASE: shop_development", "mysql:/var/lib/mysql", "FORGE_DATABASE_URL: mysql://shop:development@mysql:3306/shop_development", `"mysqladmin", "ping"`},
 				".env.development":                {"FORGE_DATABASE_URL=mysql://shop:development@127.0.0.1:", "FORGE_TEST_DATABASE_URL=mysql://root:development@127.0.0.1:"},
 				"cmd/shop/main.go":                {`"github.com/rocketinsidecorp/forge-go/mysql"`, "mysql.CommandsFromSets(jobsmysql.Migrations(), db.Migrations())"},
-				"app/bootstrap/bootstrap.go":      {"mysql.Open(ctx, app.Config().Database, mysql.WithTelemetry(app.Telemetry()))"},
+				"app/bootstrap/bootstrap.go":      {"mysql.Open(ctx, app.Config().Database, mysql.WithTelemetry(app.Telemetry()),\n\t\tmysql.Lazy(!app.Serving()))"},
 				"app/bootstrap/bootstrap_test.go": {`"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"`, "mysqltest.Config(t)"},
 				".github/workflows/ci.yml":        {"image: mysql:8.4", "MYSQL_ROOT_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
 				"README.md":                       {"MySQL 8.4", "`tls=true`", "queuemysql.Commands()", "docker compose run --rm app jobs dead"},

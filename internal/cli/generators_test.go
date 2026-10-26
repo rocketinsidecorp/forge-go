@@ -19,6 +19,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/migrate"
 	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // generatorNow is also the version of a framework migration
@@ -341,9 +342,17 @@ func TestGenerateControllerInIdentityApplicationsRegistersItsPermission(t *testi
 	if !strings.Contains(up, "'reports:read'") || strings.Contains(up, "reports:write") || !strings.Contains(down, "DELETE FROM forge_permissions WHERE name = 'reports:read'") {
 		t.Errorf("permission migration:\n%s\n%s", up, down)
 	}
+	// This application mounts no bearer login (POST /auth/login), so the
+	// JSON controller is wired closed, as in forge-rust.
 	api := mustGenerate(t, root, "controller", "feeds", "latest", "--api")
-	if !strings.Contains(api, "protect :=") || !strings.Contains(api, "httpapi.RegisterFeedsController(app, protect)") {
-		t.Errorf("a JSON controller authenticates the bearer token:\n%s", api)
+	if !strings.Contains(api, "protect refuses every request") || !strings.Contains(api, "httpapi.RegisterFeedsController(app, protect)") ||
+		!strings.Contains(api, "forge generate authentication --api-auth") {
+		t.Errorf("a JSON controller without bearer sign-in is not wired closed:\n%s", api)
+	}
+	writeFile(t, filepath.Join(root, "app", "bootstrap", "bootstrap.go"), "package bootstrap\n\n// app.Handle(\"POST /auth/login\", loginHandler)\n")
+	bearer := mustGenerate(t, root, "controller", "streams", "latest", "--api")
+	if !strings.Contains(bearer, "middleware.Authenticate(guarded)") || strings.Contains(bearer, "protect refuses every request") {
+		t.Errorf("a JSON controller with bearer sign-in does not authenticate the bearer token:\n%s", bearer)
 	}
 	// A public controller registers nothing.
 	public := mustGenerate(t, root, "controller", "landing", "index", "--public")
@@ -1102,7 +1111,7 @@ func TestControllerPermissionMigrationRunsOnPostgreSQL(t *testing.T) {
 
 	// A grant an administrator made is never revoked silently: the rollback
 	// fails and changes nothing until it is revoked.
-	if _, err := database.Exec(ctx, "INSERT INTO forge_roles (tenant_id, name) VALUES ($1, 'auditor')", owner.TenantID); err != nil {
+	if _, err := database.Exec(ctx, "INSERT INTO forge_roles (id, tenant_id, name) VALUES ($2, $1, 'auditor')", owner.TenantID, uuid.MustNew()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.Exec(ctx, "INSERT INTO forge_role_permissions (role_id, permission) SELECT id, 'reports:read' FROM forge_roles WHERE name = 'auditor'"); err != nil {

@@ -208,7 +208,7 @@ func keysAreExact(t *testing.T, newCache NewCache) {
 	mustSet(t, c, "a", []byte("1"), time.Minute)
 	mustSet(t, c, "A", []byte("2"), time.Minute)
 	mustSet(t, c, "a ", []byte("3"), time.Minute)
-	for key, want := range map[string]string{"a": "1", "A": "2", "a ": "3"} {
+	for key, want := range map[string]string{"a": "1", "A": "2", "a ": "3"} { //nolint:gocritic // mapKey: the key "a " proves keys are space-sensitive.
 		if v, ok := mustGet(t, c, key); !ok || string(v) != want {
 			t.Errorf("Get(%q) = %q, %v; want %q (keys are case- and space-sensitive)", key, v, ok, want)
 		}

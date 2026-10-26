@@ -45,10 +45,19 @@ import (
 func Configure(ctx context.Context, app *forge.App) error {
 {{- if eq .DB.Adapter "postgres"}}
 	// Outside development and test, Open refuses a role that could bypass
-	// row-level security (superuser, BYPASSRLS, CREATEROLE, a role setting):
-	// serve as the runtime role.
+	// row-level security (superuser, BYPASSRLS, CREATEROLE, TRUNCATE on a
+	// tenant table, a role setting): serve as the runtime role. `routes`
+	// and `openapi` compose the application without serving it
+	// (app.Serving() is false): the pool then connects only if something
+	// queries, so they need no reachable database.
 	database, err := postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),
-		postgres.RequireRowSecurity(app.Config().Environment))
+		postgres.Lazy(!app.Serving()))
+{{- else if eq .DB.Adapter "mysql"}}
+	// `routes` and `openapi` compose the application without serving it
+	// (app.Serving() is false): the pool then connects only if something
+	// queries, so they need no reachable database.
+	database, err := mysql.Open(ctx, app.Config().Database, mysql.WithTelemetry(app.Telemetry()),
+		mysql.Lazy(!app.Serving()))
 {{- else}}
 	database, err := {{.DB.Adapter}}.Open(ctx, app.Config().Database, {{.DB.Adapter}}.WithTelemetry(app.Telemetry()))
 {{- end}}
@@ -91,21 +100,22 @@ func Configure(ctx context.Context, app *forge.App) error {
 {{- end}}
 }
 {{- else}}
-func Configure(_ context.Context, app *forge.App) error {
+func Configure(ctx context.Context, app *forge.App) error {
 	// Translations (config/locales) for the pages and flash messages, in
 	// each request's locale.
 	translator, err := locales.New(app.Config(), app.Logger())
 	if err != nil {
 		return err
 	}
-	return routes(context.Background(), app, translator)
+	return routes(ctx, app, translator)
 }
 {{- end}}
 
 {{ if and .DB .DB.Jobs}}
 // JobsConfigure starts the in-process scheduler for recurring jobs and stops
 // it, waiting for running jobs within the shutdown budget, when the application
-// shuts down. Register application jobs on the scheduler below. Configure
+// shuts down. It starts nothing while `routes` or `openapi` only describe the
+// application (app.Serving() is false). Register application jobs on the scheduler below. Configure
 // passes the database's tick claimer (jobs{{.DB.Adapter}}.NewTickClaimer): every
 // replica runs the scheduler, and each tick of a job runs on exactly one
 // replica, the first to record it in forge_job_schedules once it has a free
@@ -118,6 +128,14 @@ func JobsConfigure(app *forge.App, ticks jobs.TickClaimer) error {
 		MaxConcurrentJobs: 4,
 		Telemetry:         app.Telemetry(),
 		OnError: func(name string, err error) {
+			// A job that fell behind its schedule runs the latest missed
+			// tick once and skips the others instead of replaying them
+			// (MaxLateness, one interval by default).
+			var skipped *jobs.SkippedTicksError
+			if errors.As(err, &skipped) {
+				app.Logger().Warn("scheduled ticks skipped", "job", name, "skipped", skipped.Skipped, "behind", skipped.Behind)
+				return
+			}
 			app.Logger().Error("scheduled job failed", "job", name, "error", err)
 		},
 		Ticks: ticks,
@@ -138,6 +156,11 @@ func JobsConfigure(app *forge.App, ticks jobs.TickClaimer) error {
 	// A job that needs the database uses the handle Configure opened: pass it
 	// to JobsConfigure and on to the job's constructor, and call
 	// database.InTx(ctx, func(tx ...) error).
+	if !app.Serving() {
+		// `routes` and `openapi` only describe the application: no job
+		// runs and no tick is recorded in forge_job_schedules.
+		return nil
+	}
 	if err := app.OnShutdown(scheduler.StopContext); err != nil {
 		_ = scheduler.Stop()
 		return err
@@ -315,8 +338,11 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 	if err != nil {
 		return err
 	}
-	if err := recoveryQueue.Start(recoveryService); err != nil {
-		return err
+	// `routes` and `openapi` only describe the application: no worker.
+	if app.Serving() {
+		if err := recoveryQueue.Start(recoveryService); err != nil {
+			return err
+		}
 	}
 
 {{- if .APIAuth}}

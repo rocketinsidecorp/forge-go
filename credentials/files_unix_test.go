@@ -94,3 +94,55 @@ func TestFIFOsAtCredentialsPathsAreRefusedWithoutBlocking(t *testing.T) {
 		t.Fatal("opening a FIFO blocked")
 	}
 }
+
+// TestSymlinkedCredentialsFilesAreRefused: a key or credentials file that is
+// a symbolic link is refused even when it points inside the directory, as in
+// forge-rust (O_NOFOLLOW): os.Root alone would follow it.
+func TestSymlinkedCredentialsFilesAreRefused(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "credentials")
+	key := newKey(t, 6)
+	writeCredentials(t, dir, "production", document, key)
+	if err := credentials.WriteKeyFile(dir, "production", []encryption.Key{key}, false); err != nil {
+		t.Fatal(err)
+	}
+	noEnv := func(string) (string, bool) { return "", false }
+	for _, name := range []string{"production.key", "production.json.enc"} {
+		path := filepath.Join(dir, name)
+		if err := os.Rename(path, path+".real"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(name+".real", path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := credentials.LoadKeys(dir, "production", noEnv); !errors.Is(err, credentials.ErrSymlink) {
+		t.Fatalf("symlinked key file: %v", err)
+	}
+	if _, err := credentials.ReadFile(dir, "production"); !errors.Is(err, credentials.ErrSymlink) {
+		t.Fatalf("symlinked credentials file: %v", err)
+	}
+	if _, err := credentials.Open("production", credentials.Options{Dir: dir, Lookup: noEnv}); !errors.Is(err, credentials.ErrSymlink) {
+		t.Fatalf("open with a symlinked key file: %v", err)
+	}
+	// A dangling link is a link, not a missing key.
+	if err := os.Remove(filepath.Join(dir, "production.key.real")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := credentials.LoadKeys(dir, "production", noEnv); !errors.Is(err, credentials.ErrSymlink) {
+		t.Fatalf("dangling key link: %v", err)
+	}
+	// The real files are accepted again once the links are gone.
+	for _, name := range []string{"production.json.enc"} {
+		path := filepath.Join(dir, name)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(path+".real", path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := credentials.ReadFile(dir, "production"); err != nil {
+		t.Fatalf("regular credentials file: %v", err)
+	}
+}

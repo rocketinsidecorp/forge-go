@@ -193,11 +193,8 @@ func (r *Repository) ReplaceMFABackupCodes(ctx context.Context, subjectID uuid.U
 			return postgres.Translate(err)
 		}
 		for _, digest := range codeDigests {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO forge_mfa_backup_codes (user_id, code_digest)
-				VALUES ($1, $2)
-			`, subjectID, digest[:]); err != nil {
-				return postgres.Translate(err)
+			if err := insertBackupCode(ctx, tx, subjectID, digest[:]); err != nil {
+				return err
 			}
 		}
 		replaced = true

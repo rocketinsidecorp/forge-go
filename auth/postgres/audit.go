@@ -29,8 +29,14 @@ func recordSecurityEvent(ctx context.Context, db execer, event auth.SecurityEven
 	if err := event.Validate(); err != nil {
 		return err
 	}
+	// IDs come from the application (UUIDv7), not a database default.
+	id, err := uuid.New()
+	if err != nil {
+		return err
+	}
 
 	args := []any{
+		id,
 		event.Kind,
 		event.Outcome,
 		nullableUUID(event.ActorID),
@@ -44,19 +50,19 @@ func recordSecurityEvent(ctx context.Context, db execer, event auth.SecurityEven
 	if event.OccurredAt.IsZero() {
 		_, err := db.Exec(ctx, `
 			INSERT INTO forge_security_audit_events
-				(kind, outcome, actor_id, subject_id, membership_id,
+				(id, kind, outcome, actor_id, subject_id, membership_id,
 				 account_digest, source_digest, credential_digest, request_id, occurred_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, clock_timestamp())
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, clock_timestamp())
 		`, args...)
 		return postgres.Translate(err)
 	}
 
 	args = append(args, event.OccurredAt.UTC())
-	_, err := db.Exec(ctx, `
+	_, err = db.Exec(ctx, `
 		INSERT INTO forge_security_audit_events
-			(kind, outcome, actor_id, subject_id, membership_id,
+			(id, kind, outcome, actor_id, subject_id, membership_id,
 			 account_digest, source_digest, credential_digest, request_id, occurred_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`, args...)
 	return postgres.Translate(err)
 }

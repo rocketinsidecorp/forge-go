@@ -28,6 +28,16 @@ func TestLoadWithLookup(t *testing.T) {
 	if cfg.Auth.MFAKey.Reveal() != "example-mfa-key" || strings.Contains(cfg.Auth.MFAKey.String(), "example-mfa-key") {
 		t.Fatalf("MFA key was not loaded/redacted")
 	}
+	// The database adapters refuse a role that bypasses row-level security
+	// from it, so it follows FORGE_ENV.
+	if cfg.Database.Environment != config.Staging {
+		t.Fatalf("Database.Environment = %q, want staging", cfg.Database.Environment)
+	}
+	// Default leaves it empty, so a pool built from it by hand is checked
+	// (fail closed) until the environment is set.
+	if got := config.Default().Database.Environment; got != "" {
+		t.Fatalf("Default().Database.Environment = %q, want empty", got)
+	}
 }
 
 func TestConfigValidateProductionTransport(t *testing.T) {

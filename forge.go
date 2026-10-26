@@ -52,6 +52,9 @@ type options struct {
 	httpMiddlewares []httpserver.Middleware
 	telemetry       *telemetry.Telemetry
 	telemetrySet    bool
+	// describeOnly marks an App composed by the routes and openapi
+	// commands, which never serve it.
+	describeOnly bool
 }
 
 // App is a Forge application: the router, the health registry, the HTTP server with its fixed
@@ -65,6 +68,9 @@ type App struct {
 	server *httpserver.Server
 	// telemetry is nil when disabled.
 	telemetry *telemetry.Telemetry
+	// describeOnly is true while the routes and openapi commands compose
+	// the application without serving it (Serving).
+	describeOnly bool
 
 	hooksMu       sync.Mutex
 	shutdownHooks []ShutdownHook
@@ -114,6 +120,10 @@ func New(opts ...Option) (*App, error) {
 			return nil, err
 		}
 	}
+	// The database adapters decide on Database.Environment whether to refuse
+	// a role that bypasses row-level security: it is always the
+	// application's own environment.
+	settings.config.Database.Environment = settings.config.Environment
 	if err := settings.config.Validate(); err != nil {
 		return nil, err
 	}
@@ -125,6 +135,8 @@ func New(opts ...Option) (*App, error) {
 		health:    health.New(),
 		telemetry: settings.telemetry,
 		apiInfo:   openapi.Info{Title: "Forge application", Version: "0.0.0"},
+
+		describeOnly: settings.describeOnly,
 	}
 	if !settings.telemetrySet {
 		built, err := telemetry.FromConfig(settings.config, settings.logger)
@@ -225,6 +237,24 @@ func WithHTTPMiddleware(middleware httpserver.Middleware) Option {
 
 // Config returns the validated configuration the application was built with.
 func (a *App) Config() config.Config { return a.config }
+
+// Serving reports whether this process composes the application to serve
+// it. It is false while the "routes" and "openapi" commands run Configure
+// only to describe the routes, and true otherwise ("serve", and an App built
+// with New). Configure starts background work (a jobs.Scheduler, a
+// queue.Worker, a recovery queue) only when it is true, so describing the
+// application never runs or claims a job, and it can open its database pool
+// lazily when it is false (postgres.Lazy(!app.Serving()), mysql.Lazy,
+// sqlite.Lazy), so those commands need no reachable database.
+func (a *App) Serving() bool { return !a.describeOnly }
+
+// describing marks an App composed only to be described (Serving).
+func describing() Option {
+	return func(settings *options) error {
+		settings.describeOnly = true
+		return nil
+	}
+}
 
 // Logger returns the application logger.
 func (a *App) Logger() *slog.Logger { return a.logger }

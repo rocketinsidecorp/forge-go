@@ -258,8 +258,8 @@ func TestPruneMFADeletesOnlyDeadRowsAndHonorsTheLimit(t *testing.T) {
 		{4, "NULL", "+ interval '1 hour'", "- interval '1 minute'", true},
 	}
 	for _, c := range challenges {
-		query := "INSERT INTO forge_mfa_challenges (token_digest, membership_id, credential_version, factor_secret_digest, expires_at, session_expires_at, consumed_at) VALUES ($1, $2, 1, $3, now() " + c.expires + ", now() " + c.session + ", " + c.consumed + ")"
-		if _, err := db.Exec(ctx, query, digest(c.seed), live.membership, digest(9)); err != nil {
+		query := "INSERT INTO forge_mfa_challenges (id, token_digest, membership_id, credential_version, factor_secret_digest, expires_at, session_expires_at, consumed_at) VALUES ($4, $1, $2, 1, $3, now() " + c.expires + ", now() " + c.session + ", " + c.consumed + ")"
+		if _, err := db.Exec(ctx, query, digest(c.seed), live.membership, digest(9), uuid.MustNew()); err != nil {
 			t.Fatal(err)
 		}
 	}
