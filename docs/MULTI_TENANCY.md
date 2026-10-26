@@ -28,9 +28,14 @@ ALTER TABLE tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks FORCE ROW LEVEL SECURITY;
 
 CREATE POLICY tasks_tenant_isolation ON tasks
-USING (tenant_id::text = current_setting('forge.tenant_id', true))
-WITH CHECK (tenant_id::text = current_setting('forge.tenant_id', true));
+USING (tenant_id = NULLIF(current_setting('forge.tenant_id', true), '')::uuid)
+WITH CHECK (tenant_id = NULLIF(current_setting('forge.tenant_id', true), '')::uuid);
 ```
+
+This is the predicate `forge generate resource --tenant-scoped` emits. It
+compares `uuid` values, so the `(tenant_id, id)` index stays usable (a
+`tenant_id::text` cast would defeat it), and `NULLIF` turns an unset or empty
+setting into `NULL`, which matches no row: the policy fails closed.
 
 The serving database role must not be a superuser or have `BYPASSRLS`, because
 those roles bypass policies. This is enforced, not only advised: the generated

@@ -65,7 +65,7 @@ What each adapter sets up:
 
 | | PostgreSQL | MySQL / MariaDB | SQLite |
 | --- | --- | --- | --- |
-| Production TLS rule | `sslmode=require`, `verify-ca`, or `verify-full` | `tls=true` | none (local file) |
+| Production TLS rule | `sslmode=verify-ca` or `verify-full` | `tls=true` | none (local file) |
 | URL parameters | pgx parameters; the Forge variables override pool size, timeouts, and `statement_timeout`; `application_name` defaults to `forge` | only `tls` (`true`, `skip-verify`, `preferred`, `false`; default `false`); anything else is rejected | none accepted |
 | Statement timeout | `statement_timeout`, every statement | MySQL: `max_execution_time`, read-only `SELECT` only. MariaDB: `max_statement_time`, every statement | none; statements stop when their context ends |
 | Session | `timestamptz` scanned as UTC | `utf8mb4`, `time_zone = '+00:00'`, strict `sql_mode`, times as UTC `time.Time` | foreign keys on, WAL, `synchronous=NORMAL`, `busy_timeout`, immediate transactions, UTC time format, defensive mode, double-quoted strings disabled |
@@ -73,10 +73,12 @@ What each adapter sets up:
 
 Rules enforced at startup ([ADR 0005](adr/0005-environment-configuration-fail-fast.md)):
 
-- **PostgreSQL in `production`:** `sslmode` must be `require`, `verify-ca`,
-  or `verify-full`. A missing `sslmode` is rejected too: libpq's default,
-  `prefer`, falls back to plaintext silently. Only `verify-full` also checks
-  the server's host name.
+- **PostgreSQL in `production`:** `sslmode` must be `verify-ca` or
+  `verify-full`. `require` is rejected: it encrypts without checking the
+  certificate, so the connection can be intercepted. A missing `sslmode` is
+  rejected too: libpq's default, `prefer`, falls back to plaintext silently.
+  Only `verify-full` also checks the server's host name; for a private CA add
+  `sslrootcert`.
 - **MySQL/MariaDB in `production`:** `tls=true`, which verifies the server
   certificate. `skip-verify` and `preferred` encrypt without verifying and are
   rejected in production.

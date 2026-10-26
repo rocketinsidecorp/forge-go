@@ -13,9 +13,9 @@ branch. Nothing in a phase marked *planned* is implemented.
 | 5     | OpenTelemetry                                      | Done    |
 | 6     | OpenAPI and tooling                                | In progress |
 | 7     | AI API and CLI subsystem                           | In progress |
-| 8     | Code generation                                    | Planned |
-| 9     | Performance                                        | Planned |
-| 10    | Security hardening                                 | Planned |
+| 8     | Code generation (generators shipped; SQL views open) | In progress |
+| 9     | Performance (benchmark suite shipped; profiling open) | In progress |
+| 10    | Security hardening (fuzzing, SBOMs, signed images shipped; signed CLI binaries open) | In progress |
 
 ## Phase 0 - Architecture
 

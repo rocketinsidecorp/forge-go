@@ -137,7 +137,7 @@ See [OBSERVABILITY.md](OBSERVABILITY.md) and [ADR 0034](adr/0034-dependency-free
 
 | Threat | STRIDE | Mitigation |
 | ------ | ------ | ---------- |
-| Insecure production configuration | T, I | `production` with `plain` HTTP transport fails at startup; `tls` without cert/key fails; non-positive timeouts or limits fail; a production PostgreSQL URL without `sslmode=require`, `verify-ca`, or `verify-full`, or a MySQL URL without `tls=true`, fails unless `FORGE_DATABASE_ALLOW_PLAINTEXT=true`. Unknown URL schemes fail. |
+| Insecure production configuration | T, I | `production` with `plain` HTTP transport fails at startup; `tls` without cert/key fails; non-positive timeouts or limits fail; a production PostgreSQL URL without `sslmode=verify-ca` or `verify-full` (`require` is refused), or a MySQL URL without `tls=true`, fails unless `FORGE_DATABASE_ALLOW_PLAINTEXT=true`. Unknown URL schemes fail. |
 | Unknown or misspelled values silently ignored | T | Unknown `FORGE_ENV` and `FORGE_HTTP_TRANSPORT` values fail validation; malformed numbers, durations, and booleans fail. |
 | Trusted-proxy list that trusts clients | S | `FORGE_HTTP_TRUSTED_PROXIES` is empty (trust nobody) by default. Malformed or empty entries, `0.0.0.0/0`, `::/0`, IPv4-mapped prefixes and zoned addresses stop the process at startup (also when set programmatically: `Config.Validate`, `web.NewTrustedProxies`); errors name the entry position, not its text. Tests: `TestTrustedProxiesRejectInvalidEntries`, `TestValidateRejectsUnsafeTrustedProxies`, `TestServerRejectsUnsafeTrustedProxies`. |
 | Secrets leaked through error messages | I | Malformed values are reported by variable name and expected format only. URL parse errors from `config` and from the adapters' `Open` are not wrapped, because they quote the URL. |
@@ -148,7 +148,7 @@ See [OBSERVABILITY.md](OBSERVABILITY.md) and [ADR 0034](adr/0034-dependency-free
 
 | Threat | STRIDE | Mitigation |
 | ------ | ------ | ---------- |
-| Eavesdropping or tampering on the database connection | I, T, S | PostgreSQL in `production` requires `sslmode=require`, `verify-ca`, or `verify-full`; only `verify-full` authenticates the server's host name, and `require` protects against passive eavesdropping only. MySQL/MariaDB in `production` requires `tls=true`, which verifies the certificate; `skip-verify` and `preferred` are rejected. `FORGE_DATABASE_ALLOW_PLAINTEXT=true` is an explicit opt-out for trusted private networks. SQLite has no network connection. |
+| Eavesdropping or tampering on the database connection | I, T, S | PostgreSQL in `production` requires `sslmode=verify-ca` or `verify-full` (`require` is refused: it does not authenticate the server); only `verify-full` authenticates the server's host name. MySQL/MariaDB in `production` requires `tls=true`, which verifies the certificate; `skip-verify` and `preferred` are rejected. `FORGE_DATABASE_ALLOW_PLAINTEXT=true` is an explicit opt-out for trusted private networks. SQLite has no network connection. |
 | Driver options injected through the connection URL | T, E | MySQL: the driver configuration is built field by field, never as a DSN string, and every URL parameter except `tls` is rejected, so a URL cannot enable `multiStatements`, `allowAllFiles` (`LOAD DATA LOCAL INFILE`), cleartext passwords, or client-side interpolation. SQLite: the URL accepts no parameters; the path is percent-encoded into a `file:` URI, so `?` or `#` in a file name cannot add pragmas; `:memory:` and `file:` paths are rejected. |
 | Stacked-query injection | T, E | MySQL multi-statement execution is enabled only on the migrator's dedicated pool, never on the application pool. MySQL uses server-side prepared statements. |
 | Silent data corruption on MySQL/MariaDB | T | Every connection sets a strict `sql_mode` (`STRICT_ALL_TABLES`, `NO_ZERO_IN_DATE`, `NO_ZERO_DATE`, `ERROR_FOR_DIVISION_BY_ZERO`, `ONLY_FULL_GROUP_BY`, `NO_ENGINE_SUBSTITUTION`), `utf8mb4`, and UTC; a connection whose setup fails is discarded. |
@@ -415,7 +415,7 @@ See [I18N.md](I18N.md) and [ADR 0042](adr/0042-internationalization.md).
 - A published telemetry metrics port, or `FORGE_TELEMETRY_OTLP_ALLOW_PLAINTEXT=true`
   outside a trusted network. Trace IDs propagate to every service reached
   through `telemetry.Transport`, including third parties.
-- `sslmode=require` or `verify-ca` without host name verification, or
+- `sslmode=verify-ca` without host name verification, or
   `FORGE_DATABASE_ALLOW_PLAINTEXT=true` outside a trusted network.
 - MySQL/MariaDB TLS can only verify against the system certificate pool; a
   server with a private CA can only be reached in production with

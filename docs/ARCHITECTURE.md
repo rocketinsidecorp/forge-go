@@ -126,7 +126,7 @@ without certificate and key files, an empty address, non-positive HTTP
 timeouts or size limits, database pool settings out of range, a database
 statement timeout below `1ms`, and a database URL with an unknown scheme or a
 malformed `postgres://`, `mysql://`, or `sqlite:` form. In `production`, a
-PostgreSQL URL must carry `sslmode=require|verify-ca|verify-full` and a MySQL
+PostgreSQL URL must carry `sslmode=verify-ca|verify-full` and a MySQL
 URL `tls=true`, unless `FORGE_DATABASE_ALLOW_PLAINTEXT=true`.
 `Database.Adapter()` reports the adapter the scheme selects, and
 `Database.SQLitePath()` the SQLite file. Malformed durations, integers, and
@@ -630,6 +630,13 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0044](adr/0044-continuous-fuzzing-sbom-signed-images.md) | Continuous fuzzing, SBOMs and keyless-signed release images |
 | [0045](adr/0045-generated-mfa-settings-pages.md) | Generated two-factor settings pages (`/mfa`) with password and code step-up |
 | [0046](adr/0046-postgresql-runtime-and-migration-roles.md) | PostgreSQL runtime and migration roles; staging and production refuse a serving role that could bypass row-level security |
+
+ADR numbers 0027 and 0028 are unassigned: the rate limiting, cache and file
+storage ADRs were drafted as 0026-0028, found those numbers taken by other work
+and were renumbered 0031-0033. [ADR 0022](adr/0022-openapi-from-typed-routes.md)
+is superseded by [ADR 0043](adr/0043-openapi-from-typed-routes.md), which
+carries the decision forward. ADRs not listed above (0013-0016, 0029, 0030 and
+0035) exist in `docs/adr/` but are missing from this table.
 
 ## Not yet implemented
 
