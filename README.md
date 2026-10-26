@@ -366,6 +366,14 @@ curl -s -X POST http://127.0.0.1:8080/auth/login -H 'Content-Type: application/j
   -d '{"email":"you@example.com","password":"your password","tenant":"acme"}'
 ```
 
+An application created without the flag adds them later: in one that has
+the pages, `--api-auth` writes nothing and prints only the JSON API wiring to
+paste into `identityRoutes`:
+
+```sh
+forge generate authentication --api-auth   # the pages exist: prints the JSON API wiring only
+```
+
 Applications generated earlier mount the JSON routes; remove those no API
 client uses (`forge generate authentication` lists them,
 [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#json-authentication-apis-opt-in)).

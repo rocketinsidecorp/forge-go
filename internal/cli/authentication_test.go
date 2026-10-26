@@ -192,6 +192,60 @@ func TestGenerateAuthenticationRespectsAPIAuth(t *testing.T) {
 	}
 }
 
+// TestGenerateAuthenticationAddsTheJSONAPIsToAnApplicationWithPages: a
+// default application from forge new already has every page, so
+// --api-auth writes nothing and prints only the JSON API wiring, instead of
+// refusing to overwrite the pages. Without --api-auth the refusal stands.
+func TestGenerateAuthenticationAddsTheJSONAPIsToAnApplicationWithPages(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "shop")
+	if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: "postgresql"}); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, dir)
+	for _, args := range [][]string{{"--api-auth"}, {"--api-auth", "--dry-run"}, {"--dry-run", "--api-auth"}} {
+		output, err := runAuthentication(dir, args...)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		for _, want := range []string{"The sign-in pages already exist", "nothing was written", "Mount the JSON authentication APIs there", "auth.NewLoginHandler(login)", `app.Handle("POST /auth/cookie/login", cookieLoginHandler)`} {
+			if !strings.Contains(output, want) {
+				t.Errorf("%v: output is missing %q:\n%s", args, want, output)
+			}
+		}
+		for _, unwanted := range []string{"create  ", "htmlauth.Register(app, browser, renderer, middleware)", "authpostgres.SetupCommand()"} {
+			if strings.Contains(output, unwanted) {
+				t.Errorf("%v: output repeats the page wiring (%q):\n%s", args, unwanted, output)
+			}
+		}
+		if after := snapshotTree(t, dir); !slices.Equal(before, after) {
+			t.Fatalf("%v: files changed", args)
+		}
+	}
+	if _, err := runAuthentication(dir); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("without --api-auth: err = %v", err)
+	}
+
+	// An application that mounts them already is told to keep them.
+	mounted := filepath.Join(t.TempDir(), "api")
+	if _, err := scaffold.Generate(scaffold.Options{Name: "api", Module: "example.com/api", Dir: mounted, Database: "postgresql", APIAuth: true}); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runAuthentication(mounted, "--api-auth")
+	if err != nil || !strings.Contains(output, "bootstrap.go already mounts them; keep them") || strings.Contains(output, "auth.NewLoginHandler(login)") {
+		t.Fatalf("--api-auth with the routes mounted: err=%v\n%s", err, output)
+	}
+
+	// Pages only partly there are not "present": the refusal names the
+	// file in the way.
+	if err := os.RemoveAll(filepath.Join(dir, "app", "views", "mfa")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runAuthentication(dir, "--api-auth"); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("partial pages with --api-auth: err = %v", err)
+	}
+}
+
 func TestScaffoldRefusesThePathsOfTheSignInPages(t *testing.T) {
 	t.Parallel()
 	for _, plural := range []string{"session", "sessions", "passwords"} {

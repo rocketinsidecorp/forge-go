@@ -107,6 +107,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"docker compose run --rm app jobs status", "docker compose run --rm app jobs dead", "docker compose run --rm app jobs show JOB_ID", "docker compose run --rm app jobs retry JOB_ID", "docker compose run --rm app jobs discard JOB_ID", "docker compose run --rm app jobs prune -older 24h",
 			"The HTML pages above are the only way to sign in",
 			"forge new myapi --api-auth",
+			"forge generate authentication --api-auth",
 			"FORGE_AUTH_MFA_KEY",
 			"FORGE_AUTH_SESSION_IDLE_TIMEOUT=30m",
 			"Forge's identity migrations",

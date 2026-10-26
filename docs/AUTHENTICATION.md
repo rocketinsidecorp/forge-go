@@ -384,8 +384,15 @@ generated `bootstrap.apiAuthRoutes` mounts:
 
 ```sh
 forge new myapi --api-auth
-forge generate authentication --api-auth   # an application without the pages: also prints the JSON wiring
+forge generate authentication --api-auth   # adds the JSON APIs to an existing application
 ```
+
+`forge generate authentication --api-auth` never overwrites anything. In an
+application that has every page file (one from `forge new` without the flag)
+it writes nothing and prints only the JSON API wiring to paste into
+`identityRoutes` after `htmlauth.Register`; in one without the pages it
+writes them and prints both wirings; when only some page files exist it
+refuses, naming the file in the way.
 
 An application generated before this option mounts all of them;
 `forge generate authentication` lists the ones its `bootstrap.go` still

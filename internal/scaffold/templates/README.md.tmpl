@@ -300,9 +300,13 @@ with `--api-auth`:
 forge new myapi --api-auth
 ```
 
-This one can mount the same handlers in `identityRoutes`
-(`auth.NewLoginHandler`, `auth.NewCookieLoginHandler` and the others the
-framework's `docs/AUTHENTICATION.md` lists under "JSON authentication APIs").
+This one can add them too. The command below writes nothing here, since the
+pages exist; it prints the handlers to mount in `identityRoutes`, after
+`htmlauth.Register`:
+
+```bash
+forge generate authentication --api-auth
+```
 {{- end}}
 {{- end}}
 

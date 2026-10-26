@@ -103,3 +103,34 @@ func TestGeneratedAPIAuthApplicationBuildsAndPasses(t *testing.T) {
 	defer golangciLint.Unlock()
 	runGo(t, dir, lint, "run", "./...")
 }
+
+// TestPrintedAPIAuthWiringCompiles pastes the JSON API wiring that
+// `forge generate authentication --api-auth` prints for a default
+// application (the code lines, after htmlauth.Register) into its
+// bootstrap.go, and requires the application to vet and build.
+func TestPrintedAPIAuthWiringCompiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the go toolchain on a generated project")
+	}
+	t.Parallel()
+	dir := matrixApplicationWith(t, "postgresql", nil, "resource", nil)
+	output, err := runAuthentication(dir, "--api-auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var code strings.Builder
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "\t") {
+			code.WriteString(line + "\n")
+		}
+	}
+	path := filepath.Join(dir, "app", "bootstrap", "bootstrap.go")
+	source := readFile(t, path)
+	const anchor = "\tif err := htmlauth.Register(app, browser, renderer, middleware); err != nil {\n\t\treturn err\n\t}\n"
+	if code.Len() == 0 || !strings.Contains(source, anchor) {
+		t.Fatalf("no wiring or no anchor:\n%s", output)
+	}
+	writeFile(t, path, strings.Replace(source, anchor, anchor+code.String(), 1))
+	goInMatrix(t, dir, "vet", "./app/bootstrap/")
+	goInMatrix(t, dir, "build", "-o", os.DevNull, "./cmd/mx")
+}
