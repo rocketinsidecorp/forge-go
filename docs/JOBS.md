@@ -173,10 +173,12 @@ between queues and workers are those of claiming one job at a time.
 enqueued through the store (or `store.In(tx)`, when the transaction commits)
 sends `NOTIFY forge_jobs` with its queue name, and every worker on the store
 holds one `LISTEN` connection: an idle worker claims a new job within
-milliseconds instead of after up to `MaxPollInterval`. Polling stays on as
-the fallback, so a lost notification only delays a job to the next poll. The
-listener reconnects with backoff (1s to 30s) and `worker.Listening()` reports
-it. Costs: one extra connection per worker, outside the pool's limit; `LISTEN`
+milliseconds instead of after up to `MaxPollInterval`. Each notification
+wakes every idle worker polling that queue, and each claims once (at most one
+woken claim per 10ms per poller). Polling stays on as the fallback, so a lost
+notification only delays a job to the next poll. The listener reconnects after
+a jittered 0.5s to 1s, doubling to 15s to 30s while it keeps failing, and
+`worker.Listening()` reports it. Costs: one extra connection per worker, outside the pool's limit; `LISTEN`
 needs a direct connection or session pooling (not PgBouncer transaction
 pooling); PostgreSQL serializes the commits of notifying transactions, which
 matters only at thousands of enqueues per second. Anyone who can `NOTIFY` on
@@ -185,6 +187,23 @@ the database can wake workers, which then claim once.
 Run job processing in dedicated replicas by starting the worker only in a
 second command or `Configure` branch selected by configuration; the queue
 itself does not care which process claims.
+
+**Outbox batches.** The outbox dispatcher (`outbox/postgres`) claims up to
+`DispatcherOptions.BatchSize` events (default 10) in one transaction and
+delivers them one after another, acknowledging each on its own; their leases
+are renewed together, and on shutdown the events not yet started go back
+without using an attempt. The claim counts an attempt for every event of the
+batch, so a crash spends one attempt on each claimed event that never
+started (up to `BatchSize - 1`), and an event already on its last attempt is
+then dead-lettered without having been delivered. Lower `BatchSize` or raise
+`MaxAttempts` if that matters.
+
+**Recurring jobs on several replicas.** The `jobs.Scheduler` (the generated
+`JobsConfigure`) records each tick in `forge_job_schedules`
+(`jobspostgres`/`jobsmysql` `.Migrations()` and `.NewTickClaimer`): each tick
+of a job runs on exactly one replica, the first with a free slot to record
+it, whatever the replicas' clocks, and no connection is held while the job
+runs. Two replicas can run consecutive ticks of one job at the same time.
 
 ## 5. Operate
 

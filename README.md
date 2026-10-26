@@ -756,9 +756,21 @@ within the shutdown budget (`FORGE_HTTP_SHUTDOWN_TIMEOUT`); a job that ignores
 its context keeps running and the hook returns the deadline error. Scheduler
 failures are reported but are not retried automatically. Every replica runs
 the scheduler, and the generated `JobsConfigure` passes the database's tick
-lock (`postgres.NewSchedulerLock`, `mysql.NewSchedulerLock`) as
-`jobs.SchedulerOptions.Lock`, so each tick of a job runs on one replica only;
-a replica that reaches a tick more than `LockWindow` (5s) late skips it.
+claimer (`jobspostgres.NewTickClaimer`, `jobsmysql.NewTickClaimer`) as
+`jobs.SchedulerOptions.Ticks`: each tick of a job runs on exactly one replica,
+the first to record it in `forge_job_schedules` (a framework migration that
+the generated `main.go` composes, so `migrate` creates it). Recording a tick is
+one statement; no connection is held while the job runs, and the outcome does
+not depend on the replicas' clocks. A tick that cannot be recorded is skipped
+and reported, and two replicas can run consecutive ticks of one job at the
+same time. An application generated earlier adopts it by adding
+`jobspostgres.Migrations()` (or `jobsmysql.Migrations()`) to its
+`CommandsFromSets` and passing the claimer to `JobsConfigure`:
+
+```sh
+forge migrate        # creates forge_job_schedules once main.go composes the jobs migrations
+forge test
+```
 
 `forge generate resource NAME field:type... (--tenant-scoped | --global)
 [--plural PLURAL] [--dry-run]` generates a working, tested CRUD resource for
@@ -1347,4 +1359,4 @@ signed images for `v*` tags only.
   - [0043 OpenAPI from typed routes](docs/adr/0043-openapi-from-typed-routes.md)
   - [0044 Continuous fuzzing, SBOMs and signed images](docs/adr/0044-continuous-fuzzing-sbom-signed-images.md)
   - [0045 Generated two-factor settings pages with step-up](docs/adr/0045-generated-mfa-settings-pages.md)
-  - [0047 Batch claims, LISTEN/NOTIFY wake-up and per-tick scheduler locks](docs/adr/0047-batch-claims-notify-and-scheduler-locks.md)
+  - [0047 Batch claims, LISTEN/NOTIFY wake-up and recorded scheduler ticks](docs/adr/0047-batch-claims-notify-and-recorded-ticks.md)

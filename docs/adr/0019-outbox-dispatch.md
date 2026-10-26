@@ -1,6 +1,6 @@
 # ADR 0019: PostgreSQL outbox dispatch
 
-Status: accepted; amended by [ADR 0047](0047-batch-claims-notify-and-scheduler-locks.md)
+Status: accepted; amended by [ADR 0047](0047-batch-claims-notify-and-recorded-ticks.md)
 (events are claimed in batches, each still acknowledged on its own)
 
 ## Context

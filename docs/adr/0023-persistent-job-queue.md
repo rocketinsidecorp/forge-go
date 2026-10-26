@@ -1,6 +1,6 @@
 # ADR 0023: Persistent database-backed job queue
 
-Status: accepted; amended by [ADR 0047](0047-batch-claims-notify-and-scheduler-locks.md) (batch claims, LISTEN/NOTIFY wake-up, recovery off the claim path)
+Status: accepted; amended by [ADR 0047](0047-batch-claims-notify-and-recorded-ticks.md) (batch claims, LISTEN/NOTIFY wake-up, recovery off the claim path)
 
 ## Context
 

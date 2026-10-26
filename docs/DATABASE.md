@@ -684,7 +684,7 @@ on the same merged history and the same `forge_schema_migrations` table.
 ### Framework migrations
 
 The migrations Forge packages ship (identity, outbox, agent journal, job
-queue, rate limiter, cache) are registered by version, name and owning package
+queue, scheduled job ticks, rate limiter, cache) are registered by version, name and owning package
 in `migrate.FrameworkMigrations()`
 ([ADR 0039](adr/0039-framework-migration-ownership.md)):
 
@@ -702,7 +702,7 @@ in `migrate.FrameworkMigrations()`
 - Reverting a framework migration is deliberate library code, never a
   command: `Migrator.DownFramework(ctx, steps)` reverts the most recently
   applied framework migrations the migrator contains and never one of yours.
-  The job queue, rate-limit, cache and outbox migrations have no down script
+  The job queue, scheduled job ticks, rate-limit, cache and outbox migrations have no down script
   and are refused as irreversible.
 
 ```sh
