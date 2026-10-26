@@ -614,7 +614,7 @@ func wireParts(t *testing.T, dir string, partsList []resourceWiringParts) {
 		usage.WriteString(parts.Usage)
 	}
 	source = strings.Replace(source, "\t\"net/http\"\n", "\t\"net/http\"\n"+imports.String(), 1)
-	anchor := "\treturn app.Handle(\"GET /v1/auth/session\""
+	anchor := "\t// Pages behind a permission authenticate the session cookie"
 	insertAfter := false
 	if !strings.Contains(source, anchor) {
 		anchor = "\tif err := routes(ctx, app, translator); err != nil {\n\t\treturn err\n\t}\n"

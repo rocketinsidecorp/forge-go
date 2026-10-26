@@ -126,7 +126,7 @@ type source struct {
 //
 //	csrfField          hidden authenticity_token input for a form
 //	csrfMeta           csrf-param and csrf-token meta tags
-//	csrfToken          the token itself, for data attributes
+//	csrfToken          the token, masked afresh per call, for data attributes
 //	methodField "PATCH" hidden _method input (PUT, PATCH or DELETE)
 //	flashes            the incoming web.FlashMessage values
 //	flash "notice"     the text of one incoming flash message

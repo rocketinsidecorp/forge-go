@@ -233,12 +233,27 @@ FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit
 variables; `FORGE_MAIL_URL` without `FORGE_AUTH_PASSWORD_RESET_URL` stops the
 application at startup. See the Forge mail guide (`docs/MAIL.md`).
 
+### Session lifetime
+
+A session ends 24 hours after sign-in, or earlier after two hours without a
+request. Change the idle limit (from `5m` to `720h`) with
+`FORGE_AUTH_SESSION_IDLE_TIMEOUT`, in `.env.local` or the deployment's
+environment:
+
+```bash
+FORGE_AUTH_SESSION_IDLE_TIMEOUT=30m
+```
+
 `db/seeds.go` holds `db.Seed`, which `forge seed` (`{{.Name}} seed`) runs in
 one transaction. Keep it idempotent.
 
-## Authentication API (generated with PostgreSQL)
+## Authentication API
+{{- if .APIAuth}}
 
-The following endpoints are registered by `bootstrap.Configure`:
+This application was created with `forge new --api-auth`, so
+`bootstrap.apiAuthRoutes` registers the JSON authentication APIs beside the
+HTML pages. Each is another place a password or a one-time code is entered:
+remove the ones no API client or browser script uses.
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
@@ -262,6 +277,37 @@ fail-closed: they return the same accepted response to avoid account
 enumeration, log a generic configuration error and invalidate the token, and
 the HTML reset pages are not mounted. No recovery token or recipient is
 written to logs.
+
+Sign in for a bearer token and call an authenticated route:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"your password","tenant":"acme"}'
+# {"access_token":"...","token_type":"Bearer","expires_at":"..."}
+TOKEN=paste-the-access_token-here
+curl -s http://127.0.0.1:8080/v1/auth/session -H "Authorization: Bearer $TOKEN"
+```
+{{- else}}
+
+The HTML pages above are the only way to sign in: this application mounts no
+JSON login. The JSON authentication APIs (bearer login and logout for API
+clients, a cookie login for browser scripts, MFA completion, JSON password
+recovery and `GET /v1/auth/session`) are opt-in, because each is another
+place a password or a one-time code is entered. A new application gets them
+with `--api-auth`:
+
+```bash
+forge new myapi --api-auth
+```
+
+This one can add them too. The command below writes nothing here, since the
+pages exist; it prints the handlers to mount in `identityRoutes`, after
+`htmlauth.Register`:
+
+```bash
+forge generate authentication --api-auth
+```
+{{- end}}
 {{- end}}
 
 | Path | Purpose |
@@ -293,19 +339,22 @@ PostgreSQL projects include Forge's identity migrations alongside application
 migrations and wire the PostgreSQL identity repository into the generated
 composition root.
 
-The generated API exposes:
+{{- if .APIAuth}}
+
+The generated API (`--api-auth`) exposes:
 
 - `POST /auth/login` for tenant-scoped email/password bearer login;
 - `POST /auth/logout` for idempotent bearer-session revocation with security
   audit;
 - `GET /v1/auth/session` as an authenticated example returning the current
   subject, tenant, and permissions.
+{{- end}}
 
 The generated `.env.local` contains a unique development-only key for local
 MFA seed encryption. It is git-ignored and loaded by both `forge` and Docker
 Compose. Never reuse this development key in production; configure a separate
 secret there. If `FORGE_AUTH_MFA_KEY` is configured, the generated app wires
-`POST /auth/mfa/complete`. The value must be canonical unpadded base64url for
+the `/session/mfa` step{{if .APIAuth}} and `POST /auth/mfa/complete`{{end}}. The value must be canonical unpadded base64url for
 exactly 32 random bytes and belongs in `.env.local` during development or a
 secret manager in deployed environments. It is never stored in the identity
 database.
@@ -313,8 +362,7 @@ database.
 Run `migrate` before serving so the Forge identity tables exist, then
 `setup` once to create the first owner, sign in and open `/mfa` to turn on
 two-factor authentication. Inviting further users remains an application
-opt-in. Browser-cookie
-routes are available for HTTPS applications. Password recovery delivery is
+opt-in. The session cookies need HTTPS (or `localhost`). Password recovery delivery is
 enabled by the `FORGE_MAIL_*` and `FORGE_AUTH_PASSWORD_RESET_URL` settings
 above; any SMTP server works, self-hosted included.
 {{- end}}
@@ -326,7 +374,7 @@ route (`openapi.Typed` or `openapi.Describe` from
 `github.com/rocketinsidecorp/forge-go/openapi`), so the OpenAPI 3.1 document
 is generated from the Go types and cannot drift from them. `GET /v1/status`
 in `app/bootstrap` is the example; generated resources and `--api`
-controllers are described too{{if and .DB .DB.Identity}}, and so are the identity routes
+controllers are described too{{if and .DB .DB.Identity .APIAuth}}, and so are the identity routes
 (`/auth/login`, logout, MFA completion when `FORGE_AUTH_MFA_KEY` is set, password
 recovery and the cookie routes): Forge's `auth` handlers carry their descriptions, so register them as
 returned{{end}}.
@@ -334,7 +382,7 @@ returned{{end}}.
 ```bash
 # Served in development and test (FORGE_OPENAPI_ENABLED=true elsewhere)
 curl http://127.0.0.1:8080/openapi.json
-{{- if and .DB .DB.Identity}}
+{{- if and .DB .DB.Identity .APIAuth}}
 curl -s http://127.0.0.1:8080/openapi.json | grep '"/auth/'   # the identity routes
 {{- end}}
 

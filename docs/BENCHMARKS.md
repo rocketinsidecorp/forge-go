@@ -41,7 +41,8 @@ go run ./internal/loadgen -h
 ```
 
 `scripts/bench.sh` builds the `forge` CLI and the load generator, runs
-`forge new --framework-path` against your checkout and
+`forge new --framework-path --api-auth` against your checkout (loadgen signs in
+through the bearer `POST /auth/login`) and
 `forge generate scaffold post title:string body:text --tenant-scoped`, pastes
 the wiring the generator prints into `bootstrap.go`, creates a non-superuser
 role and a database of its own on the server (row-level security applies, as in

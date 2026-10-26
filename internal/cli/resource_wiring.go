@@ -194,7 +194,7 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 	if spec.Identity {
 		guard = "protectCookie"
 		parts.CookieGuard = identityPagesGuard
-		parts.Notes = append(parts.Notes, "The pages authenticate the session cookie the sign-in page (/session/new) and POST /auth/cookie/login set; a signed-out browser is redirected to /session/new and back, while API clients get the 401 JSON error. forge new generates the sign-in page; run `forge generate authentication` in an application that lacks it. Their forms are protected by the CSRF middleware that bootstrap.go installs.")
+		parts.Notes = append(parts.Notes, "The pages authenticate the session cookie the sign-in page (/session/new) sets (as does POST /auth/cookie/login in applications created with --api-auth); a signed-out browser is redirected to /session/new and back, while API clients get the 401 JSON error. forge new generates the sign-in page; run `forge generate authentication` in an application that lacks it. Their forms are protected by the CSRF middleware that bootstrap.go installs.")
 	}
 	if spec.Identity && !spec.TenantScoped {
 		parts.Usage += fmt.Sprintf(`	if err := htmlui.Register%[1]s(app, %[2]sService, renderer, func(permission string, next http.Handler) (http.Handler, error) {

@@ -37,6 +37,7 @@ var frameworkMigrations = []FrameworkMigration{
 	{Version: 20260927203000, Name: "mfa_backup_codes", Owner: "auth/postgres"},
 	{Version: 20260928004500, Name: "security_audit", Owner: "auth/postgres"},
 	{Version: 20261020120000, Name: "login_throttle_pair_scope", Owner: "auth/postgres"},
+	{Version: 20261026090000, Name: "session_idle_timeout", Owner: "auth/postgres"},
 	{Version: 20261003200000, Name: "outbox", Owner: "outbox/postgres"},
 	{Version: 20261003210000, Name: "dispatch", Owner: "outbox/postgres"},
 	{Version: 20261003220000, Name: "dispatch_indexes", Owner: "outbox/postgres"},

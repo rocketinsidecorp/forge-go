@@ -296,6 +296,7 @@ func NewRecoveryService(store RecoveryStore, sender RecoverySender, options ...R
 			return nil, err
 		}
 	}
+	warnProcessLocalThrottle(service.logger, "password-reset", service.throttler)
 	return service, nil
 }
 

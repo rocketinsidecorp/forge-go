@@ -95,7 +95,7 @@ safely. The generated `views.go` embeds templates one directory deep
 | ------ | ------ |
 | `{{csrfField}}` | `<input type="hidden" name="authenticity_token" value="...">`; put it in every form that does not use `GET` |
 | `{{csrfMeta}}` | `csrf-param` and `csrf-token` meta tags for scripts (the layout has them) |
-| `{{csrfToken}}` | the token, for a `data-` attribute |
+| `{{csrfToken}}` | the token, masked afresh on every call (see [CSRF](#csrf)), for a `data-` attribute |
 | `{{methodField "PATCH"}}` | `<input type="hidden" name="_method" value="PATCH">`; `PUT`, `PATCH` or `DELETE` only |
 | `{{range flashes}}` | the incoming `web.FlashMessage` values (`.Kind`, `.Text`) |
 | `{{flash "notice"}}` | the text of one incoming message, or empty |
@@ -502,6 +502,70 @@ Unsafe requests are rejected with `403` when:
   sibling subdomain), unless the origin is in `csrf.Options.TrustedOrigins`;
 - the token is missing, repeated, malformed or does not match the
   `__Host-forge_csrf` cookie.
+
+Pages never embed the token itself. `{{csrfField}}`, `{{csrfMeta}}` and
+`{{csrfToken}}` (all through `csrf.Token`) write it masked, as Rails does:
+a fresh 32-byte one-time pad followed by the token XOR the pad, 86
+characters of base64url. Every render embeds different bytes, so a page
+compressed together with reflected input cannot leak the token through its
+size (BREACH). The middleware and `auth.RequireCSRF` unmask what they receive
+and compare it with the cookie in constant time. They also accept the token
+unmasked: scripts that read the cookie send it so (cookies are not part of a
+compressed body), and forms rendered before the upgrade to masked tokens
+carry it, so pages open during a deploy keep working. Accepting the unmasked
+form in `authenticity_token` is a transition for one release;
+`csrf.MaskToken` and `csrf.UnmaskToken` are there for custom renderers.
+
+TODO(v0.2.0): stop accepting an unmasked token in the `authenticity_token`
+form field. Masked tokens first ship in v0.1.0 (no release has been tagged
+yet), so v0.2.0 is the release after the one-release transition. The
+`X-CSRF-Token` header keeps accepting the unmasked cookie value, which
+scripts read from the cookie.
+
+### Upgrading: tests that compare the embedded token with the cookie
+
+Applications generated before masked tokens have two tests that compare the
+token a page embeds with the `__Host-forge_csrf` cookie byte for byte, and
+fail after the upgrade although nothing is broken:
+
+- `app/views/views_test.go`, `TestLayoutRendersFlashAndCSRF`: it expects
+  `<meta name="csrf-token" content="` + cookie + `">` and
+  `<input type="hidden" name="authenticity_token" value="` + cookie + `">`;
+- `app/bootstrap/bootstrap_test.go`, `TestBrowserPipelineRequiresCSRFToken`:
+  it fails when `cookies[0].Value != form.Body.String()`.
+
+Compare with `csrf.Match(cookieToken, embedded)` instead. It reports whether
+`embedded`, masked or not, carries the cookie's token (constant time):
+
+```go
+// bootstrap_test.go, TestBrowserPipelineRequiresCSRFToken
+if form.Code != http.StatusOK || len(cookies) != 1 || cookies[0].Name != csrf.CookieName ||
+	cookies[0].Value == form.Body.String() || !csrf.Match(cookies[0].Value, form.Body.String()) {
+	t.Fatalf("form status=%d cookies=%v body=%q", form.Code, cookies, form.Body.String())
+}
+```
+
+```go
+// views_test.go, TestLayoutRendersFlashAndCSRF: drop the two token lines
+// from the list of wanted fragments, then check what the page embeds.
+meta := embeddedValue(body, `<meta name="csrf-token" content="`)
+field := embeddedValue(body, `<input type="hidden" name="authenticity_token" value="`)
+if !csrf.Match(token, meta) || !csrf.Match(token, field) || meta == token || field == token {
+	t.Fatalf("the embedded CSRF tokens do not carry the cookie token masked: meta=%q field=%q", meta, field)
+}
+
+// embeddedValue is the attribute value that follows prefix in body.
+func embeddedValue(body, prefix string) string {
+	_, rest, found := strings.Cut(body, prefix)
+	if !found {
+		return ""
+	}
+	value, _, _ := strings.Cut(rest, `"`)
+	return value
+}
+```
+
+A new application from `forge new` already has these assertions.
 
 The token check does not apply to requests with an `Authorization: Bearer`
 header or a JSON body, which cross-site pages cannot send, so JSON APIs keep

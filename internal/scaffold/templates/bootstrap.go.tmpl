@@ -200,7 +200,9 @@ func status(*http.Request, openapi.NoBody) (statusResponse, error) {
 {{- if and .DB .DB.Identity}}
 
 func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, translator *i18n.Translator) error {
-	repository, err := authpostgres.New(database)
+	// Sessions end after FORGE_AUTH_SESSION_IDLE_TIMEOUT (default 2h) without
+	// a request, before their absolute expiry.
+	repository, err := authpostgres.New(database, authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))
 	if err != nil {
 		return err
 	}
@@ -212,7 +214,6 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 		auth.WithLoginThrottler(throttler),
 		auth.WithSecurityAuditor(repository),
 	}
-	var mfaCompletion http.Handler
 	var mfaService *auth.MFAService
 	if !app.Config().Auth.MFAKey.IsZero() {
 		cipher, err := auth.NewAESGCMSecretCipherBase64(app.Config().Auth.MFAKey.Reveal())
@@ -235,10 +236,6 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 		}
 		mfaService = mfa
 		loginOptions = append(loginOptions, auth.WithMFAChallengeIssuer(mfa))
-		mfaCompletion, err = auth.NewMFACompletionHandler(mfa)
-		if err != nil {
-			return err
-		}
 	}
 	login, err := auth.NewLoginService(repository, repository, loginOptions...)
 	if err != nil {
@@ -255,30 +252,15 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 	if err != nil {
 		return err
 	}
-	loginHandler, err := auth.NewLoginHandler(login)
-	if err != nil {
-		return err
-	}
-	logoutHandler, err := auth.NewAuditedLogoutHandler(repository, repository)
-	if err != nil {
-		return err
-	}
-	if err := app.Handle("POST /auth/login", loginHandler); err != nil {
-		return err
-	}
-	if err := app.Handle("POST /auth/logout", logoutHandler); err != nil {
-		return err
-	}
-	if mfaCompletion != nil {
-		if err := app.Handle("POST /auth/mfa/complete", mfaCompletion); err != nil {
-			return err
-		}
-	}
 
-	// Password recovery routes (public, non-enumerating). Reset links are
-	// emailed only when outgoing mail is configured (see
-	// passwordRecoveryDelivery); until then the JSON routes fail closed with
-	// their uniform answer and the HTML reset pages are not mounted.
+	// Password recovery (public, non-enumerating). Reset links are emailed
+	// only when outgoing mail is configured (see passwordRecoveryDelivery);
+{{- if .APIAuth}}
+	// until then the HTML reset pages are not mounted and the JSON routes
+	// fail closed with their uniform answer.
+{{- else}}
+	// until then the HTML reset pages are not mounted.
+{{- end}}
 	delivery, mailConfigured, err := passwordRecoveryDelivery(app)
 	if err != nil {
 		return err
@@ -313,6 +295,90 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 	if err := recoveryQueue.Start(recoveryService); err != nil {
 		return err
 	}
+
+{{- if .APIAuth}}
+	// HTML sign-in, sign-out, two-factor and password-reset pages
+	// (app/adapters/htmlauth); apiAuthRoutes below adds the JSON
+	// authentication APIs (--api-auth). auth.Browser verifies the CSRF token
+	// of every form. The reset pages and the "Forgot your password?" link
+	// exist only when reset emails can actually be sent.
+{{- else}}
+	// HTML sign-in, sign-out, two-factor and password-reset pages
+	// (app/adapters/htmlauth), the only way to enter a password: the JSON
+	// authentication APIs are opt-in (forge new --api-auth). auth.Browser
+	// verifies the CSRF token of every form. The reset pages and the "Forgot
+	// your password?" link exist only when reset emails can actually be sent.
+{{- end}}
+	browserOptions := auth.BrowserOptions{
+		Login:     login,
+		Sessions:  repository,
+		MFA:       mfaService,
+		Passwords: repository,
+		Auditor:   repository,
+	}
+	if mailConfigured {
+		browserOptions.Recovery = recoveryService
+	}
+	browser, err := auth.NewBrowser(browserOptions)
+	if err != nil {
+		return err
+	}
+	// The pages include the two-factor settings at /mfa (enrollment,
+	// rotation, backup codes, disable), behind the session cookie; every
+	// change asks for the password again (and a current code once a factor
+	// exists). They say so when FORGE_AUTH_MFA_KEY is not set.
+	if err := htmlauth.Register(app, browser, renderer, middleware); err != nil {
+		return err
+	}
+{{- if .APIAuth}}
+	if err := apiAuthRoutes(app, login, mfaService, recoveryService, repository, middleware); err != nil {
+		return err
+	}
+{{- end}}
+
+	// Pages behind a permission authenticate the session cookie and send
+	// signed-out browsers to the sign-in page, for example:
+	//
+	//	page, err := auth.RequireAudited("reports:read", reportsPage, repository)
+	//	...
+	//	guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
+
+	return nil
+}
+{{- if .APIAuth}}
+
+// apiAuthRoutes mounts the JSON authentication APIs (forge new --api-auth)
+// beside the HTML pages: a bearer-token login for API clients, a cookie
+// login for browser scripts, MFA completion for both, JSON password
+// recovery and GET /v1/auth/session. Each is another place a password or a
+// one-time code is entered; remove the ones the application does not use.
+func apiAuthRoutes(app *forge.App, login *auth.LoginService, mfaService *auth.MFAService, recoveryService *auth.RecoveryService, repository *authpostgres.Repository, middleware *auth.Middleware) error {
+	// Bearer sessions (API clients)
+	loginHandler, err := auth.NewLoginHandler(login)
+	if err != nil {
+		return err
+	}
+	logoutHandler, err := auth.NewAuditedLogoutHandler(repository, repository)
+	if err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/login", loginHandler); err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/logout", logoutHandler); err != nil {
+		return err
+	}
+	if mfaService != nil {
+		mfaCompletion, err := auth.NewMFACompletionHandler(mfaService)
+		if err != nil {
+			return err
+		}
+		if err := app.Handle("POST /auth/mfa/complete", mfaCompletion); err != nil {
+			return err
+		}
+	}
+
+	// Password recovery (public, non-enumerating; fail closed without mail)
 	recoveryRequestHandler, err := auth.NewAuditedPasswordRecoveryRequestHandler(recoveryService, repository)
 	if err != nil {
 		return err
@@ -328,7 +394,7 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 		return err
 	}
 
-	// Cookie-based authentication routes (browser applications)
+	// Cookie sessions for browser scripts: the same cookies as the HTML pages
 	cookieLoginHandler, err := auth.NewCookieLoginHandler(login)
 	if err != nil {
 		return err
@@ -353,40 +419,6 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 		return err
 	}
 
-	// HTML sign-in, sign-out, two-factor and password-reset pages
-	// (app/adapters/htmlauth). They set the same session cookies as the
-	// cookie routes above; auth.Browser verifies the CSRF token of every form.
-	// The reset pages and the "Forgot your password?" link exist only when
-	// reset emails can actually be sent.
-	browserOptions := auth.BrowserOptions{
-		Login:     login,
-		Sessions:  repository,
-		MFA:       mfaService,
-		Passwords: repository,
-		Auditor:   repository,
-	}
-	if mailConfigured {
-		browserOptions.Recovery = recoveryService
-	}
-	browser, err := auth.NewBrowser(browserOptions)
-	if err != nil {
-		return err
-	}
-	// The pages include the two-factor settings at /mfa (enrollment,
-	// rotation, backup codes, disable), behind the session cookie; every
-	// change asks for the password again (and a current code once a factor
-	// exists). They say so when FORGE_AUTH_MFA_KEY is not set.
-	if err := htmlauth.Register(app, browser, renderer, middleware); err != nil {
-		return err
-	}
-
-	// Pages behind a permission authenticate the session cookie and send
-	// signed-out browsers to the sign-in page, for example:
-	//
-	//	page, err := auth.RequireAudited("reports:read", reportsPage, repository)
-	//	...
-	//	guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
-
 	return app.Handle("GET /v1/auth/session", openapi.Describe(middleware.Authenticate(http.HandlerFunc(currentSession)), openapi.Operation{
 		Summary:       "The signed-in session",
 		Tags:          []string{"auth"},
@@ -394,6 +426,7 @@ func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, 
 		Responses:     []openapi.Response{openapi.JSON[sessionResponse](http.StatusOK)},
 	}))
 }
+{{- end}}
 
 // passwordRecoveryDelivery emails reset links through auth/recoverymail when
 // outgoing mail is configured:
@@ -446,6 +479,8 @@ func (s recoveryDeliveryNotConfigured) SendPasswordRecovery(ctx context.Context,
 	return errors.New("password recovery delivery is not configured")
 }
 
+{{- if .APIAuth}}
+
 type sessionResponse struct {
 	SubjectID   string            `json:"subject_id"`
 	TenantID    string            `json:"tenant_id"`
@@ -464,4 +499,5 @@ func currentSession(w http.ResponseWriter, r *http.Request) {
 		Permissions: principal.Permissions(),
 	})
 }
+{{- end}}
 {{- end}}

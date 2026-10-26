@@ -1,6 +1,7 @@
 package csrf_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"mime/multipart"
@@ -85,7 +86,10 @@ func TestSafeRequestIssuesTokenOnlyWhenUsed(t *testing.T) {
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, site+"/form", nil))
 	cookie := csrfCookie(page.Result())
-	if cookie == nil || cookie.Value != first || first != second || !csrf.Match(first, first) {
+	// Each call masks the cookie token with a fresh pad: the page never
+	// embeds the token itself, and no two renders embed the same bytes.
+	if cookie == nil || first == second || first == cookie.Value || second == cookie.Value ||
+		!csrf.Match(cookie.Value, first) || !csrf.Match(cookie.Value, second) {
 		t.Fatalf("cookie=%+v first=%q second=%q", cookie, first, second)
 	}
 	if !cookie.Secure || cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.Path != "/" || cookie.Domain != "" {
@@ -100,7 +104,7 @@ func TestSafeRequestIssuesTokenOnlyWhenUsed(t *testing.T) {
 	again.AddCookie(cookie)
 	reused := httptest.NewRecorder()
 	handler.ServeHTTP(reused, again)
-	if first != cookie.Value || reused.Header().Get("Set-Cookie") != "" {
+	if !csrf.Match(cookie.Value, first) || reused.Header().Get("Set-Cookie") != "" {
 		t.Fatalf("token rotated: %q vs %q, %v", first, cookie.Value, reused.Header())
 	}
 
@@ -109,7 +113,7 @@ func TestSafeRequestIssuesTokenOnlyWhenUsed(t *testing.T) {
 	malformed.AddCookie(&http.Cookie{Name: csrf.CookieName, Value: "short"})
 	replaced := httptest.NewRecorder()
 	handler.ServeHTTP(replaced, malformed)
-	if fresh := csrfCookie(replaced.Result()); fresh == nil || fresh.Value == "short" || fresh.Value != first {
+	if fresh := csrfCookie(replaced.Result()); fresh == nil || fresh.Value == "short" || !csrf.Match(fresh.Value, first) {
 		t.Fatalf("malformed cookie not replaced: %v (token %q)", replaced.Header(), first)
 	}
 }
@@ -143,7 +147,8 @@ func TestUnsafeRequestsWithValidTokenPass(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		before := *calls
 		handler.ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusNoContent || *calls != before+1 || recorder.Header().Get("X-Seen") != request.Method+" "+token {
+		seen, issued, _ := strings.Cut(recorder.Header().Get("X-Seen"), " ")
+		if recorder.Code != http.StatusNoContent || *calls != before+1 || seen != request.Method || !csrf.Match(token, issued) {
 			t.Fatalf("%s: status=%d seen=%q body=%s", tt.name, recorder.Code, recorder.Header().Get("X-Seen"), recorder.Body.String())
 		}
 		if recorder.Header().Get("Set-Cookie") != "" {
@@ -417,21 +422,30 @@ func TestInteroperatesWithAuthCookieTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	var issued string
+	page := httptest.NewRecorder()
 	protection.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		issued, _ = csrf.Token(w, r)
-	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, site+"/", nil))
+	})).ServeHTTP(page, httptest.NewRequest(http.MethodGet, site+"/", nil))
+	cookie := csrfCookie(page.Result())
+	if cookie == nil {
+		t.Fatal("no CSRF cookie")
+	}
 
 	required, err := auth.RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, site+"/auth/cookie/logout", nil)
-	request.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: issued})
-	request.Header.Set(auth.CSRFHeaderName, issued)
-	recorder := httptest.NewRecorder()
-	protection.Handler(required).ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	// The masked token of a page (the csrf-token meta tag) and the cookie
+	// value a script reads are both accepted in the header.
+	for _, header := range []string{issued, cookie.Value} {
+		request := httptest.NewRequest(http.MethodPost, site+"/auth/cookie/logout", nil)
+		request.AddCookie(cookie)
+		request.Header.Set(auth.CSRFHeaderName, header)
+		recorder := httptest.NewRecorder()
+		protection.Handler(required).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("header %q: status=%d body=%s", header, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 
@@ -531,4 +545,129 @@ func TestVerifiedReportsOnlyCheckedTokens(t *testing.T) {
 	if csrf.Verified(httptest.NewRequest(http.MethodPost, site+"/session", nil)) {
 		t.Fatal("without the middleware nothing is verified")
 	}
+}
+
+// TestMaskedTokens: every mask of a token differs, every mask and the
+// canonical token itself validate, and any change to a masked token, its
+// length or its encoding is refused.
+func TestMaskedTokens(t *testing.T) {
+	t.Parallel()
+	token := newToken(t)
+	seen := map[string]bool{token: true}
+	for range 64 {
+		masked, err := csrf.MaskToken(token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(masked) != 86 || seen[masked] {
+			t.Fatalf("mask %q is not a fresh 86-character value", masked)
+		}
+		seen[masked] = true
+		if !csrf.Match(token, masked) {
+			t.Fatalf("masked token %q does not match", masked)
+		}
+		if raw, err := csrf.UnmaskToken(masked); err != nil || encode(raw) != token {
+			t.Fatalf("UnmaskToken(%q) = %q, %v", masked, encode(raw), err)
+		}
+	}
+	if !csrf.Match(token, token) {
+		t.Fatal("the canonical token no longer matches")
+	}
+	if _, err := csrf.MaskToken("short"); !errors.Is(err, csrf.ErrInvalid) {
+		t.Fatalf("MaskToken of a malformed token: %v", err)
+	}
+
+	masked, err := csrf.MaskToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := newToken(t)
+	otherMasked, err := csrf.MaskToken(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := []string{
+		flip(masked, 0),             // the pad
+		flip(masked, 50),            // the masked token
+		flip(masked, len(masked)-1), // the last character
+		masked[:85],
+		masked + "A",
+		masked + "=",
+		masked[:43],
+		masked[43:],
+		strings.Replace(masked, masked[:1], "+", 1),
+		otherMasked,
+		other,
+		"",
+	}
+	for _, value := range tampered {
+		if value == masked {
+			continue
+		}
+		if csrf.Match(token, value) {
+			t.Fatalf("tampered token %q matched", value)
+		}
+	}
+	// A masked value is never a valid cookie: the cookie holds the token.
+	if csrf.Match(masked, masked) {
+		t.Fatal("a masked token was accepted as the cookie token")
+	}
+}
+
+// TestMaskedTokensPassTheMiddleware: a form posts the masked token a page
+// rendered, a script the header, a page rendered before the upgrade the
+// canonical token; all pass, and a tampered one is 403.
+func TestMaskedTokensPassTheMiddleware(t *testing.T) {
+	t.Parallel()
+	handler, calls := protected(t, csrf.Options{})
+	token := newToken(t)
+	masked, err := csrf.MaskToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := &http.Cookie{Name: csrf.CookieName, Value: token}
+	cases := []struct {
+		name    string
+		request func() *http.Request
+		want    int
+	}{
+		{"masked form field", func() *http.Request {
+			return formPost("/posts", url.Values{csrf.FormField: {masked}}.Encode())
+		}, http.StatusNoContent},
+		{"canonical form field", func() *http.Request {
+			return formPost("/posts", url.Values{csrf.FormField: {token}}.Encode())
+		}, http.StatusNoContent},
+		{"masked header", func() *http.Request {
+			request := httptest.NewRequest(http.MethodDelete, site+"/posts/1", nil)
+			request.Header.Set(csrf.HeaderName, masked)
+			return request
+		}, http.StatusNoContent},
+		{"tampered form field", func() *http.Request {
+			return formPost("/posts", url.Values{csrf.FormField: {flip(masked, 60)}}.Encode())
+		}, http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		request := tc.request()
+		request.AddCookie(cookie)
+		recorder := httptest.NewRecorder()
+		before := *calls
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != tc.want {
+			t.Fatalf("%s: status=%d body=%s", tc.name, recorder.Code, recorder.Body.String())
+		}
+		if reached := *calls > before; reached != (tc.want == http.StatusNoContent) {
+			t.Fatalf("%s: handler reached=%v", tc.name, reached)
+		}
+	}
+}
+
+func encode(raw []byte) string { return base64.RawURLEncoding.EncodeToString(raw) }
+
+// flip changes the base64url character at i to another valid one.
+func flip(value string, i int) string {
+	replacement := byte('A')
+	if value[i] == 'A' {
+		replacement = 'B'
+	}
+	return value[:i] + string(replacement) + value[i+1:]
 }

@@ -62,9 +62,24 @@ type Auth struct {
 	// (FORGE_AUTH_PASSWORD_RESET_URL). It must be https, or http on a
 	// loopback host for development. Empty disables reset emails.
 	PasswordResetURL string
+	// SessionIdleTimeout ends a session nobody used for this long, before
+	// its absolute expiry (FORGE_AUTH_SESSION_IDLE_TIMEOUT, default 2h,
+	// between 5m and 720h). auth/postgres.WithSessionIdleTimeout applies it.
+	SessionIdleTimeout time.Duration
 }
 
+// Bounds of Auth.SessionIdleTimeout: at least five minutes, at most the
+// longest session lifetime (30 days), where it no longer shortens anything.
+const (
+	defaultSessionIdleTimeout = 2 * time.Hour
+	minSessionIdleTimeout     = 5 * time.Minute
+	maxSessionIdleTimeout     = 30 * 24 * time.Hour
+)
+
 func (a Auth) validate() error {
+	if a.SessionIdleTimeout < minSessionIdleTimeout || a.SessionIdleTimeout > maxSessionIdleTimeout {
+		return errors.New("FORGE_AUTH_SESSION_IDLE_TIMEOUT must be between 5m and 720h")
+	}
 	if a.PasswordResetURL == "" {
 		return nil
 	}
@@ -182,6 +197,7 @@ func Default() Config {
 			ConnectTimeout:   5 * time.Second,
 			StatementTimeout: 30 * time.Second,
 		},
+		Auth:      Auth{SessionIdleTimeout: defaultSessionIdleTimeout},
 		RateLimit: RateLimit{MaxKeys: defaultRateLimitMax},
 		Cache: Cache{
 			MaxEntries:    10_000,

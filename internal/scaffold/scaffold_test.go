@@ -62,6 +62,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"FORGE_DATABASE_URL=postgres://app_runtime:app_runtime@127.0.0.1:" + port + "/billing_api_development?sslmode=disable",
 			"FORGE_MIGRATION_DATABASE_URL=postgres://app_migrator:app_migrator@127.0.0.1:" + port + "/billing_api_development?sslmode=disable",
 			"FORGE_TEST_DATABASE_URL=postgres://postgres:development@127.0.0.1:" + port + "/postgres?sslmode=disable",
+			"# FORGE_AUTH_SESSION_IDLE_TIMEOUT=2h",
 		},
 		"docker/postgres/init.sql": {
 			"CREATE ROLE app_migrator\n    LOGIN PASSWORD 'app_migrator'\n    NOSUPERUSER CREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;",
@@ -85,7 +86,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		"app/bootstrap/bootstrap.go": {
 			"postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),\n\t\tpostgres.RequireRowSecurity(app.Config().Environment))",
 			`app.Readiness("database", database.Ping)`,
-			"authpostgres.New(database)",
+			"authpostgres.New(database, authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))",
 			"authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())",
 			"auth.NewLoginService(",
 			"auth.WithSecurityAuditor(repository)",
@@ -98,23 +99,17 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"auth.NewAESGCMSecretCipherBase64(app.Config().Auth.MFAKey.Reveal())",
 			"auth.NewMFAService(",
 			"auth.WithMFAAuditor(repository)",
-			`app.Handle("POST /auth/mfa/complete", mfaCompletion)`,
-			`app.Handle("POST /auth/login", loginHandler)`,
-			`app.Handle("POST /auth/logout", logoutHandler)`,
-			`app.Handle("GET /v1/auth/session", openapi.Describe(middleware.Authenticate(http.HandlerFunc(currentSession)), openapi.Operation{`,
+			"htmlauth.Register(app, browser, renderer, middleware)",
 		},
 		"db/db.go": {"//go:embed all:migrations"},
 		"README.md": {
 			"queuepostgres.Commands()",
 			"docker compose run --rm app jobs status", "docker compose run --rm app jobs dead", "docker compose run --rm app jobs show JOB_ID", "docker compose run --rm app jobs retry JOB_ID", "docker compose run --rm app jobs discard JOB_ID", "docker compose run --rm app jobs prune -older 24h",
-			"POST /auth/login",
-			"POST /auth/logout",
-			"`/auth/recovery/request`",
-			"`/auth/recovery/reset`",
-			"`/auth/cookie/login`",
-			"GET /v1/auth/session",
-			"POST /auth/mfa/complete",
+			"The HTML pages above are the only way to sign in",
+			"forge new myapi --api-auth",
+			"forge generate authentication --api-auth",
 			"FORGE_AUTH_MFA_KEY",
+			"FORGE_AUTH_SESSION_IDLE_TIMEOUT=30m",
 			"Forge's identity migrations",
 		},
 		".github/workflows/ci.yml": {"go test -race ./...", "tags: billing-api:ci", "image: postgres:18-alpine", "POSTGRES_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: postgres://forge:forge@127.0.0.1:5432/postgres?sslmode=disable", `FORGE_TEST_REQUIRE_DATABASE: "true"`,
@@ -134,6 +129,82 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 	if got := localEnv.Mode().Perm(); got != 0o600 {
 		t.Fatalf(".env.local permissions = %04o, want 0600", got)
 	}
+}
+
+// TestJSONAuthenticationAPIsAreOptIn: a PostgreSQL application gets only
+// the HTML sign-in flow; --api-auth adds the bearer and cookie JSON logins,
+// MFA completion, JSON recovery and GET /v1/auth/session, documented in its
+// README. Other databases have no identity, so the flag is refused there.
+func TestJSONAuthenticationAPIsAreOptIn(t *testing.T) {
+	t.Parallel()
+	routes := []string{
+		`"POST /auth/login"`, `"POST /auth/logout"`, `"POST /auth/mfa/complete"`,
+		`"POST /auth/recovery/request"`, `"POST /auth/recovery/reset"`,
+		`"POST /auth/cookie/login"`, `"POST /auth/cookie/mfa/complete"`, `"POST /auth/cookie/logout"`,
+		`"GET /v1/auth/session"`,
+	}
+	for _, apiAuth := range []bool{false, true} {
+		dir := filepath.Join(t.TempDir(), "shop")
+		if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: "postgresql", APIAuth: apiAuth}); err != nil {
+			t.Fatal(err)
+		}
+		bootstrap := readText(t, filepath.Join(dir, "app", "bootstrap", "bootstrap.go"))
+		readme := readText(t, filepath.Join(dir, "README.md"))
+		test := readText(t, filepath.Join(dir, "app", "bootstrap", "bootstrap_test.go"))
+		for _, route := range routes {
+			if strings.Contains(bootstrap, route) != apiAuth {
+				t.Errorf("apiAuth=%v: bootstrap.go mounts %s = %v", apiAuth, route, !apiAuth)
+			}
+		}
+		for _, always := range []string{"htmlauth.Register(app, browser, renderer, middleware)", "authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())", "auth.NewRecoveryService("} {
+			if !strings.Contains(bootstrap, always) {
+				t.Errorf("apiAuth=%v: bootstrap.go lacks %q", apiAuth, always)
+			}
+		}
+		if apiAuth {
+			for _, want := range []string{"func apiAuthRoutes(", "apiAuthRoutes(app, login, mfaService, recoveryService, repository, middleware)", "func currentSession("} {
+				if !strings.Contains(bootstrap, want) {
+					t.Errorf("--api-auth bootstrap.go lacks %q", want)
+				}
+			}
+			for _, want := range []string{"created with `forge new --api-auth`", "`/auth/cookie/login`", "curl -s -X POST http://127.0.0.1:8080/auth/login", "POST /auth/mfa/complete", "GET /v1/auth/session"} {
+				if !strings.Contains(readme, want) {
+					t.Errorf("--api-auth README lacks %q", want)
+				}
+			}
+			if !strings.Contains(test, `"/auth/cookie/login", "/auth/cookie/mfa/complete", "/auth/cookie/logout")`) {
+				t.Error("--api-auth bootstrap test does not check the documented JSON routes")
+			}
+			continue
+		}
+		for _, absent := range []string{"apiAuthRoutes", "currentSession", "NewLoginHandler", "NewCookieLoginHandler", "NewMFACompletionHandler"} {
+			if strings.Contains(bootstrap, absent) {
+				t.Errorf("default bootstrap.go contains %q", absent)
+			}
+		}
+		for _, absent := range []string{"`/auth/cookie/login`", "| `POST` | `/auth/login`", "grep '\"/auth/'"} {
+			if strings.Contains(readme, absent) {
+				t.Errorf("default README documents %q", absent)
+			}
+		}
+		if !strings.Contains(test, "want 404 without --api-auth") {
+			t.Error("the default bootstrap test does not check that the JSON routes are absent")
+		}
+	}
+	for _, database := range []string{"", "mysql", "mariadb", "sqlite"} {
+		if _, err := scaffold.Normalize(scaffold.Options{Name: "shop", Database: database, APIAuth: true}); err == nil || !strings.Contains(err.Error(), "--api-auth") {
+			t.Errorf("--api-auth with database %q: err=%v, want a refusal", database, err)
+		}
+	}
+}
+
+func readText(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(content)
 }
 
 func TestGenerateWithoutDatabase(t *testing.T) {

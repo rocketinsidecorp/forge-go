@@ -62,6 +62,7 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 		{"FORGE_DATABASE_CONNECT_TIMEOUT", &cfg.Database.ConnectTimeout},
 		{"FORGE_DATABASE_STATEMENT_TIMEOUT", &cfg.Database.StatementTimeout},
 		{"FORGE_MAIL_TIMEOUT", &cfg.Mail.Timeout},
+		{"FORGE_AUTH_SESSION_IDLE_TIMEOUT", &cfg.Auth.SessionIdleTimeout},
 		{"FORGE_CACHE_DEFAULT_TTL", &cfg.Cache.DefaultTTL},
 		{"FORGE_STORAGE_LINK_TTL", &cfg.Storage.LinkTTL},
 	}

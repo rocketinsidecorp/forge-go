@@ -76,7 +76,8 @@ rejected fail-closed and comparisons use constant-time equality.
 - organizations and tenants;
 - memberships, roles, permissions, and role assignments;
 - sessions containing only token digests, membership, credential version,
-  expiry, and revocation time.
+  expiry, revocation time and last use (`last_seen_at`, for the idle
+  timeout).
 
 All entity identifiers default to PostgreSQL `uuidv7()` (the repositories
 supply them from Go; the default covers rows inserted in SQL, such as the
@@ -90,6 +91,57 @@ joins the live session, user, organization, tenant and membership state and
 recomputes permissions from current role assignments. `RevokeSession` is
 idempotent, while `RevokeUserSessions` increments the user's credential
 version and revokes existing sessions atomically.
+
+### Session idle timeout
+
+A session also ends when nobody used it for the idle timeout, two hours by
+default, before its absolute expiry. Resolution refuses a session whose
+`last_seen_at` is older than the timeout, exactly as it refuses a revoked one
+(the middleware answers `401`, browser pages redirect to the sign-in page),
+and signing in again creates a new session. Resolving records the use at most
+once a minute per session: a conditional `UPDATE` runs only when the stored
+use is more than a minute old, so most requests only read and concurrent
+requests record one use. The database clock decides both, so replicas with
+skewed clocks agree.
+
+```go
+repository, err := authpostgres.New(database,
+	authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))
+```
+
+`FORGE_AUTH_SESSION_IDLE_TIMEOUT` sets it, a duration from `5m` to `720h`.
+There is no value that switches the idle check off: at `720h`, which equals
+the 30-day maximum session lifetime (`WithSessionTTL`), the idle limit can no
+longer end a session before its absolute expiry, so it no longer shortens
+sessions, but every resolution still checks it. Generated applications pass
+it as above.
+
+Recording the use is part of resolving the session, and it fails closed: when
+the conditional `UPDATE` fails, `ResolveSession` returns the error and the
+request is answered `500` instead of being served on an unrecorded use. A
+resolver connected to a read-only replica (`cannot execute UPDATE in a
+read-only transaction`), a statement timeout (`FORGE_DATABASE_STATEMENT_TIMEOUT`)
+or a lock wait on the session row therefore fails the request, at most once a
+minute per session, since only a stale use is written. Resolve sessions on
+the primary.
+
+The migration `20261026090000_session_idle_timeout` adds the column; sessions
+that exist when it runs count as used at that moment, so upgrading signs
+nobody out. Run `forge migrate` before deploying the new code: the resolver
+reads the column. `ALTER TABLE ... ADD COLUMN` with the stable default
+`now()` does not rewrite the table, but it takes a brief `ACCESS EXCLUSIVE`
+lock on `forge_sessions`, and it waits behind any open transaction that uses
+the table, holding up every session lookup queued after it. On a busy table,
+bound the wait and retry instead of stalling sign-ins:
+
+```sh
+forge migrate
+echo 'FORGE_AUTH_SESSION_IDLE_TIMEOUT=30m' >> .env.local   # shorter, for example
+
+# Busy forge_sessions table: give up after 5s instead of queueing every lookup
+# behind the lock, and run `forge migrate` again if it times out.
+PGOPTIONS='-c lock_timeout=5s' forge migrate
+```
 
 The plaintext bearer token is never stored.
 
@@ -200,7 +252,22 @@ expired counters on every attempt (more than one attempt creates), so the table
 follows the live windows however many logins and sources an attacker cycles
 through, with no scheduled job; `PruneExpired` still deletes expired counters in
 bounded batches using `SKIP LOCKED` to empty a table that stopped receiving
-attempts. `MaxEntries` bounds only the in-memory throttler.
+attempts. `MaxEntries` bounds only the in-memory throttler. Generated
+PostgreSQL applications wire it for sign-in, two-factor codes and password
+resets.
+
+The in-memory throttler counts per process: with several replicas a guesser
+gets each replica's budget, and every restart or deploy resets it. When
+`FORGE_ENV=production`, `NewLoginService`, `NewMFAService` and
+`NewRecoveryService` therefore log a warning (through `slog.Default`, or the
+recovery service's `WithRecoveryLogger`) when they count attempts in a
+`MemoryLoginThrottler`, the default or an explicit one. It is a warning and
+not a refusal, since a single-process application (SQLite, one replica) may
+count in memory on purpose:
+
+```text
+level=WARN msg="auth: sign-in attempts are throttled in this process only (auth.MemoryLoginThrottler): ..." service=sign-in environment=production
+```
 
 A blocked login returns `login_throttled` with HTTP `429`; the HTTP adapter
 also sends `Retry-After`. The source is the client address the HTTP server
@@ -319,6 +386,41 @@ How the flow stays safe:
 - **Tenant selection.** The organization field holds the tenant slug,
   prefilled from `?tenant=`: logins always name their tenant and there is no
   default tenant. Forge does not derive the tenant from `Host`.
+
+### JSON authentication APIs (opt-in)
+
+`forge new` generates only the HTML flow above: it is the application's only
+way to enter a password. The JSON authentication APIs are opt-in with
+`forge new NAME --api-auth` (PostgreSQL), because each is another
+credential-entry point to throttle, audit and keep in mind. With the flag the
+generated `bootstrap.apiAuthRoutes` mounts:
+
+| Method | Route | Handler |
+| ------ | ----- | ------- |
+| `POST` | `/auth/login`, `/auth/logout` | `NewLoginHandler`, `NewAuditedLogoutHandler`: bearer sessions for API clients |
+| `POST` | `/auth/mfa/complete` | `NewMFACompletionHandler` (with `FORGE_AUTH_MFA_KEY`) |
+| `POST` | `/auth/recovery/request`, `/auth/recovery/reset` | `NewAuditedPasswordRecoveryRequestHandler`, `NewAuditedPasswordResetHandler` |
+| `POST` | `/auth/cookie/login`, `/auth/cookie/logout` | `NewCookieLoginHandler`, `NewAuditedCookieLogoutHandler`: the page cookies, for browser scripts |
+| `POST` | `/auth/cookie/mfa/complete` | `NewCookieMFACompletionHandler` (with `FORGE_AUTH_MFA_KEY`) |
+| `GET` | `/v1/auth/session` | the bearer session's principal, behind `Middleware.Authenticate` |
+
+```sh
+forge new myapi --api-auth
+forge generate authentication --api-auth   # adds the JSON APIs to an existing application
+```
+
+`forge generate authentication --api-auth` never overwrites anything. In an
+application that has every page file (one from `forge new` without the flag)
+it writes nothing and prints only the JSON API wiring to paste into
+`identityRoutes` after `htmlauth.Register`; in one without the pages it
+writes them and prints both wirings; when only some page files exist it
+refuses, naming the file in the way.
+
+An application generated before this option mounts all of them;
+`forge generate authentication` lists the ones its `bootstrap.go` still
+mounts. Remove those no API client or script uses. Forge-Rust has no JSON
+login (its applications sign in through the pages only), so the flag is
+Forge-Go's ([RAILS_PARITY.md](RAILS_PARITY.md#parity-follow-ups)).
 
 ### Password-reset emails
 

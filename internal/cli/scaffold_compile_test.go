@@ -184,7 +184,7 @@ func TestOwnerSignsInAndReachesTheScaffoldPages(t *testing.T) {
 		"/products/new":    http.StatusOK,
 		"/categories":      http.StatusOK,
 		"/categories/new":  http.StatusForbidden, // global writes stay behind protectPlatformWrite
-		"/v1/auth/session": http.StatusUnauthorized,
+		"/v1/auth/session": http.StatusNotFound,  // JSON authentication APIs are opt-in (--api-auth)
 	} {
 		if page := do(http.MethodGet, path, nil); page.Code != want {
 			t.Errorf("signed-in GET %s = %d, want %d: %s", path, page.Code, want, page.Body)

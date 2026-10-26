@@ -14,6 +14,9 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Server-rendered HTML, layouts, partials, forms, flash, CSRF | Action View | Done | Done |
 | HTML + JSON CRUD generator | `rails g scaffold` | Done | Done |
 | Authentication pages, password reset | `rails g authentication` | Done | Done |
+| Sign-in through the HTML pages only by default; JSON login opt-in | (`rails new --api` for API-only apps) | Done (`forge new --api-auth`, `forge generate authentication --api-auth`; without the flag no JSON login is mounted) | Done (no JSON login exists; `--api-auth` not needed until one does) |
+| Session idle timeout | (gems, e.g. Devise `timeoutable`) | Done (`FORGE_AUTH_SESSION_IDLE_TIMEOUT`, default 2h; `last_seen_at` written at most once a minute) | Planned (see Parity follow-ups) |
+| CSRF token masked per render (BREACH) | `masked_authenticity_token` | Done (`csrf.Token`, `csrf.MaskToken`) | Planned (see Parity follow-ups) |
 | First tenant and owner, seeds | `db:seed` | Done (`forge setup`, `forge seed`) | In review (`forge setup`, `forge seed`; the application commands `setup` and `seed` are Done) |
 | Multi-tenancy with database enforcement | (gems) | Done (PostgreSQL RLS; `app_migrator`/`app_runtime` roles, staging and production refuse a serving role that could bypass RLS, tests run as the runtime role; [ADR 0046](adr/0046-postgresql-runtime-and-migration-roles.md)) | Done (PostgreSQL RLS; `app_migrator`/`app_runtime` roles, Forge-Rust ADR 0011; production refusal planned in [forge-rust#70](https://github.com/rocketinsidecorp/forge-rust/issues/70)) |
 | TOTP MFA | (gems) | Done (sign-in code step and generated `/mfa` settings pages: enrollment, rotation, backup codes, disable; [ADR 0045](adr/0045-generated-mfa-settings-pages.md)) | Done (`FORGE_AUTH_MFA_KEY`, `/session/mfa`, generated `/mfa` settings pages; Forge-Rust ADR 0040) |
@@ -121,6 +124,31 @@ the work is finished and waiting for its review; **Planned** means not started.
   through `migrate.env`
   ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57));
   Forge-Rust's `forge deploy` has no `migrate.env` yet (tracked in [forge-rust#73](https://github.com/rocketinsidecorp/forge-rust/issues/73)).
+
+- Security defaults (QG4a, audit findings S-3, S-4, S-7 and PF-3). Forge-Go
+  now: ends a session after `FORGE_AUTH_SESSION_IDLE_TIMEOUT` without a
+  request (default `2h`, `5m` to `720h`; migration
+  `20261026090000_session_idle_timeout` adds `forge_sessions.last_seen_at`,
+  written at most once a minute per session by a conditional `UPDATE`, sessions
+  open at the upgrade count as used then); generates only the HTML sign-in
+  flow, with the JSON authentication APIs opt-in through `forge new
+  --api-auth` (and `forge generate authentication --api-auth`); embeds the
+  CSRF token masked with a fresh one-time pad on every render (Rails'
+  format: pad then token XOR pad, base64url, 86 characters), accepting the
+  canonical token too (scripts read it from the cookie; pages rendered before
+  the upgrade embed it, a transition for one release); and logs a warning when
+  a production process (`FORGE_ENV=production`) builds its sign-in, MFA or
+  password-reset service on the in-memory throttler (generated applications
+  already use the PostgreSQL throttler, as Forge-Rust's do since QR2).
+  Forge-Rust status and follow-ups, tracked in
+  [forge-rust#75](https://github.com/rocketinsidecorp/forge-rust/issues/75):
+  (1) the same idle timeout, variable name and default in its generated
+  session store (a `last_seen_at` column in a new migration, the same
+  once-a-minute write); (2) masked CSRF tokens from `csrf_field`/`csrf_meta`
+  with the same encoding, so a page can be served by either framework;
+  (3) the production warning for `MemoryLoginThrottle` in custom wiring.
+  `--api-auth` needs nothing in Forge-Rust while it has no JSON login; if it
+  gains one, it is opt-in under the same flag name.
 
 ## Review gate
 

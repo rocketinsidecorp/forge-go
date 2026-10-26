@@ -11,7 +11,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
-const authenticationUsage = "usage: forge generate authentication [--dry-run]"
+const authenticationUsage = "usage: forge generate authentication [--api-auth] [--dry-run]"
 
 // runGenerateAuthentication is `forge generate authentication`: the sign-in,
 // sign-out, two-factor and password-reset pages `forge new -d postgresql`
@@ -19,16 +19,25 @@ const authenticationUsage = "usage: forge generate authentication [--dry-run]"
 // it never overwrites a file and never edits bootstrap.go or main.go; it
 // prints the wiring instead.
 func runGenerateAuthentication(args []string, stdout io.Writer, root string, env []string) error {
-	dryRun := false
-	switch {
-	case len(args) == 0:
-	case len(args) == 1 && args[0] == "--dry-run":
-		dryRun = true
-	default:
-		return errors.New(authenticationUsage)
+	dryRun, apiAuth := false, false
+	for _, arg := range args {
+		switch {
+		case arg == "--dry-run" && !dryRun:
+			dryRun = true
+		case arg == "--api-auth" && !apiAuth:
+			apiAuth = true
+		default:
+			return errors.New(authenticationUsage)
+		}
 	}
-	plan, err := planAuthentication(root, env)
+	plan, err := planAuthentication(root, env, apiAuth)
 	if err != nil {
+		return err
+	}
+	if plan.pagesPresent {
+		// --api-auth in an application that has the pages: nothing to
+		// write, only the JSON API wiring to print.
+		_, err = io.WriteString(stdout, apiAuthOnlyWiring(plan))
 		return err
 	}
 	if !dryRun {
@@ -55,9 +64,19 @@ type authenticationPlan struct {
 	files           []generatedFile
 	browserPipeline bool
 	i18nMiddleware  bool
+	// apiAuth is --api-auth: the wiring also mounts the JSON
+	// authentication APIs, as `forge new --api-auth` does.
+	apiAuth bool
+	// jsonAuthRoutes are the JSON authentication routes bootstrap.go
+	// already mounts (applications from before --api-auth mount them all).
+	jsonAuthRoutes []string
+	// pagesPresent is set for --api-auth when every page file exists
+	// already (an application from forge new): files is then empty and only
+	// the JSON API wiring is printed.
+	pagesPresent bool
 }
 
-func planAuthentication(root string, env []string) (authenticationPlan, error) {
+func planAuthentication(root string, env []string, apiAuth bool) (authenticationPlan, error) {
 	projectRoot, err := os.OpenRoot(root)
 	if err != nil {
 		return authenticationPlan{}, errors.New("go.mod not found: run this inside a Forge application")
@@ -85,7 +104,7 @@ func planAuthentication(root string, env []string) (authenticationPlan, error) {
 	if !hasIdentityMigrations(projectRoot) {
 		return authenticationPlan{}, errors.New("cmd/<name>/main.go does not compose the Forge identity migrations (authpostgres.Migrations()); the pages need the identity tables: add them to the migrate commands first (see docs/AUTHENTICATION.md)")
 	}
-	plan := authenticationPlan{module: module, command: "<name>", browserPipeline: hasBrowserPipeline(projectRoot), i18nMiddleware: hasI18nMiddleware(projectRoot)}
+	plan := authenticationPlan{module: module, command: "<name>", apiAuth: apiAuth, browserPipeline: hasBrowserPipeline(projectRoot), i18nMiddleware: hasI18nMiddleware(projectRoot), jsonAuthRoutes: mountedJSONAuthRoutes(projectRoot)}
 	if name, err := resolveCommand(root, nil); err == nil {
 		plan.command = name
 	}
@@ -96,6 +115,10 @@ func planAuthentication(root string, env []string) (authenticationPlan, error) {
 	authentication, err := scaffold.AuthenticationFiles(name, module)
 	if err != nil {
 		return authenticationPlan{}, err
+	}
+	if apiAuth && allRegularFiles(projectRoot, authentication) {
+		plan.pagesPresent = true
+		return plan, nil
 	}
 	for _, file := range authentication {
 		plan.files = append(plan.files, generatedFile{path: file.Path, content: string(file.Content)})
@@ -141,6 +164,106 @@ func planAuthentication(root string, env []string) (authenticationPlan, error) {
 	return plan, nil
 }
 
+// allRegularFiles reports whether every file exists in the application as a
+// regular file (not a symbolic link or a directory).
+func allRegularFiles(projectRoot *os.Root, files []scaffold.BaseFile) bool {
+	for _, file := range files {
+		info, err := projectRoot.Lstat(file.Path)
+		if err != nil || !info.Mode().IsRegular() {
+			return false
+		}
+	}
+	return len(files) > 0
+}
+
+// apiAuthOnlyWiring is printed for --api-auth when the application already
+// has the sign-in pages: Forge writes nothing and prints the JSON API wiring.
+func apiAuthOnlyWiring(plan authenticationPlan) string {
+	var out strings.Builder
+	out.WriteString("\nThe sign-in pages already exist (app/adapters/htmlauth, app/views/{sessions,passwords,mfa}); nothing was written.\n")
+	if len(plan.jsonAuthRoutes) == len(jsonAuthRoutePatterns) {
+		out.WriteString("\n  JSON authentication APIs (--api-auth): bootstrap.go already mounts them; keep them.\n")
+		return out.String()
+	}
+	if len(plan.jsonAuthRoutes) > 0 {
+		fmt.Fprintf(&out, "\n  app/bootstrap/bootstrap.go already mounts %s; add only the others below.\n", strings.Join(plan.jsonAuthRoutes, ", "))
+	}
+	out.WriteString("\nForge did not edit app/bootstrap/bootstrap.go. Mount the JSON authentication APIs there:\n")
+	out.WriteString(apiAuthWiring)
+	return out.String()
+}
+
+// jsonAuthRoutePatterns are the JSON authentication routes `forge new
+// --api-auth` mounts (apiAuthRoutes in the generated bootstrap.go).
+var jsonAuthRoutePatterns = []string{
+	"POST /auth/login", "POST /auth/logout", "POST /auth/mfa/complete",
+	"POST /auth/recovery/request", "POST /auth/recovery/reset",
+	"POST /auth/cookie/login", "POST /auth/cookie/mfa/complete", "POST /auth/cookie/logout",
+	"GET /v1/auth/session",
+}
+
+// mountedJSONAuthRoutes lists the JSON authentication routes that
+// app/bootstrap/bootstrap.go registers, as quoted route patterns.
+func mountedJSONAuthRoutes(projectRoot *os.Root) []string {
+	source, err := projectRoot.ReadFile(filepath.Join("app", "bootstrap", "bootstrap.go"))
+	if err != nil {
+		return nil
+	}
+	var mounted []string
+	for _, pattern := range jsonAuthRoutePatterns {
+		if strings.Contains(string(source), `"`+pattern+`"`) {
+			mounted = append(mounted, pattern)
+		}
+	}
+	return mounted
+}
+
+// apiAuthWiring mounts the JSON authentication APIs as `forge new
+// --api-auth` does; it is printed for --api-auth.
+const apiAuthWiring = `
+  JSON authentication APIs (--api-auth): every route below is another place
+  a password or a one-time code is entered, so mount only those API clients
+  or browser scripts use. Inside identityRoutes, after htmlauth.Register:
+
+	loginHandler, err := auth.NewLoginHandler(login) // bearer sessions
+	if err != nil {
+		return err
+	}
+	logoutHandler, err := auth.NewAuditedLogoutHandler(repository, repository)
+	if err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/login", loginHandler); err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/logout", logoutHandler); err != nil {
+		return err
+	}
+	cookieLoginHandler, err := auth.NewCookieLoginHandler(login) // browser scripts
+	if err != nil {
+		return err
+	}
+	cookieLogoutHandler, err := auth.NewAuditedCookieLogoutHandler(repository, repository)
+	if err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/cookie/login", cookieLoginHandler); err != nil {
+		return err
+	}
+	if err := app.Handle("POST /auth/cookie/logout", cookieLogoutHandler); err != nil {
+		return err
+	}
+
+     With MFA, also mount auth.NewMFACompletionHandler(mfaService) at
+     POST /auth/mfa/complete and auth.NewCookieMFACompletionHandler(mfaService)
+     at POST /auth/cookie/mfa/complete; for JSON password recovery,
+     auth.NewAuditedPasswordRecoveryRequestHandler(recoveryService, repository)
+     and auth.NewAuditedPasswordResetHandler(recoveryService, repository) at
+     POST /auth/recovery/request and /auth/recovery/reset. A new application
+     shows the complete function: forge new NAME --api-auth (apiAuthRoutes in
+     app/bootstrap/bootstrap.go).
+`
+
 // authenticationWiring is printed after generation (and for --dry-run).
 func authenticationWiring(plan authenticationPlan) string {
 	var out strings.Builder
@@ -150,8 +273,9 @@ func authenticationWiring(plan authenticationPlan) string {
 	fmt.Fprintf(&out, "\t%q\n\t%q\n", plan.module+"/app/adapters/htmlauth", plan.module+"/app/views")
 	out.WriteString(`
   2. Inside identityRoutes, after the login, MFA (when configured) and recovery
-     services are built, mount the pages. They set the same session cookies as
-     POST /auth/cookie/login; reuse an existing renderer if you have one:
+     services are built, mount the pages. They set the session cookie that
+     middleware.AuthenticateCookie and AuthenticateBrowser read; reuse an
+     existing renderer if you have one:
 
 	browser, err := auth.NewBrowser(auth.BrowserOptions{
 		Login:     login,
@@ -194,6 +318,14 @@ func authenticationWiring(plan authenticationPlan) string {
 
 `)
 	fmt.Fprintf(&out, "  4. Add the setup command to the commands in %s, so the first owner\n     can be created:\n\n\tauthpostgres.SetupCommand(),\n", main)
+	switch {
+	case plan.apiAuth && len(plan.jsonAuthRoutes) == len(jsonAuthRoutePatterns):
+		out.WriteString("\n  JSON authentication APIs (--api-auth): bootstrap.go already mounts them; keep them.\n")
+	case plan.apiAuth:
+		out.WriteString(apiAuthWiring)
+	case len(plan.jsonAuthRoutes) > 0:
+		fmt.Fprintf(&out, "\n  NOTE: app/bootstrap/bootstrap.go also mounts JSON authentication routes (%s). forge new mounts them only with --api-auth: with the pages above, browsers need none of them, and each is another place a password or code is entered. Remove those no API client or script uses (run this command with --api-auth to keep them).\n", strings.Join(plan.jsonAuthRoutes, ", "))
+	}
 	if !plan.browserPipeline {
 		out.WriteString("\n  WARNING: app/bootstrap/bootstrap.go does not appear to install csrf.Protection, web.MethodOverride and web.Flash (forge new generates useBrowserPipeline for them). auth.Browser refuses every form without a verified CSRF token, so sign-in cannot work until they are installed (docs/VIEWS.md).\n")
 	}

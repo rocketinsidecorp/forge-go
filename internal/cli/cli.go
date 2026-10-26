@@ -312,7 +312,8 @@ func usage(output io.Writer) {
 commands:
   new NAME            generate an application with Dockerfile, compose and CI;
                       --database postgresql (default), mysql, mariadb, sqlite or none;
-                      --locale en (default), es or pt-BR
+                      --locale en (default), es or pt-BR;
+                      --api-auth also mounts the JSON sign-in APIs (PostgreSQL)
   dev [NAME] [--no-reload] [--poll-interval D]
                       run the application; rebuild, restart gracefully and
                       reload the browser when files change
@@ -351,7 +352,7 @@ commands:
   generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural P] [--dry-run]
                       a resource plus HTML CRUD pages: forms, 422 errors,
                       flash notices, CSRF; never public
-  generate authentication [--dry-run]
+  generate authentication [--api-auth] [--dry-run]
                       add the sign-in, sign-out, two-factor and password-reset
                       pages forge new generates (PostgreSQL)
   destroy GENERATOR ARGUMENTS... [--force] [--migrations] [--dry-run]
