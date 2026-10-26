@@ -126,7 +126,7 @@ without certificate and key files, an empty address, non-positive HTTP
 timeouts or size limits, database pool settings out of range, a database
 statement timeout below `1ms`, and a database URL with an unknown scheme or a
 malformed `postgres://`, `mysql://`, or `sqlite:` form. In `production`, a
-PostgreSQL URL must carry `sslmode=verify-ca|verify-full` and a MySQL
+PostgreSQL URL must carry `sslmode=verify-full` (or `verify-ca` with `sslrootcert`) and a MySQL
 URL `tls=true`, unless `FORGE_DATABASE_ALLOW_PLAINTEXT=true`.
 `Database.Adapter()` reports the adapter the scheme selects, and
 `Database.SQLitePath()` the SQLite file. Malformed durations, integers, and

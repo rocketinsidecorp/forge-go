@@ -296,7 +296,7 @@ TLS:
 
 | Database | Required | Notes |
 | -------- | -------- | ----- |
-| PostgreSQL | `sslmode=verify-ca` or `verify-full` | `require` is rejected: it encrypts but does not authenticate the server. `verify-ca` checks the certificate chain; `verify-full` also checks the host name; use it whenever the provider supports it. For a CA that is not publicly trusted, mount it and add `sslrootcert=/path/to/ca.pem`. |
+| PostgreSQL | `sslmode=verify-full`, or `verify-ca` with `sslrootcert` | `require` is rejected: it encrypts but does not authenticate the server. `verify-full` checks the certificate chain and the host name; use it whenever the provider supports it. `verify-ca` checks the chain only, and without `sslrootcert` pgx would trust the system roots, so a certificate any public CA issued for any name would pass: it is refused unless the URL has `sslrootcert=/path/to/ca.pem` (mount the CA; pgx then trusts that file alone). |
 | MySQL / MariaDB | `tls=true` | Verifies the server certificate against the system certificate pool. `skip-verify` and `preferred` do not verify and are rejected in production. Only the `tls` parameter is accepted, so a private CA cannot be configured through the URL. |
 | SQLite | none | A local file; protect it with file permissions and the volume. |
 

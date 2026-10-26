@@ -56,8 +56,10 @@ The design and its assumptions are documented in
 [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md). Summary:
 
 - configuration is validated at startup; `production` refuses plain HTTP;
-- in `production`, PostgreSQL connections must use `sslmode=verify-ca`
-  or `verify-full` (prefer `verify-full`; `require` is rejected) and MySQL/MariaDB
+- in `production`, PostgreSQL connections must use `sslmode=verify-full`, or
+  `verify-ca` with `sslrootcert` in the URL (prefer `verify-full`; `require`
+  is rejected, and `verify-ca` without `sslrootcert` would trust every public
+  CA and check no host name) and MySQL/MariaDB
   connections `tls=true`, unless `FORGE_DATABASE_ALLOW_PLAINTEXT=true` is set;
 - the database URL is a redacted secret in logs, formatted output, and
   JSON; configuration errors never echo values; `forge doctor` drops the

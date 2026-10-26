@@ -71,6 +71,10 @@ func TestDatabaseConfiguration(t *testing.T) {
 		{name: "development plaintext", env: map[string]string{"FORGE_DATABASE_URL": "postgres://app:pw@localhost:5432/app?sslmode=disable"}},
 		{name: "production verify-full", env: map[string]string{"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_DATABASE_URL": "postgres://app:pw@db:5432/app?sslmode=verify-full"}},
 		{name: "production verify-ca with private CA", env: map[string]string{"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_DATABASE_URL": "postgres://app:pw@db:5432/app?sslmode=verify-ca&sslrootcert=/etc/ssl/db-ca.pem"}},
+		{name: "production verify-ca without sslrootcert trusts the system roots", env: map[string]string{"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_DATABASE_URL": "postgres://app:pw@db:5432/app?sslmode=verify-ca"}, wantErr: true},
+		{name: "production verify-ca with an empty sslrootcert", env: map[string]string{"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_DATABASE_URL": "postgres://app:pw@db:5432/app?sslmode=verify-ca&sslrootcert="}, wantErr: true},
+		{name: "staging verify-ca without sslrootcert is allowed", env: map[string]string{"FORGE_ENV": "staging", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_DATABASE_URL": "postgres://app:pw@db:5432/app?sslmode=verify-ca"}},
+		{name: "production verify-ca without sslrootcert, plaintext allowed", env: map[string]string{"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_DATABASE_URL": "postgres://app:pw@db:5432/app?sslmode=verify-ca", "FORGE_DATABASE_ALLOW_PLAINTEXT": "true"}},
 		{name: "production require is unverified", env: map[string]string{"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_DATABASE_URL": "postgres://app:pw@db:5432/app?sslmode=require"}, wantErr: true},
 		{name: "production default sslmode", env: map[string]string{"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_DATABASE_URL": "postgres://app:pw@db:5432/app"}, wantErr: true},
 		{name: "production prefer", env: map[string]string{"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy", "FORGE_DATABASE_URL": "postgres://app:pw@db/app?sslmode=prefer"}, wantErr: true},
@@ -283,5 +287,27 @@ func TestOpenAPIIsServedOnlyInDevelopmentAndTestByDefault(t *testing.T) {
 	}
 	if _, err := load(map[string]string{"FORGE_OPENAPI_ENABLED": "yes please"}); err == nil || !strings.Contains(err.Error(), "FORGE_OPENAPI_ENABLED") || strings.Contains(err.Error(), "yes please") {
 		t.Fatalf("invalid value: err = %v", err)
+	}
+}
+
+// verify-ca checks the chain only; without sslrootcert pgx trusts the system
+// roots, so production refuses it, saying what to add and quoting no secret.
+func TestProductionVerifyCARequiresSSLRootCert(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{"FORGE_ENV": "production", "FORGE_HTTP_TRANSPORT": "trusted-proxy"}
+	load := func(url string) error {
+		env["FORGE_DATABASE_URL"] = url
+		_, err := config.LoadWithLookup(func(key string) (string, bool) { value, ok := env[key]; return value, ok })
+		return err
+	}
+	err := load("postgres://app:s3cret@db:5432/app?sslmode=verify-ca")
+	if err == nil || !strings.Contains(err.Error(), "sslrootcert") || strings.Contains(err.Error(), "s3cret") {
+		t.Fatalf("verify-ca without sslrootcert: %v", err)
+	}
+	if err := load("postgres://app:s3cret@db:5432/app?sslmode=verify-ca&sslrootcert=/etc/ssl/db-ca.pem"); err != nil {
+		t.Fatalf("verify-ca with sslrootcert: %v", err)
+	}
+	if err := load("postgres://app:s3cret@db:5432/app?sslmode=verify-full"); err != nil {
+		t.Fatalf("verify-full needs no sslrootcert: %v", err)
 	}
 }

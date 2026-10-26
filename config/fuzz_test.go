@@ -96,6 +96,9 @@ func FuzzDatabaseURL(f *testing.F) {
 			if mode := query.Get("sslmode"); production && mode != "verify-full" && mode != "verify-ca" {
 				t.Fatalf("production accepted sslmode %q in %q", mode, raw)
 			}
+			if production && query.Get("sslmode") == "verify-ca" && query.Get("sslrootcert") == "" {
+				t.Fatalf("production accepted verify-ca without sslrootcert in %q", raw)
+			}
 		case config.AdapterMySQL:
 			if parsed.Host == "" || strings.Trim(parsed.Path, "/") == "" {
 				t.Fatalf("accepted %q without a host and database", raw)

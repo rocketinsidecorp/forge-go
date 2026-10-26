@@ -25,7 +25,8 @@ const maxDatabaseConns = 1000
 // verifiedSSLModes encrypt the connection and authenticate the server.
 // "require" encrypts without checking the certificate, so it can be
 // intercepted; libpq's default, "prefer", silently falls back to plaintext.
-// Private CAs are configured with sslrootcert.
+// Private CAs are configured with sslrootcert, which verify-ca requires in
+// production: without it pgx trusts the system roots and checks no host name.
 var verifiedSSLModes = map[string]bool{"verify-ca": true, "verify-full": true}
 
 // Adapter reports the adapter the URL selects, or "" when no database is
@@ -129,9 +130,17 @@ func (d Database) validate(environment Environment) error {
 			return errors.New("FORGE_DATABASE_URL must be postgres://user:password@host:port/database (one host)")
 		}
 		if production && !verifiedSSLModes[parsed.Query().Get("sslmode")] {
-			return errors.New("production requires FORGE_DATABASE_URL with sslmode=verify-full or verify-ca " +
-				"(sslrootcert for a private CA; FORGE_DATABASE_ALLOW_PLAINTEXT=true accepts unverified or " +
+			return errors.New("production requires FORGE_DATABASE_URL with sslmode=verify-full or " +
+				"verify-ca plus sslrootcert (FORGE_DATABASE_ALLOW_PLAINTEXT=true accepts unverified or " +
 				"plaintext connections, only for a trusted private network)")
+		}
+		// verify-ca checks the chain only. Without sslrootcert pgx trusts the
+		// system roots, and a certificate any public CA issued for any name
+		// would pass; sslrootcert limits trust to the file named.
+		if production && parsed.Query().Get("sslmode") == "verify-ca" && parsed.Query().Get("sslrootcert") == "" {
+			return errors.New("production with sslmode=verify-ca requires sslrootcert in FORGE_DATABASE_URL " +
+				"(the CA file the server's certificate must chain to; sslmode=verify-full also checks the host name " +
+				"and needs none; FORGE_DATABASE_ALLOW_PLAINTEXT=true accepts unverified connections, only for a trusted private network)")
 		}
 	case AdapterMySQL:
 		if parsed.Host == "" || strings.Trim(parsed.Path, "/") == "" {
