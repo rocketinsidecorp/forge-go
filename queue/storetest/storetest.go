@@ -191,6 +191,9 @@ func Run(t *testing.T, newStore NewStore) {
 		{"ScheduledRunAt", scheduledRunAt},
 		{"PriorityOrder", priorityOrder},
 		{"ConcurrentWorkersNeverRunAJobTwice", concurrentWorkers},
+		{"BatchedWorkersRunEachJobExactlyOnce", batchedWorkers},
+		{"ConcurrentClaimBatchesAreDisjoint", disjointBatches},
+		{"ClaimBatchOrderAndLimit", batchOrderAndLimit},
 		{"LeaseExpiryFencesStaleWorker", leaseExpiryFencing},
 		{"ExpiredFinalAttemptDies", expiredFinalAttempt},
 		{"WorkerLosesLeaseWhenRenewalFails", workerLosesLease},
@@ -461,6 +464,197 @@ func concurrentWorkers(t *testing.T, newStore NewStore) {
 	}
 }
 
+// batchedWorkers races workers that claim several jobs per round trip: every
+// job runs exactly once (the leases are long enough never to expire), on its
+// first attempt, and no worker runs more jobs at once than its concurrency.
+func batchedWorkers(t *testing.T, newStore NewStore) {
+	e := newEnv(t, newStore)
+	const (
+		jobs        = 400
+		workers     = 4
+		concurrency = 8
+	)
+	var mu sync.Mutex
+	runs := make(map[int]int, jobs)
+	var finished, active, peak atomic.Int32
+	e.register("batched", func(_ context.Context, m Message) error {
+		n := active.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		mu.Lock()
+		runs[m.ID]++
+		mu.Unlock()
+		time.Sleep(time.Millisecond)
+		active.Add(-1)
+		finished.Add(1)
+		return nil
+	})
+	ids := make([]uuid.UUID, 0, jobs)
+	for i := range jobs {
+		ids = append(ids, e.enqueue("batched", Message{ID: i}))
+	}
+	for range workers {
+		e.start(e.worker(queue.WorkerOptions{
+			Lease:     30 * time.Second,
+			BatchSize: concurrency,
+			Queues:    []queue.QueueConfig{{Name: queue.DefaultQueue, Concurrency: concurrency}},
+		}))
+	}
+	waitFor(t, 60*time.Second, "all batched jobs", func() bool { return finished.Load() >= jobs })
+	for _, id := range ids {
+		if info := e.waitState(id, queue.StateSucceeded); info.Job.Attempt != 1 {
+			t.Fatalf("job %s attempt = %d, want 1", id, info.Job.Attempt)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(runs) != jobs {
+		t.Fatalf("%d distinct jobs ran, want %d", len(runs), jobs)
+	}
+	for id, n := range runs {
+		if n != 1 {
+			t.Fatalf("job %d ran %d times", id, n)
+		}
+	}
+	if p := peak.Load(); p > workers*concurrency {
+		t.Fatalf("%d handlers ran at once, above %d workers x %d slots", p, workers, concurrency)
+	}
+}
+
+// disjointBatches calls ClaimBatch from many goroutines at once: no job is
+// leased twice, every job is leased, and each lease fences its own job.
+func disjointBatches(t *testing.T, newStore NewStore) {
+	store := newStore(t)
+	batcher, ok := store.(queue.BatchClaimer)
+	if !ok {
+		t.Skip("the store does not implement queue.BatchClaimer")
+	}
+	const (
+		jobs     = 300
+		claimers = 8
+		limit    = 7
+	)
+	inserted := make(map[uuid.UUID]bool, jobs)
+	for range jobs {
+		inserted[insertK(t, store, 3)] = true
+	}
+	var (
+		mu      sync.Mutex
+		claimed = make(map[uuid.UUID]int, jobs)
+		wg      sync.WaitGroup
+		failure atomic.Value
+	)
+	request := queue.ClaimRequest{Queue: queue.DefaultQueue, Kinds: []string{"k"}, Lease: time.Minute}
+	for i := range claimers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := request
+			r.WorkerID = fmt.Sprintf("claimer-%d", i)
+			for {
+				batch, err := batcher.ClaimBatch(context.Background(), r, limit)
+				if err != nil {
+					failure.Store(err)
+					return
+				}
+				if len(batch) == 0 {
+					return
+				}
+				if len(batch) > limit {
+					failure.Store(fmt.Errorf("ClaimBatch returned %d jobs, limit %d", len(batch), limit))
+					return
+				}
+				for _, c := range batch {
+					if c.Job.Attempt != 1 || c.Lease.JobID != c.Job.ID || string(c.Payload) == "" {
+						failure.Store(fmt.Errorf("bad claim %+v", c))
+						return
+					}
+					mu.Lock()
+					claimed[c.Job.ID]++
+					mu.Unlock()
+					if err := store.Complete(context.Background(), c.Lease); err != nil {
+						failure.Store(fmt.Errorf("complete %s: %w", c.Job.ID, err))
+						return
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if err, _ := failure.Load().(error); err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != jobs {
+		t.Fatalf("%d distinct jobs claimed, want %d", len(claimed), jobs)
+	}
+	for id, n := range claimed {
+		if !inserted[id] || n != 1 {
+			t.Fatalf("job %s claimed %d times (inserted: %v)", id, n, inserted[id])
+		}
+	}
+}
+
+// batchOrderAndLimit checks that a batch takes the first jobs in claim order
+// (priority, then due time) up to its limit, and that limits are validated.
+func batchOrderAndLimit(t *testing.T, newStore NewStore) {
+	store := newStore(t)
+	batcher, ok := store.(queue.BatchClaimer)
+	if !ok {
+		t.Skip("the store does not implement queue.BatchClaimer")
+	}
+	ctx := context.Background()
+	byPriority := map[int]uuid.UUID{}
+	for _, priority := range []int{5, -1, 3, 0, 9} {
+		id := uuid.MustNew()
+		if _, err := store.Insert(ctx, queue.NewJob{ID: id, Kind: "k", Queue: queue.DefaultQueue, Payload: json.RawMessage(`{"id":1}`), MaxAttempts: 3, Priority: priority}); err != nil {
+			t.Fatal(err)
+		}
+		byPriority[priority] = id
+	}
+	request := queue.ClaimRequest{Queue: queue.DefaultQueue, Kinds: []string{"k"}, WorkerID: "w", Lease: time.Minute}
+	for _, bad := range []int{0, -1, queue.MaxClaimBatch + 1} {
+		if _, err := batcher.ClaimBatch(ctx, request, bad); err == nil {
+			t.Errorf("ClaimBatch limit %d accepted", bad)
+		}
+	}
+	first, err := batcher.ClaimBatch(ctx, request, 3)
+	if err != nil || len(first) != 3 {
+		t.Fatalf("ClaimBatch(3) = %d jobs, %v; want 3", len(first), err)
+	}
+	got := map[uuid.UUID]bool{}
+	for _, c := range first {
+		got[c.Job.ID] = true
+		if info, err := store.Get(ctx, c.Job.ID); err != nil || info.State != queue.StateRunning || info.WorkerID != "w" || info.LeaseUntil == nil {
+			t.Fatalf("claimed job %s: %+v, %v; want running under w", c.Job.ID, info, err)
+		}
+	}
+	for _, priority := range []int{-1, 0, 3} {
+		if !got[byPriority[priority]] {
+			t.Fatalf("first batch misses the job of priority %d", priority)
+		}
+	}
+	rest, err := batcher.ClaimBatch(ctx, request, queue.MaxClaimBatch)
+	if err != nil || len(rest) != 2 {
+		t.Fatalf("ClaimBatch(max) = %d jobs, %v; want the 2 left", len(rest), err)
+	}
+	if none, err := batcher.ClaimBatch(ctx, request, 5); err != nil || len(none) != 0 {
+		t.Fatalf("ClaimBatch on an empty queue = %d jobs, %v", len(none), err)
+	}
+	// Each lease of the batch fences its own job only.
+	if err := store.Complete(ctx, queue.Lease{JobID: rest[0].Job.ID, Token: first[0].Lease.Token}); !errors.Is(err, queue.ErrLeaseLost) {
+		t.Fatalf("Complete with another claim's token = %v, want ErrLeaseLost", err)
+	}
+	for _, c := range append(first, rest...) {
+		if err := store.Complete(ctx, c.Lease); err != nil {
+			t.Fatalf("Complete %s: %v", c.Job.ID, err)
+		}
+	}
+}
+
 func claimOne(t *testing.T, store queue.Store, worker string, lease time.Duration) queue.Claimed {
 	t.Helper()
 	claimed, ok, err := store.Claim(context.Background(), queue.ClaimRequest{Queue: queue.DefaultQueue, Kinds: []string{"k"}, WorkerID: worker, Lease: lease})
@@ -468,6 +662,15 @@ func claimOne(t *testing.T, store queue.Store, worker string, lease time.Duratio
 		t.Fatalf("Claim by %s = %v, %v; want a job", worker, ok, err)
 	}
 	return claimed
+}
+
+// recoverAll is what a worker's recovery loop does: Claim leaves expired
+// leases alone.
+func recoverAll(t *testing.T, store queue.Store) {
+	t.Helper()
+	if _, err := store.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
 }
 
 func insertK(t *testing.T, store queue.Store, maxAttempts int) uuid.UUID {
@@ -496,6 +699,7 @@ func leaseExpiryFencing(t *testing.T, newStore NewStore) {
 		t.Fatalf("Renew live lease: %v", err)
 	}
 	time.Sleep(2600 * time.Millisecond) // the lease expires
+	recoverAll(t, store)
 
 	fresh := claimOne(t, store, "worker-b", time.Minute)
 	if fresh.Job.ID != id || fresh.Job.Attempt != 2 {
@@ -538,6 +742,7 @@ func expiredFinalAttempt(t *testing.T, newStore NewStore) {
 	id := insertK(t, store, 1)
 	claimOne(t, store, "worker-a", 100*time.Millisecond)
 	time.Sleep(600 * time.Millisecond)
+	recoverAll(t, store)
 	if _, ok, err := store.Claim(ctx, queue.ClaimRequest{Queue: queue.DefaultQueue, Kinds: []string{"k"}, WorkerID: "worker-b", Lease: time.Minute}); err != nil || ok {
 		t.Fatalf("Claim after final-attempt expiry = %v, %v; want none", ok, err)
 	}

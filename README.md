@@ -754,9 +754,50 @@ starting with a letter. The generated shutdown hook calls
 `scheduler.StopContext(ctx)`, which cancels running jobs and waits for them only
 within the shutdown budget (`FORGE_HTTP_SHUTDOWN_TIMEOUT`); a job that ignores
 its context keeps running and the hook returns the deadline error. Scheduler
-failures are reported but are not retried automatically; jobs that run on
-multiple replicas must be idempotent or use a PostgreSQL advisory lock when only
-one replica may perform a schedule tick.
+failures are reported but are not retried automatically. Every replica runs
+the scheduler, and the generated `JobsConfigure` passes the database's tick
+claimer (`jobspostgres.NewTickClaimer`, `jobsmysql.NewTickClaimer`) as
+`jobs.SchedulerOptions.Ticks`: each tick of a job runs on exactly one replica,
+the first to record it in `forge_job_schedules` (a framework migration that
+the generated `main.go` composes, so `migrate` creates it). Recording a tick is
+one statement; no connection is held while the job runs, and the outcome does
+not depend on the replicas' clocks. A tick that cannot be recorded is skipped
+and reported, and two replicas can run consecutive ticks of one job at the
+same time. An application generated earlier adopts it by composing the
+migration in `cmd/<name>/main.go` and passing the claimer to `JobsConfigure`
+in `app/bootstrap/bootstrap.go`. PostgreSQL:
+
+```go
+// cmd/<name>/main.go: import jobspostgres "github.com/rocketinsidecorp/forge-go/jobs/postgres"
+postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations()),
+
+// app/bootstrap/bootstrap.go, at the end of Configure (same import):
+return JobsConfigure(app, jobspostgres.NewTickClaimer(database))
+
+// JobsConfigure takes the claimer and sets it on the scheduler:
+func JobsConfigure(app *forge.App, ticks jobs.TickClaimer) error {
+	options := jobs.SchedulerOptions{
+		// ... MaxConcurrentJobs, Telemetry and OnError as before ...
+		Ticks: ticks,
+	}
+```
+
+MySQL and MariaDB:
+
+```go
+// cmd/<name>/main.go: import jobsmysql "github.com/rocketinsidecorp/forge-go/jobs/mysql"
+forge.Main(bootstrap.Configure, append(mysql.CommandsFromSets(jobsmysql.Migrations(), db.Migrations()), mysql.SeedCommand(db.Seed))...)
+
+// app/bootstrap/bootstrap.go, at the end of Configure (same import):
+return JobsConfigure(app, jobsmysql.NewTickClaimer(database))
+```
+
+Then create the table and check the application:
+
+```sh
+forge migrate        # creates forge_job_schedules once main.go composes the jobs migrations
+forge test
+```
 
 `forge generate resource NAME field:type... (--tenant-scoped | --global)
 [--plural PLURAL] [--dry-run]` generates a working, tested CRUD resource for
@@ -1006,6 +1047,23 @@ docker compose run --rm app jobs show JOB_ID           # one job's metadata
 docker compose run --rm app jobs retry JOB_ID          # move a dead job back to pending
 docker compose run --rm app jobs discard JOB_ID        # delete a dead job permanently
 docker compose run --rm app jobs prune -older 24h      # delete finished jobs
+```
+
+Workers claim up to `WorkerOptions.BatchSize` jobs (default 10, never more
+than their free slots) per round trip, and the outbox dispatcher claims
+`DispatcherOptions.BatchSize` events (default 10) per transaction and
+acknowledges each on its own. On PostgreSQL, `queuepostgres.WithNotify()`
+wakes idle workers as soon as a job is enqueued (`LISTEN/NOTIFY`, with polling
+as the fallback) instead of after up to 10 seconds of idle backoff:
+
+```go
+store, err := queuepostgres.NewStore(database, queuepostgres.WithNotify())
+worker, err := queue.NewWorker(store, registry, queue.WorkerOptions{BatchSize: 10})
+dispatcher, err := outboxpostgres.NewDispatcher(database.Pool(), handler, outboxpostgres.DispatcherOptions{Workers: 2, BatchSize: 50})
+```
+
+```sh
+docker compose run --rm app jobs status                # ready, running and oldest-ready per queue: latency at a glance
 ```
 
 Exit status is `0` on success, `1` on failure (including invalid
@@ -1328,3 +1386,4 @@ signed images for `v*` tags only.
   - [0043 OpenAPI from typed routes](docs/adr/0043-openapi-from-typed-routes.md)
   - [0044 Continuous fuzzing, SBOMs and signed images](docs/adr/0044-continuous-fuzzing-sbom-signed-images.md)
   - [0045 Generated two-factor settings pages with step-up](docs/adr/0045-generated-mfa-settings-pages.md)
+  - [0047 Batch claims, LISTEN/NOTIFY wake-up and recorded scheduler ticks](docs/adr/0047-batch-claims-notify-and-recorded-ticks.md)

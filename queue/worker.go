@@ -33,14 +33,24 @@ const (
 	defaultReleaseTimeout      = 5 * time.Second
 	defaultRetainSucceeded     = 24 * time.Hour
 	defaultMaintenanceInterval = time.Minute
+	defaultBatchSize           = 10
 	minLease                   = 10 * time.Millisecond
 
 	claimTimeout   = 30 * time.Second
 	persistTimeout = 10 * time.Second
 	pruneBatch     = 1000
-	recoverBatch   = 100 // jobs one Store.Recover call handles
 	maxPruneRounds = 10
 	maxClaimErrGap = 30 * time.Second
+
+	// A worker's listener reconnects after a jittered wait in
+	// [backoff/2, backoff], backoff starting at minListenBackoff (so 0.5s to
+	// 1s) and doubling up to maxListenBackoff (15s to 30s) while it keeps
+	// failing; polling covers the gap.
+	minListenBackoff = time.Second
+	maxListenBackoff = 30 * time.Second
+	// minWakeGap spaces claims that announcements trigger, so a flood of
+	// notifications cannot turn an idle poller into a busy loop.
+	minWakeGap = 10 * time.Millisecond
 )
 
 var (
@@ -58,6 +68,7 @@ type QueueConfig struct {
 type Outcome string
 
 const (
+	// OutcomeSucceeded means the handler returned nil and the job is done.
 	OutcomeSucceeded Outcome = "succeeded"
 	// OutcomeRetry means the attempt failed and another is scheduled.
 	OutcomeRetry Outcome = "retry"
@@ -124,8 +135,15 @@ type WorkerOptions struct {
 	// forever (prune with the jobs command instead).
 	RetainSucceeded     time.Duration
 	MaintenanceInterval time.Duration // default 1 minute
-	Logger              *slog.Logger
-	Hooks               Hooks
+	// BatchSize is the most jobs one claim leases in a single round trip
+	// when the store supports it (queue.BatchClaimer); default 10, at most
+	// MaxClaimBatch. A claim never takes more jobs than the queue has free
+	// slots, so every claimed job starts at once and leases, attempts and
+	// visibility are exactly those of claiming the jobs one by one. Set 1 to
+	// claim one job per round trip.
+	BatchSize int
+	Logger    *slog.Logger
+	Hooks     Hooks
 	// Telemetry traces each attempt with a consumer span (the root of a new
 	// trace, so database spans of the handler nest under it) and records
 	// forge.queue.job.duration by queue, kind and outcome. Payloads and
@@ -152,6 +170,10 @@ type Worker struct {
 	pollers  sync.WaitGroup
 	jobs     sync.WaitGroup
 	inflight map[uuid.UUID]*running
+	// wakes holds one coalescing signal per queue, written by the listener
+	// and read by that queue's poller; fixed at Start.
+	wakes     map[string]chan struct{}
+	listening atomic.Bool
 	// handlers counts jobs whose handler is running; settling counts jobs
 	// whose outcome is being written. Atomics rather than WaitGroups because
 	// Shutdown polls them while jobs keep starting and finishing.
@@ -269,6 +291,12 @@ func normalizeWorkerOptions(opts WorkerOptions) (WorkerOptions, error) {
 	if opts.MaintenanceInterval == 0 {
 		opts.MaintenanceInterval = defaultMaintenanceInterval
 	}
+	if opts.BatchSize < 0 || opts.BatchSize > MaxClaimBatch {
+		return opts, fmt.Errorf("queue: batch size must be between 1 and %d", MaxClaimBatch)
+	}
+	if opts.BatchSize == 0 {
+		opts.BatchSize = defaultBatchSize
+	}
 	if opts.RetainSucceeded == 0 {
 		opts.RetainSucceeded = defaultRetainSucceeded
 	}
@@ -297,6 +325,11 @@ func defaultWorkerID() string {
 
 // WorkerID returns the identifier written to the leases of this worker.
 func (w *Worker) WorkerID() string { return w.opts.WorkerID }
+
+// Listening reports whether the worker holds an active subscription to its
+// store's enqueue announcements (see Listener), for readiness checks and
+// tests. It is false for stores that do not announce.
+func (w *Worker) Listening() bool { return w.listening.Load() }
 
 // InFlight reports how many jobs this worker is running now.
 func (w *Worker) InFlight() int {
@@ -329,9 +362,17 @@ func (w *Worker) Start(ctx context.Context) error {
 	pollCtx, pollStop := context.WithCancel(ctx)
 	w.pollStop = pollStop
 	w.jobCtx, w.jobStop = context.WithCancelCause(context.WithoutCancel(ctx))
+	w.wakes = make(map[string]chan struct{}, len(w.opts.Queues))
+	for _, q := range w.opts.Queues {
+		w.wakes[q.Name] = make(chan struct{}, 1)
+	}
 	for _, q := range w.opts.Queues {
 		w.pollers.Add(1)
-		go w.poll(pollCtx, q)
+		go w.poll(pollCtx, q, w.wakes[q.Name])
+	}
+	if listener, ok := w.store.(Listener); ok {
+		w.pollers.Add(1)
+		go w.listen(pollCtx, listener)
 	}
 	w.pollers.Add(1)
 	go w.recoverLoop(pollCtx)
@@ -468,12 +509,14 @@ func waitZero(counter *atomic.Int64, timeout time.Duration) bool {
 	return true
 }
 
-// poll claims jobs of one queue while there is a free slot.
-func (w *Worker) poll(ctx context.Context, q QueueConfig) {
+// poll claims jobs of one queue while there is a free slot, up to BatchSize
+// (and never more than the free slots) per round trip.
+func (w *Worker) poll(ctx context.Context, q QueueConfig, wake <-chan struct{}) {
 	defer w.pollers.Done()
 	slots := make(chan struct{}, q.Concurrency)
 	idle := w.opts.PollInterval
 	failures := 0
+	var lastClaim time.Time
 	for {
 		select {
 		case slots <- struct{}{}:
@@ -485,11 +528,24 @@ func (w *Worker) poll(ctx context.Context, q QueueConfig) {
 		if ctx.Err() != nil {
 			return
 		}
+		want := 1
+	fill:
+		for want < w.opts.BatchSize {
+			select {
+			case slots <- struct{}{}:
+				want++
+			default:
+				break fill
+			}
+		}
 		claimStarted := time.Now()
-		claimed, ok, err := w.claim(q.Name)
+		lastClaim = claimStarted
+		claimed, err := w.claim(q.Name, want)
+		for range want - len(claimed) {
+			<-slots
+		}
 		switch {
 		case err != nil:
-			<-slots
 			failures++
 			delay := min(w.opts.PollInterval<<min(failures, 8), maxClaimErrGap)
 			w.logger.Warn("claim jobs failed", "queue", q.Name, "error", err, "retry_in", delay)
@@ -497,33 +553,129 @@ func (w *Worker) poll(ctx context.Context, q QueueConfig) {
 				return
 			}
 			continue
-		case !ok:
-			<-slots
+		case len(claimed) == 0:
 			failures = 0
-			// Uniform in [idle/2, idle]: never longer than MaxPollInterval.
-			if !sleep(ctx, idle/2+jitter(idle/2)) {
+			// Uniform in [idle/2, idle]: never longer than MaxPollInterval. An
+			// announcement of a job in this queue ends the wait early.
+			if !w.idle(ctx, idle/2+jitter(idle/2), wake, lastClaim) {
 				return
 			}
 			idle = min(idle*2, w.opts.MaxPollInterval)
 			continue
 		}
 		failures, idle = 0, w.opts.PollInterval
-		w.jobs.Add(1)
-		w.handlers.Add(1)
-		go func() {
-			defer func() { <-slots }()
-			defer w.jobs.Done()
-			w.process(claimed, claimStarted)
-		}()
+		for _, job := range claimed {
+			w.jobs.Add(1)
+			w.handlers.Add(1)
+			go func() {
+				defer func() { <-slots }()
+				defer w.jobs.Done()
+				w.process(job, claimStarted)
+			}()
+		}
 	}
 }
 
-// claim uses a context that only a forced shutdown cancels: abandoning a
-// claim mid-commit would strand a leased job until its lease expires.
-func (w *Worker) claim(queueName string) (Claimed, bool, error) {
+// idle waits d, or until wake signals (but no sooner than minWakeGap after
+// the last claim). It reports false when ctx ended.
+func (w *Worker) idle(ctx context.Context, d time.Duration, wake <-chan struct{}, lastClaim time.Time) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	case <-wake:
+	}
+	if gap := minWakeGap - time.Since(lastClaim); gap > 0 {
+		return sleep(ctx, gap)
+	}
+	return ctx.Err() == nil
+}
+
+// claim leases up to want jobs of one queue. It uses a context that only a
+// forced shutdown cancels: abandoning a claim mid-commit would strand leased
+// jobs until their leases expire.
+func (w *Worker) claim(queueName string, want int) ([]Claimed, error) {
 	ctx, cancel := context.WithTimeout(w.jobCtx, claimTimeout)
 	defer cancel()
-	return w.store.Claim(ctx, ClaimRequest{Queue: queueName, Kinds: w.kinds, WorkerID: w.opts.WorkerID, Lease: w.opts.Lease})
+	request := ClaimRequest{Queue: queueName, Kinds: w.kinds, WorkerID: w.opts.WorkerID, Lease: w.opts.Lease}
+	batcher, ok := w.store.(BatchClaimer)
+	if !ok || want == 1 {
+		claimed, found, err := w.store.Claim(ctx, request)
+		if err != nil || !found {
+			return nil, err
+		}
+		return []Claimed{claimed}, nil
+	}
+	claimed, err := batcher.ClaimBatch(ctx, request, want)
+	if err != nil {
+		return nil, err
+	}
+	if len(claimed) > want {
+		// A store bug: the worker has no slot for the extra jobs, so it hands
+		// them back at once rather than run more than its concurrency.
+		w.logger.Error("store returned more jobs than requested; releasing the extra ones", "queue", queueName, "requested", want, "returned", len(claimed))
+		for _, extra := range claimed[want:] {
+			releaseCtx, done := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
+			if err := w.store.Release(releaseCtx, extra.Lease); err != nil {
+				w.logger.Warn("release extra claimed job failed; it is reclaimed when its lease expires", "job_id", extra.Job.ID, "error", err)
+			}
+			done()
+		}
+		claimed = claimed[:want]
+	}
+	return claimed, nil
+}
+
+// listen keeps a subscription to the store's enqueue announcements while the
+// worker runs, reconnecting with backoff. It is owned by the pollers group:
+// Shutdown cancels ctx and waits for it.
+func (w *Worker) listen(ctx context.Context, listener Listener) {
+	defer w.pollers.Done()
+	backoff := minListenBackoff
+	for {
+		connected := false
+		err := listener.Listen(ctx, func() {
+			connected = true
+			w.listening.Store(true)
+			// Jobs announced while the subscription was down were missed:
+			// every queue claims once now.
+			for name := range w.wakes {
+				w.wake(name)
+			}
+		}, w.wake)
+		w.listening.Store(false)
+		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, ErrListenUnsupported) {
+			w.logger.Debug("store does not announce enqueued jobs; polling only")
+			return
+		}
+		if connected {
+			backoff = minListenBackoff
+		}
+		w.logger.Warn("job announcement listener disconnected; polling continues", "error", err, "retry_in", backoff)
+		if !sleep(ctx, backoff/2+jitter(backoff/2)) {
+			return
+		}
+		backoff = min(backoff*2, maxListenBackoff)
+	}
+}
+
+// wake signals the poller of queueName without blocking; signals coalesce.
+// Unknown names (other workers' queues, or noise on the channel) are ignored.
+func (w *Worker) wake(queueName string) {
+	signal, ok := w.wakes[queueName]
+	if !ok {
+		return
+	}
+	select {
+	case signal <- struct{}{}:
+	default:
+	}
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {
@@ -543,9 +695,9 @@ func (w *Worker) recoverEvery() time.Duration {
 	return min(max(w.opts.Lease/4, 100*time.Millisecond), 5*time.Second)
 }
 
-// recoverLoop makes jobs of crashed workers available again. Claim sweeps
-// too, but only while a slot is free; a saturated worker would otherwise
-// never recover the jobs of a dead peer.
+// recoverLoop makes jobs of crashed workers available again. It is the only
+// place a worker recovers leases, off the claim path, so claims never pay for
+// the sweep and a saturated worker still recovers the jobs of a dead peer.
 func (w *Worker) recoverLoop(ctx context.Context) {
 	defer w.pollers.Done()
 	for {
@@ -564,7 +716,7 @@ func (w *Worker) recoverLoop(ctx context.Context) {
 			if n > 0 {
 				w.logger.Warn("recovered jobs whose lease expired", "jobs", n)
 			}
-			if n < recoverBatch {
+			if n < RecoverBatch {
 				break
 			}
 		}

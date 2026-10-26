@@ -25,11 +25,6 @@ linters:
         - fmt.Fprintln
   exclusions:
     rules:
-      # Packages another change is editing in parallel; their doc comments are
-      # added once that change lands.
-      - path: ^(queue|outbox|jobs)/
-        linters:
-          - revive
       # Tests read files they created in t.TempDir, run the go tool on
       # generated projects and echo input in fixture handlers; gosec guards
       # production code.

@@ -32,10 +32,8 @@ func TestDispatcherTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for range 2 {
-		if worked, err := d.dispatchOne(context.Background()); err != nil || !worked {
-			t.Fatalf("dispatchOne = %v, %v", worked, err)
-		}
+	if worked, err := d.dispatchBatch(context.Background()); err != nil || !worked {
+		t.Fatalf("dispatchBatch = %v, %v", worked, err)
 	}
 	if len(handled) != 2 {
 		t.Fatalf("handled %v", handled)

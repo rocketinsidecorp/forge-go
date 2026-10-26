@@ -401,7 +401,12 @@ tests of generated resources check every response against it.
 `app/bootstrap/bootstrap.go` has `JobsConfigure`, which starts an in-process
 `jobs.Scheduler` for recurring work and stops it within the shutdown timeout
 (`FORGE_HTTP_SHUTDOWN_TIMEOUT`). Add a job with `forge generate job cleanup`,
-then register it there with an explicit schedule.
+then register it there with an explicit schedule. Every replica runs the
+scheduler, and each tick of a job runs on exactly one replica: the first to
+record it in the `forge_job_schedules` table (a framework migration applied by
+`migrate`), so scaling out does not multiply runs. Recording a tick holds no
+connection while the job runs and does not depend on the replicas' clocks.
+Two replicas can run consecutive ticks of one job at the same time.
 {{end}}
 Work that must survive restarts and retry runs on the persistent job queue
 (`queue/{{.DB.Adapter}}`), like Solid Queue in Rails:

@@ -195,8 +195,9 @@ var Err{{Name}}NotImplemented = errors.New("{{name}} job is not implemented")
 
 // Run{{Name}} performs one {{name}} job invocation. The scheduler provides a
 // bounded context and cancels it during shutdown; honor cancellation promptly.
-// Every replica runs this job, so make the work idempotent or acquire a
-// PostgreSQL advisory lock when only one replica may perform a schedule tick.
+// The generated JobsConfigure records each tick in the database, so each tick
+// runs on exactly one replica; a tick is skipped while the database is
+// unreachable, and two replicas can run consecutive ticks at the same time.
 // Scheduler failures are reported but not retried automatically.
 func Run{{Name}}(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {

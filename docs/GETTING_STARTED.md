@@ -693,8 +693,9 @@ import (
 
 // RunCleanup performs one cleanup job invocation. The scheduler provides a
 // bounded context and cancels it during shutdown; honor cancellation promptly.
-// Every replica runs this job, so make the work idempotent or acquire a
-// PostgreSQL advisory lock when only one replica may perform a schedule tick.
+// The generated JobsConfigure records each tick in the database, so each tick
+// runs on exactly one replica; a tick is skipped while the database is
+// unreachable, and two replicas can run consecutive ticks at the same time.
 func RunCleanup(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

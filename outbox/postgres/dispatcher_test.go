@@ -14,6 +14,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/events"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestConcurrentClaimersGetDistinctEvents(t *testing.T) {
@@ -282,6 +283,15 @@ func TestExpiredClaimsCannotExceedMaximumAttempts(t *testing.T) {
 	if attempts != 2 || !deadLettered {
 		t.Fatalf("after expired claims attempts=%d dead_lettered=%v, want 2 and true", attempts, deadLettered)
 	}
+}
+
+// claim leases the next event alone, as a batch of one.
+func (d *Dispatcher) claim(ctx context.Context) (events.Event, uuid.UUID, int, bool, error) {
+	batch, token, err := d.claimBatch(ctx, 1)
+	if err != nil || len(batch) == 0 {
+		return events.Event{}, uuid.UUID{}, 0, false, err
+	}
+	return batch[0].event, token, batch[0].attempts, true, nil
 }
 
 func insertEvents(t *testing.T, db interface {

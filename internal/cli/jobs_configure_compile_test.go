@@ -60,6 +60,17 @@ func TestGeneratedJobsConfigureExampleCompiles(t *testing.T) {
 			if !strings.Contains(source, "app.OnShutdown(scheduler.StopContext)") {
 				t.Error("the shutdown hook does not use StopContext")
 			}
+			adapter := map[string]string{"postgresql": "postgres", "mysql": "mysql"}[database]
+			if !strings.Contains(source, "return JobsConfigure(app, jobs"+adapter+".NewTickClaimer(database))") || !strings.Contains(source, "\t\tTicks: ticks,\n") {
+				t.Error("the scheduler is not given the database's tick claimer, so every replica would run every tick")
+			}
+			main := readFile(t, filepath.Join(dir, "cmd", filepath.Base(dir), "main.go"))
+			if strings.Contains(main, "JobsConfigure") {
+				t.Error("main.go calls JobsConfigure besides Configure")
+			}
+			if !strings.Contains(main, "jobs"+adapter+".Migrations()") {
+				t.Error("main.go does not migrate forge_job_schedules, which the tick claimer needs")
+			}
 			runGo(t, dir, "go", "vet", "./app/bootstrap/")
 
 			enabled := uncommentJobExample(t, source)

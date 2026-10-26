@@ -463,17 +463,18 @@ func TestGeneratedApplication(t *testing.T) {
 			if output := run("rollback", "-steps", "3"); !strings.Contains(output, "reverted") {
 				t.Fatalf("rollback output: %s", output)
 			}
-			// Only Forge's own migrations are left: the identity schema
-			// a PostgreSQL application composes is never rolled back
-			// (ADR 0039), and the other databases have nothing left.
+			// Only Forge's own migrations are left: the scheduled job
+			// ticks table (newest, every server database) and the
+			// identity schema of PostgreSQL are never rolled back
+			// (ADR 0039); SQLite has nothing left.
 			var rest bytes.Buffer
 			err = runApp(context.Background(), dir, "ledger", []string{"rollback"}, env, &rest, &rest)
-			if database.adapter == "postgres" {
-				if err == nil || !strings.Contains(rest.String(), "from the auth/postgres package") {
-					t.Fatalf("rollback with only the identity migrations left: %v\n%s", err, rest.String())
+			if database.adapter == "sqlite" {
+				if err != nil || strings.Contains(rest.String(), "reverted 20") {
+					t.Fatalf("rollback with nothing left: %v\n%s", err, rest.String())
 				}
-			} else if err != nil || strings.Contains(rest.String(), "reverted 20") {
-				t.Fatalf("rollback with nothing left: %v\n%s", err, rest.String())
+			} else if err == nil || !strings.Contains(rest.String(), "20261026120000_job_schedules, from the jobs package") {
+				t.Fatalf("rollback with only Forge's migrations left: %v\n%s", err, rest.String())
 			}
 			if output := run("migrate"); !strings.Contains(output, "_create_products") {
 				t.Fatalf("migrate after rollback: %s", output)

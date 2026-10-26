@@ -18,7 +18,7 @@ import (
 	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
 {{- end}}
 {{- if and .DB .DB.Jobs}}
-	"context"
+	jobs{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/jobs/{{.DB.Adapter}}"
 {{- end}}
 {{- if .DB}}
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
@@ -30,28 +30,12 @@ import (
 {{- end}}
 )
 
-{{ if and .DB .DB.Identity .DB.Jobs }}
-func main() {
-	forge.Main(
-		func(ctx context.Context, app *forge.App) error {
-			if err := bootstrap.Configure(ctx, app); err != nil {
-				return err
-			}
-			return bootstrap.JobsConfigure(app)
-		},
-		append(
-			postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations()),
-			authpostgres.SetupCommand(),
-			postgres.SeedCommand(db.Seed),
-		)...,
-	)
-}
-{{- else if and .DB .DB.Identity -}}
+{{ if and .DB .DB.Identity -}}
 func main() {
 	forge.Main(
 		bootstrap.Configure,
 		append(
-			postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations()),
+			postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations()),
 			authpostgres.SetupCommand(),
 			postgres.SeedCommand(db.Seed),
 		)...,
@@ -59,15 +43,7 @@ func main() {
 }
 {{- else if and .DB .DB.Jobs -}}
 func main() {
-	forge.Main(
-		func(ctx context.Context, app *forge.App) error {
-			if err := bootstrap.Configure(ctx, app); err != nil {
-				return err
-			}
-			return bootstrap.JobsConfigure(app)
-		},
-		append({{.DB.Adapter}}.Commands(db.Migrations()), {{.DB.Adapter}}.SeedCommand(db.Seed))...,
-	)
+	forge.Main(bootstrap.Configure, append({{.DB.Adapter}}.CommandsFromSets(jobs{{.DB.Adapter}}.Migrations(), db.Migrations()), {{.DB.Adapter}}.SeedCommand(db.Seed))...)
 }
 {{- else if .DB -}}
 func main() {
