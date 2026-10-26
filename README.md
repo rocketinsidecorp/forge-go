@@ -854,7 +854,19 @@ The generator refuses to overwrite any file and never edits
 `RegisterProducts` needs a `protect` function and asks it for `products:read` or
 `products:write` per route, so the endpoints are never public by accident. On
 PostgreSQL (Forge identity) the migration adds those permissions to
-`forge_permissions` and the wiring uses `auth.RequireAudited`; a global resource's
+`forge_permissions` and the wiring uses `auth.RequireAudited` behind the bearer
+token of `POST /auth/login`. That login exists only in an application created
+with `--api-auth` (or given it by `forge generate authentication --api-auth`);
+in a default application, which issues no bearer tokens, the printed `protect`
+refuses every request instead, as forge-rust's `DenyAll` does, so the JSON API
+is generated but closed until you open it:
+
+```sh
+forge generate authentication --api-auth   # paste the JSON authentication wiring it prints
+forge generate resource product name:string --tenant-scoped --dry-run   # now prints the bearer guard
+```
+
+A global resource's
 write routes additionally stay behind a deny-all `protectPlatformWrite` you replace
 with operator-level authorization (tenant roles must not be able to change rows every
 tenant reads); on other databases the
@@ -875,7 +887,8 @@ arguments, writes exactly the same resource files, and adds:
 - the views base (`app/views/views.go`, `layouts/application.gohtml`,
   `shared/_flash.gohtml`) when the application lacks it.
 
-The pages live at `/<plural>` (the JSON API stays at `/v1/<plural>`). Forms
+The pages live at `/<plural>` (the JSON API stays at `/v1/<plural>`, wired
+closed in an application without bearer sign-in, as above). Forms
 carry the CSRF token and use `_method` for `PATCH` and `DELETE`; invalid input
 re-renders the form with `422` and a message beside each field, success sets a
 flash notice and answers `303 See Other`, a missing record shows a `404` page,
