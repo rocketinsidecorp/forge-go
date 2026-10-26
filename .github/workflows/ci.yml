@@ -137,7 +137,16 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Test generated applications
-        run: go test -count=1 -timeout 30m -run '^TestGeneratedApplication$' ./internal/cli
+        run: go test -count=1 -timeout 30m -run '^TestGeneratedApplication$' -skip '^TestGeneratedApplication$/^readme_quickstart' ./internal/cli
+      - name: README quickstart end to end (PostgreSQL and SQLite)
+        # The generated README's Quickstart block, run as written by a real
+        # forge binary in a fresh `forge new` application (the PostgreSQL
+        # service container stands in for `docker compose up -d --wait
+        # postgres`), with no code edited; then `forge dev` is driven over
+        # HTTP: sign in as the owner, list, create, show, edit and delete
+        # products through the CSRF-protected forms, and /v1/products as JSON.
+        # See internal/cli/readme_quickstart_test.go.
+        run: go test -count=1 -timeout 20m -run '^TestGeneratedApplication$/^readme_quickstart' -v ./internal/cli
 
   coverage:
     # Statement coverage of the module with go test -coverpkg=./..., the

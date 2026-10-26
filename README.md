@@ -158,6 +158,63 @@ forge dev                       # rebuilds, restarts and reloads the browser whe
 With SQLite, `forge db prepare` and `forge dev` use `storage/development.db`
 directly.
 
+### End to end: a CRUD with sign-in, no code edited
+
+The generated README carries this sequence too. PostgreSQL (the default):
+
+```sh
+forge new shop
+cd shop
+docker compose up -d --wait postgres
+forge migrate
+forge setup --tenant acme --email you@example.com --organization "Acme Inc"
+forge generate scaffold product name:string price:int --tenant-scoped
+forge migrate
+forge dev
+```
+
+`forge setup` asks for the owner's password twice (or reads
+`FORGE_SETUP_PASSWORD`). Open `http://localhost:8080/session/new`, sign in
+with organization `acme`, then list, create, edit and delete products at
+`http://localhost:8080/products`. The scaffold mounted itself in
+`app/bootstrap/routes_gen.go` behind sign-in and the `products:read` and
+`products:write` permissions its migration grants to the owner role. The JSON
+API at `/v1/products` authenticates the same session cookie (and, in an
+application created with `--api-auth`, bearer tokens); changes send the CSRF
+token in the `X-CSRF-Token` header:
+
+```sh
+jar=$(mktemp)
+token=$(curl -s -c "$jar" -H 'Accept: text/html' http://localhost:8080/session/new | sed -n 's/.*name="authenticity_token" value="\([^"]*\)".*/\1/p' | head -n 1)
+read -rsp 'Password: ' password; echo
+curl -s -o /dev/null -b "$jar" -c "$jar" -H 'Accept: text/html' --data-urlencode "authenticity_token=$token" --data-urlencode tenant=acme --data-urlencode email=you@example.com --data-urlencode "password=$password" http://localhost:8080/session
+curl -s -b "$jar" http://localhost:8080/v1/products
+curl -s -b "$jar" -H "X-CSRF-Token: $(awk '$6 == "__Host-forge_csrf" {print $7}' "$jar")" -H 'Content-Type: application/json' -d '{"name":"Lamp","price":1999}' http://localhost:8080/v1/products
+```
+
+SQLite (also MySQL and MariaDB, with `docker compose up -d --wait mysql` or
+`mariadb` after `cd`) has no Forge identity: the sign-in pages and
+`forge setup` are PostgreSQL-only, so generated routes are closed (`403`)
+unless generated with `--public`, which serves them to anyone who can reach
+the server (forms still need their CSRF token) and needs `--global`:
+
+```sh
+forge new shop -d sqlite3
+cd shop
+forge migrate
+forge generate scaffold product name:string price:int --global --public
+forge migrate
+forge dev
+```
+
+Then open `http://localhost:8080/products`, or
+`curl -s http://localhost:8080/v1/products`. To put your own authentication in
+front, declare `func public(permission string, next http.Handler)
+(http.Handler, error)` (or `protect`, for routes generated without
+`--public`) in another file of `app/bootstrap`; the generators then use yours.
+CI runs both sequences as written, with a real `forge` binary, and drives
+them over HTTP (`TestGeneratedApplication/readme_quickstart_*`).
+
 ### Database roles (PostgreSQL)
 
 A PostgreSQL application serves as a runtime role that row-level security
@@ -287,8 +344,7 @@ context, which browsers grant to `http://localhost`). Then add pages and use
 them as the owner:
 
 ```sh
-forge generate scaffold post title:string body:text --tenant-scoped
-# paste the printed wiring into app/bootstrap/bootstrap.go
+forge generate scaffold post title:string body:text --tenant-scoped   # mounts itself in app/bootstrap/routes_gen.go
 forge migrate                   # also grants posts:read and posts:write to the owner role
 forge dev                       # http://localhost:8080/posts (signed-out visitors go to /session/new and back)
 ```
@@ -443,7 +499,7 @@ forge migrate
 forge test
 ```
 
-The command prints the wiring to paste into `app/bootstrap/bootstrap.go`; the
+The command mounts the routes in `app/bootstrap/routes_gen.go` (below); the
 pages are served at `/posts` and are never public (see
 [docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud)). In a PostgreSQL application a
 signed-out browser visiting `/posts` is sent to the sign-in page and back; once
@@ -471,8 +527,18 @@ response headers or body bytes are written.
 ### Generators
 
 Every generator refuses to overwrite a file, writes nothing when it refuses,
-takes `--dry-run`, never edits `app/bootstrap/bootstrap.go` (it prints the
-lines to paste) and never makes anything public by accident. Fields are
+takes `--dry-run`, never edits `app/bootstrap/bootstrap.go` and never makes
+anything public by accident. `forge generate scaffold`, `resource` and
+`controller` mount their routes in `app/bootstrap/routes_gen.go`, a file
+they own: `bootstrap.go` calls its `generatedRoutes` once, each generator adds
+a block (and the guards, view renderer or live-update stream it needs, once),
+`forge destroy` takes the block back out, and running a generator again with
+the same arguments changes nothing. A hand edit of `routes_gen.go` is
+detected by its checksum and refused, never overwritten; to replace a guard
+(`protect`, `protectCookie`, `protectPlatformWrite`, `public`), declare a
+function of that name in another file of `app/bootstrap`. Applications
+generated before the seam (no `generatedRoutes` call in `bootstrap.go`) still
+get the wiring printed to paste. The mailer and job generators print theirs. Fields are
 `name:type` with `type` one of `string`, `text`, `int`, `bool`, `time`, `uuid`
 (a trailing `?` makes one optional; quote it in shells that expand `?`). The
 full reference is [docs/GENERATORS.md](docs/GENERATORS.md).
@@ -510,7 +576,8 @@ unchanged: a file you edited is listed, nothing is removed, and `--force`
 overrides. The same goes for files a bigger generation still needs: a model
 inside a resource or scaffold, a view a controller renders. Migrations are kept unless `--migrations` (run `forge rollback`
 first if they ran), shared files such as the views base are never removed, and
-the wiring to take out of `bootstrap.go` is printed.
+the routes are taken out of `app/bootstrap/routes_gen.go` (in an application
+without it, the wiring to take out of `bootstrap.go` is printed).
 
 `forge new myapp` generates:
 
@@ -520,6 +587,7 @@ myapp/
   cmd/myapp/main.go            # forge.Main(bootstrap.Configure, <adapter> migrate/rollback, seed (and setup) commands)
   app/bootstrap/bootstrap.go   # opens the database, readiness check "database", GET /v1/status
   app/bootstrap/bootstrap_test.go
+  app/bootstrap/routes_gen.go  # the routes generate scaffold/resource/controller add (generator-owned)
   app/adapters/htmlauth/       # PostgreSQL: sign-in, sign-out, two-factor and password-reset pages
   app/views/                   # layout, flash partial (and, with PostgreSQL, sessions/ and passwords/)
   db/db.go                     # embeds db/migrations into the binary
@@ -718,8 +786,8 @@ response against the document. Details, type mapping and tags:
 | `forge generate controller NAME ACTION... [--api] [--public] [--dry-run]` | Create or preview HTTP handlers for read-only actions, their routes, views (HTML) and tests, without persistence; `--api` generates JSON handlers; guarded unless `--public` |
 | `forge generate mailer NAME METHOD[:field,field]... [--dry-run]` | Create or preview a mailer: typed methods, text and HTML templates, previews and tests, on the `mail` package |
 | `forge generate job NAME [field:type...] --queue [--dry-run]` | Create or preview a typed handler for the persistent job queue, its enqueue function and tests |
-| `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database. Never public: see below |
-| `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--broadcast] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests; `--broadcast` adds live updates over Server-Sent Events. Never public: see below |
+| `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--public] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database, mounted in `app/bootstrap/routes_gen.go`. Never public unless `--public` (no Forge identity, `--global`): see below |
+| `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--broadcast] [--public] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests; `--broadcast` adds live updates over Server-Sent Events. Never public unless `--public`: see below |
 | `forge generate authentication [--api-auth] [--dry-run]` | PostgreSQL: add the sign-in, sign-out, two-factor and password-reset pages `forge new` generates to an application that lacks them, and print their wiring (with `--api-auth`, also the JSON authentication APIs'); other databases are refused (identity persistence is PostgreSQL-only) |
 | `forge destroy GENERATOR ARGUMENTS... [--force] [--migrations] [--dry-run]` | Remove what a generator created (`model`, `resource`, `scaffold`, `controller`, `mailer`, `job`, `view`): the same arguments as the generate command; a file that differs from what the generator writes, or that a bigger generation still needs, is never removed without `--force`, migrations are kept without `--migrations` |
 | `forge deploy [init\|setup\|rollback VERSION\|prune\|details\|lock\|maintenance] [--dry-run] [--json]` | Deploy the image to your servers over SSH with zero-downtime switches through forge-proxy, Kamal-style: see [Deploy](#deploy) |
@@ -879,7 +947,7 @@ forge test
 ```
 
 `forge generate resource NAME field:type... (--tenant-scoped | --global)
-[--plural PLURAL] [--dry-run]` generates a working, tested CRUD resource for
+[--plural PLURAL] [--public] [--dry-run]` generates a working, tested CRUD resource for
 the application's database (read from `FORGE_DATABASE_URL`, as `forge inspect`
 does). `NAME` is singular snake_case; the table and routes use the plural
 (`category` becomes `categories`; pass `--plural` for irregular words).
@@ -906,34 +974,40 @@ predicates alone. Updates and deletes need the version the client read (`409`
 when stale), lists are newest-first keyset pages, and `PATCH` changes only the
 fields it names (`null` clears an optional one).
 
-The generator refuses to overwrite any file and never edits
-`app/bootstrap/bootstrap.go`: it prints the imports and wiring to add.
-`RegisterProducts` needs a `protect` function and asks it for `products:read` or
-`products:write` per route, so the endpoints are never public by accident. On
-PostgreSQL (Forge identity) the migration adds those permissions to
-`forge_permissions` and the wiring uses `auth.RequireAudited` behind the bearer
-token of `POST /auth/login`. That login exists only in an application created
-with `--api-auth` (or given it by `forge generate authentication --api-auth`);
-in a default application, which issues no bearer tokens, the printed `protect`
-refuses every request instead, as forge-rust's `DenyAll` does, so the JSON API
-is generated but closed until you open it:
+The generator refuses to overwrite any file (running it again with the same
+arguments is a no-op) and never edits `app/bootstrap/bootstrap.go`: it mounts
+the routes in `app/bootstrap/routes_gen.go`. `RegisterProducts` needs a
+`protect` function and asks it for `products:read` or `products:write` per
+route, so the endpoints are never public by accident. On PostgreSQL (Forge
+identity) the migration adds those permissions to `forge_permissions`, grants
+them to the `owner` role, and `protect` uses `auth.RequireAudited`: behind the
+bearer token of `POST /auth/login` in an application created with
+`--api-auth` (or given it by `forge generate authentication --api-auth`), and
+otherwise behind the session cookie of the sign-in page, with the CSRF token
+required in the `X-CSRF-Token` header of every change (`auth.RequireCSRF`):
 
 ```sh
 forge generate authentication --api-auth   # paste the JSON authentication wiring it prints
-forge generate resource product name:string --tenant-scoped --dry-run   # now prints the bearer guard
 ```
+
+The guard `protect` in `routes_gen.go` is written by the first generator that
+needs it and kept as it is, so adding `--api-auth` later does not change the
+routes already generated: once no route uses the cookie guard (destroy them),
+the next generator writes the bearer one, or declare your own `protect` in
+`app/bootstrap`.
 
 A global resource's
 write routes additionally stay behind a deny-all `protectPlatformWrite` you replace
 with operator-level authorization (tenant roles must not be able to change rows every
 tenant reads); on other databases the
-printed guard denies every request until you replace it with your own
-authentication and authorization. The generated integration tests need the test
+guard denies every request until you declare your own `protect` in
+`app/bootstrap` (or generate the routes with `--public`, which needs
+`--global` and serves them to anyone). The generated integration tests need the test
 database (`FORGE_TEST_DATABASE_URL`, set by `.env.development`) and fail instead
 of skipping when `FORGE_TEST_REQUIRE_DATABASE=true`.
 
 `forge generate scaffold NAME field:type... (--tenant-scoped | --global)
-[--plural PLURAL] [--broadcast] [--dry-run]` is `forge generate resource` plus the HTML
+[--plural PLURAL] [--broadcast] [--public] [--dry-run]` is `forge generate resource` plus the HTML
 pages, the equivalent of `rails g scaffold`. It takes exactly the same
 arguments, writes exactly the same resource files, and adds:
 
@@ -944,8 +1018,8 @@ arguments, writes exactly the same resource files, and adds:
 - the views base (`app/views/views.go`, `layouts/application.gohtml`,
   `shared/_flash.gohtml`) when the application lacks it.
 
-The pages live at `/<plural>` (the JSON API stays at `/v1/<plural>`, wired
-closed in an application without bearer sign-in, as above). Forms
+The pages live at `/<plural>` (the JSON API stays at `/v1/<plural>`, behind
+the session cookie in an application without bearer sign-in, as above). Forms
 carry the CSRF token and use `_method` for `PATCH` and `DELETE`; invalid input
 re-renders the form with `422` and a message beside each field, success sets a
 flash notice and answers `303 See Other`, a missing record shows a `404` page,
@@ -955,7 +1029,9 @@ routes (`<plural>:read` for index and show, `<plural>:write` for forms and
 changes); with Forge identity the printed wiring authenticates the session
 cookie rather than a bearer token and sends signed-out browsers to the
 sign-in page. On PostgreSQL the migration also grants the new permissions to
-the `owner` role `forge setup` creates. See [docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud).
+the `owner` role `forge setup` creates. `--public` (applications without
+Forge identity, global resources only) serves the pages and the JSON API to
+anyone instead. See [docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud).
 
 ### Hotwire: JavaScript, Turbo and live updates
 

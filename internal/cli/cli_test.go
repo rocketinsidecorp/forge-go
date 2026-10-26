@@ -389,6 +389,15 @@ func TestGeneratedApplication(t *testing.T) {
 		return dir
 	}
 
+	// The README quickstart, run as written by a real forge binary, then
+	// driven over HTTP like a person in a browser (readme_quickstart_test.go).
+	for _, database := range []string{"postgresql", "sqlite"} {
+		t.Run("readme quickstart "+database, func(t *testing.T) {
+			t.Parallel()
+			testReadmeQuickstart(t, frameworkPath, database)
+		})
+	}
+
 	t.Run("without database", func(t *testing.T) {
 		t.Parallel()
 		dir := generate(t, "edge", "--skip-database")
