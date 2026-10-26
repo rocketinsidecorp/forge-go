@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"go/format"
@@ -42,8 +43,40 @@ func runGenerateAtTime(args []string, stdout io.Writer, root string, now time.Ti
 }
 
 // runGenerateEnv is runGenerateAtTime with the process environment passed in,
-// for generators that read FORGE_DATABASE_URL.
+// for generators that read FORGE_DATABASE_URL. In an application that vendors
+// its dependencies (forge new --framework-path), what was generated may import
+// framework packages the vendor directory does not hold yet, so a successful
+// run is followed by go mod vendor.
 func runGenerateEnv(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
+	if err := generateFiles(args, stdout, root, env, now); err != nil {
+		return err
+	}
+	return revendor(context.Background(), root, args, stdout, os.Stderr)
+}
+
+// revendor runs go mod vendor in root when the application has a vendor
+// directory, unless the run was a dry run. The generated files stay in place
+// when it fails; the error says how to finish by hand.
+func revendor(ctx context.Context, root string, args []string, stdout, stderr io.Writer) error {
+	if slices.Contains(args, "--dry-run") {
+		return nil
+	}
+	if info, err := os.Stat(filepath.Join(root, "vendor")); err != nil || !info.IsDir() {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		return nil
+	}
+	if _, err := fmt.Fprintln(stdout, "  run     go mod vendor"); err != nil {
+		return err
+	}
+	if err := runGoStep(ctx, root, stdout, stderr, "mod", "vendor"); err != nil {
+		return fmt.Errorf("the files were generated, but go mod vendor failed (run it in %s, or the application will not build): %w", root, err)
+	}
+	return nil
+}
+
+func generateFiles(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
 	if len(args) > 0 && args[0] == "resource" {
 		return runGenerateResource(args[1:], stdout, root, env, now)
 	}

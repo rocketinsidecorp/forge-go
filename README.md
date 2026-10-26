@@ -726,7 +726,11 @@ Flags for `forge new`:
   Without it the pages are the only way to sign in.
 - `--framework-path DIR` is for framework contributors: it adds a `replace`
   directive pointing at a local checkout, then runs `go mod tidy` and
-  `go mod vendor` so the Docker build context is self-contained. Without it,
+  `go mod vendor` so the Docker build context is self-contained. In such an
+  application (any with a `vendor/` directory) every `forge generate ...` that
+  writes files ends with `go mod vendor` as well, so what it generated, which
+  may import framework packages `vendor/` did not hold, still builds; a
+  `--dry-run` does not. Without it,
   `forge new` runs `go get github.com/rocketinsidecorp/forge-go@<cli version or
   latest>` followed by `go mod tidy`. The CLI version is the release stamped at
   build time or, for a CLI installed from the module proxy with
