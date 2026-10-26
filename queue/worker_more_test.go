@@ -159,7 +159,7 @@ func TestWorkerRecoversAndPrunesFullBatchesInRounds(t *testing.T) {
 			case rounds <- struct{}{}:
 			default:
 			}
-			return recoverBatch, nil // a full batch asks for another round
+			return RecoverBatch, nil // a full batch asks for another round
 		},
 	}
 	reg := registerK(t, func(context.Context) error { return nil })

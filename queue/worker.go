@@ -33,12 +33,12 @@ const (
 	defaultReleaseTimeout      = 5 * time.Second
 	defaultRetainSucceeded     = 24 * time.Hour
 	defaultMaintenanceInterval = time.Minute
+	defaultBatchSize           = 10
 	minLease                   = 10 * time.Millisecond
 
 	claimTimeout   = 30 * time.Second
 	persistTimeout = 10 * time.Second
 	pruneBatch     = 1000
-	recoverBatch   = 100 // jobs one Store.Recover call handles
 	maxPruneRounds = 10
 	maxClaimErrGap = 30 * time.Second
 )
@@ -124,8 +124,15 @@ type WorkerOptions struct {
 	// forever (prune with the jobs command instead).
 	RetainSucceeded     time.Duration
 	MaintenanceInterval time.Duration // default 1 minute
-	Logger              *slog.Logger
-	Hooks               Hooks
+	// BatchSize is the most jobs one claim leases in a single round trip
+	// when the store supports it (queue.BatchClaimer); default 10, at most
+	// MaxClaimBatch. A claim never takes more jobs than the queue has free
+	// slots, so every claimed job starts at once and leases, attempts and
+	// visibility are exactly those of claiming the jobs one by one. Set 1 to
+	// claim one job per round trip.
+	BatchSize int
+	Logger    *slog.Logger
+	Hooks     Hooks
 	// Telemetry traces each attempt with a consumer span (the root of a new
 	// trace, so database spans of the handler nest under it) and records
 	// forge.queue.job.duration by queue, kind and outcome. Payloads and
@@ -268,6 +275,12 @@ func normalizeWorkerOptions(opts WorkerOptions) (WorkerOptions, error) {
 	}
 	if opts.MaintenanceInterval == 0 {
 		opts.MaintenanceInterval = defaultMaintenanceInterval
+	}
+	if opts.BatchSize < 0 || opts.BatchSize > MaxClaimBatch {
+		return opts, fmt.Errorf("queue: batch size must be between 1 and %d", MaxClaimBatch)
+	}
+	if opts.BatchSize == 0 {
+		opts.BatchSize = defaultBatchSize
 	}
 	if opts.RetainSucceeded == 0 {
 		opts.RetainSucceeded = defaultRetainSucceeded
@@ -468,7 +481,8 @@ func waitZero(counter *atomic.Int64, timeout time.Duration) bool {
 	return true
 }
 
-// poll claims jobs of one queue while there is a free slot.
+// poll claims jobs of one queue while there is a free slot, up to BatchSize
+// (and never more than the free slots) per round trip.
 func (w *Worker) poll(ctx context.Context, q QueueConfig) {
 	defer w.pollers.Done()
 	slots := make(chan struct{}, q.Concurrency)
@@ -485,11 +499,23 @@ func (w *Worker) poll(ctx context.Context, q QueueConfig) {
 		if ctx.Err() != nil {
 			return
 		}
+		want := 1
+	fill:
+		for want < w.opts.BatchSize {
+			select {
+			case slots <- struct{}{}:
+				want++
+			default:
+				break fill
+			}
+		}
 		claimStarted := time.Now()
-		claimed, ok, err := w.claim(q.Name)
+		claimed, err := w.claim(q.Name, want)
+		for range want - len(claimed) {
+			<-slots
+		}
 		switch {
 		case err != nil:
-			<-slots
 			failures++
 			delay := min(w.opts.PollInterval<<min(failures, 8), maxClaimErrGap)
 			w.logger.Warn("claim jobs failed", "queue", q.Name, "error", err, "retry_in", delay)
@@ -497,8 +523,7 @@ func (w *Worker) poll(ctx context.Context, q QueueConfig) {
 				return
 			}
 			continue
-		case !ok:
-			<-slots
+		case len(claimed) == 0:
 			failures = 0
 			// Uniform in [idle/2, idle]: never longer than MaxPollInterval.
 			if !sleep(ctx, idle/2+jitter(idle/2)) {
@@ -508,22 +533,51 @@ func (w *Worker) poll(ctx context.Context, q QueueConfig) {
 			continue
 		}
 		failures, idle = 0, w.opts.PollInterval
-		w.jobs.Add(1)
-		w.handlers.Add(1)
-		go func() {
-			defer func() { <-slots }()
-			defer w.jobs.Done()
-			w.process(claimed, claimStarted)
-		}()
+		for _, job := range claimed {
+			w.jobs.Add(1)
+			w.handlers.Add(1)
+			go func() {
+				defer func() { <-slots }()
+				defer w.jobs.Done()
+				w.process(job, claimStarted)
+			}()
+		}
 	}
 }
 
-// claim uses a context that only a forced shutdown cancels: abandoning a
-// claim mid-commit would strand a leased job until its lease expires.
-func (w *Worker) claim(queueName string) (Claimed, bool, error) {
+// claim leases up to want jobs of one queue. It uses a context that only a
+// forced shutdown cancels: abandoning a claim mid-commit would strand leased
+// jobs until their leases expire.
+func (w *Worker) claim(queueName string, want int) ([]Claimed, error) {
 	ctx, cancel := context.WithTimeout(w.jobCtx, claimTimeout)
 	defer cancel()
-	return w.store.Claim(ctx, ClaimRequest{Queue: queueName, Kinds: w.kinds, WorkerID: w.opts.WorkerID, Lease: w.opts.Lease})
+	request := ClaimRequest{Queue: queueName, Kinds: w.kinds, WorkerID: w.opts.WorkerID, Lease: w.opts.Lease}
+	batcher, ok := w.store.(BatchClaimer)
+	if !ok || want == 1 {
+		claimed, found, err := w.store.Claim(ctx, request)
+		if err != nil || !found {
+			return nil, err
+		}
+		return []Claimed{claimed}, nil
+	}
+	claimed, err := batcher.ClaimBatch(ctx, request, want)
+	if err != nil {
+		return nil, err
+	}
+	if len(claimed) > want {
+		// A store bug: the worker has no slot for the extra jobs, so it hands
+		// them back at once rather than run more than its concurrency.
+		w.logger.Error("store returned more jobs than requested; releasing the extra ones", "queue", queueName, "requested", want, "returned", len(claimed))
+		for _, extra := range claimed[want:] {
+			releaseCtx, done := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
+			if err := w.store.Release(releaseCtx, extra.Lease); err != nil {
+				w.logger.Warn("release extra claimed job failed; it is reclaimed when its lease expires", "job_id", extra.Job.ID, "error", err)
+			}
+			done()
+		}
+		claimed = claimed[:want]
+	}
+	return claimed, nil
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {
@@ -543,9 +597,9 @@ func (w *Worker) recoverEvery() time.Duration {
 	return min(max(w.opts.Lease/4, 100*time.Millisecond), 5*time.Second)
 }
 
-// recoverLoop makes jobs of crashed workers available again. Claim sweeps
-// too, but only while a slot is free; a saturated worker would otherwise
-// never recover the jobs of a dead peer.
+// recoverLoop makes jobs of crashed workers available again. It is the only
+// place a worker recovers leases, off the claim path, so claims never pay for
+// the sweep and a saturated worker still recovers the jobs of a dead peer.
 func (w *Worker) recoverLoop(ctx context.Context) {
 	defer w.pollers.Done()
 	for {
@@ -564,7 +618,7 @@ func (w *Worker) recoverLoop(ctx context.Context) {
 			if n > 0 {
 				w.logger.Warn("recovered jobs whose lease expired", "jobs", n)
 			}
-			if n < recoverBatch {
+			if n < RecoverBatch {
 				break
 			}
 		}

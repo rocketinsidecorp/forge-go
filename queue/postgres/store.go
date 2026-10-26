@@ -1,10 +1,10 @@
 // Package postgres is the PostgreSQL adapter of Forge's job queue (ADR 0023).
 //
 // Workers claim jobs with FOR UPDATE SKIP LOCKED in a single autocommit
-// statement, so no transaction or row lock is held while a handler runs, and
-// all lease timestamps come from the database clock, so skew between
-// application hosts cannot expire a lease early. Every acknowledgement is
-// fenced by the lease token of the claim.
+// statement, several at a time (ClaimBatch), so no transaction or row lock is
+// held while a handler runs, and all lease timestamps come from the database
+// clock, so skew between application hosts cannot expire a lease early. Every
+// acknowledgement is fenced by the lease token of the claim.
 //
 // Enqueue inside the caller's transaction with Store.In:
 //
@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,11 +36,13 @@ const uniqueViolation = "23505"
 
 // Store is the PostgreSQL implementation of queue.Store.
 type Store struct {
-	pool     *pgxpool.Pool
-	lastReap atomic.Int64 // unix nanoseconds of the last lease recovery
+	pool *pgxpool.Pool
 }
 
-var _ queue.Store = (*Store)(nil)
+var (
+	_ queue.Store        = (*Store)(nil)
+	_ queue.BatchClaimer = (*Store)(nil)
+)
 
 // NewStore returns a store on db's pool. The tables come from Migrations.
 func NewStore(db *forgepostgres.DB) (*Store, error) {
@@ -127,29 +128,37 @@ func (in inserter) Insert(ctx context.Context, job queue.NewJob) (queue.InsertRe
 
 // Claim leases the next eligible job of the request.
 func (s *Store) Claim(ctx context.Context, request queue.ClaimRequest) (queue.Claimed, bool, error) {
-	if request.Queue == "" || len(request.Kinds) == 0 || request.Lease <= 0 {
-		return queue.Claimed{}, false, errors.New("queue claim needs a queue, kinds and a lease")
-	}
-	if err := s.recoverExpired(ctx); err != nil {
+	claimed, err := s.ClaimBatch(ctx, request, 1)
+	if err != nil || len(claimed) == 0 {
 		return queue.Claimed{}, false, err
+	}
+	return claimed[0], true, nil
+}
+
+// ClaimBatch leases up to limit eligible jobs of the request in one
+// statement. SKIP LOCKED makes concurrent claims take disjoint jobs; the jobs
+// share one lease token.
+func (s *Store) ClaimBatch(ctx context.Context, request queue.ClaimRequest, limit int) ([]queue.Claimed, error) {
+	if request.Queue == "" || len(request.Kinds) == 0 || request.Lease <= 0 {
+		return nil, errors.New("queue claim needs a queue, kinds and a lease")
+	}
+	if limit < 1 || limit > queue.MaxClaimBatch {
+		return nil, fmt.Errorf("queue claim batch must be between 1 and %d", queue.MaxClaimBatch)
 	}
 	token, err := uuid.NewV7()
 	if err != nil {
-		return queue.Claimed{}, false, fmt.Errorf("generate lease token: %w", err)
+		return nil, fmt.Errorf("generate lease token: %w", err)
 	}
-	var (
-		job     queue.Job
-		payload []byte
-		key     string
-	)
-	err = s.pool.QueryRow(ctx, `
-		WITH candidate AS (
+	// MATERIALIZED keeps the locked candidate set fixed: the UPDATE joins
+	// exactly the rows the CTE locked.
+	rows, err := s.pool.Query(ctx, `
+		WITH candidate AS MATERIALIZED (
 			SELECT id FROM forge_jobs
 			WHERE state = 'pending' AND queue = $1 AND kind = ANY($2)
 			  AND run_at <= clock_timestamp()
 			ORDER BY priority, run_at, id
 			FOR UPDATE SKIP LOCKED
-			LIMIT 1
+			LIMIT $6
 		)
 		UPDATE forge_jobs AS j
 		SET state = 'running',
@@ -161,47 +170,42 @@ func (s *Store) Claim(ctx context.Context, request queue.ClaimRequest) (queue.Cl
 		WHERE j.id = candidate.id
 		RETURNING j.id, j.kind, j.queue, j.payload, j.attempts, j.max_attempts, j.priority,
 		          j.run_at, j.enqueued_at, COALESCE(j.idempotency_key, '')
-	`, request.Queue, request.Kinds, token, request.Lease.Microseconds(), request.WorkerID).Scan(
-		&job.ID, &job.Kind, &job.Queue, &payload, &job.Attempt, &job.MaxAttempts, &job.Priority,
-		&job.RunAt, &job.EnqueuedAt, &key)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return queue.Claimed{}, false, nil
-	}
+	`, request.Queue, request.Kinds, token, request.Lease.Microseconds(), request.WorkerID, limit)
 	if err != nil {
-		return queue.Claimed{}, false, fmt.Errorf("claim job: %w", err)
+		return nil, fmt.Errorf("claim jobs: %w", err)
 	}
-	job.Key = key
-	job.RunAt, job.EnqueuedAt = job.RunAt.UTC(), job.EnqueuedAt.UTC()
-	return queue.Claimed{Job: job, Payload: payload, Lease: queue.Lease{JobID: job.ID, Token: token}}, true, nil
-}
-
-// recoveryInterval spaces lease recovery sweeps per store, so a hot claim
-// path pays for one extra statement per interval, not per claim. A crashed
-// worker's job waits at most this long beyond its lease.
-const recoveryInterval = 250 * time.Millisecond
-
-// recoverExpired is Recover, at most once per recoveryInterval, for Claim.
-func (s *Store) recoverExpired(ctx context.Context) error {
-	now := time.Now().UnixNano()
-	last := s.lastReap.Load()
-	if now-last < int64(recoveryInterval) || !s.lastReap.CompareAndSwap(last, now) {
-		return nil
+	defer rows.Close()
+	claimed := make([]queue.Claimed, 0, limit)
+	for rows.Next() {
+		var (
+			job     queue.Job
+			payload []byte
+		)
+		if err := rows.Scan(&job.ID, &job.Kind, &job.Queue, &payload, &job.Attempt, &job.MaxAttempts, &job.Priority,
+			&job.RunAt, &job.EnqueuedAt, &job.Key); err != nil {
+			return nil, fmt.Errorf("scan claimed job: %w", err)
+		}
+		job.RunAt, job.EnqueuedAt = job.RunAt.UTC(), job.EnqueuedAt.UTC()
+		claimed = append(claimed, queue.Claimed{Job: job, Payload: payload, Lease: queue.Lease{JobID: job.ID, Token: token}})
 	}
-	_, err := s.Recover(ctx)
-	return err
+	if err := rows.Err(); err != nil {
+		// The statement may have committed before the error: those leases
+		// expire and Recover makes the jobs pending again.
+		return nil, fmt.Errorf("claim jobs: %w", err)
+	}
+	return claimed, nil
 }
 
 // Recover makes jobs whose lease expired pending again, or dead when they
-// used their last attempt. It handles up to 100 jobs per call.
+// used their last attempt. It handles up to queue.RecoverBatch jobs per call.
 func (s *Store) Recover(ctx context.Context) (int64, error) {
-	s.lastReap.Store(time.Now().UnixNano())
 	tag, err := s.pool.Exec(ctx, `
 		WITH expired AS (
 			SELECT id FROM forge_jobs
 			WHERE state = 'running' AND lease_until <= clock_timestamp()
 			ORDER BY lease_until
 			FOR UPDATE SKIP LOCKED
-			LIMIT 100
+			LIMIT $1
 		)
 		UPDATE forge_jobs AS j
 		SET state = CASE WHEN j.attempts >= j.max_attempts THEN 'dead' ELSE 'pending' END,
@@ -210,7 +214,7 @@ func (s *Store) Recover(ctx context.Context) (int64, error) {
 		    last_error = 'lease expired: the worker stopped renewing it'
 		FROM expired
 		WHERE j.id = expired.id
-	`)
+	`, queue.RecoverBatch)
 	if err != nil {
 		return 0, fmt.Errorf("recover expired job leases: %w", err)
 	}
