@@ -56,6 +56,13 @@ type DispatcherOptions struct {
 	// back without using an attempt. A larger batch means fewer claim
 	// transactions but more events waiting behind a slow handler; 1 claims
 	// one event at a time.
+	//
+	// The claim counts an attempt for every event of the batch. If the
+	// process crashes, the events it had claimed but not started keep that
+	// attempt when their leases expire: up to BatchSize-1 attempts are spent
+	// without a delivery, and an event already on its last attempt is then
+	// dead-lettered without having been delivered. Size MaxAttempts with
+	// that in mind.
 	BatchSize int
 	// Telemetry traces each delivery attempt with a consumer span (the root
 	// of a new trace) and records forge.outbox.dispatch.duration by event
@@ -210,16 +217,22 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context) (bool, error) {
 		if ctx.Err() != nil {
 			break
 		}
-		begun, err := leases.begin(item.event.ID)
-		if err != nil {
-			break
-		}
-		if !begun {
+		// The handler's cancel is registered in the same critical section
+		// that checks the lease, so a renewal that finds the lease lost
+		// either skips the event or cancels its handler.
+		workCtx, cancelWork := context.WithCancel(ctx)
+		begun, err := leases.begin(item.event.ID, cancelWork)
+		if err != nil || !begun {
+			cancelWork()
+			if err != nil {
+				break
+			}
 			continue // reclaimed by another dispatcher before its turn: it delivers it
 		}
 		started := time.Now()
 		span := d.tel.start(item.event, item.attempts)
-		handlerErr, err := d.deliver(telemetry.ContextWithSpan(ctx, span), leases, item.event, token, item.attempts)
+		handlerErr, err := d.deliver(telemetry.ContextWithSpan(ctx, span), telemetry.ContextWithSpan(workCtx, span), leases, item.event, token, item.attempts)
+		cancelWork()
 		d.tel.finish(span, item.event, time.Since(started), d.outcome(item.attempts, handlerErr, err), handlerErr, err)
 		leases.settled(item.event.ID)
 		if err != nil {
@@ -260,10 +273,8 @@ func (d *Dispatcher) outcome(attempts int, handlerErr, err error) string {
 
 // deliver runs the handler for a claimed event and records the result. It
 // returns the handler's error and the persistence or lease error.
-func (d *Dispatcher) deliver(ctx context.Context, leases *batchLeases, event events.Event, token uuid.UUID, attempts int) (error, error) {
-	workCtx, cancelWork := context.WithCancel(ctx)
-	defer cancelWork()
-	leases.running(event.ID, cancelWork)
+// workCtx is the handler's context, which a lost lease cancels.
+func (d *Dispatcher) deliver(ctx, workCtx context.Context, leases *batchLeases, event events.Event, token uuid.UUID, attempts int) (error, error) {
 	handlerErr := d.handler(workCtx, event)
 	if leaseErr := leases.finished(); leaseErr != nil {
 		return handlerErr, leaseErr
@@ -299,21 +310,21 @@ func newBatchLeases(batch []claimed) *batchLeases {
 	return &batchLeases{holding: holding}
 }
 
-// begin reports whether the event is still held and may be delivered, or
-// the failure that ended the batch.
-func (b *batchLeases) begin(id uuid.UUID) (bool, error) {
+// begin makes the event the running one, with cancel stopping its handler,
+// and reports true when the event is still held. It reports false when the
+// lease was lost before the event's turn, and the failure that ended the
+// batch, if one did.
+func (b *batchLeases) begin(id uuid.UUID, cancel context.CancelFunc) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.err != nil {
 		return false, b.err
 	}
-	return b.holding[id], nil
-}
-
-func (b *batchLeases) running(id uuid.UUID, cancel context.CancelFunc) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	if !b.holding[id] {
+		return false, nil
+	}
 	b.current, b.cancel, b.lost = id, cancel, nil
+	return true, nil
 }
 
 // finished ends the current handler's turn and returns why its lease ended

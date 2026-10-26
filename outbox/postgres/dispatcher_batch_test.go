@@ -274,3 +274,40 @@ func TestAnEventReclaimedBeforeItsTurnIsSkipped(t *testing.T) {
 		t.Fatalf("reclaimed event: %+v; it belongs to the other dispatcher", row)
 	}
 }
+
+// begin registers the handler's cancel in the same step that checks the
+// lease: a renewal that loses the event before begin makes begin refuse it,
+// and one that loses it after begin cancels the registered handler.
+func TestBatchLeasesBeginIsAtomicWithTheLeaseCheck(t *testing.T) {
+	t.Parallel()
+	first, second := uuid.MustNew(), uuid.MustNew()
+	leases := newBatchLeases([]claimed{{event: events.Event{ID: first}}, {event: events.Event{ID: second}}})
+
+	// Lost before its turn: refused, its cancel never registered.
+	leases.renewed([]uuid.UUID{first, second}, map[uuid.UUID]bool{first: true})
+	canceled := false
+	if begun, err := leases.begin(second, func() { canceled = true }); begun || err != nil {
+		t.Fatalf("begin of a lost event = %v, %v; want false, nil", begun, err)
+	}
+
+	// Lost while running: the handler registered by begin is canceled and
+	// the batch ends with ErrLeaseLost.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if begun, err := leases.begin(first, cancel); !begun || err != nil {
+		t.Fatalf("begin of a held event = %v, %v", begun, err)
+	}
+	leases.renewed([]uuid.UUID{first}, map[uuid.UUID]bool{})
+	if ctx.Err() == nil {
+		t.Fatal("losing the running event's lease did not cancel its handler")
+	}
+	if err := leases.finished(); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("finished = %v, want ErrLeaseLost", err)
+	}
+	if _, err := leases.begin(second, func() {}); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("begin after the batch failed = %v, want ErrLeaseLost", err)
+	}
+	if canceled {
+		t.Fatal("a refused event's cancel was called")
+	}
+}
