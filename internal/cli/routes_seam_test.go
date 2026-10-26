@@ -618,4 +618,25 @@ func TestSeamLockAndWriteSafety(t *testing.T) {
 	if err := runGenerateEnv([]string{"scaffold", "post", "title:string", "--global", "--public"}, &out, dir, withoutDatabaseURL(), seamNow); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("a symlinked .forge: %v", err)
 	}
+	if err := os.Remove(filepath.Join(dir, ".forge")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A go.mod that is not a regular file refuses the run instead of
+	// running it without the lock.
+	goMod := filepath.Join(dir, "go.mod")
+	moved := filepath.Join(t.TempDir(), "go.mod")
+	if err := os.Rename(goMod, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, goMod); err != nil {
+		t.Fatal(err)
+	}
+	before = fileTree(t, dir)
+	if err := runGenerateEnv([]string{"scaffold", "post", "title:string", "--global", "--public"}, &out, dir, withoutDatabaseURL(), seamNow); err == nil || !strings.Contains(err.Error(), "go.mod is not a regular file") {
+		t.Fatalf("a symlinked go.mod: %v", err)
+	}
+	if !maps.Equal(fileTree(t, dir), before) {
+		t.Fatal("a generator refused for a symlinked go.mod wrote files")
+	}
 }

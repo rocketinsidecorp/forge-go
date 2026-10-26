@@ -331,16 +331,22 @@ var errGenerateLocked = fmt.Errorf("another forge generate or forge destroy is r
 // another run may be using it) and removed afterwards. Anything that keeps
 // the lock from being taken refuses the run rather than running unlocked:
 // an existing lock, a .forge that is not a plain directory (a symlink, a
-// file), or any other error. A directory without go.mod is not an
-// application, and fn reports that itself.
+// file), a go.mod that is not a regular file, or any other error. A
+// directory without go.mod is not an application, and fn reports that
+// itself.
 func withGenerateLock(root string, fn func() error) error {
 	projectRoot, err := os.OpenRoot(root)
 	if err != nil {
 		return fn()
 	}
 	defer func() { _ = projectRoot.Close() }()
-	if info, err := projectRoot.Lstat("go.mod"); err != nil || !info.Mode().IsRegular() {
+	switch info, err := projectRoot.Lstat("go.mod"); {
+	case errors.Is(err, fs.ErrNotExist):
 		return fn()
+	case err != nil:
+		return fmt.Errorf("take the generate lock: %w", err)
+	case !info.Mode().IsRegular():
+		return errors.New("refusing to run: go.mod is not a regular file (a symlink or a directory), so the generate lock cannot be taken safely")
 	}
 	directory := filepath.Dir(generateLock)
 	info, err := projectRoot.Lstat(directory)
