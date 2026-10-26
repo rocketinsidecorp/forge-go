@@ -499,6 +499,8 @@ delivery is at-least-once, so consumers must be idempotent. Start it with
 `outbox/postgres.NewDispatcher(db.Pool(), handler, options)` and run it under
 an application-owned context. Handler calls happen outside database
 transactions, and the dispatcher renews its lease while the handler runs.
+Each worker claims up to `DispatcherOptions.BatchSize` events (default 10) in
+one transaction and delivers them in order, acknowledging each on its own.
 Dead-letter rows are retained for operator inspection; automated replay and
 queue metrics are not yet provided. See
 [ADR 0018](adr/0018-transactional-outbox-foundation.md) and
@@ -688,7 +690,7 @@ on the same merged history and the same `forge_schema_migrations` table.
 ### Framework migrations
 
 The migrations Forge packages ship (identity, outbox, agent journal, job
-queue, rate limiter, cache) are registered by version, name and owning package
+queue, scheduled job ticks, rate limiter, cache) are registered by version, name and owning package
 in `migrate.FrameworkMigrations()`
 ([ADR 0039](adr/0039-framework-migration-ownership.md)):
 
@@ -706,7 +708,7 @@ in `migrate.FrameworkMigrations()`
 - Reverting a framework migration is deliberate library code, never a
   command: `Migrator.DownFramework(ctx, steps)` reverts the most recently
   applied framework migrations the migrator contains and never one of yours.
-  The job queue, rate-limit, cache and outbox migrations have no down script
+  The job queue, scheduled job ticks, rate-limit, cache and outbox migrations have no down script
   and are refused as irreversible.
 
 ```sh

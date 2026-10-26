@@ -504,7 +504,8 @@ environment taking precedence.
 `forge new` creates only what the application needs to run:
 
 ```text
-cmd/<name>/main.go   forge.Main(bootstrap.Configure, <adapter>.Commands(db.Migrations())...)
+cmd/<name>/main.go   forge.Main(bootstrap.Configure, <adapter>.CommandsFromSets(jobs<adapter>.Migrations(), db.Migrations())...)
+                     (SQLite: <adapter>.Commands(db.Migrations()))
 app/bootstrap/       composition root: database pool, readiness check "database", routes,
                      locale negotiation + method override + CSRF + flash middleware
                      (generated with GET /v1/status, the /assets/ route for app/assets and tests)
@@ -639,6 +640,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0044](adr/0044-continuous-fuzzing-sbom-signed-images.md) | Continuous fuzzing, SBOMs and keyless-signed release images |
 | [0045](adr/0045-generated-mfa-settings-pages.md) | Generated two-factor settings pages (`/mfa`) with password and code step-up |
 | [0046](adr/0046-postgresql-runtime-and-migration-roles.md) | PostgreSQL runtime and migration roles; staging and production refuse a serving role that could bypass row-level security |
+| [0047](adr/0047-batch-claims-notify-and-recorded-ticks.md) | Batch claims for the queue and the outbox, PostgreSQL `LISTEN/NOTIFY` wake-up, scheduler ticks recorded once in the database |
 
 ADR numbers 0027 and 0028 are unassigned: the rate limiting, cache and file
 storage ADRs were drafted as 0026-0028, 0026 turned out to be taken by other

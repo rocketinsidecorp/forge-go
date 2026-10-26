@@ -316,8 +316,10 @@ type Store interface {
 	Inserter
 	Admin
 	// Claim leases the next eligible job of the request, or reports false.
-	// Expired leases are recovered first: a job whose lease expired is made
-	// pending again, or dead when it already used its last attempt.
+	// It does not recover expired leases: Recover does, and every Worker
+	// calls it on its own schedule. Code that drives a Store without a
+	// Worker must call Recover itself, or jobs of crashed workers stay
+	// leased forever.
 	Claim(ctx context.Context, request ClaimRequest) (Claimed, bool, error)
 	// Renew extends the lease to now+extend, or returns ErrLeaseLost.
 	Renew(ctx context.Context, lease Lease, extend time.Duration) error
@@ -325,14 +327,55 @@ type Store interface {
 	Complete(ctx context.Context, lease Lease) error
 	// Fail schedules a retry or kills the job, or returns ErrLeaseLost.
 	Fail(ctx context.Context, lease Lease, failure Failure) error
-	// Recover makes every job whose lease expired pending again, or dead when
-	// it already used its last attempt, and reports how many it changed. Claim
-	// recovers too, but only while a worker has a free slot, so workers also
-	// call Recover on their own schedule.
+	// Recover makes jobs whose lease expired pending again, or dead when they
+	// already used their last attempt, and reports how many it changed. One
+	// call handles a bounded batch (RecoverBatch jobs); workers call it
+	// every Lease/4, off the claim path, and repeat it while batches are
+	// full.
 	Recover(ctx context.Context) (int64, error)
 	// Release gives the job back without penalty (the attempt is not
 	// counted), or returns ErrLeaseLost. Graceful shutdown uses it.
 	Release(ctx context.Context, lease Lease) error
+}
+
+// RecoverBatch is the most jobs one Store.Recover call changes.
+const RecoverBatch = 100
+
+// MaxClaimBatch is the most jobs one ClaimBatch call may lease.
+const MaxClaimBatch = 100
+
+// BatchClaimer is implemented by stores that lease several jobs in one round
+// trip. A Worker uses it when present and falls back to Claim otherwise.
+type BatchClaimer interface {
+	// ClaimBatch leases up to limit (1 to MaxClaimBatch) eligible jobs of the
+	// request, the ones Claim would return one by one, and returns them,
+	// possibly none, in no particular order (UPDATE ... RETURNING does not
+	// keep one). Each job is leased exactly as Claim leases one:
+	// same lease duration, attempt count and token fencing. The jobs may
+	// share one lease token; acknowledgements stay fenced because a lease
+	// names the job and the token.
+	ClaimBatch(ctx context.Context, request ClaimRequest, limit int) ([]Claimed, error)
+}
+
+// ErrListenUnsupported is what Listener.Listen returns when the store was not
+// configured to publish enqueue notifications. A worker then stops listening
+// and only polls.
+var ErrListenUnsupported = errors.New("queue: the store does not publish enqueue notifications")
+
+// Listener is implemented by stores that announce enqueued jobs, such as
+// queue/postgres with WithNotify (LISTEN/NOTIFY). A Worker whose store is a
+// Listener holds one listening connection and claims as soon as a job of one
+// of its queues is announced, instead of waiting for its next poll. Polling
+// continues as the fallback: announcements are hints, may be lost while the
+// connection is down, and are never needed for correctness.
+type Listener interface {
+	// Listen subscribes to announcements and blocks until ctx ends or the
+	// subscription fails, which it reports as an error (ErrListenUnsupported
+	// when the store does not announce). It calls listening once the
+	// subscription is active and wake with the queue name of each
+	// announcement, both on the calling goroutine; wake must not block. It
+	// must return promptly when ctx ends and release its connection.
+	Listen(ctx context.Context, listening func(), wake func(queue string)) error
 }
 
 type jobContextKey struct{}

@@ -34,6 +34,8 @@ func TestNewDispatcherRefusesUnsafeOptions(t *testing.T) {
 		"huge base":             {RetryBase: 25 * time.Hour},
 		"huge max":              {RetryMax: 25 * time.Hour},
 		"max below base":        {RetryBase: time.Minute, RetryMax: time.Second},
+		"negative batch":        {BatchSize: -1},
+		"huge batch":            {BatchSize: MaxBatchSize + 1},
 	} {
 		if _, err := NewDispatcher(pool, noopHandler, opts); err == nil {
 			t.Errorf("%s was accepted", name)
@@ -130,7 +132,7 @@ func TestDispatcherOperationsFailWhenTheTableIsUnavailable(t *testing.T) {
 		"ack":               d.ack(ctx, event.ID, token),
 		"retry":             d.retry(ctx, event.ID, token, attempts),
 		"dead-letter":       d.retry(ctx, event.ID, token, 2),
-		"dispatchOne":       func() error { _, err := d.dispatchOne(ctx); return err }(),
+		"dispatchBatch":     func() error { _, err := d.dispatchBatch(ctx); return err }(),
 		"stats":             func() error { _, err := d.Stats(ctx); return err }(),
 		"list dead letters": func() error { _, err := d.ListDeadLetters(ctx, nil, 10); return err }(),
 		"replay":            d.ReplayDeadLetter(ctx, event.ID),

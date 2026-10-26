@@ -81,7 +81,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		"cmd/billing-api/main.go": {
 			`"example.com/acme/billing/app/bootstrap"`,
 			`authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"`,
-			"postgres.CommandsFromSets(authpostgres.Migrations(), db.Migrations())",
+			"postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations())",
 		},
 		"app/bootstrap/bootstrap.go": {
 			"postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),\n\t\tpostgres.RequireRowSecurity(app.Config().Environment))",
@@ -367,7 +367,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 			want: map[string][]string{
 				"compose.yaml":                    {"image: mysql:8.4", "MYSQL_DATABASE: shop_development", "mysql:/var/lib/mysql", "FORGE_DATABASE_URL: mysql://shop:development@mysql:3306/shop_development", `"mysqladmin", "ping"`},
 				".env.development":                {"FORGE_DATABASE_URL=mysql://shop:development@127.0.0.1:", "FORGE_TEST_DATABASE_URL=mysql://root:development@127.0.0.1:"},
-				"cmd/shop/main.go":                {`"github.com/rocketinsidecorp/forge-go/mysql"`, "mysql.Commands(db.Migrations())"},
+				"cmd/shop/main.go":                {`"github.com/rocketinsidecorp/forge-go/mysql"`, "mysql.CommandsFromSets(jobsmysql.Migrations(), db.Migrations())"},
 				"app/bootstrap/bootstrap.go":      {"mysql.Open(ctx, app.Config().Database, mysql.WithTelemetry(app.Telemetry()))"},
 				"app/bootstrap/bootstrap_test.go": {`"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"`, "mysqltest.Config(t)"},
 				".github/workflows/ci.yml":        {"image: mysql:8.4", "MYSQL_ROOT_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
@@ -384,7 +384,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 			database: "mariadb",
 			want: map[string][]string{
 				"compose.yaml":             {"image: mariadb:11.8", "MARIADB_DATABASE: shop_development", "FORGE_DATABASE_URL: mysql://shop:development@mariadb:3306/shop_development", "healthcheck.sh"},
-				"cmd/shop/main.go":         {"mysql.Commands(db.Migrations())"},
+				"cmd/shop/main.go":         {"mysql.CommandsFromSets(jobsmysql.Migrations(), db.Migrations())"},
 				".github/workflows/ci.yml": {"image: mariadb:11.8", "MARIADB_ROOT_PASSWORD: forge", "healthcheck.sh --connect --innodb_initialized", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
 				"README.md":                {"MariaDB 11.8"},
 			},

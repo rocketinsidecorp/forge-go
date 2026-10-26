@@ -1,7 +1,9 @@
 // Package jobs provides an in-process scheduler for recurring background
-// work. Each replica runs its own scheduler; job authors must use advisory
-// locks or idempotent outbox events for exactly-once semantics across
-// replicas.
+// work. Each replica runs its own scheduler. With SchedulerOptions.Ticks
+// (jobs/postgres or jobs/mysql NewTickClaimer) each tick of a job runs on
+// exactly one replica, recorded in the database; without it every replica
+// runs every tick, and job authors need their own coordination or idempotent
+// outbox events.
 package jobs
 
 import (
@@ -88,8 +90,8 @@ func (s ScheduleSpec) nextRun(after time.Time) (time.Time, error) {
 }
 
 // Scheduler runs jobs on a schedule. It is not a distributed scheduler;
-// each replica runs its own instance. Jobs that must run exactly once per
-// schedule tick across replicas should use postgres.TryAdvisoryXactLock.
+// each replica runs its own instance. Set SchedulerOptions.Ticks so that each
+// tick of a job runs on one replica only.
 type Scheduler struct {
 	jobs       map[string]scheduledJob
 	opts       SchedulerOptions
@@ -124,7 +126,62 @@ type SchedulerOptions struct {
 	// (succeeded, failed, timeout). Error messages are never recorded. Nil
 	// disables it.
 	Telemetry *telemetry.Telemetry
+	// Ticks, when set, makes the replicas that share it run each tick of a
+	// job exactly once between them: after taking a concurrency slot, a
+	// replica runs a tick only if ClaimTick records it, and a tick another
+	// replica recorded is skipped silently. Ticks are recorded per job and
+	// only move forward, so the outcome does not depend on the replicas'
+	// clocks, and no connection is held while a job runs. A tick that could
+	// not be recorded (the database unreachable) is skipped and reported to
+	// OnError. One replica runs the ticks of a job one after another, but two
+	// replicas can run consecutive ticks of a job at the same time when a run
+	// outlasts the interval; guard such jobs yourself. On a replica whose
+	// clock runs ahead of the database, a tick is refused as early and the
+	// replica waits for the database clock, keeping the job's concurrency
+	// slot meanwhile: up to about two minutes (two waits of at most a minute)
+	// before it gives up on the tick and reports it. Keep replica clocks
+	// synchronized to avoid that. Use jobs/postgres or jobs/mysql
+	// NewTickClaimer; nil runs every tick on every replica.
+	Ticks TickClaimer
 }
+
+// TickClaimer records which replica runs each tick of a scheduled job.
+// Implementations are in packages jobs/postgres and jobs/mysql; package
+// jobs/ticktest is their conformance suite.
+type TickClaimer interface {
+	// ClaimTick records tick as the latest tick of job and reports whether
+	// this call recorded it, which makes the caller the one replica that
+	// runs it. A tick at or before the job's recorded tick is never claimed
+	// again, by anyone. A tick later than the database's clock is refused
+	// with an *EarlyTickError, so a replica whose clock runs ahead can
+	// neither run a tick early nor block the others. It holds no connection
+	// after it returns.
+	ClaimTick(ctx context.Context, job string, tick time.Time) (bool, error)
+}
+
+// EarlyTickError reports a tick later than the database's clock.
+type EarlyTickError struct {
+	// Wait is how far the tick is ahead of the database's clock.
+	Wait time.Duration
+}
+
+func (e *EarlyTickError) Error() string {
+	return fmt.Sprintf("jobs: the tick is %s ahead of the database clock", e.Wait)
+}
+
+// MaxJobNameLength bounds a scheduled job's name in bytes, so that the
+// database adapters can record its ticks.
+const MaxJobNameLength = 255
+
+const (
+	// claimTimeout bounds one ClaimTick call.
+	claimTimeout = 10 * time.Second
+	// maxEarlyWait is how far ahead of the database a replica's clock may
+	// be: its early ticks wait for the database to catch up, up to this.
+	maxEarlyWait = time.Minute
+	// claimAttempts bounds the retries of an early tick.
+	claimAttempts = 3
+)
 
 // maxConcurrentJobs is the largest MaxConcurrentJobs; defaultConcurrentJobs
 // is what zero means.
@@ -211,6 +268,9 @@ func (s *Scheduler) run(ctx context.Context, name string, job Job) error {
 func (s *Scheduler) Register(name string, spec ScheduleSpec, job Job) error {
 	if name == "" {
 		return errors.New("job name is required")
+	}
+	if len(name) > MaxJobNameLength {
+		return fmt.Errorf("job name must not exceed %d bytes", MaxJobNameLength)
 	}
 	if err := spec.Validate(); err != nil {
 		return fmt.Errorf("invalid schedule for job %q: %w", name, err)
@@ -351,21 +411,68 @@ func (s *Scheduler) runJob(name string, sj scheduledJob) {
 			return
 		case <-timer.C:
 		}
-		select {
-		case <-s.ctx.Done():
-			return
-		case s.concurrent <- struct{}{}:
-		}
-		if s.ctx.Err() != nil {
-			<-s.concurrent
+		if !s.tick(name, sj, nextRun) {
 			return
 		}
-		jobCtx, cancel := context.WithTimeout(s.ctx, jobTimeout(sj.spec))
-		if err := s.run(jobCtx, name, sj.job); err != nil {
-			s.opts.OnError(name, err)
-		}
+	}
+}
+
+// tick runs one tick of a job: it waits for a concurrency slot, claims the
+// tick when the scheduler records ticks, and runs the job. The slot comes
+// first so a replica that cannot run the job now does not claim the tick: by
+// the time it has a slot, another replica may have run it. It reports false
+// once the scheduler is stopping.
+func (s *Scheduler) tick(name string, sj scheduledJob, at time.Time) bool {
+	select {
+	case <-s.ctx.Done():
+		return false
+	case s.concurrent <- struct{}{}:
+	}
+	defer func() { <-s.concurrent }()
+	if s.ctx.Err() != nil {
+		return false
+	}
+	if s.opts.Ticks != nil && !s.claim(name, at) {
+		return s.ctx.Err() == nil
+	}
+	jobCtx, cancel := context.WithTimeout(s.ctx, jobTimeout(sj.spec))
+	defer cancel()
+	if err := s.run(jobCtx, name, sj.job); err != nil {
+		s.opts.OnError(name, err)
+	}
+	return s.ctx.Err() == nil
+}
+
+// claim records the tick and reports whether this replica runs it. A tick
+// recorded elsewhere is a normal outcome, logged at debug level only; a tick
+// that could not be recorded is skipped (fail closed) and reported.
+func (s *Scheduler) claim(name string, at time.Time) bool {
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(s.ctx, claimTimeout)
+		claimed, err := s.opts.Ticks.ClaimTick(ctx, name, at)
 		cancel()
-		<-s.concurrent
+		var early *EarlyTickError
+		switch {
+		case err == nil && claimed:
+			return true
+		case err == nil:
+			slog.Default().Debug("scheduled tick ran on another replica", "job", name, "tick", at)
+			return false
+		case errors.As(err, &early) && early.Wait <= maxEarlyWait && attempt < claimAttempts:
+			// This replica's clock is ahead of the database's: wait for it.
+			timer := time.NewTimer(early.Wait + 10*time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-s.ctx.Done():
+				timer.Stop()
+				return false
+			}
+		case s.ctx.Err() != nil:
+			return false
+		default:
+			s.opts.OnError(name, fmt.Errorf("jobs: skipped the %s tick: could not record it: %w", at.Format(time.RFC3339Nano), err))
+			return false
+		}
 	}
 }
 

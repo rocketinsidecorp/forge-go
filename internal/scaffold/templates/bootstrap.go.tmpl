@@ -20,6 +20,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/i18n"
 {{- if and .DB .DB.Jobs}}
 	"github.com/rocketinsidecorp/forge-go/jobs"
+	jobs{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/jobs/{{.DB.Adapter}}"
 {{- end}}
 {{- if and .DB .DB.Identity}}
 	"github.com/rocketinsidecorp/forge-go/mail"
@@ -75,8 +76,16 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := routes(ctx, app, translator); err != nil {
 		return err
 	}
-{{- if and .DB .DB.Identity}}
-	return identityRoutes(ctx, app, database, translator)
+{{- if .DB.Identity}}
+	if err := identityRoutes(ctx, app, database, translator); err != nil {
+		return err
+	}
+{{- end}}
+{{- if .DB.Jobs}}
+	// Recurring jobs. Their ticks are recorded in the database
+	// (forge_job_schedules), so with several replicas each tick of a job
+	// runs on exactly one of them.
+	return JobsConfigure(app, jobs{{.DB.Adapter}}.NewTickClaimer(database))
 {{- else}}
 	return nil
 {{- end}}
@@ -96,14 +105,22 @@ func Configure(_ context.Context, app *forge.App) error {
 {{ if and .DB .DB.Jobs}}
 // JobsConfigure starts the in-process scheduler for recurring jobs and stops
 // it, waiting for running jobs within the shutdown budget, when the application
-// shuts down. Register application jobs on the scheduler below.
-func JobsConfigure(app *forge.App) error {
+// shuts down. Register application jobs on the scheduler below. Configure
+// passes the database's tick claimer (jobs{{.DB.Adapter}}.NewTickClaimer): every
+// replica runs the scheduler, and each tick of a job runs on exactly one
+// replica, the first to record it in forge_job_schedules once it has a free
+// slot. Recording a tick borrows a connection for one statement only. A tick
+// that cannot be recorded (database unreachable) is skipped and reported
+// through OnError. Two replicas may run consecutive ticks of one job at the
+// same time, so a job longer than its interval must tolerate that.
+func JobsConfigure(app *forge.App, ticks jobs.TickClaimer) error {
 	options := jobs.SchedulerOptions{
 		MaxConcurrentJobs: 4,
 		Telemetry:         app.Telemetry(),
 		OnError: func(name string, err error) {
 			app.Logger().Error("scheduled job failed", "job", name, "error", err)
 		},
+		Ticks: ticks,
 	}
 	// NewScheduler would silently clamp a bad value: refuse it at startup.
 	if err := options.Validate(); err != nil {
@@ -119,7 +136,8 @@ func JobsConfigure(app *forge.App) error {
 	//	return err
 	// }
 	// A job that needs the database uses the handle Configure opened: pass it
-	// to the job's constructor and call database.InTx(ctx, func(tx ...) error).
+	// to JobsConfigure and on to the job's constructor, and call
+	// database.InTx(ctx, func(tx ...) error).
 	if err := app.OnShutdown(scheduler.StopContext); err != nil {
 		_ = scheduler.Stop()
 		return err

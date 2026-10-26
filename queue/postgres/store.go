@@ -1,10 +1,16 @@
 // Package postgres is the PostgreSQL adapter of Forge's job queue (ADR 0023).
 //
 // Workers claim jobs with FOR UPDATE SKIP LOCKED in a single autocommit
-// statement, so no transaction or row lock is held while a handler runs, and
-// all lease timestamps come from the database clock, so skew between
-// application hosts cannot expire a lease early. Every acknowledgement is
-// fenced by the lease token of the claim.
+// statement, several at a time (ClaimBatch), so no transaction or row lock is
+// held while a handler runs, and all lease timestamps come from the database
+// clock, so skew between application hosts cannot expire a lease early. Every
+// acknowledgement is fenced by the lease token of the claim.
+//
+// With WithNotify, an enqueue also sends NOTIFY forge_jobs (payload: the
+// queue name) when the job is due, delivered when the enqueuing transaction
+// commits, and workers on the store LISTEN for it: an idle worker claims
+// within milliseconds instead of at its next poll. Polling stays the
+// fallback, so a lost notification only delays a job to the next poll.
 //
 // Enqueue inside the caller's transaction with Store.In:
 //
@@ -19,7 +25,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -35,28 +40,63 @@ import (
 // uniqueViolation is SQLSTATE 23505.
 const uniqueViolation = "23505"
 
+// NotifyChannel is the PostgreSQL notification channel of WithNotify. The
+// payload of each notification is a queue name.
+const NotifyChannel = "forge_jobs"
+
 // Store is the PostgreSQL implementation of queue.Store.
 type Store struct {
-	pool     *pgxpool.Pool
-	lastReap atomic.Int64 // unix nanoseconds of the last lease recovery
+	pool   *pgxpool.Pool
+	notify bool
 }
 
-var _ queue.Store = (*Store)(nil)
+var (
+	_ queue.Store        = (*Store)(nil)
+	_ queue.BatchClaimer = (*Store)(nil)
+	_ queue.Listener     = (*Store)(nil)
+)
+
+// Option configures a Store.
+type Option func(*Store)
+
+// WithNotify announces every due job on NotifyChannel when it is enqueued
+// (through Insert, or through In when the caller's transaction commits) and
+// lets workers on this store LISTEN for the announcements (queue.Listener):
+// an idle worker then claims a new job at once instead of at its next poll,
+// which can be MaxPollInterval (10s by default) away.
+//
+// Costs: each worker holds one extra connection, outside the pool's
+// MaxConns, for its whole life; LISTEN does not work through PgBouncer in
+// transaction pooling mode (connect workers directly or use session
+// pooling); and PostgreSQL serializes the commits of transactions that sent
+// a notification, which matters only at thousands of enqueues per second.
+// Notifications are hints: each one wakes every idle worker polling that
+// queue, and each of them claims once (at most one claim per 10ms per
+// poller); anyone who can NOTIFY on the database can wake workers; and
+// polling still finds every job.
+func WithNotify() Option { return func(s *Store) { s.notify = true } }
 
 // NewStore returns a store on db's pool. The tables come from Migrations.
-func NewStore(db *forgepostgres.DB) (*Store, error) {
+func NewStore(db *forgepostgres.DB, options ...Option) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("queue PostgreSQL database is required")
 	}
-	return NewStoreFromPool(db.Pool())
+	return NewStoreFromPool(db.Pool(), options...)
 }
 
 // NewStoreFromPool is NewStore for an application-owned pool.
-func NewStoreFromPool(pool *pgxpool.Pool) (*Store, error) {
+func NewStoreFromPool(pool *pgxpool.Pool, options ...Option) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("queue PostgreSQL pool is required")
 	}
-	return &Store{pool: pool}, nil
+	store := &Store{pool: pool}
+	for _, option := range options {
+		if option == nil {
+			return nil, errors.New("queue PostgreSQL store option is nil")
+		}
+		option(store)
+	}
+	return store, nil
 }
 
 // executor is what both the pool and a pgx.Tx provide.
@@ -73,14 +113,17 @@ type executor interface {
 // same key concurrently make one fail with SQLSTATE 40001, like any
 // conflicting write; run them with postgres.TxOptions.Attempts so the retry
 // sees the committed job and reports a duplicate. READ COMMITTED needs no retry.
-func (s *Store) In(tx pgx.Tx) queue.Inserter { return inserter{exec: tx} }
+func (s *Store) In(tx pgx.Tx) queue.Inserter { return inserter{exec: tx, notify: s.notify} }
 
-type inserter struct{ exec executor }
+type inserter struct {
+	exec   executor
+	notify bool
+}
 
 // Insert stores job in its own implicit transaction (a single statement).
 // Use In for atomicity with business data.
 func (s *Store) Insert(ctx context.Context, job queue.NewJob) (queue.InsertResult, error) {
-	return inserter{exec: s.pool}.Insert(ctx, job)
+	return inserter{exec: s.pool, notify: s.notify}.Insert(ctx, job)
 }
 
 func (in inserter) Insert(ctx context.Context, job queue.NewJob) (queue.InsertResult, error) {
@@ -101,12 +144,31 @@ func (in inserter) Insert(ctx context.Context, job queue.NewJob) (queue.InsertRe
 		VALUES ($1, $2, $3, $4::jsonb, $5, $6, COALESCE($7, clock_timestamp()), NULLIF($8::text, ''))
 		ON CONFLICT (kind, idempotency_key) WHERE idempotency_key IS NOT NULL AND state IN ('pending', 'running') DO NOTHING
 		RETURNING id`
+	// With WithNotify the announcement is part of the same statement, so it
+	// is sent exactly when a due job was stored and delivered when the
+	// transaction commits. count(*) makes the query read the notified CTE,
+	// which would otherwise never run.
+	const insertNotifySQL = `
+		WITH inserted AS (
+			INSERT INTO forge_jobs (id, queue, kind, payload, priority, max_attempts, run_at, idempotency_key)
+			VALUES ($1, $2, $3, $4::jsonb, $5, $6, COALESCE($7, clock_timestamp()), NULLIF($8::text, ''))
+			ON CONFLICT (kind, idempotency_key) WHERE idempotency_key IS NOT NULL AND state IN ('pending', 'running') DO NOTHING
+			RETURNING id, queue, run_at
+		), notified AS (
+			SELECT pg_notify($9, inserted.queue) FROM inserted
+			WHERE inserted.run_at <= clock_timestamp()
+		)
+		SELECT inserted.id FROM inserted, (SELECT count(*) FROM notified) AS announcements`
+	statement, args := insertSQL, []any{job.ID, job.Queue, job.Kind, []byte(job.Payload), job.Priority, job.MaxAttempts, runAt, job.Key}
+	if in.notify {
+		statement, args = insertNotifySQL, append(args, NotifyChannel)
+	}
 	const existingSQL = `
 		SELECT id FROM forge_jobs
 		WHERE kind = $1 AND idempotency_key = $2 AND state IN ('pending', 'running')`
 	for range 3 {
 		var id uuid.UUID
-		err := in.exec.QueryRow(ctx, insertSQL, job.ID, job.Queue, job.Kind, []byte(job.Payload), job.Priority, job.MaxAttempts, runAt, job.Key).Scan(&id)
+		err := in.exec.QueryRow(ctx, statement, args...).Scan(&id)
 		if err == nil {
 			return queue.InsertResult{ID: id}, nil
 		}
@@ -127,29 +189,37 @@ func (in inserter) Insert(ctx context.Context, job queue.NewJob) (queue.InsertRe
 
 // Claim leases the next eligible job of the request.
 func (s *Store) Claim(ctx context.Context, request queue.ClaimRequest) (queue.Claimed, bool, error) {
-	if request.Queue == "" || len(request.Kinds) == 0 || request.Lease <= 0 {
-		return queue.Claimed{}, false, errors.New("queue claim needs a queue, kinds and a lease")
-	}
-	if err := s.recoverExpired(ctx); err != nil {
+	claimed, err := s.ClaimBatch(ctx, request, 1)
+	if err != nil || len(claimed) == 0 {
 		return queue.Claimed{}, false, err
+	}
+	return claimed[0], true, nil
+}
+
+// ClaimBatch leases up to limit eligible jobs of the request in one
+// statement. SKIP LOCKED makes concurrent claims take disjoint jobs; the jobs
+// share one lease token.
+func (s *Store) ClaimBatch(ctx context.Context, request queue.ClaimRequest, limit int) ([]queue.Claimed, error) {
+	if request.Queue == "" || len(request.Kinds) == 0 || request.Lease <= 0 {
+		return nil, errors.New("queue claim needs a queue, kinds and a lease")
+	}
+	if limit < 1 || limit > queue.MaxClaimBatch {
+		return nil, fmt.Errorf("queue claim batch must be between 1 and %d", queue.MaxClaimBatch)
 	}
 	token, err := uuid.NewV7()
 	if err != nil {
-		return queue.Claimed{}, false, fmt.Errorf("generate lease token: %w", err)
+		return nil, fmt.Errorf("generate lease token: %w", err)
 	}
-	var (
-		job     queue.Job
-		payload []byte
-		key     string
-	)
-	err = s.pool.QueryRow(ctx, `
-		WITH candidate AS (
+	// MATERIALIZED keeps the locked candidate set fixed: the UPDATE joins
+	// exactly the rows the CTE locked.
+	rows, err := s.pool.Query(ctx, `
+		WITH candidate AS MATERIALIZED (
 			SELECT id FROM forge_jobs
 			WHERE state = 'pending' AND queue = $1 AND kind = ANY($2)
 			  AND run_at <= clock_timestamp()
 			ORDER BY priority, run_at, id
 			FOR UPDATE SKIP LOCKED
-			LIMIT 1
+			LIMIT $6
 		)
 		UPDATE forge_jobs AS j
 		SET state = 'running',
@@ -161,47 +231,42 @@ func (s *Store) Claim(ctx context.Context, request queue.ClaimRequest) (queue.Cl
 		WHERE j.id = candidate.id
 		RETURNING j.id, j.kind, j.queue, j.payload, j.attempts, j.max_attempts, j.priority,
 		          j.run_at, j.enqueued_at, COALESCE(j.idempotency_key, '')
-	`, request.Queue, request.Kinds, token, request.Lease.Microseconds(), request.WorkerID).Scan(
-		&job.ID, &job.Kind, &job.Queue, &payload, &job.Attempt, &job.MaxAttempts, &job.Priority,
-		&job.RunAt, &job.EnqueuedAt, &key)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return queue.Claimed{}, false, nil
-	}
+	`, request.Queue, request.Kinds, token, request.Lease.Microseconds(), request.WorkerID, limit)
 	if err != nil {
-		return queue.Claimed{}, false, fmt.Errorf("claim job: %w", err)
+		return nil, fmt.Errorf("claim jobs: %w", err)
 	}
-	job.Key = key
-	job.RunAt, job.EnqueuedAt = job.RunAt.UTC(), job.EnqueuedAt.UTC()
-	return queue.Claimed{Job: job, Payload: payload, Lease: queue.Lease{JobID: job.ID, Token: token}}, true, nil
-}
-
-// recoveryInterval spaces lease recovery sweeps per store, so a hot claim
-// path pays for one extra statement per interval, not per claim. A crashed
-// worker's job waits at most this long beyond its lease.
-const recoveryInterval = 250 * time.Millisecond
-
-// recoverExpired is Recover, at most once per recoveryInterval, for Claim.
-func (s *Store) recoverExpired(ctx context.Context) error {
-	now := time.Now().UnixNano()
-	last := s.lastReap.Load()
-	if now-last < int64(recoveryInterval) || !s.lastReap.CompareAndSwap(last, now) {
-		return nil
+	defer rows.Close()
+	claimed := make([]queue.Claimed, 0, limit)
+	for rows.Next() {
+		var (
+			job     queue.Job
+			payload []byte
+		)
+		if err := rows.Scan(&job.ID, &job.Kind, &job.Queue, &payload, &job.Attempt, &job.MaxAttempts, &job.Priority,
+			&job.RunAt, &job.EnqueuedAt, &job.Key); err != nil {
+			return nil, fmt.Errorf("scan claimed job: %w", err)
+		}
+		job.RunAt, job.EnqueuedAt = job.RunAt.UTC(), job.EnqueuedAt.UTC()
+		claimed = append(claimed, queue.Claimed{Job: job, Payload: payload, Lease: queue.Lease{JobID: job.ID, Token: token}})
 	}
-	_, err := s.Recover(ctx)
-	return err
+	if err := rows.Err(); err != nil {
+		// The statement may have committed before the error: those leases
+		// expire and Recover makes the jobs pending again.
+		return nil, fmt.Errorf("claim jobs: %w", err)
+	}
+	return claimed, nil
 }
 
 // Recover makes jobs whose lease expired pending again, or dead when they
-// used their last attempt. It handles up to 100 jobs per call.
+// used their last attempt. It handles up to queue.RecoverBatch jobs per call.
 func (s *Store) Recover(ctx context.Context) (int64, error) {
-	s.lastReap.Store(time.Now().UnixNano())
 	tag, err := s.pool.Exec(ctx, `
 		WITH expired AS (
 			SELECT id FROM forge_jobs
 			WHERE state = 'running' AND lease_until <= clock_timestamp()
 			ORDER BY lease_until
 			FOR UPDATE SKIP LOCKED
-			LIMIT 100
+			LIMIT $1
 		)
 		UPDATE forge_jobs AS j
 		SET state = CASE WHEN j.attempts >= j.max_attempts THEN 'dead' ELSE 'pending' END,
@@ -210,7 +275,7 @@ func (s *Store) Recover(ctx context.Context) (int64, error) {
 		    last_error = 'lease expired: the worker stopped renewing it'
 		FROM expired
 		WHERE j.id = expired.id
-	`)
+	`, queue.RecoverBatch)
 	if err != nil {
 		return 0, fmt.Errorf("recover expired job leases: %w", err)
 	}

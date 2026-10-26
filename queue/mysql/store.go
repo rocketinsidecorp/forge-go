@@ -2,8 +2,9 @@
 // (ADR 0023). It is tested on MySQL 8.4 and MariaDB 11.8, both of which
 // support SELECT ... FOR UPDATE SKIP LOCKED.
 //
-// A claim is one short READ COMMITTED transaction (select the next due job
-// with SKIP LOCKED, mark it running) that ends before the handler starts, so
+// A claim is one short READ COMMITTED transaction (select the next due jobs,
+// several at a time with ClaimBatch, with SKIP LOCKED, mark them running)
+// that ends before the handlers start, so
 // no transaction or row lock is held while a handler runs. READ COMMITTED
 // avoids the gap locks REPEATABLE READ would take on the claim index, which
 // would otherwise block concurrent enqueues. All lease timestamps come from
@@ -25,7 +26,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	forgemysql "github.com/rocketinsidecorp/forge-go/mysql"
@@ -37,21 +37,18 @@ import (
 // duplicateEntry is MySQL and MariaDB error 1062 (ER_DUP_ENTRY).
 const duplicateEntry = 1062
 
-// recoveryInterval spaces lease recovery sweeps per store, so a hot claim
-// path pays for one extra statement per interval, not per claim. A crashed
-// worker's job waits at most this long beyond its lease.
-const recoveryInterval = 250 * time.Millisecond
-
 // claimAttempts reruns a claim transaction that lost a deadlock.
 const claimAttempts = 3
 
 // Store is the MySQL/MariaDB implementation of queue.Store.
 type Store struct {
-	db       *sqldb.DB
-	lastReap atomic.Int64 // unix nanoseconds of the last lease recovery
+	db *sqldb.DB
 }
 
-var _ queue.Store = (*Store)(nil)
+var (
+	_ queue.Store        = (*Store)(nil)
+	_ queue.BatchClaimer = (*Store)(nil)
+)
 
 // NewStore returns a store on db, which mysql.Open returns. The tables come
 // from Migrations.
@@ -152,85 +149,101 @@ func inClause(n int) string {
 
 // Claim leases the next eligible job of the request.
 func (s *Store) Claim(ctx context.Context, request queue.ClaimRequest) (queue.Claimed, bool, error) {
-	if request.Queue == "" || len(request.Kinds) == 0 || request.Lease <= 0 {
-		return queue.Claimed{}, false, errors.New("queue claim needs a queue, kinds and a lease")
-	}
-	if err := s.recoverExpired(ctx); err != nil {
+	claimed, err := s.ClaimBatch(ctx, request, 1)
+	if err != nil || len(claimed) == 0 {
 		return queue.Claimed{}, false, err
+	}
+	return claimed[0], true, nil
+}
+
+// ClaimBatch leases up to limit eligible jobs of the request in one READ
+// COMMITTED transaction. SKIP LOCKED makes concurrent claims take disjoint
+// jobs; the jobs share one lease token.
+func (s *Store) ClaimBatch(ctx context.Context, request queue.ClaimRequest, limit int) ([]queue.Claimed, error) {
+	if request.Queue == "" || len(request.Kinds) == 0 || request.Lease <= 0 {
+		return nil, errors.New("queue claim needs a queue, kinds and a lease")
+	}
+	if limit < 1 || limit > queue.MaxClaimBatch {
+		return nil, fmt.Errorf("queue claim batch must be between 1 and %d", queue.MaxClaimBatch)
 	}
 	token, err := uuid.NewV7()
 	if err != nil {
-		return queue.Claimed{}, false, fmt.Errorf("generate lease token: %w", err)
+		return nil, fmt.Errorf("generate lease token: %w", err)
 	}
-	var (
-		claimed queue.Claimed
-		found   bool
-	)
 	args := []any{request.Queue}
 	for _, kind := range request.Kinds {
 		args = append(args, kind)
 	}
+	args = append(args, limit)
 	selectSQL := `
 		SELECT id, kind, queue, payload, attempts, max_attempts, priority, run_at, enqueued_at, COALESCE(idempotency_key, '')
 		FROM forge_jobs
 		WHERE state = 'pending' AND queue = ? AND kind IN ` + inClause(len(request.Kinds)) + `
 		  AND run_at <= UTC_TIMESTAMP(6)
 		ORDER BY priority, run_at, id
-		LIMIT 1
-		FOR UPDATE SKIP LOCKED`
+		LIMIT ?
+		FOR UPDATE SKIP LOCKED` // #nosec G202 -- inClause emits only "?" placeholders
+	var claimed []queue.Claimed
 	err = s.db.InTxWith(ctx, sqldb.TxOptions{Isolation: sql.LevelReadCommitted, Attempts: claimAttempts}, func(tx *sql.Tx) error {
-		found = false
-		var (
-			job     queue.Job
-			payload string
-		)
-		err := tx.QueryRowContext(ctx, selectSQL, args...).Scan(&job.ID, &job.Kind, &job.Queue, &payload, &job.Attempt, &job.MaxAttempts, &job.Priority, &job.RunAt, &job.EnqueuedAt, &job.Key)
-		if errors.Is(err, sql.ErrNoRows) {
+		claimed = nil
+		rows, err := tx.QueryContext(ctx, selectSQL, args...)
+		if err != nil {
+			return fmt.Errorf("select next jobs: %w", err)
+		}
+		var ids []any
+		for rows.Next() {
+			var (
+				job     queue.Job
+				payload string
+			)
+			if err := rows.Scan(&job.ID, &job.Kind, &job.Queue, &payload, &job.Attempt, &job.MaxAttempts, &job.Priority, &job.RunAt, &job.EnqueuedAt, &job.Key); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan next job: %w", err)
+			}
+			job.Attempt++
+			job.RunAt, job.EnqueuedAt = job.RunAt.UTC(), job.EnqueuedAt.UTC()
+			claimed = append(claimed, queue.Claimed{Job: job, Payload: []byte(payload), Lease: queue.Lease{JobID: job.ID, Token: token}})
+			ids = append(ids, job.ID)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return fmt.Errorf("select next jobs: %w", err)
+		}
+		if len(ids) == 0 {
 			return nil
 		}
-		if err != nil {
-			return fmt.Errorf("select next job: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `
+		// Exactly the rows this transaction locked; an UPDATE with the
+		// eligibility predicate would wait on rows other claims hold.
+		leaseArgs := append([]any{token, request.WorkerID, request.Lease.Microseconds()}, ids...)
+		result, err := tx.ExecContext(ctx, `
 			UPDATE forge_jobs
 			SET state = 'running', attempts = attempts + 1, lease_token = ?, locked_by = ?,
 			    lease_until = DATE_ADD(UTC_TIMESTAMP(6), INTERVAL ? MICROSECOND)
-			WHERE id = ?`, token, request.WorkerID, request.Lease.Microseconds(), job.ID); err != nil {
-			return fmt.Errorf("lease job: %w", err)
+			WHERE id IN `+inClause(len(ids)), leaseArgs...) // #nosec G202 -- inClause emits only "?" placeholders
+		if err != nil {
+			return fmt.Errorf("lease jobs: %w", err)
 		}
-		job.Attempt++
-		job.RunAt, job.EnqueuedAt = job.RunAt.UTC(), job.EnqueuedAt.UTC()
-		claimed = queue.Claimed{Job: job, Payload: []byte(payload), Lease: queue.Lease{JobID: job.ID, Token: token}}
-		found = true
+		n, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("lease jobs: %w", err)
+		}
+		if n != int64(len(ids)) {
+			return fmt.Errorf("lease jobs: %d of %d locked rows changed", n, len(ids))
+		}
 		return nil
 	})
 	if err != nil {
-		return queue.Claimed{}, false, fmt.Errorf("claim job: %w", err)
+		return nil, fmt.Errorf("claim jobs: %w", err)
 	}
-	return claimed, found, nil
-}
-
-// recoverExpired is Recover, at most once per recoveryInterval, for Claim. A
-// lost lock race is harmless and ignored; the next sweep retries.
-func (s *Store) recoverExpired(ctx context.Context) error {
-	now := time.Now().UnixNano()
-	last := s.lastReap.Load()
-	if now-last < int64(recoveryInterval) || !s.lastReap.CompareAndSwap(last, now) {
-		return nil
-	}
-	if _, err := s.Recover(ctx); err != nil && !isConflict(err) {
-		return err
-	}
-	return nil
+	return claimed, nil
 }
 
 // Recover makes jobs whose lease expired pending again, or dead when they
-// used their last attempt. It handles up to 100 jobs per call. It runs at
+// used their last attempt. It handles up to queue.RecoverBatch jobs per call.
+// It runs at
 // READ COMMITTED, like Claim: at REPEATABLE READ the scan of the
 // (state, lease_until) index would take next-key locks on neighbouring rows
 // and block the heartbeats and acknowledgements of live jobs.
 func (s *Store) Recover(ctx context.Context) (int64, error) {
-	s.lastReap.Store(time.Now().UnixNano())
 	var changed int64
 	err := s.db.InTxWith(ctx, sqldb.TxOptions{Isolation: sql.LevelReadCommitted, Attempts: claimAttempts}, func(tx *sql.Tx) error {
 		changed = 0
@@ -241,8 +254,8 @@ func (s *Store) Recover(ctx context.Context) (int64, error) {
 			SELECT id FROM forge_jobs
 			WHERE state = 'running' AND lease_until <= UTC_TIMESTAMP(6)
 			ORDER BY lease_until
-			LIMIT 100
-			FOR UPDATE SKIP LOCKED`)
+			LIMIT ?
+			FOR UPDATE SKIP LOCKED`, queue.RecoverBatch)
 		if err != nil {
 			return err
 		}
@@ -278,14 +291,6 @@ func (s *Store) Recover(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("recover expired job leases: %w", err)
 	}
 	return changed, nil
-}
-
-func isConflict(err error) bool {
-	switch forgemysql.ErrorNumber(err) {
-	case 1213, 1205: // deadlock, lock wait timeout
-		return true
-	}
-	return false
 }
 
 // fenced runs an UPDATE guarded by id and lease token; no changed row means
