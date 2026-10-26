@@ -109,16 +109,38 @@ repository, err := authpostgres.New(database,
 	authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))
 ```
 
-`FORGE_AUTH_SESSION_IDLE_TIMEOUT` sets it (a duration from `5m` to `720h`;
-`720h`, the longest session lifetime, effectively turns it off). Generated
-applications pass it as above. The migration `20261026090000_session_idle_timeout`
-adds the column; sessions that exist when it runs count as used at that
-moment, so upgrading signs nobody out. Run `forge migrate` before deploying
-the new code: the resolver reads the column.
+`FORGE_AUTH_SESSION_IDLE_TIMEOUT` sets it, a duration from `5m` to `720h`.
+There is no value that switches the idle check off: at `720h`, which equals
+the 30-day maximum session lifetime (`WithSessionTTL`), the idle limit can no
+longer end a session before its absolute expiry, so it no longer shortens
+sessions, but every resolution still checks it. Generated applications pass
+it as above.
+
+Recording the use is part of resolving the session, and it fails closed: when
+the conditional `UPDATE` fails, `ResolveSession` returns the error and the
+request is answered `500` instead of being served on an unrecorded use. A
+resolver connected to a read-only replica (`cannot execute UPDATE in a
+read-only transaction`), a statement timeout (`FORGE_DATABASE_STATEMENT_TIMEOUT`)
+or a lock wait on the session row therefore fails the request, at most once a
+minute per session, since only a stale use is written. Resolve sessions on
+the primary.
+
+The migration `20261026090000_session_idle_timeout` adds the column; sessions
+that exist when it runs count as used at that moment, so upgrading signs
+nobody out. Run `forge migrate` before deploying the new code: the resolver
+reads the column. `ALTER TABLE ... ADD COLUMN` with the stable default
+`now()` does not rewrite the table, but it takes a brief `ACCESS EXCLUSIVE`
+lock on `forge_sessions`, and it waits behind any open transaction that uses
+the table, holding up every session lookup queued after it. On a busy table,
+bound the wait and retry instead of stalling sign-ins:
 
 ```sh
 forge migrate
 echo 'FORGE_AUTH_SESSION_IDLE_TIMEOUT=30m' >> .env.local   # shorter, for example
+
+# Busy forge_sessions table: give up after 5s instead of queueing every lookup
+# behind the lock, and run `forge migrate` again if it times out.
+PGOPTIONS='-c lock_timeout=5s' forge migrate
 ```
 
 The plaintext bearer token is never stored.

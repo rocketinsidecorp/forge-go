@@ -250,7 +250,9 @@ func (r *Repository) RevokeUserSessions(ctx context.Context, userID uuid.UUID) e
 // session, so most requests only read; that write, conditional on the
 // stored value still being stale, makes concurrent requests record one use.
 // The database clock decides both the idle limit and the throttle, so
-// replicas with skewed clocks agree.
+// replicas with skewed clocks agree. A failed write fails closed: the error
+// is returned (a 500, never a served request), for example on a read-only
+// replica or after a statement timeout, so resolve sessions on the primary.
 func (r *Repository) ResolveSession(ctx context.Context, digest auth.Digest) (auth.Session, bool, error) {
 	var (
 		subjectID       uuid.UUID
