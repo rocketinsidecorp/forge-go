@@ -304,3 +304,36 @@ func TestSeamRefusesToRemoveABlockAnotherUses(t *testing.T) {
 		t.Fatalf("removing the nested block: %q %v", verb, err)
 	}
 }
+
+// `forge g` and `forge d` are `forge generate` and `forge destroy`, as in Rails.
+func TestGenerateAndDestroyAliases(t *testing.T) {
+	dir := seamApplication(t, "sqlite")
+	t.Chdir(dir) // Run works in the current directory, so not in parallel
+	t.Setenv("FORGE_DATABASE_URL", "sqlite:storage/development.db")
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"g", "scaffold", "product", "name:string", "--global", "--public"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "wire  app/bootstrap/routes_gen.go") {
+		t.Fatalf("forge g scaffold: code=%d %s %s", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	if code := Run([]string{"d", "scaffold", "product", "name:string", "--global", "--public"}, &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), "unwire") {
+		t.Fatalf("forge d scaffold: code=%d %s %s", code, stdout.String(), stderr.String())
+	}
+	if blocks := seamBlocks(t, dir); len(blocks) != 0 {
+		t.Fatalf("forge d left %v", blocks)
+	}
+	for alias, canonical := range map[string]string{"g": "generate", "d": "destroy"} {
+		var help bytes.Buffer
+		if code := Run([]string{alias, "--help"}, &help, &stderr); code != 0 || !strings.Contains(help.String(), "usage: forge "+canonical) || !strings.Contains(help.String(), "alias: forge "+alias) {
+			t.Errorf("forge %s --help: code=%d\n%s", alias, code, help.String())
+		}
+		help.Reset()
+		if err := runHelp([]string{alias}, &help); err != nil || !strings.Contains(help.String(), "usage: forge "+canonical) {
+			t.Errorf("forge help %s: %v\n%s", alias, err, help.String())
+		}
+	}
+	var usageText bytes.Buffer
+	usage(&usageText)
+	if !strings.Contains(usageText.String(), "g is short for generate") || !strings.Contains(usageText.String(), "d is short for destroy") {
+		t.Errorf("forge help does not list the aliases:\n%s", usageText.String())
+	}
+}

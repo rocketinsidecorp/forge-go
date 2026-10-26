@@ -37,6 +37,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
+	if canonical, ok := commandAliases[args[0]]; ok {
+		args = append([]string{canonical}, args[1:]...)
+	}
 	commandStderr := stderr
 	if jsonErrors {
 		// Delegated tools and flag parsers can print paths, arguments, or other
@@ -315,6 +318,10 @@ func lookupIn(env []string) func(string) (string, bool) {
 	}
 }
 
+// commandAliases are the short names Rails users type: `forge g` is `forge
+// generate` and `forge d` is `forge destroy`.
+var commandAliases = map[string]string{"g": "generate", "d": "destroy"}
+
 func usage(output io.Writer) {
 	fmt.Fprint(output, `usage: forge [--error-format=json] <command> [arguments]
 
@@ -342,8 +349,10 @@ commands:
                       create the first tenant and its owner account (PostgreSQL;
                       the password is prompted for, never an argument)
   seed                load db.Seed's data in one transaction
-  generate migration NAME [--dry-run]
-                      create or preview db/migrations/<timestamp>_NAME.{up,down}.sql
+  generate migration NAME [field:type...] [--dry-run]
+                      create or preview db/migrations/<timestamp>_NAME.{up,down}.sql;
+                      add_X_to_TABLE and remove_X_from_TABLE with fields write
+                      the ALTER TABLE statements (g is short for generate)
   generate view [DIR/]NAME [--dry-run]
                       create or preview an auto-escaped page in app/views
   generate job NAME [--dry-run]
@@ -371,6 +380,7 @@ commands:
                       pages forge new generates (PostgreSQL)
   destroy GENERATOR ARGUMENTS... [--force] [--migrations] [--dry-run]
                       remove what a generator created, unless it was edited
+                      (d is short for destroy)
   deploy [init|setup|rollback VERSION|prune|details|lock|maintenance]
                       deploy containers to hosts over SSH behind forge-proxy;
                       --dry-run prints the remote commands, secrets redacted
