@@ -143,6 +143,34 @@ type SchedulerOptions struct {
 	// synchronized to avoid that. Use jobs/postgres or jobs/mysql
 	// NewTickClaimer; nil runs every tick on every replica.
 	Ticks TickClaimer
+	// MaxLateness is how late a tick may start. A job that falls behind its
+	// schedule (a run longer than its interval, a GC pause, a suspended VM,
+	// a slow ClaimTick, a wait for a concurrency slot) does not replay the
+	// ticks it missed back to back: only the latest tick due runs, once,
+	// and only while it is at most MaxLateness late; the other missed ticks
+	// are skipped, the next run is computed from the current time, and the
+	// number skipped is reported to OnError as a *SkippedTicksError. Zero
+	// means one interval of the job's schedule (Every, a day for DailyAt,
+	// the gap to the following tick for Cron), so after a stall the latest
+	// missed tick still runs once. Forge-Rust's Schedule::max_lateness has
+	// the same meaning. Validate refuses a negative value; NewScheduler
+	// treats it as zero.
+	MaxLateness time.Duration
+}
+
+// SkippedTicksError is reported to SchedulerOptions.OnError when a job fell
+// behind its schedule and ticks were skipped instead of replayed (see
+// SchedulerOptions.MaxLateness). It is not a failure of the job.
+type SkippedTicksError struct {
+	// Skipped is how many ticks did not run.
+	Skipped int
+	// Behind is how late the earliest skipped tick was when the scheduler
+	// noticed it.
+	Behind time.Duration
+}
+
+func (e *SkippedTicksError) Error() string {
+	return fmt.Sprintf("jobs: skipped %d late ticks (the job was %s behind its schedule)", e.Skipped, e.Behind)
 }
 
 // TickClaimer records which replica runs each tick of a scheduled job.
@@ -192,25 +220,32 @@ const (
 
 // Validate reports options NewScheduler would silently change: a negative
 // MaxConcurrentJobs, or one above 256 (zero is valid and means the default,
-// 4). Call it where the options are built to refuse a misconfigured scheduler
+// 4), and a negative MaxLateness. Call it where the options are built to refuse a misconfigured scheduler
 // at startup, like the other constructors that return an error; NewScheduler
 // itself keeps clamping, so existing callers are unaffected.
 func (o SchedulerOptions) Validate() error {
 	if o.MaxConcurrentJobs < 0 || o.MaxConcurrentJobs > maxConcurrentJobs {
 		return fmt.Errorf("jobs: MaxConcurrentJobs must be between 0 (the default, %d) and %d, got %d", defaultConcurrentJobs, maxConcurrentJobs, o.MaxConcurrentJobs)
 	}
+	if o.MaxLateness < 0 {
+		return fmt.Errorf("jobs: MaxLateness must not be negative (zero means one interval), got %s", o.MaxLateness)
+	}
 	return nil
 }
 
 // NewScheduler creates a scheduler with the given options. Zero or negative
-// MaxConcurrentJobs uses the default and a value above 256 is lowered to 256;
-// SchedulerOptions.Validate reports both instead.
+// MaxConcurrentJobs uses the default and a value above 256 is lowered to 256,
+// and a negative MaxLateness means the default; SchedulerOptions.Validate
+// reports these instead.
 func NewScheduler(opts SchedulerOptions) *Scheduler {
 	if opts.MaxConcurrentJobs < 1 {
 		opts.MaxConcurrentJobs = defaultConcurrentJobs
 	}
 	if opts.MaxConcurrentJobs > maxConcurrentJobs {
 		opts.MaxConcurrentJobs = maxConcurrentJobs
+	}
+	if opts.MaxLateness < 0 {
+		opts.MaxLateness = 0
 	}
 	if opts.OnError == nil {
 		opts.OnError = func(name string, err error) {
@@ -383,14 +418,8 @@ func (s *Scheduler) closeDrainedLocked() {
 
 func (s *Scheduler) runJob(name string, sj scheduledJob) {
 	defer s.jobGoroutineDone()
-	nextRun := time.Now().UTC()
+	nextRun, err := sj.next(time.Now().UTC())
 	for {
-		var err error
-		if sj.cron != nil {
-			nextRun, err = sj.cron.nextRun(nextRun)
-		} else {
-			nextRun, err = sj.spec.nextRun(nextRun)
-		}
 		if err != nil {
 			s.opts.OnError(name, err)
 			return
@@ -411,10 +440,84 @@ func (s *Scheduler) runJob(name string, sj scheduledJob) {
 			return
 		case <-timer.C:
 		}
-		if !s.tick(name, sj, nextRun) {
+		// Behind schedule, only the latest tick due is a candidate: the
+		// earlier ones are skipped rather than run back to back.
+		now := time.Now().UTC()
+		at, passed, err := sj.latestDue(nextRun, now)
+		if err != nil {
+			s.opts.OnError(name, err)
 			return
 		}
+		if now.Sub(at) > s.maxLateness(sj, at) {
+			s.opts.OnError(name, &SkippedTicksError{Skipped: passed + 1, Behind: now.Sub(nextRun)})
+			nextRun, err = sj.next(now)
+			continue
+		}
+		if passed > 0 {
+			s.opts.OnError(name, &SkippedTicksError{Skipped: passed, Behind: now.Sub(nextRun)})
+		}
+		if !s.tick(name, sj, at) {
+			return
+		}
+		nextRun, err = sj.next(at)
 	}
+}
+
+// next returns the job's first tick after t.
+func (sj scheduledJob) next(t time.Time) (time.Time, error) {
+	if sj.cron != nil {
+		return sj.cron.nextRun(t)
+	}
+	return sj.spec.nextRun(t)
+}
+
+// maxCatchUpWalk bounds the ticks latestDue steps over one by one (cron
+// schedules): 65536 minutes is about 45 days.
+const maxCatchUpWalk = 1 << 16
+
+// latestDue returns the latest tick at or before now, starting from tick
+// (which is due), and how many earlier due ticks it passed over. A cron
+// schedule further behind than maxCatchUpWalk ticks returns a tick that is
+// not the latest, which the caller then finds too late.
+func (sj scheduledJob) latestDue(tick, now time.Time) (time.Time, int, error) {
+	if every := sj.spec.Every; every > 0 {
+		passed := now.Sub(tick) / every
+		if passed <= 0 {
+			return tick, 0, nil
+		}
+		return tick.Add(passed * every), int(passed), nil
+	}
+	passed := 0
+	for passed < maxCatchUpWalk {
+		following, err := sj.next(tick)
+		if err != nil {
+			return tick, passed, err
+		}
+		if following.After(now) {
+			break
+		}
+		tick = following
+		passed++
+	}
+	return tick, passed, nil
+}
+
+// maxLateness is how late tick may start: SchedulerOptions.MaxLateness, or
+// one interval of the job's schedule.
+func (s *Scheduler) maxLateness(sj scheduledJob, tick time.Time) time.Duration {
+	switch {
+	case s.opts.MaxLateness > 0:
+		return s.opts.MaxLateness
+	case sj.spec.Every > 0:
+		return sj.spec.Every
+	case sj.spec.DailyAt != nil:
+		return 24 * time.Hour
+	}
+	following, err := sj.next(tick)
+	if err != nil {
+		return 0
+	}
+	return following.Sub(tick)
 }
 
 // tick runs one tick of a job: it waits for a concurrency slot, claims the
@@ -431,6 +534,11 @@ func (s *Scheduler) tick(name string, sj scheduledJob, at time.Time) bool {
 	defer func() { <-s.concurrent }()
 	if s.ctx.Err() != nil {
 		return false
+	}
+	// The wait for a slot may have made the tick too late to run.
+	if late := time.Since(at); late > s.maxLateness(sj, at) {
+		s.opts.OnError(name, &SkippedTicksError{Skipped: 1, Behind: late})
+		return true
 	}
 	if s.opts.Ticks != nil && !s.claim(name, at) {
 		return s.ctx.Err() == nil

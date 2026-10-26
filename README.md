@@ -770,7 +770,22 @@ the generated `main.go` composes, so `migrate` creates it). Recording a tick is
 one statement; no connection is held while the job runs, and the outcome does
 not depend on the replicas' clocks. A tick that cannot be recorded is skipped
 and reported, and two replicas can run consecutive ticks of one job at the
-same time. An application generated earlier adopts it by composing the
+same time. A job that falls behind its schedule (a run longer than its
+interval, a paused VM, a slow tick claim, a wait for a free slot) does not
+replay the ticks it missed back to back: only the latest tick due runs, once,
+and only while it is at most `jobs.SchedulerOptions.MaxLateness` late (zero,
+the default, means one interval of the job's schedule); the others are skipped
+and reported to `OnError` as a `*jobs.SkippedTicksError`, which the generated
+`JobsConfigure` logs as a warning. To skip a tick that is more than ten
+minutes late, even for a daily job:
+
+```go
+options := jobs.SchedulerOptions{
+	// ... MaxConcurrentJobs, Telemetry, OnError and Ticks as generated ...
+	MaxLateness: 10 * time.Minute,
+}
+```
+ An application generated earlier adopts it by composing the
 migration in `cmd/<name>/main.go` and passing the claimer to `JobsConfigure`
 in `app/bootstrap/bootstrap.go`. PostgreSQL:
 

@@ -117,6 +117,14 @@ func JobsConfigure(app *forge.App, ticks jobs.TickClaimer) error {
 		MaxConcurrentJobs: 4,
 		Telemetry:         app.Telemetry(),
 		OnError: func(name string, err error) {
+			// A job that fell behind its schedule runs the latest missed
+			// tick once and skips the others instead of replaying them
+			// (MaxLateness, one interval by default).
+			var skipped *jobs.SkippedTicksError
+			if errors.As(err, &skipped) {
+				app.Logger().Warn("scheduled ticks skipped", "job", name, "skipped", skipped.Skipped, "behind", skipped.Behind)
+				return
+			}
 			app.Logger().Error("scheduled job failed", "job", name, "error", err)
 		},
 		Ticks: ticks,
