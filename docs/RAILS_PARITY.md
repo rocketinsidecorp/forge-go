@@ -120,7 +120,7 @@ the work is finished and waiting for its review; **Planned** means not started.
   `forge deploy` gives the migration credential to the migrate step alone
   through `migrate.env`
   ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57));
-  Forge-Rust's `forge deploy` has no `migrate.env` yet.
+  Forge-Rust's `forge deploy` has no `migrate.env` yet (tracked in [forge-rust#73](https://github.com/rocketinsidecorp/forge-rust/issues/73)).
 
 ## Review gate
 
