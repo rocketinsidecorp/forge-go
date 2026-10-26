@@ -114,7 +114,7 @@ type scheduledJob struct {
 // SchedulerOptions bounds scheduler behavior.
 type SchedulerOptions struct {
 	// MaxConcurrentJobs bounds the number of jobs running simultaneously.
-	// Default 4, maximum 256.
+	// Default 4 (zero), maximum 256; Validate refuses anything else.
 	MaxConcurrentJobs int
 	// OnError receives job failures. When nil, failures are sent to the
 	// standard structured logger. The callback may be invoked concurrently.
@@ -126,14 +126,34 @@ type SchedulerOptions struct {
 	Telemetry *telemetry.Telemetry
 }
 
+// maxConcurrentJobs is the largest MaxConcurrentJobs; defaultConcurrentJobs
+// is what zero means.
+const (
+	maxConcurrentJobs     = 256
+	defaultConcurrentJobs = 4
+)
+
+// Validate reports options NewScheduler would silently change: a negative
+// MaxConcurrentJobs, or one above 256 (zero is valid and means the default,
+// 4). Call it where the options are built to refuse a misconfigured scheduler
+// at startup, like the other constructors that return an error; NewScheduler
+// itself keeps clamping, so existing callers are unaffected.
+func (o SchedulerOptions) Validate() error {
+	if o.MaxConcurrentJobs < 0 || o.MaxConcurrentJobs > maxConcurrentJobs {
+		return fmt.Errorf("jobs: MaxConcurrentJobs must be between 0 (the default, %d) and %d, got %d", defaultConcurrentJobs, maxConcurrentJobs, o.MaxConcurrentJobs)
+	}
+	return nil
+}
+
 // NewScheduler creates a scheduler with the given options. Zero or negative
-// MaxConcurrentJobs uses the default.
+// MaxConcurrentJobs uses the default and a value above 256 is lowered to 256;
+// SchedulerOptions.Validate reports both instead.
 func NewScheduler(opts SchedulerOptions) *Scheduler {
 	if opts.MaxConcurrentJobs < 1 {
-		opts.MaxConcurrentJobs = 4
+		opts.MaxConcurrentJobs = defaultConcurrentJobs
 	}
-	if opts.MaxConcurrentJobs > 256 {
-		opts.MaxConcurrentJobs = 256
+	if opts.MaxConcurrentJobs > maxConcurrentJobs {
+		opts.MaxConcurrentJobs = maxConcurrentJobs
 	}
 	if opts.OnError == nil {
 		opts.OnError = func(name string, err error) {

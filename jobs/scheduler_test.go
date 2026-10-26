@@ -228,3 +228,24 @@ func TestNextCronRun(t *testing.T) {
 		t.Fatal("impossible calendar schedule should return an error")
 	}
 }
+
+func TestSchedulerOptionsValidate(t *testing.T) {
+	t.Parallel()
+	for _, valid := range []int{0, 1, 4, 256} {
+		if err := (SchedulerOptions{MaxConcurrentJobs: valid}).Validate(); err != nil {
+			t.Errorf("MaxConcurrentJobs %d refused: %v", valid, err)
+		}
+	}
+	for _, invalid := range []int{-1, 257, 1 << 20} {
+		if err := (SchedulerOptions{MaxConcurrentJobs: invalid}).Validate(); err == nil {
+			t.Errorf("MaxConcurrentJobs %d accepted", invalid)
+		}
+	}
+	// NewScheduler keeps its clamping, so existing callers are unaffected.
+	if got := cap(NewScheduler(SchedulerOptions{MaxConcurrentJobs: -3}).concurrent); got != 4 {
+		t.Errorf("negative: %d slots, want the default 4", got)
+	}
+	if got := cap(NewScheduler(SchedulerOptions{MaxConcurrentJobs: 1000}).concurrent); got != 256 {
+		t.Errorf("too large: %d slots, want 256", got)
+	}
+}

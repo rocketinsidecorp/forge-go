@@ -98,13 +98,18 @@ func Configure(_ context.Context, app *forge.App) error {
 // it, waiting for running jobs within the shutdown budget, when the application
 // shuts down. Register application jobs on the scheduler below.
 func JobsConfigure(app *forge.App) error {
-	scheduler := jobs.NewScheduler(jobs.SchedulerOptions{
+	options := jobs.SchedulerOptions{
 		MaxConcurrentJobs: 4,
 		Telemetry:         app.Telemetry(),
 		OnError: func(name string, err error) {
 			app.Logger().Error("scheduled job failed", "job", name, "error", err)
 		},
-	})
+	}
+	// NewScheduler would silently clamp a bad value: refuse it at startup.
+	if err := options.Validate(); err != nil {
+		return err
+	}
+	scheduler := jobs.NewScheduler(options)
 	// Register application jobs here (they need the time package), e.g.:
 	// if err := scheduler.Register("cleanup", jobs.ScheduleSpec{Every: 24 * time.Hour}, func(ctx context.Context) error {
 	//	// ctx is cancelled on shutdown: return promptly when it is done.
