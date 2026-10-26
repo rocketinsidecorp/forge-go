@@ -21,6 +21,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Multi-tenancy with database enforcement | (gems) | Done (PostgreSQL RLS; `app_migrator`/`app_runtime` roles, staging and production refuse a serving role that could bypass RLS, tests run as the runtime role; [ADR 0046](adr/0046-postgresql-runtime-and-migration-roles.md)) | Done (PostgreSQL RLS; `app_migrator`/`app_runtime` roles, Forge-Rust ADR 0011; production refusal planned in [forge-rust#70](https://github.com/rocketinsidecorp/forge-rust/issues/70)) |
 | TOTP MFA | (gems) | Done (sign-in code step and generated `/mfa` settings pages: enrollment, rotation, backup codes, disable; [ADR 0045](adr/0045-generated-mfa-settings-pages.md)) | Done (`FORGE_AUTH_MFA_KEY`, `/session/mfa`, generated `/mfa` settings pages; Forge-Rust ADR 0040) |
 | Persistent jobs, cron, outbox | Solid Queue | Done | Done (framework crates; `forge new` wiring planned) |
+| Batch claims, `LISTEN/NOTIFY` wake-up, one replica per scheduled tick | Solid Queue (`batch_size`, `polling_interval`, recurring tasks run once) | Done (`WorkerOptions.BatchSize`, `queuepostgres.WithNotify`, `DispatcherOptions.BatchSize`, `jobs.SchedulerOptions.Lock` wired by `forge new`; [ADR 0047](adr/0047-batch-claims-notify-and-scheduler-locks.md)) | Partial (jobs claim up to the free slots, outbox `DispatcherSettings::batch` 50, ticks recorded once in a table; no wake-up; see Parity follow-ups) |
 | Mailer with previews | Action Mailer | Done | Done (`forge::mail`, password-reset emails, `/_mail` previews, `forge generate mailer`; Forge-Rust ADR 0035 and 0038) |
 | Rate limiting | `rate_limit` | Done | Done |
 | Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | Done (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Done (`FORGE_HTTP_TRUSTED_PROXIES`, Forge-Rust ADR 0032; `forge deploy` sets it once ported) |
@@ -43,6 +44,21 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Planned |
 
 ## Parity follow-ups
+
+- Queue and scheduler throughput (forge-go QG4c, audit PF-1, PF-2, PF-5,
+  PF-7; [ADR 0047](adr/0047-batch-claims-notify-and-scheduler-locks.md)).
+  Forge-Rust already claims jobs in batches (up to a queue's free slots,
+  without a knob), batches outbox events (`DispatcherSettings::batch`,
+  default 50, a lease covering the batch) and runs each scheduled tick once
+  (`forge_jobs_fire_tick`, stronger than Forge-Go's lock window). It lacks the
+  wake-up: it adopts `NOTIFY forge_jobs` (payload: the queue name, sent in
+  `forge_jobs_enqueue` for due jobs) and a worker `LISTEN` owned by `Jobs::run`
+  with 1s to 30s reconnect backoff behind an opt-in setting with the same
+  meaning as Go's `WithNotify`, and a `WorkerSettings` batch bound (Go's
+  `BatchSize`, default 10, never above the free slots). Forge-Go keeps its
+  per-tick lock and outbox default of 10 until the frameworks agree on one
+  default (to be tracked in a forge-rust issue opened with this change's pull
+  request).
 
 - Two-factor settings hardening (forge-go#32, from the review of the `/mfa`
   pages): Forge-Go now refuses `POST /mfa` and `POST /mfa/confirm` for an

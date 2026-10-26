@@ -1,6 +1,6 @@
 # ADR 0020: Background jobs and scheduling
 
-Status: accepted (Phase 4)
+Status: accepted (Phase 4); amended by [ADR 0047](0047-batch-claims-notify-and-scheduler-locks.md) (optional per-tick locks across replicas)
 
 ## Context
 

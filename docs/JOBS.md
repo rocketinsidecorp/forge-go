@@ -121,7 +121,9 @@ func Configure(ctx context.Context, app *forge.App) error {
     if err != nil { return err }
     if err := app.OnShutdown(func(context.Context) error { db.Close(); return nil }); err != nil { return err }
 
-    store, err := queuepostgres.NewStore(db)
+    // WithNotify: enqueues announce themselves (NOTIFY forge_jobs) and idle
+    // workers wake at once instead of at their next poll (optional).
+    store, err := queuepostgres.NewStore(db, queuepostgres.WithNotify())
     if err != nil { return err }
     registry := queue.NewRegistry()
     if err := registerJobs(registry, mailer); err != nil { return err }
@@ -148,15 +150,37 @@ saying how many handlers were still running. Keep handlers responsive to `ctx`.
 
 Worker options (all optional): `Lease` (60s; renewed every third of it, so a
 crashed worker's jobs resume after at most a lease), `PollInterval`/
-`MaxPollInterval` (1s/10s, jittered), `Backoff`, `RetainSucceeded` (24h),
-`WorkerID`, `Hooks`. Run several processes and workers freely; a job is leased
+`MaxPollInterval` (1s/10s, jittered), `BatchSize` (10, see below), `Backoff`,
+`RetainSucceeded` (24h), `WorkerID`, `Hooks`. Run several processes and workers freely; a job is leased
 to one worker at a time, a worker that lost its lease cannot overwrite the new
 owner's result (token fencing), and a handler is canceled before its lease can
 expire when renewals fail. Delivery stays at-least-once: see above.
 
-Lease recovery runs in every worker, independently of free slots, every
-`Lease/4` (100ms to 5s): a crashed worker's jobs are pending again at most one
-lease plus that interval after its last renewal, as long as one worker is alive.
+Lease recovery runs in every worker, independently of free slots and off the
+claim path, every `Lease/4` (100ms to 5s), up to 100 jobs per statement: a
+crashed worker's jobs are pending again at most one lease plus that interval
+after its last renewal, as long as one worker is alive. `Store.Claim` does not
+recover leases; call `Store.Recover` if you drive a store without a worker.
+
+**Batches.** A poller claims up to `BatchSize` jobs in one round trip
+(`FOR UPDATE SKIP LOCKED` with a `LIMIT` on PostgreSQL, MySQL and MariaDB; one
+`UPDATE ... RETURNING` on SQLite), but never more than its queue has free
+slots, so every claimed job starts at once: leases, attempts and fairness
+between queues and workers are those of claiming one job at a time.
+`BatchSize: 1` restores one job per round trip.
+
+**Wake-up (PostgreSQL).** With `queuepostgres.WithNotify()`, every due job
+enqueued through the store (or `store.In(tx)`, when the transaction commits)
+sends `NOTIFY forge_jobs` with its queue name, and every worker on the store
+holds one `LISTEN` connection: an idle worker claims a new job within
+milliseconds instead of after up to `MaxPollInterval`. Polling stays on as
+the fallback, so a lost notification only delays a job to the next poll. The
+listener reconnects with backoff (1s to 30s) and `worker.Listening()` reports
+it. Costs: one extra connection per worker, outside the pool's limit; `LISTEN`
+needs a direct connection or session pooling (not PgBouncer transaction
+pooling); PostgreSQL serializes the commits of notifying transactions, which
+matters only at thousands of enqueues per second. Anyone who can `NOTIFY` on
+the database can wake workers, which then claim once.
 
 Run job processing in dedicated replicas by starting the worker only in a
 second command or `Configure` branch selected by configuration; the queue
@@ -185,8 +209,9 @@ metrics and tracing. `WorkerOptions.Telemetry` traces attempts and records
 
 ## Limits
 
-Delivery is at-least-once, not exactly-once. Polling, not push: a job can wait
-up to the idle poll interval. The queue is global, not tenant-scoped: put the
+Delivery is at-least-once, not exactly-once. Without `WithNotify` (and always
+on MySQL, MariaDB and SQLite) workers poll: a job can wait up to the idle poll
+interval. The queue is global, not tenant-scoped: put the
 tenant ID in the payload and authorize in the handler. SQLite is single-host.
 Workers only claim kinds they have a handler for; give specialized kinds their
 own queue.
