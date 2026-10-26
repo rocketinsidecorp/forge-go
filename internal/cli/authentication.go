@@ -90,6 +90,9 @@ func planAuthentication(root string, env []string, apiAuth bool) (authentication
 	if module == "" {
 		return authenticationPlan{}, errors.New("go.mod has no module declaration")
 	}
+	if apiOnlyApplication(projectRoot) {
+		return authenticationPlan{}, errors.New(apiOnlyAuthenticationRefusal)
+	}
 	adapter, err := databaseAdapter(root, env)
 	if err != nil {
 		return authenticationPlan{}, errors.New("environment files could not be loaded: check .env.development and .env.local syntax")

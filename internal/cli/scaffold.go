@@ -39,6 +39,9 @@ func runGenerateScaffold(args []string, stdout io.Writer, root string, env []str
 		return err
 	}
 	request.Scaffold = true
+	if apiOnlyAt(root) {
+		return errors.New(apiOnlyScaffoldRefusal)
+	}
 	if slices.Contains(scaffoldReservedPlurals, request.Plural) {
 		return fmt.Errorf("plural %q is a path the application or its view tree already uses (%s); pass another --plural", request.Plural, strings.Join(scaffoldReservedPlurals, ", "))
 	}

@@ -75,8 +75,12 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	skipDatabase := flags.Bool("skip-database", false, "same as --database none")
 	locale := flags.String("locale", "en", "default locale: "+strings.Join(scaffold.Locales, ", ")+" (en.json is always generated)")
 	apiAuth := flags.Bool("api-auth", false, "also mount the JSON authentication APIs (bearer and cookie login, MFA completion, JSON password recovery, GET /v1/auth/session); PostgreSQL only")
+	apiOnly := flags.Bool("api", false, "generate an API-only application (like rails new --api): JSON handlers without views, assets, JavaScript, translations, sign-in pages or browser middleware")
 	name, err := parseSinglePositional(flags, args, "NAME")
 	if err != nil {
+		return err
+	}
+	if err := checkAPIConflicts(flags, *apiOnly); err != nil {
 		return err
 	}
 	frameworkPath, err := resolveForgePath(flags, *forgePath, *deprecatedPath, stderr)
@@ -91,7 +95,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 		}
 		*database = "none"
 	}
-	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale, APIAuth: *apiAuth})
+	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale, APIAuth: *apiAuth, API: *apiOnly})
 	if err != nil {
 		return err
 	}
@@ -114,8 +118,33 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("resolve dependencies (files were generated; fix the cause and run `go mod tidy` in %s): %w", opts.Dir, err)
 		}
 	}
-	_, err = fmt.Fprintf(stdout, "\nNext steps:\n  cd %s\n  docker compose up --build   # or: forge dev\n\n  After it starts, visit http://127.0.0.1:8080/ for the welcome screen.\n\n  Traces, metrics and logs in Grafana (Prometheus, Tempo, Loki): see \"Observability stack\" in README.md.\n", opts.Dir)
+	visit := "visit http://127.0.0.1:8080/ for the welcome screen."
+	if opts.API {
+		visit = "curl http://127.0.0.1:8080/ and http://127.0.0.1:8080/health (JSON)."
+	}
+	_, err = fmt.Fprintf(stdout, "\nNext steps:\n  cd %s\n  docker compose up --build   # or: forge dev\n\n  After it starts, %s\n\n  Traces, metrics and logs in Grafana (Prometheus, Tempo, Loki): see \"Observability stack\" in README.md.\n", opts.Dir, visit)
 	return err
+}
+
+// checkAPIConflicts refuses the flags Forge-Rust declares conflicts_with =
+// "api" for `forge new`: --api-auth (the JSON authentication APIs sit beside
+// the sign-in pages an API-only application lacks) and --locale (it has no
+// pages to translate). Naming either with --api is a usage error, as in
+// Forge-Rust, even with the default value.
+func checkAPIConflicts(flags *flag.FlagSet, apiOnly bool) error {
+	if !apiOnly {
+		return nil
+	}
+	var conflicts []string
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "api-auth" || f.Name == "locale" {
+			conflicts = append(conflicts, f.Name)
+		}
+	})
+	if len(conflicts) == 0 {
+		return nil
+	}
+	return usageError{fmt.Sprintf("--%s cannot be used with --api", conflicts[0])}
 }
 
 // resolveForgePath returns the local checkout named by --forge-path or by its
