@@ -40,6 +40,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		// input-derived text. Keep stderr machine-readable in this mode.
 		commandStderr = io.Discard
 	}
+	if commandHelpRequested(args) {
+		// forge COMMAND --help is a request, not a failure: exit 0.
+		if err := writeCommandHelp(stdout, args[0]); err != nil {
+			fmt.Fprintf(stderr, "forge: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 	var err error
 	switch args[0] {
 	case "version":
@@ -101,6 +109,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) && commandDetailNamed(args[0]) != nil {
+			// A flag set saw -h or --help somewhere the pre-scan leaves to the
+			// command (after its own flags): still a request for help.
+			if helpErr := writeCommandHelp(stdout, args[0]); helpErr == nil {
+				return 0
+			}
+		}
 		if errors.Is(err, errDoctorUnhealthy) {
 			return 1
 		}
@@ -356,6 +371,7 @@ commands:
   openapi [--output FILE | --check FILE]
                       print or write the OpenAPI 3.1 document of the described
                       routes; --check fails when FILE is out of date
+  help [COMMAND]      describe a command (also forge COMMAND --help)
   help --json         print the versioned machine-readable command catalog
   uuid [--count N]    generate UUIDv7 identifiers
   version             print the Forge version
