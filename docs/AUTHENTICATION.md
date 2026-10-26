@@ -98,13 +98,24 @@ password against any hash) is padded, from the credential lookup on, up to the
 cost of one PBKDF2-600k verification plus 25% (one verification varies from
 call to call by some 10-20%). The floor is calibrated once per hasher, on the
 first failure, as the slowest of two PBKDF2 verifications, and rises with the
-slowest legacy verification seen since (at most tenfold). Measured on a 4-CPU
-container: unknown account, wrong password on an Argon2id account and wrong
-password on a PBKDF2 account all answered in 185 ms (medians within 0.5 ms;
-33, 31 and 130 ms without the floor). The padding
-is a timer: it holds no `PasswordWorkLimiter` slot, burns no CPU and ends with
-the request's context. Successful sign-ins are not padded. Once no
-`$pbkdf2-sha256$` hash remains, turn it off:
+slowest legacy verification seen since, at most to twice the calibration:
+observations only raise it, so a slow outlier must not slow every later
+failure for the life of the process. The calibration itself is not capped: a
+CPU flood during the first failure after start makes every failed check
+slower until the process restarts, which costs latency only. Measured on a
+4-CPU container: unknown account, wrong password on an Argon2id account and
+wrong password on a PBKDF2 account all answered in 185 ms (medians within
+0.5 ms; 33, 31 and 130 ms without the floor). The failure is audited first
+(`auth.login_failed`, or the step-up's denied event), then padded, so a client
+that hangs up during the padding, having learned the guess was wrong, still
+leaves the record. The padding is a timer: it holds no `PasswordWorkLimiter`
+slot, burns no CPU and ends with the request's context. Successful sign-ins
+are not padded.
+
+An application created with this release or later never stored a PBKDF2 hash,
+and one whose `$pbkdf2-sha256$` hashes are all gone (below) no longer needs the
+floor. Turn it off where `identityRoutes` (`app/bootstrap/bootstrap.go`)
+builds the login service:
 
 ```go
 hasher, err := auth.NewPasswordHasher(auth.WithLegacyHashTimingFloor(false))

@@ -131,47 +131,89 @@ func TestFailedChecksWaitForTheLegacyTimingFloor(t *testing.T) {
 		}
 
 		// The step-up of auth.Browser is padded the same way.
-		accounts := &memoryMFAAccounts{accounts: map[uuid.UUID]*mfaAccount{}}
-		subject := uuid.MustNew()
-		accounts.accounts[subject] = &mfaAccount{login: "ada@example.com", hash: legacy}
-		for name, check := range map[string]struct {
-			subject  uuid.UUID
-			password string
-		}{"unknown subject": {uuid.MustNew(), "correct horse"}, "wrong password": {subject, "wrong"}} {
+		f := floorStepUp(t, hasher)
+		for name, subject := range map[string]uuid.UUID{"unknown subject": uuid.MustNew(), "wrong password": f.ada} {
 			start := time.Now()
-			if _, ok, err := verifySubjectPassword(context.Background(), hasher, accounts, check.subject, check.password); ok || err != nil || time.Since(start) != testLegacyFloor {
-				t.Errorf("step-up %s: ok=%v err=%v took %v", name, ok, err, time.Since(start))
+			refused := f.post(subject, "/mfa", url.Values{"password": {"wrong"}}, true)
+			if refused.Header().Get("X-Error") != ErrMFAStepUpInvalid.Error() || time.Since(start) != testLegacyFloor {
+				t.Errorf("step-up %s: error=%q took %v", name, refused.Header().Get("X-Error"), time.Since(start))
 			}
+		}
+		if denied := f.deniedEvents(SecurityMFAEnrollmentStarted); denied != 2 {
+			t.Errorf("%d step-up refusals audited, want 2", denied)
 		}
 	})
 }
 
-// The padding is a timer that ends with the request: a cancelled sign-in
-// stops waiting at once, and so does a step-up.
+// floorStepUp is the two-factor settings fixture with its Browser's login
+// service on hasher.
+func floorStepUp(t *testing.T, hasher *PasswordHasher) *mfaSettingsFixture {
+	t.Helper()
+	f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
+	login, err := NewLoginService(newAccountsStore(t, nil), &sessionStub{}, WithLoginPasswordHasher(hasher))
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, err := NewBrowser(BrowserOptions{Login: login, Sessions: &browserRevoker{}, MFA: f.mfa, Passwords: f.accounts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.app = mfaSettingsApp(t, browser)
+	return f
+}
+
+// The padding is a timer that ends with the request: a client that hangs up
+// during it stops the wait, and the failure it learned of is still audited,
+// for a sign-in and for a step-up.
 func TestLegacyTimingFloorStopsWhenTheContextEnds(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		// cancelAfter cancels the returned context d of bubble time from now.
+		cancelAfter := func(d time.Duration) context.Context {
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() {
+				// fake-clock: cancels the request part way into the padding, in bubble time
+				time.Sleep(d)
+				cancel()
+			}()
+			return ctx
+		}
 		hasher := floorHasher(t)
-		service, err := NewLoginService(newAccountsStore(t, nil), &sessionStub{}, WithLoginPasswordHasher(hasher))
+		auditor := &securityAuditorStub{}
+		service, err := NewLoginService(newAccountsStore(t, map[string]string{"ada@example.com": legacyPasswordHash(t, "correct horse")}), &sessionStub{},
+			WithLoginPasswordHasher(hasher), WithSecurityAuditor(auditor))
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		go func() {
-			// fake-clock: cancels the request 10 ms of bubble time into the padding
-			time.Sleep(10 * time.Millisecond)
-			cancel()
-		}()
-		start := time.Now()
-		_, err = service.Login(ctx, LoginInput{Email: "nobody@example.com", Password: "secret", TenantSlug: "acme"})
-		if !errors.Is(err, context.Canceled) || time.Since(start) != 10*time.Millisecond {
-			t.Fatalf("cancelled sign-in: err=%v after %v", err, time.Since(start))
+		for name, email := range map[string]string{"unknown account": "nobody@example.com", "wrong password": "ada@example.com"} {
+			auditor.events = nil
+			start := time.Now()
+			_, err = service.Login(cancelAfter(10*time.Millisecond), LoginInput{Email: email, Password: "wrong", TenantSlug: "acme"})
+			if !errors.Is(err, context.Canceled) || time.Since(start) != 10*time.Millisecond {
+				t.Errorf("cancelled sign-in, %s: err=%v after %v", name, err, time.Since(start))
+			}
+			if len(auditor.events) != 1 || auditor.events[0].Kind != SecurityLoginFailed || auditor.events[0].Outcome != SecurityOutcomeDenied {
+				t.Errorf("cancelled sign-in, %s: audit %+v, want one denied sign-in", name, auditor.events)
+			}
 		}
 
-		ctx, cancel = context.WithCancel(context.Background())
-		cancel()
-		accounts := &memoryMFAAccounts{accounts: map[uuid.UUID]*mfaAccount{}}
-		if _, ok, err := verifySubjectPassword(ctx, hasher, accounts, uuid.MustNew(), "secret"); ok || !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled step-up: ok=%v err=%v", ok, err)
+		f := floorStepUp(t, hasher)
+		csrfToken, err := csrf.NewToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		values := url.Values{"password": {"wrong"}, csrf.FormField: {csrfToken}}
+		request := httptest.NewRequestWithContext(cancelAfter(10*time.Millisecond), http.MethodPost, browserSite+"/mfa", strings.NewReader(values.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		request.AddCookie(&http.Cookie{Name: csrf.CookieName, Value: csrfToken})
+		request.Header.Set("X-Subject", f.ada.String())
+		start := time.Now()
+		recorder := httptest.NewRecorder()
+		f.app.ServeHTTP(recorder, request)
+		if !strings.Contains(recorder.Header().Get("X-Error"), context.Canceled.Error()) || time.Since(start) != 10*time.Millisecond {
+			t.Errorf("cancelled step-up: status=%d error=%q after %v", recorder.Code, recorder.Header().Get("X-Error"), time.Since(start))
+		}
+		if denied := f.deniedEvents(SecurityMFAEnrollmentStarted); denied != 1 {
+			t.Errorf("cancelled step-up: %d refusals audited, want 1", denied)
 		}
 	})
 }

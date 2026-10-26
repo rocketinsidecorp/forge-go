@@ -49,8 +49,11 @@ cryptography, which Forge refuses.
   dormant accounts from unknown ones. Every failed sign-in or step-up check is
   therefore padded by a timer (no limiter slot, no CPU, cancelled with the
   request) to one PBKDF2-600k verification plus 25%, calibrated once per
-  hasher and raised by slower legacy verifications. `WithLegacyHashTimingFloor` (on by
-  default with Argon2id) turns it off once no `$pbkdf2-sha256$` hash remains.
+  hasher and raised by slower legacy verifications up to twice the
+  calibration. The failure is audited before the padding, so hanging up
+  during it cannot skip the record. `WithLegacyHashTimingFloor` (on by
+  default with Argon2id) turns it off once no `$pbkdf2-sha256$` hash remains,
+  or in an application created with this release, which never stored one.
 - Every hash and verification runs through a `PasswordWorkLimiter`: one slot
   per CPU (`GOMAXPROCS`), at most 16, a two-second wait, then
   `ErrPasswordHashingUnavailable` (`503`, `Retry-After: 5`), as in Forge-Rust.

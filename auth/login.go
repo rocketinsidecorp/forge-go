@@ -177,9 +177,14 @@ func NewLoginService(passwords PasswordStore, sessions CredentialSessionCreator,
 		passwords: passwords,
 		sessions:  sessions,
 		throttler: throttler,
-		hasher:    DefaultPasswordHasher(),
-		now:       time.Now,
-		ttl:       defaultSessionTTL,
+		// The default hasher keeps the legacy timing floor on, for
+		// applications that still have PBKDF2 hashes. One created with this
+		// release or later never stored one and can pass
+		// WithLoginPasswordHasher(hasher) built with
+		// WithLegacyHashTimingFloor(false).
+		hasher: DefaultPasswordHasher(),
+		now:    time.Now,
+		ttl:    defaultSessionTTL,
 	}
 	for _, option := range options {
 		if option == nil {
@@ -210,7 +215,8 @@ func NewLoginService(passwords PasswordStore, sessions CredentialSessionCreator,
 // verification (plus 25%) would have finished since the lookup began, so an
 // account that still has a PBKDF2 hash is not told apart by its slower
 // verification.
-// If ctx ends during the padding, Login returns ctx's error. A successful
+// The failure is audited before the padding; if ctx ends during the padding,
+// Login returns ctx's error (joined with any audit error). A successful
 // check is not padded; the first one of a PBKDF2 account costs PBKDF2 plus
 // the Argon2id rehash. A rehash refused because hashing is saturated
 // (ErrPasswordHashingUnavailable) is skipped, not an error: the password was
@@ -253,10 +259,12 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		if verifyErr := s.hasher.verifyDummy(ctx, input.Password); verifyErr != nil {
 			return LoginResult{}, verifyErr
 		}
-		if err := s.hasher.padFailedCheck(ctx, started); err != nil {
-			return LoginResult{}, err
-		}
+		// Audited before the padding, so a client that hangs up during it
+		// (having learned the guess was wrong) still leaves the record.
 		auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, uuid.UUID{}, uuid.UUID{}, throttleKey)
+		if err := s.hasher.padFailedCheck(ctx, started); err != nil {
+			return LoginResult{}, errors.Join(err, auditErr)
+		}
 		return LoginResult{}, errors.Join(ErrCredentialsInvalid, auditErr)
 	}
 	if identity.SubjectID.Version() != 7 || identity.SubjectID.Variant() != 2 ||
@@ -270,10 +278,10 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, err
 	}
 	if !match {
-		if err := s.hasher.padFailedCheck(ctx, started); err != nil {
-			return LoginResult{}, err
-		}
 		auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, identity.SubjectID, identity.MembershipID, throttleKey)
+		if err := s.hasher.padFailedCheck(ctx, started); err != nil {
+			return LoginResult{}, errors.Join(err, auditErr)
+		}
 		return LoginResult{}, errors.Join(ErrCredentialsInvalid, auditErr)
 	}
 	if needsRehash {

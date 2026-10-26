@@ -21,11 +21,12 @@ const (
 	// floor; the slowest counts.
 	legacyFloorCalibrations = 2
 	// maxLegacyFloorFactor bounds how far an observed legacy verification can
-	// raise the floor above the calibrated one: a stored hash takes at most
-	// maxAcceptedPasswordIterations, about 8.3 times the default, and one slow
-	// outlier (a GC pause, a busy CPU) must not slow every later failure
-	// without limit.
-	maxLegacyFloorFactor = 10
+	// raise the floor above the calibrated one. Observations only ever raise
+	// it, so one slow outlier (a GC pause, a busy CPU) would otherwise slow
+	// every later failure for the life of the process. A legacy hash stored
+	// with more than about twice the default iterations can therefore still
+	// take longer than the floor; Forge never wrote one.
+	maxLegacyFloorFactor = 2
 	// legacyFloorMarginPercent is added to the measured cost: one PBKDF2
 	// verification varies by some 10-20% from call to call, and a legacy
 	// check that ends after the floor would still stand out.
@@ -72,7 +73,9 @@ func waitContext(ctx context.Context, d time.Duration) error {
 // floor returns the current floor, calibrating it on first use: the slowest
 // of legacyFloorCalibrations PBKDF2 verifications, raised by the slowest
 // legacy verification observed since (within maxLegacyFloorFactor), plus
-// legacyFloorMarginPercent.
+// legacyFloorMarginPercent. Calibration is not capped: a CPU flood during the
+// first failure after start makes the floor, and so every failed check,
+// slower until the process restarts. That costs latency only.
 func (f *legacyTimingFloor) floor() time.Duration {
 	f.once.Do(func() {
 		for range legacyFloorCalibrations {
@@ -107,11 +110,13 @@ func (f *legacyTimingFloor) pad(ctx context.Context, started time.Time) error {
 // password check of LoginService and of the step-up of auth.Browser (an
 // unknown account or tenant, a malformed login, a wrong password against any
 // hash) does not answer before one PBKDF2-600k verification would have
-// finished (plus 25%, for its variation), so a wrong password against an account that still has a
-// $pbkdf2-sha256$ hash takes no longer than any other failure. The padding is
-// a timer: it holds no PasswordWorkLimiter slot and burns no CPU, and it ends
-// with the request's context. Successful checks are never padded. Turn it off
-// once no $pbkdf2-sha256$ hash remains (see docs/AUTHENTICATION.md); a
+// finished (plus 25%, for its variation), so a wrong password against an
+// account that still has a $pbkdf2-sha256$ hash takes no longer than any
+// other failure. The failure is audited first; the padding is a timer that
+// holds no PasswordWorkLimiter slot, burns no CPU and ends with the
+// request's context. Successful checks are never padded. Turn it off once no
+// $pbkdf2-sha256$ hash remains (see docs/AUTHENTICATION.md), and in an
+// application created with this release or later, which never stored one; a
 // hasher that writes PBKDF2 needs none, every check already costs PBKDF2.
 func WithLegacyHashTimingFloor(enabled bool) PasswordHasherOption {
 	return func(h *PasswordHasher) error {
