@@ -371,17 +371,22 @@ func TestCredentialsEditCleansUpOnSIGTERM(t *testing.T) {
 	go func() { done <- h.run(t, "edit", "--environment", "production") }()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		if _, err := os.Stat(record); err == nil {
-			break
+		// The helper writes the record, then a swap file next to the edited
+		// file (which must be cleaned up too), then sleeps. forge registers
+		// its SIGTERM handlers before it starts the editor, so the signal is
+		// safe once both exist.
+		var r editorRecord
+		if data, err := os.ReadFile(record); err == nil && json.Unmarshal(data, &r) == nil {
+			if _, err := os.Stat(r.Path + ".swp"); err == nil {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the editor never started")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// The helper writes the record before it sleeps; give it a moment to
-	// reach the sleep, then terminate the forge process (this one).
-	time.Sleep(200 * time.Millisecond)
+	// Terminate the forge process (this one).
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
