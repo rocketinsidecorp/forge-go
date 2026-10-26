@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/config"
@@ -31,6 +32,23 @@ type Server struct {
 // headers remain outside custom middleware; custom middleware remains inside
 // body limiting and panic recovery.
 type Middleware func(http.Handler) http.Handler
+
+// Rewriter is implemented by a handler a Middleware returns when the
+// middleware rewrites the request for routing, as i18n.Translator.Middleware
+// does with NegotiationOptions.PathPrefix (/pt-BR/admin is routed as
+// /admin). The server calls RewriteRequest of every such middleware, in
+// registration order, once per request and before the first application
+// middleware runs, so every middleware sees the request path the router
+// uses whatever its position: a path guard registered before the rewriting
+// middleware cannot be bypassed by the part the rewrite removes.
+// RewriteRequest returns a non-nil request, must be idempotent for the
+// request it returns (the middleware's ServeHTTP may apply it again) and
+// cannot answer the request.
+// Request IDs, telemetry and the panic log run before it and see the request
+// as sent.
+type Rewriter interface {
+	RewriteRequest(r *http.Request) *http.Request
+}
 
 func New(cfg config.Config, handler http.Handler, logger *slog.Logger) (*Server, error) {
 	return NewWithMiddleware(cfg, handler, logger)
@@ -56,6 +74,11 @@ type Options struct {
 	Instrument Middleware
 	// Middlewares are application middleware, as for NewWithMiddleware.
 	Middlewares []Middleware
+	// Rewrite runs once per request after the rewrites of Middlewares that
+	// return a Rewriter and before the first of Middlewares. forge.App runs
+	// the rewrites of the middleware added with App.Use here. Nil means
+	// none.
+	Rewrite func(*http.Request) *http.Request
 }
 
 // NewWithOptions constructs the standard Forge server with an optional
@@ -74,15 +97,24 @@ func NewWithOptions(cfg config.Config, handler http.Handler, logger *slog.Logger
 		return nil, err
 	}
 	wrappedHandler := handler
+	var rewrites []func(*http.Request) *http.Request
+	if opts.Rewrite != nil {
+		rewrites = append(rewrites, opts.Rewrite)
+	}
 	for i := len(middlewares) - 1; i >= 0; i-- {
 		wrappedHandler = middlewares[i](wrappedHandler)
 		if wrappedHandler == nil {
 			return nil, errors.New("HTTP middleware returned a nil handler")
 		}
+		if rewriter, ok := wrappedHandler.(Rewriter); ok {
+			rewrites = append(rewrites, rewriter.RewriteRequest)
+		}
 	}
+	// Collected innermost first; they run in registration order.
+	slices.Reverse(rewrites)
 	// Outermost first: every response, including 413 and recovered panics,
 	// carries the security headers and the request ID.
-	inner := recoverer(limitBody(cfg.HTTP.MaxBodyBytes, wrappedHandler))
+	inner := recoverer(limitBody(cfg.HTTP.MaxBodyBytes, rewrite(rewrites, wrappedHandler)))
 	if opts.Instrument != nil {
 		if inner = opts.Instrument(inner); inner == nil {
 			return nil, errors.New("HTTP instrumentation returned a nil handler")
@@ -161,6 +193,20 @@ func securityHeaders(cfg config.Config, next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 		if cfg.HTTP.Transport != config.TransportPlain {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// rewrite applies every rewrite to the request before next, the first
+// application middleware, sees it.
+func rewrite(rewrites []func(*http.Request) *http.Request, next http.Handler) http.Handler {
+	if len(rewrites) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, apply := range rewrites {
+			r = apply(r)
 		}
 		next.ServeHTTP(w, r)
 	})

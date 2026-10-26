@@ -552,6 +552,82 @@ func TestMiddleware(t *testing.T) {
 	}
 }
 
+// rewriter is httpserver.Rewriter, which the Middleware's handler implements
+// so a forge.App removes the prefix before every middleware (forge-go#56).
+type rewriter interface {
+	RewriteRequest(r *http.Request) *http.Request
+}
+
+func TestMiddlewareRemovesThePrefixOnceAndAsARewriter(t *testing.T) {
+	t.Parallel()
+	translator := load(t, i18n.Options{})
+	on := i18n.NegotiationOptions{PathPrefix: true}
+	middleware, err := translator.Middleware(on)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Negotiate in a handler still sees the removed prefix.
+		_, _ = w.Write([]byte(r.URL.Path + "|" + i18n.Locale(r.Context()) + "|" + i18n.PathPrefix(r.Context()) + "|" + translator.Negotiate(r, on)))
+	})
+	handler := middleware(record)
+	rewriting, ok := handler.(rewriter)
+	if !ok {
+		t.Fatalf("the handler %T is not a rewriter", handler)
+	}
+	// Two negotiation layers, and the server's rewrite step before both:
+	// the prefix is removed once, so /en after /pt-BR is a path.
+	twice := middleware(middleware(record))
+	for target, want := range map[string]string{
+		"/pt-BR/en/posts": "/en/posts|pt-BR|/pt-BR|pt-BR",
+		"/PT-br/posts":    "/posts|pt-BR|/pt-BR|pt-BR",
+		"/posts":          "/posts|en||en",
+	} {
+		for name, serve := range map[string]func(*http.Request) *httptest.ResponseRecorder{
+			"middleware": func(r *http.Request) *httptest.ResponseRecorder {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, r)
+				return recorder
+			},
+			"two middlewares": func(r *http.Request) *httptest.ResponseRecorder {
+				recorder := httptest.NewRecorder()
+				twice.ServeHTTP(recorder, r)
+				return recorder
+			},
+			"rewrite step, then middleware": func(r *http.Request) *httptest.ResponseRecorder {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, rewriting.RewriteRequest(rewriting.RewriteRequest(r)))
+				return recorder
+			},
+		} {
+			request := httptest.NewRequest(http.MethodGet, target, nil)
+			request.Header.Set("Accept-Language", "en")
+			if got := serve(request).Body.String(); got != want {
+				t.Errorf("%s, %s: %q, want %q", name, target, got, want)
+			}
+		}
+	}
+	// Without PathPrefix the rewrite leaves the request alone.
+	off, err := translator.Middleware(i18n.NegotiationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/pt-BR/posts", nil)
+	if got := off(record).(rewriter).RewriteRequest(request); got != request {
+		t.Error("the rewrite changed a request without PathPrefix")
+	}
+	// A prefix removed for one translator names no locale of another: that
+	// one negotiates from the other sources instead.
+	english, err := i18n.Load(fstest.MapFS{"en.json": {Data: []byte(enJSON)}}, i18n.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten := rewriting.RewriteRequest(httptest.NewRequest(http.MethodGet, "/pt/posts", nil))
+	if got := english.Negotiate(rewritten, on); got != "en" || rewritten.URL.Path != "/posts" {
+		t.Errorf("other translator: %q, path %q", got, rewritten.URL.Path)
+	}
+}
+
 func TestSetHeaders(t *testing.T) {
 	t.Parallel()
 	translator := load(t, i18n.Options{})
