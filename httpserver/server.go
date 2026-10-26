@@ -178,15 +178,18 @@ func (s *Server) Run(ctx context.Context) error {
 	s.logger.Info("serving HTTP", "address", listener.Addr().String())
 	errorsChannel := make(chan error, 1)
 	go func() {
+		var err error
+		if s.transport == config.TransportTLS {
+			err = s.server.ServeTLS(listener, s.certFile, s.keyFile)
+		} else {
+			err = s.server.Serve(listener)
+		}
 		// Serve closes the listener when it stops, but ServeTLS returns
 		// before serving when the certificate cannot be loaded; close it then
-		// too, as ListenAndServeTLS does, so the port is not held.
-		defer func() { _ = listener.Close() }()
-		if s.transport == config.TransportTLS {
-			errorsChannel <- s.server.ServeTLS(listener, s.certFile, s.keyFile)
-		} else {
-			errorsChannel <- s.server.Serve(listener)
-		}
+		// too, as ListenAndServeTLS does. Closing before the send means the
+		// port is free by the time Run returns.
+		_ = listener.Close()
+		errorsChannel <- err
 	}()
 
 	select {
