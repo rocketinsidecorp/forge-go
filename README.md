@@ -859,6 +859,12 @@ forge migrate
 forge test                                              # includes an end-to-end event stream test on PostgreSQL
 ```
 
+Release note: the generated `htmlstreams.NewSigner` now takes the previous
+keys as a third argument (`FORGE_STREAMS_PREVIOUS_KEYS`). `streams.go` is
+written once, so an application generated earlier must update it before the
+newly printed wiring compiles: see
+[docs/VIEWS.md](docs/VIEWS.md#rotating-the-stream-signing-key).
+
 Paste the printed wiring into `app/bootstrap/bootstrap.go` (it defines the
 stream signer, mounts `GET /streams` behind the session cookie and the
 `posts:read` permission, and passes the broker to the pages). Open `/posts` in
