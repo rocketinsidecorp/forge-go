@@ -305,6 +305,57 @@ func TestSchedulerSkipsATickLaterThanMaxLateness(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now().UTC()
 		recorder := &runRecorder{}
+		s := NewScheduler(SchedulerOptions{OnError: recorder.onError, MaxLateness: minMaxLateness})
+		var calls atomic.Int32
+		if err := s.Register("report", ScheduleSpec{Every: 5 * time.Minute}, func(context.Context) error {
+			recorder.ran()
+			if calls.Add(1) == 1 {
+				// fake-clock: a run that outlasts a tick, until 11m40s: the 10m tick is 100s late.
+				time.Sleep(400 * time.Second)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		s.Start()
+		// fake-clock: advances the synctest bubble's clock past the ticks under test.
+		time.Sleep(15*time.Minute + 10*time.Second)
+		synctest.Wait()
+		if err := s.Stop(); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := recorder.offsets(start), []time.Duration{5 * time.Minute, 15 * time.Minute}; !slices.Equal(got, want) {
+			t.Fatalf("runs at %v, want %v", got, want)
+		}
+		if len(recorder.skipped) != 1 || recorder.skipped[0].Skipped != 1 || recorder.skipped[0].Behind != 100*time.Second {
+			t.Fatalf("skipped reports = %+v, want one of 1 tick, 100s behind", recorder.skipped)
+		}
+	})
+}
+
+// An explicit MaxLateness below a minute is raised to a minute, as in
+// Forge-Rust (Schedule::max_lateness): a tick 30s late still runs, where a
+// 10s bound would have skipped it, and one 61s late is skipped.
+func TestSchedulerRaisesAnExplicitMaxLatenessToAMinute(t *testing.T) {
+	t.Parallel()
+	for _, explicit := range []time.Duration{time.Nanosecond, time.Second, 10 * time.Second, 59 * time.Second} {
+		if got := NewScheduler(SchedulerOptions{MaxLateness: explicit}).opts.MaxLateness; got != minMaxLateness {
+			t.Errorf("MaxLateness %s: %s, want %s", explicit, got, minMaxLateness)
+		}
+	}
+	for _, kept := range []time.Duration{0, minMaxLateness, 90 * time.Second, time.Hour} {
+		if got := NewScheduler(SchedulerOptions{MaxLateness: kept}).opts.MaxLateness; got != kept {
+			t.Errorf("MaxLateness %s changed to %s", kept, got)
+		}
+	}
+	// The default stays one interval, even below a minute.
+	s := NewScheduler(SchedulerOptions{})
+	if got := s.maxLateness(scheduledJob{spec: ScheduleSpec{Every: 10 * time.Second}}, time.Time{}); got != 10*time.Second {
+		t.Errorf("default lateness of Every 10s = %s, want 10s", got)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now().UTC()
+		recorder := &runRecorder{}
 		s := NewScheduler(SchedulerOptions{OnError: recorder.onError, MaxLateness: 10 * time.Second})
 		var calls atomic.Int32
 		if err := s.Register("report", ScheduleSpec{Every: time.Minute}, func(context.Context) error {
@@ -324,11 +375,12 @@ func TestSchedulerSkipsATickLaterThanMaxLateness(t *testing.T) {
 		if err := s.Stop(); err != nil {
 			t.Fatal(err)
 		}
-		if got, want := recorder.offsets(start), []time.Duration{time.Minute, 3 * time.Minute}; !slices.Equal(got, want) {
-			t.Fatalf("runs at %v, want %v", got, want)
+		want := []time.Duration{time.Minute, 2*time.Minute + 30*time.Second, 3 * time.Minute}
+		if got := recorder.offsets(start); !slices.Equal(got, want) {
+			t.Fatalf("runs at %v, want %v: a tick 30s late must run under a 10s bound raised to a minute", got, want)
 		}
-		if len(recorder.skipped) != 1 || recorder.skipped[0].Skipped != 1 || recorder.skipped[0].Behind != 30*time.Second {
-			t.Fatalf("skipped reports = %+v, want one of 1 tick, 30s behind", recorder.skipped)
+		if len(recorder.skipped) != 0 {
+			t.Fatalf("skipped reports = %+v, want none", recorder.skipped)
 		}
 	})
 }
@@ -341,7 +393,7 @@ func TestSchedulerSkipsATickThatWaitedTooLongForASlot(t *testing.T) {
 		hog, victim := &runRecorder{}, &runRecorder{}
 		s := NewScheduler(SchedulerOptions{
 			MaxConcurrentJobs: 1,
-			MaxLateness:       10 * time.Second,
+			MaxLateness:       minMaxLateness,
 			OnError: func(name string, err error) {
 				if name == "victim" {
 					victim.onError(name, err)
@@ -351,18 +403,18 @@ func TestSchedulerSkipsATickThatWaitedTooLongForASlot(t *testing.T) {
 			},
 		})
 		var hogCalls atomic.Int32
-		if err := s.Register("hog", ScheduleSpec{Every: time.Minute}, func(context.Context) error {
+		if err := s.Register("hog", ScheduleSpec{Every: 10 * time.Minute}, func(context.Context) error {
 			hog.ran()
 			if hogCalls.Add(1) == 1 {
-				// fake-clock: a run that holds the only slot from 1m to 1m50s.
-				time.Sleep(50 * time.Second)
+				// fake-clock: a run that holds the only slot from 10m to 16m10s.
+				time.Sleep(370 * time.Second)
 			}
 			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		// Every 90s: due at 1m30s, while the hog holds the slot.
-		if err := s.Register("victim", ScheduleSpec{Every: 90 * time.Second}, func(context.Context) error {
+		// Every 15m: due at 15m, while the hog holds the slot.
+		if err := s.Register("victim", ScheduleSpec{Every: 15 * time.Minute}, func(context.Context) error {
 			victim.ran()
 			return nil
 		}); err != nil {
@@ -370,16 +422,16 @@ func TestSchedulerSkipsATickThatWaitedTooLongForASlot(t *testing.T) {
 		}
 		s.Start()
 		// fake-clock: advances the synctest bubble's clock past the ticks under test.
-		time.Sleep(3*time.Minute + 10*time.Second)
+		time.Sleep(30*time.Minute + 10*time.Second)
 		synctest.Wait()
 		if err := s.Stop(); err != nil {
 			t.Fatal(err)
 		}
-		if got, want := victim.offsets(start), []time.Duration{3 * time.Minute}; !slices.Equal(got, want) {
+		if got, want := victim.offsets(start), []time.Duration{30 * time.Minute}; !slices.Equal(got, want) {
 			t.Fatalf("victim runs at %v, want %v", got, want)
 		}
-		if len(victim.skipped) != 1 || victim.skipped[0].Skipped != 1 || victim.skipped[0].Behind != 20*time.Second {
-			t.Fatalf("victim skipped reports = %+v, want one of 1 tick, 20s behind", victim.skipped)
+		if len(victim.skipped) != 1 || victim.skipped[0].Skipped != 1 || victim.skipped[0].Behind != 70*time.Second {
+			t.Fatalf("victim skipped reports = %+v, want one of 1 tick, 70s behind", victim.skipped)
 		}
 	})
 }

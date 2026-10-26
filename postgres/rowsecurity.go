@@ -87,7 +87,7 @@ func AllowRowSecurityBypass() Option {
 // reported by that query, not by Open. Generated applications pass
 // Lazy(!app.Serving()): `routes` and `openapi` compose the application
 // without serving it and need no reachable database. Lazy(false) is Open's
-// default.
+// default. A set PGOPTIONS is refused lazily too (see Open).
 func Lazy(lazy bool) Option {
 	return func(o *openOptions) { o.lazy = lazy }
 }

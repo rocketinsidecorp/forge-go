@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -51,6 +53,13 @@ var _ DBTX = (*DB)(nil)
 // a role that could bypass row-level security; see RequireRowSecurity for
 // the rules and AllowRowSecurityBypass for the explicit opt-out. With
 // Lazy(true) it connects on the first query instead.
+//
+// Open refuses, lazily too, while PGOPTIONS is set (non-empty): pgx would add
+// it to every connection, and PGOPTIONS='-c forge.tenant_id=...' would give
+// every session a default tenant. The error names the variable, never its
+// value. PGTZ and PGAPPNAME are ignored: sessions are in UTC and the
+// application_name is the URL's, else "forge". Only the migrator
+// (NewMigrator) reads PGOPTIONS, as for psql.
 func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error) {
 	var settings openOptions
 	for _, option := range opts {
@@ -64,10 +73,11 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 	if err != nil {
 		return nil, err
 	}
-	// The serving pool takes no session setting from the environment: a
+	// The serving pool takes no session setting from the environment, and
+	// refuses to open while PGOPTIONS is set: a
 	// PGOPTIONS='-c forge.tenant_id=...' would give every pooled session a
 	// default tenant, so a query outside InTenantTx would read that
-	// tenant's rows instead of none.
+	// tenant's rows instead of none. See parseConfig.
 	poolConfig, err := parseConfig(cfg, stripEnvironmentSession)
 	if err != nil {
 		return nil, err
@@ -128,13 +138,35 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 	return &DB{pool: pool, unobserve: unobserve}, nil
 }
 
+// errPGOptionsRefused is why a pool refuses to open while PGOPTIONS is set.
+// It names the variable, never its value (Forge-Rust's wording, with pgx for
+// SQLx).
+var errPGOptionsRefused = errors.New("PGOPTIONS is set in the environment, and pgx " +
+	"would add its session settings to every connection of this pool (PGOPTIONS='-c " +
+	"forge.tenant_id=...' gives every session a default tenant): unset it for the application " +
+	"and name session settings in the URL's options parameter instead; only migrate and " +
+	"rollback read PGOPTIONS")
+
+// refuseEnvironmentOptions refuses the options PGOPTIONS would add to every
+// connection of a pool that takes no session setting from the environment.
+// Forge-Rust's SQLx cannot drop it once read, so both frameworks refuse
+// instead of ignoring it, and the failure is visible. Empty or blank is no
+// setting.
+func refuseEnvironmentOptions(getenv func(string) string) error {
+	if strings.TrimSpace(getenv("PGOPTIONS")) != "" {
+		return errPGOptionsRefused
+	}
+	return nil
+}
+
 // sessionSource says whether the session settings pgx reads from the
 // environment (PGOPTIONS, PGTZ, PGAPPNAME) reach the connection.
 type sessionSource bool
 
 const (
 	// stripEnvironmentSession keeps only the session settings the URL
-	// names: the serving pool's choice.
+	// names, and refuses PGOPTIONS: the serving pool's choice. PGTZ and
+	// PGAPPNAME are ignored.
 	stripEnvironmentSession sessionSource = false
 	// keepEnvironmentSession lets the environment fill the session settings
 	// the URL leaves out, as for psql: the migrator's choice, so an operator
@@ -175,6 +207,9 @@ func parseConfig(cfg config.Database, session sessionSource) (*pgxpool.Config, e
 		return nil, err
 	}
 	if session == stripEnvironmentSession {
+		if err := refuseEnvironmentOptions(os.Getenv); err != nil {
+			return nil, err
+		}
 		iso.StripSession(poolConfig.ConnConfig.RuntimeParams)
 	}
 	poolConfig.ConnConfig.ConnectTimeout = cfg.ConnectTimeout

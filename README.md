@@ -175,6 +175,16 @@ forge test                        # repository and sign-in tests run as a fresh 
 docker compose down --volumes     # once, for a volume created before the roles existed
 ```
 
+Only `forge migrate` and `forge rollback` read `PGOPTIONS`, as for `psql`; every command that
+opens the application's pool (`forge dev`, `seed`, `jobs`, `setup`) refuses to
+start while it is set, naming the variable and never its value, because a
+`forge.tenant_id` in it would give every session a default tenant:
+
+```sh
+PGOPTIONS='-c lock_timeout=5s' forge migrate   # works: bounds lock waits for this run
+PGOPTIONS='-c lock_timeout=5s' forge dev       # refused: PGOPTIONS is set in the environment, ...
+```
+
 In production, provision the same two roles once (SQL in
 [Database roles](docs/DATABASE.md#database-roles-postgresql)), migrate with
 the migration role and serve with the runtime role only. In staging and
@@ -819,7 +829,9 @@ same time. A job that falls behind its schedule (a run longer than its
 interval, a paused VM, a slow tick claim, a wait for a free slot) does not
 replay the ticks it missed back to back: only the latest tick due runs, once,
 and only while it is at most `jobs.SchedulerOptions.MaxLateness` late (zero,
-the default, means one interval of the job's schedule); the others are skipped
+the default, means one interval of the job's schedule; an explicit value below
+a minute is raised to a minute, as in Forge-Rust's `Schedule::max_lateness`);
+the others are skipped
 and reported to `OnError` as a `*jobs.SkippedTicksError`, which the generated
 `JobsConfigure` logs as a warning. To skip a tick that is more than ten
 minutes late, even for a daily job:
