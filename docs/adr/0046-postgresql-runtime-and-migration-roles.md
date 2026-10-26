@@ -21,7 +21,8 @@ roles.
 ## Decision
 
 1. **Two roles.** A PostgreSQL application serves as a runtime role
-   (`FORGE_DATABASE_URL`): `NOSUPERUSER NOBYPASSRLS NOCREATEROLE`, owns
+   (`FORGE_DATABASE_URL`): `NOSUPERUSER NOBYPASSRLS NOCREATEROLE
+   NOREPLICATION`, owns
    nothing, holds only `SELECT, INSERT, UPDATE, DELETE` on tables and
    `USAGE, SELECT` on sequences, and may not create temporary tables. It migrates as a migration role
    (`FORGE_MIGRATION_DATABASE_URL`) that owns the database and its schema.

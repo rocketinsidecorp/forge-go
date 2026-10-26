@@ -557,7 +557,8 @@ this step only. The serving containers get `FORGE_DATABASE_URL` alone, for a
 role that is `NOSUPERUSER NOBYPASSRLS NOREPLICATION`, owns no table and holds only
 `SELECT, INSERT, UPDATE, DELETE`: in staging and production the app refuses
 to start when that role is a superuser or has `BYPASSRLS`, `CREATEROLE` or
-`REPLICATION`, is a member of such a role or of a predefined role that reaches
+`REPLICATION`, is a member of a superuser, `BYPASSRLS` or `REPLICATION` role
+or of a predefined role that reaches
 the server's files or programs, owns (or can `SET ROLE` to the owner of) a
 table with row-level security, or when the URL makes the session act as
 another role, because each could bypass the tenant isolation of row-level

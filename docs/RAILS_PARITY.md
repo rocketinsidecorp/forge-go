@@ -171,8 +171,8 @@ the work is finished and waiting for its review; **Planned** means not started.
   `REPLICATION`, membership in a superuser, `BYPASSRLS` or `REPLICATION` role,
   membership in `pg_execute_server_program`, `pg_write_server_files` or
   `pg_read_server_files`, and owning (or being able to `SET ROLE` to the owner
-  of) a table with row-level security, with the same SQL, reasons and fix text
-  in both frameworks.
+  of) a table with row-level security, with the same escape rules (the
+  catalog predicates), reasons and fix text in both frameworks.
   `forge deploy` gives the migration credential to the migrate step alone
   through `migrate.env`
   ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57));
