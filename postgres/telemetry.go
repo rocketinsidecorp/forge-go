@@ -16,11 +16,12 @@ type Option func(*openOptions)
 type openOptions struct {
 	telemetry *telemetry.Telemetry
 	poolName  string
-	// rowSecurity, when set, says whether Open refuses a role that could
-	// bypass row-level security (RequireRowSecurity,
-	// AllowRowSecurityBypass). Unset, it follows the configuration's
-	// environment.
-	rowSecurity *bool
+	// requireRowSecurity forces the row-level security check
+	// (RequireRowSecurity outside development and test); it wins over
+	// allowRowSecurityBypass, the only opt-out (AllowRowSecurityBypass).
+	// Without either, the check follows the configuration's environment.
+	requireRowSecurity     bool
+	allowRowSecurityBypass bool
 	// lazy defers connecting to the first query (Lazy).
 	lazy bool
 }

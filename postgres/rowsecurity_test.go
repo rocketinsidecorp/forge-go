@@ -444,12 +444,30 @@ func TestOpenRefusesBypassingRolesByDefaultOutsideDevelopmentAndTest(t *testing.
 		}
 		t.Errorf("a superuser through config.Default().Database: err = %v, want ErrRowSecurityBypass", err)
 	}
-	// The last of the two options wins.
-	if err := open(config.Production, postgres.RequireRowSecurity(config.Production), postgres.AllowRowSecurityBypass()); err != nil {
-		t.Errorf("RequireRowSecurity then AllowRowSecurityBypass: %v", err)
+	// RequireRowSecurity only ever adds the check: for development it does
+	// not switch off the check a production configuration asks for, and for
+	// production it wins over AllowRowSecurityBypass in either order.
+	for _, environment := range []config.Environment{config.Development, config.Test} {
+		if err := open(config.Production, postgres.RequireRowSecurity(environment)); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+			t.Errorf("RequireRowSecurity(%s) on a production configuration: err = %v, want ErrRowSecurityBypass", environment, err)
+		}
+		if err := open(environment, postgres.RequireRowSecurity(environment)); err != nil {
+			t.Errorf("RequireRowSecurity(%s) on a %s configuration: %v", environment, environment, err)
+		}
 	}
-	if err := open(config.Development, postgres.AllowRowSecurityBypass(), postgres.RequireRowSecurity(config.Production)); !errors.Is(err, postgres.ErrRowSecurityBypass) {
-		t.Errorf("AllowRowSecurityBypass then RequireRowSecurity(production): err = %v, want ErrRowSecurityBypass", err)
+	if err := open(config.Development, postgres.RequireRowSecurity(config.Production)); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+		t.Errorf("RequireRowSecurity(production) on a development configuration: err = %v, want ErrRowSecurityBypass", err)
+	}
+	for name, opts := range map[string][]postgres.Option{
+		"Require then Allow": {postgres.RequireRowSecurity(config.Production), postgres.AllowRowSecurityBypass()},
+		"Allow then Require": {postgres.AllowRowSecurityBypass(), postgres.RequireRowSecurity(config.Production)},
+	} {
+		if err := open(config.Development, opts...); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+			t.Errorf("%s: err = %v, want ErrRowSecurityBypass", name, err)
+		}
+	}
+	if err := open(config.Production, postgres.RequireRowSecurity(config.Development), postgres.AllowRowSecurityBypass()); err != nil {
+		t.Errorf("AllowRowSecurityBypass with RequireRowSecurity(development): %v", err)
 	}
 }
 

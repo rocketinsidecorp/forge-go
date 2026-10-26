@@ -275,9 +275,10 @@ the URL must log in as the serving role itself. The error wraps
 `postgres.ErrRowSecurityBypass` and names the role. This is `Open`'s default
 for every application, generated or hand-written, and for every pool it opens
 (the `jobs`, `seed` and `auth setup` commands included).
-`postgres.RequireRowSecurity(environment)` checks for an explicit
-environment instead. There is no override variable; the only opt-out is in
-code, for a pool that must use such a role on purpose (an administration or
+`postgres.RequireRowSecurity(environment)` adds the check for an explicit
+staging or production environment, whatever `cfg.Environment` says; it never
+switches the check off, and it wins over the opt-out. There is no override
+variable; the only opt-out, `postgres.AllowRowSecurityBypass()`, is in code, for a pool that must use such a role on purpose (an administration or
 reporting tool), never for the pool that serves tenants:
 
 ```go

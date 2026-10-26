@@ -15,11 +15,14 @@ import (
 // RequireRowSecurity).
 var ErrRowSecurityBypass = errors.New("the database role bypasses row-level security")
 
-// RequireRowSecurity makes Open check the role, as described below, in
-// every environment except development and test (so in staging and
-// production), whatever cfg.Environment says. Open already does so for
-// cfg.Environment, which config.Load and forge.New set; pass this option
-// only for a config.Database built in code whose Environment is not the
+// RequireRowSecurity makes Open check the role, as described below, when
+// environment is neither development nor test (so in staging and
+// production), even if cfg.Environment says development or test. It only
+// ever adds the check: RequireRowSecurity(config.Development) leaves Open's
+// default, which follows cfg.Environment, and it also wins over
+// AllowRowSecurityBypass. Open already checks for cfg.Environment, which
+// config.Load and forge.New set; pass this option only for a
+// config.Database built in code whose Environment is not the
 // application's.
 //
 // The check covers both the role FORGE_DATABASE_URL logs in as
@@ -47,26 +50,26 @@ var ErrRowSecurityBypass = errors.New("the database role bypasses row-level secu
 // returns it to the login role, so only the login role counts and it must be
 // the serving role itself. Tenant isolation through RLS policies is otherwise
 // only as strong as every query's own predicate, so the application refuses
-// to serve instead. In development and test it does nothing, so local tools
-// may connect as an administrator.
+// to serve instead. Outside these environments, and without this option,
+// development and test are not checked, so local tools may connect as an
+// administrator.
 //
 // Serve as a NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOREPLICATION runtime role
 // that owns no table and migrate as a separate role (FORGE_MIGRATION_DATABASE_URL); see
 // docs/DATABASE.md.
 func RequireRowSecurity(environment config.Environment) Option {
-	check := environment != config.Development && environment != config.Test
-	return func(o *openOptions) { o.rowSecurity = &check }
+	require := environment != config.Development && environment != config.Test
+	return func(o *openOptions) { o.requireRowSecurity = o.requireRowSecurity || require }
 }
 
 // AllowRowSecurityBypass is the explicit opt-out of the check Open applies
 // outside development and test (see RequireRowSecurity): Open then accepts
 // any role. Pass it only for a pool that must connect as such a role on
 // purpose, such as an administration or reporting tool, never for the pool
-// an application serves tenants with. The last of RequireRowSecurity and
-// AllowRowSecurityBypass passed to Open wins.
+// an application serves tenants with. It is the only opt-out, and
+// RequireRowSecurity for a staging or production environment overrides it.
 func AllowRowSecurityBypass() Option {
-	check := false
-	return func(o *openOptions) { o.rowSecurity = &check }
+	return func(o *openOptions) { o.allowRowSecurityBypass = true }
 }
 
 // Lazy makes Open, when lazy is true, return without connecting: the pool

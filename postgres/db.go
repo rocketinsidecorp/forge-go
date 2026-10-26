@@ -58,10 +58,8 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 			option(&settings)
 		}
 	}
-	checkRowSecurity := cfg.Environment != config.Development && cfg.Environment != config.Test
-	if settings.rowSecurity != nil {
-		checkRowSecurity = *settings.rowSecurity
-	}
+	checkRowSecurity := settings.requireRowSecurity ||
+		(!settings.allowRowSecurityBypass && cfg.Environment != config.Development && cfg.Environment != config.Test)
 	observer, err := sqldb.NewObserver(settings.telemetry, poolSystem, classify)
 	if err != nil {
 		return nil, err
