@@ -209,6 +209,26 @@ func TestKeyRotation(t *testing.T) {
 	}
 }
 
+// TestTwoStepKeyRotation is the rolling redeploy of docs/VIEWS.md: in step 1
+// the new key is only a previous key, so a replica already on step 2 and one
+// still on step 1 accept each other's stream names.
+func TestTwoStepKeyRotation(t *testing.T) {
+	t.Parallel()
+	oldKey := []byte("oldoldoldoldoldoldoldoldoldoldol")
+	newKey := []byte("newnewnewnewnewnewnewnewnewnewne")
+	step1, _ := newSigner(t, func(o *broadcast.SignerOptions) { o.Key = oldKey; o.PreviousKeys = [][]byte{newKey} })
+	step2, _ := newSigner(t, func(o *broadcast.SignerOptions) { o.Key = newKey; o.PreviousKeys = [][]byte{oldKey} })
+	for name, pair := range map[string][2]*broadcast.Signer{"step 1 signs, step 2 verifies": {step1, step2}, "step 2 signs, step 1 verifies": {step2, step1}} {
+		token, err := pair[0].Sign(mustGlobal(t, "posts"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pair[1].Verify(token); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 func TestSignerValidation(t *testing.T) {
 	t.Parallel()
 	for name, opts := range map[string]broadcast.SignerOptions{
