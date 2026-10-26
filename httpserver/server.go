@@ -169,7 +169,7 @@ func (s *Server) Run(ctx context.Context) error {
 			address = ":https"
 		}
 	}
-	listener, err := net.Listen("tcp", address)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", address)
 	if err != nil {
 		return fmt.Errorf("serve HTTP: %w", err)
 	}
