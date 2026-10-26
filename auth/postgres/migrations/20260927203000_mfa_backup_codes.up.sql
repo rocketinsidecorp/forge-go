@@ -1,5 +1,5 @@
 CREATE TABLE forge_mfa_backup_codes (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY,
     user_id uuid NOT NULL REFERENCES forge_users(id) ON DELETE CASCADE,
     code_digest bytea NOT NULL CHECK (octet_length(code_digest) = 32),
     consumed_at timestamptz,

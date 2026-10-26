@@ -16,7 +16,7 @@ CREATE TABLE forge_totp_factors (
 );
 
 CREATE TABLE forge_mfa_challenges (
-    id uuid PRIMARY KEY DEFAULT uuidv7(),
+    id uuid PRIMARY KEY,
     token_digest bytea NOT NULL CHECK (octet_length(token_digest) = 32),
     membership_id uuid NOT NULL REFERENCES forge_memberships(id) ON DELETE CASCADE,
     credential_version bigint NOT NULL CHECK (credential_version > 0),

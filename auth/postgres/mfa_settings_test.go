@@ -54,7 +54,7 @@ func TestMFASettingsAgainstPostgres(t *testing.T) {
 	first := backup("first")
 	for _, digest := range first {
 		for _, id := range []uuid.UUID{ada, gone} {
-			if _, err := db.Exec(ctx, "INSERT INTO forge_mfa_backup_codes (user_id, code_digest) VALUES ($1, $2)", id, digest[:]); err != nil {
+			if _, err := db.Exec(ctx, "INSERT INTO forge_mfa_backup_codes (id, user_id, code_digest) VALUES ($3, $1, $2)", id, digest[:], uuid.MustNew()); err != nil {
 				t.Fatal(err)
 			}
 		}

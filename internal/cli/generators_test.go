@@ -19,6 +19,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/migrate"
 	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // generatorNow is also the version of a framework migration
@@ -1110,7 +1111,7 @@ func TestControllerPermissionMigrationRunsOnPostgreSQL(t *testing.T) {
 
 	// A grant an administrator made is never revoked silently: the rollback
 	// fails and changes nothing until it is revoked.
-	if _, err := database.Exec(ctx, "INSERT INTO forge_roles (tenant_id, name) VALUES ($1, 'auditor')", owner.TenantID); err != nil {
+	if _, err := database.Exec(ctx, "INSERT INTO forge_roles (id, tenant_id, name) VALUES ($2, $1, 'auditor')", owner.TenantID, uuid.MustNew()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.Exec(ctx, "INSERT INTO forge_role_permissions (role_id, permission) SELECT id, 'reports:read' FROM forge_roles WHERE name = 'auditor'"); err != nil {

@@ -50,6 +50,36 @@ var frameworkMigrations = []FrameworkMigration{
 	{Version: 20261026120000, Name: "job_schedules", Owner: "jobs"},
 }
 
+// supersededChecksums lists, per framework migration version, the checksums
+// of up scripts Forge shipped before an edit made while the migration was
+// unreleased (no version tag included it). A database that applied such an
+// earlier text is still accepted: Forge wrote both, and the edit changed
+// nothing a database that already ran the old text needs. Never add a
+// released migration here: released history only grows (add a migration).
+var supersededChecksums = map[int64][]string{
+	// The identity tables declared DEFAULT uuidv7(), which PostgreSQL 16 and
+	// 17 lack; the application has always been able to supply the IDs, and
+	// now always does (forge-go QG9). A database migrated before keeps the
+	// unused defaults.
+	20260927090000: {"97b2e99f3157ead576f950a2dbb031e3d7df41d559afd884fe9e69023481efde"},
+	20260927142000: {"943bc72bacf06d89a307c50835d79fab308c8051802af6bf60e3b8777a55b917"},
+	20260927200000: {"d0d4b601e34a2f6d9bf2275a63d97eea1c3300aba116f2171bbaaba4321622a0"},
+	20260927203000: {"af1ae8e3bdfc8cadb3a4ffb8b2ccc01d551a3b9473cf0e9052e96bdb3a43b443"},
+	20260928004500: {"b0e756ab61753decd2b31205375ca607fab8faa1beab1f88fc7bb3940696f79e"},
+}
+
+// checksumMatches reports whether a database row recorded with checksum
+// applied migration: the current script, or for a framework migration
+// recorded under its own name, an earlier text in supersededChecksums.
+func checksumMatches(migration Migration, recordedName, checksum string) bool {
+	if checksum == migration.Checksum {
+		return true
+	}
+	framework, reserved := frameworkMigration(migration.Version)
+	return reserved && framework.Name == migration.Name && recordedName == framework.Name &&
+		slices.Contains(supersededChecksums[migration.Version], checksum)
+}
+
 // FrameworkMigrations returns every registered framework migration in
 // version order. The result is a copy.
 func FrameworkMigrations() []FrameworkMigration {

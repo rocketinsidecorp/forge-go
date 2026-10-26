@@ -19,6 +19,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/migrate"
 	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 const ownerPassword = "correct horse battery staple"
@@ -116,7 +117,7 @@ func TestProvisionOwnerIsAtomicAndSerialized(t *testing.T) {
 	ctx := context.Background()
 
 	// A user with the owner's email aborts the whole transaction.
-	if _, err := db.Exec(ctx, "INSERT INTO forge_users (email, email_normalized, password_hash) VALUES ('taken@example.com', 'taken@example.com', 'x')"); err != nil {
+	if _, err := db.Exec(ctx, "INSERT INTO forge_users (id, email, email_normalized, password_hash) VALUES ($1, 'taken@example.com', 'taken@example.com', 'x')", uuid.MustNew()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.ProvisionOwner(ctx, authpostgres.OwnerAccount{Organization: "Acme", TenantSlug: "acme", Email: "Taken@example.com", Password: ownerPassword}); !errors.Is(err, authpostgres.ErrOwnerEmailTaken) {
@@ -169,7 +170,6 @@ func TestProvisionOwnerIsAtomicAndSerialized(t *testing.T) {
 
 func TestSetupCommandReadsThePasswordSafely(t *testing.T) {
 	db, database := postgrestest.NewWithConfig(t)
-	postgrestest.RequireUUIDv7(t, db) // the identity migrations use DEFAULT uuidv7()
 	dbtest.Migrate(t, authpostgres.Migrations(), func(loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
 		return postgres.NewMigrator(database, loaded, logger)
 	})

@@ -150,9 +150,13 @@ func (r *Repository) CreateSession(ctx context.Context, membershipID uuid.UUID, 
 		return auth.Token{}, fmt.Errorf("generate session token: %w", err)
 	}
 	digest := token.Digest()
+	id, err := uuid.New()
+	if err != nil {
+		return auth.Token{}, err
+	}
 	tag, err := r.db.Exec(ctx, `
-		INSERT INTO forge_sessions (token_digest, membership_id, credential_version, expires_at)
-		SELECT $1, m.id, u.session_version, $3
+		INSERT INTO forge_sessions (id, token_digest, membership_id, credential_version, expires_at)
+		SELECT $4, $1, m.id, u.session_version, $3
 		FROM forge_memberships m
 		JOIN forge_users u ON u.id = m.user_id
 		JOIN forge_tenants t ON t.id = m.tenant_id
@@ -162,7 +166,7 @@ func (r *Repository) CreateSession(ctx context.Context, membershipID uuid.UUID, 
 		  AND u.status = 'active'
 		  AND t.status = 'active'
 		  AND o.status = 'active'
-	`, digest[:], membershipID, expiresAt.UTC())
+	`, digest[:], membershipID, expiresAt.UTC(), id)
 	if err != nil {
 		return auth.Token{}, postgres.Translate(err)
 	}
@@ -195,9 +199,13 @@ func (r *Repository) CreateSessionAtVersion(
 		return auth.Token{}, fmt.Errorf("generate session token: %w", err)
 	}
 	digest := token.Digest()
+	id, err := uuid.New()
+	if err != nil {
+		return auth.Token{}, err
+	}
 	tag, err := r.db.Exec(ctx, `
-		INSERT INTO forge_sessions (token_digest, membership_id, credential_version, expires_at)
-		SELECT $1, m.id, u.session_version, $4
+		INSERT INTO forge_sessions (id, token_digest, membership_id, credential_version, expires_at)
+		SELECT $5, $1, m.id, u.session_version, $4
 		FROM forge_memberships m
 		JOIN forge_users u ON u.id = m.user_id
 		JOIN forge_tenants t ON t.id = m.tenant_id
@@ -208,7 +216,7 @@ func (r *Repository) CreateSessionAtVersion(
 		  AND u.status = 'active'
 		  AND t.status = 'active'
 		  AND o.status = 'active'
-	`, digest[:], membershipID, credentialVersion, expiresAt.UTC())
+	`, digest[:], membershipID, credentialVersion, expiresAt.UTC(), id)
 	if err != nil {
 		return auth.Token{}, postgres.Translate(err)
 	}

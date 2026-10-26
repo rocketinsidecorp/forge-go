@@ -1100,9 +1100,12 @@ CREATE TABLE notes (
 );
 ```
 
-- Forge's identity tables (`auth/postgres`, released migrations) keep
-  `DEFAULT uuidv7()`, a PostgreSQL 18 function, so applications with Forge
-  identity need PostgreSQL 18. When a migration fails on an older server with
+- Forge's identity tables (`auth/postgres`) have no id default either: the
+  repositories generate the ids, so applications with Forge identity run on
+  PostgreSQL 16 and 17 too. (They declared `DEFAULT uuidv7()` until forge-go
+  QG9; the migrations were edited before any release, and a database that
+  applied the earlier text still verifies.) When an application migration
+  fails on an older server with
   `function uuidv7() does not exist` (SQLSTATE 42883), the error adds the
   server version and the two ways out: PostgreSQL 18, or a `uuidv7()`
   function defined by an earlier migration. The failed migration is rolled

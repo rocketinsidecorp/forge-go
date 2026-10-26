@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -44,7 +45,6 @@ func TestFrameworkMigrationOwnership(t *testing.T) {
 func TestRollbackKeepsIdentityTables(t *testing.T) {
 	t.Parallel()
 	db, cfg := postgrestest.NewWithConfig(t)
-	postgrestest.RequireUUIDv7(t, db) // the identity migrations use DEFAULT uuidv7()
 	lookup := func(key string) (string, bool) {
 		switch key {
 		case "FORGE_ENV":
@@ -79,5 +79,59 @@ func TestRollbackKeepsIdentityTables(t *testing.T) {
 	var users bool
 	if err := db.QueryRow(context.Background(), "SELECT to_regclass('forge_users') IS NOT NULL").Scan(&users); err != nil || !users {
 		t.Fatalf("identity table forge_users after rollback: %v %v", users, err)
+	}
+}
+
+// The identity migrations dropped DEFAULT uuidv7() before any release, so
+// they apply on PostgreSQL 16 and 17. A database that applied the earlier
+// text (recorded under its checksum) still migrates and reports every
+// migration applied; any other checksum is still a modified migration.
+func TestIdentityMigrationsAppliedWithTheUUIDv7DefaultsStillVerify(t *testing.T) {
+	t.Parallel()
+	db, cfg := postgrestest.NewWithConfig(t)
+	ctx := context.Background()
+	loaded, err := migrate.LoadMigrationSets(authpostgres.Migrations())
+	if err != nil {
+		t.Fatal(err)
+	}
+	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m, err := postgres.NewMigrator(cfg, loaded, discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Close() }()
+	if _, err := m.Up(ctx); err != nil {
+		t.Fatalf("the identity migrations on this server: %v", err)
+	}
+	var defaults int
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM information_schema.columns WHERE table_name LIKE 'forge\\_%' AND column_name = 'id' AND column_default IS NOT NULL").Scan(&defaults); err != nil {
+		t.Fatal(err)
+	}
+	if defaults != 0 {
+		t.Fatalf("%d forge_ id columns still have a database default; IDs come from the application", defaults)
+	}
+	record := func(checksum string) {
+		t.Helper()
+		if _, err := db.Exec(ctx, "UPDATE "+migrate.Table+" SET checksum = $1 WHERE version = 20260927090000", checksum); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// What a database migrated before the change recorded.
+	record("97b2e99f3157ead576f950a2dbb031e3d7df41d559afd884fe9e69023481efde")
+	if _, err := m.Up(ctx); err != nil {
+		t.Fatalf("a database that applied the earlier identity migration: %v", err)
+	}
+	statuses, err := m.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range statuses {
+		if status.State != migrate.StateApplied {
+			t.Errorf("%d_%s is %s, want applied", status.Version, status.Name, status.State)
+		}
+	}
+	record(strings.Repeat("0", 64))
+	if _, err := m.Up(ctx); err == nil || !strings.Contains(err.Error(), "was modified after it was applied") {
+		t.Fatalf("a checksum Forge never shipped: err = %v, want the modified-migration refusal", err)
 	}
 }

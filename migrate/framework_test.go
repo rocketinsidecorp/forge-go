@@ -117,3 +117,50 @@ func TestFrameworkMigrationOnlyErrorNamesTheWayOut(t *testing.T) {
 		}
 	}
 }
+
+// Superseded checksums are accepted only for the framework migration they
+// belong to, recorded under its own name, and never equal the shipped
+// script's: an entry for a migration whose text did not change, or one
+// outside the registry, is a mistake.
+func TestSupersededChecksumsBelongToShippedFrameworkMigrations(t *testing.T) {
+	t.Parallel()
+	shipped, err := LoadMigrations(os.DirFS("../auth/postgres/migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byVersion := map[int64]Migration{}
+	for _, migration := range shipped {
+		byVersion[migration.Version] = migration
+	}
+	for version, checksums := range supersededChecksums {
+		framework, ok := frameworkMigration(version)
+		if !ok {
+			t.Errorf("%d has superseded checksums but is no framework migration", version)
+			continue
+		}
+		migration, ok := byVersion[version]
+		if !ok {
+			t.Errorf("%d_%s is not shipped by auth/postgres", version, framework.Name)
+			continue
+		}
+		for _, checksum := range checksums {
+			if checksum == migration.Checksum {
+				t.Errorf("%d_%s lists its current checksum as superseded", version, framework.Name)
+			}
+			if !checksumMatches(migration, framework.Name, checksum) {
+				t.Errorf("%d_%s: the superseded checksum is not accepted", version, framework.Name)
+			}
+			if checksumMatches(migration, "renamed", checksum) {
+				t.Errorf("%d_%s: a row recorded under another name is accepted", version, framework.Name)
+			}
+			application := migration
+			application.Version = 20990101000000
+			if checksumMatches(application, framework.Name, checksum) {
+				t.Errorf("%d_%s: the checksum is accepted for an application migration", version, framework.Name)
+			}
+		}
+		if checksumMatches(migration, framework.Name, strings.Repeat("0", 64)) {
+			t.Errorf("%d_%s accepts an arbitrary checksum", version, framework.Name)
+		}
+	}
+}
