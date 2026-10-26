@@ -202,36 +202,45 @@ func (t *Translator) matchAcceptLanguage(header string) (string, bool) {
 // Negotiate returns the locale of a request, the first of: the path prefix
 // (with PathPrefix), the query parameter (with Param), the cookie, the
 // Accept-Language header and the default locale. Values that name no
-// available locale are ignored.
+// available locale are ignored. On a request whose prefix the Middleware
+// already removed, the removed prefix (PathPrefix) is the path prefix.
 func (t *Translator) Negotiate(r *http.Request, opts NegotiationOptions) string {
-	locale, _ := t.negotiate(r, opts)
-	return locale
-}
-
-// negotiate also returns the path prefix to remove, if any.
-func (t *Translator) negotiate(r *http.Request, opts NegotiationOptions) (string, string) {
 	if opts.PathPrefix {
-		segment, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
-		if locale, ok := t.exact(segment); ok {
-			return locale, "/" + segment
+		if locale, ok := t.prefixLocale(r); ok {
+			return locale
 		}
 	}
 	if opts.Param != "" {
 		if value := r.URL.Query().Get(opts.Param); value != "" {
 			if locale, ok := t.match(value); ok {
-				return locale, ""
+				return locale
 			}
 		}
 	}
 	if cookie, err := r.Cookie(cookieName(opts)); err == nil {
 		if locale, ok := t.match(cookie.Value); ok {
-			return locale, ""
+			return locale
 		}
 	}
 	if locale, ok := t.matchAcceptLanguage(r.Header.Get("Accept-Language")); ok {
-		return locale, ""
+		return locale
 	}
-	return t.defaultLocale, ""
+	return t.defaultLocale
+}
+
+// prefixLocale returns the locale of the path prefix: the one a Middleware
+// removed, or, for a request no Middleware rewrote, the first path segment.
+func (t *Translator) prefixLocale(r *http.Request) (string, bool) {
+	if prefixChecked(r.Context()) {
+		return t.exact(strings.TrimPrefix(PathPrefix(r.Context()), "/"))
+	}
+	return t.exact(firstSegment(r))
+}
+
+// firstSegment returns the first segment of the decoded request path.
+func firstSegment(r *http.Request) string {
+	segment, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	return segment
 }
 
 func cookieName(opts NegotiationOptions) string {
@@ -243,10 +252,23 @@ func cookieName(opts NegotiationOptions) string {
 
 // Middleware negotiates each request's locale (see Negotiate) and stores it
 // with the translator in the request context for T, the views' t helper and
-// the formatting functions. Install it before routing (forge.App.Use) so a
-// path prefix is removed in time. It sets no response headers: responses
-// that do not depend on the language (digested assets, JSON) stay cacheable;
-// translated responses call SetHeaders (the views renderer does).
+// the formatting functions. Install it before routing (forge.App.Use). It
+// sets no response headers: responses that do not depend on the language
+// (digested assets, JSON) stay cacheable; translated responses call
+// SetHeaders (the views renderer does).
+//
+// With PathPrefix, the locale segment is removed from the request path once
+// per request (PathPrefix gives it back). The handler the middleware returns
+// is an httpserver.Rewriter: in a forge.App, or a server built by
+// httpserver, the segment is removed before the first application
+// middleware runs, wherever this middleware is registered (App.Use,
+// forge.WithHTTPMiddleware), so a path guard registered before it sees
+// /admin for /pt-BR/admin, the path the router serves. Elsewhere (a plain
+// net/http server, or this middleware wrapped inside another one) it is
+// removed when this middleware runs, so only what runs after it sees the
+// stripped path. Register it directly: wrapped inside another middleware,
+// Forge cannot see it as an httpserver.Rewriter, and path guards outside it
+// see the prefix.
 func (t *Translator) Middleware(opts NegotiationOptions) (func(http.Handler) http.Handler, error) {
 	if opts.Param != "" && !argumentName(opts.Param) {
 		return nil, fmt.Errorf("i18n: invalid locale parameter name %q", truncate(opts.Param))
@@ -258,21 +280,55 @@ func (t *Translator) Middleware(opts NegotiationOptions) (func(http.Handler) htt
 		if next == nil {
 			panic("i18n: Middleware needs a next handler")
 		}
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			locale, prefix := t.negotiate(r, opts)
-			r = r.WithContext(NewContext(r.Context(), t, locale))
-			if prefix != "" {
-				r = stripPrefix(r, prefix)
-				// The locale's canonical name, not the request's spelling
-				// of it ("/PT-br" is stored as "/pt-BR").
-				r = r.WithContext(context.WithValue(r.Context(), prefixKey{}, "/"+locale))
-			}
-			next.ServeHTTP(w, r)
-		})
+		return &negotiation{translator: t, opts: opts, next: next}
 	}, nil
 }
 
-type prefixKey struct{}
+// negotiation is the handler of Middleware.
+type negotiation struct {
+	translator *Translator
+	opts       NegotiationOptions
+	next       http.Handler
+}
+
+// RewriteRequest removes the locale path prefix (with PathPrefix), unless
+// a Middleware already looked for one on this request: the prefix is
+// removed at most once, so /pt-BR/en/admin is routed as /en/admin. It
+// implements httpserver.Rewriter.
+func (n *negotiation) RewriteRequest(r *http.Request) *http.Request {
+	if !n.opts.PathPrefix || prefixChecked(r.Context()) {
+		return r
+	}
+	r = r.WithContext(context.WithValue(r.Context(), checkedKey{}, true))
+	segment := firstSegment(r)
+	locale, ok := n.translator.exact(segment)
+	if !ok {
+		return r
+	}
+	r = stripPrefix(r, "/"+segment)
+	// The locale's canonical name, not the request's spelling of it
+	// ("/PT-br" is stored as "/pt-BR").
+	return r.WithContext(context.WithValue(r.Context(), prefixKey{}, "/"+locale))
+}
+
+func (n *negotiation) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// A no-op when the server already applied the rewrite.
+	r = n.RewriteRequest(r)
+	locale := n.translator.Negotiate(r, n.opts)
+	n.next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), n.translator, locale)))
+}
+
+type (
+	prefixKey  struct{}
+	checkedKey struct{}
+)
+
+// prefixChecked reports whether a Middleware with PathPrefix already looked
+// for a locale path prefix on the request of ctx.
+func prefixChecked(ctx context.Context) bool {
+	checked, _ := ctx.Value(checkedKey{}).(bool)
+	return checked
+}
 
 // PathPrefix returns the locale path segment the Middleware removed from the
 // request ("/pt-BR"), or "" when the request had none (or ctx did not pass

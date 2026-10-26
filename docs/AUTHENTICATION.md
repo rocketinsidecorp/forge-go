@@ -340,8 +340,8 @@ guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
 Authenticated responses are marked `Cache-Control: no-store` (a handler may
 still set its own value). A request without a valid session that prefers HTML
 (`web.PrefersHTML`) is answered `303 /session/new?return_to=%2Freports` (GET and HEAD keep the
-path; other methods go to the sign-in page without one; behind the i18n
-middleware with `PathPrefix`, the locale prefix is kept:
+path; other methods go to the sign-in page without one; with the i18n
+middleware's `PathPrefix`, wherever it is registered, the locale prefix is kept:
 `return_to=%2Fpt-BR%2Freports`). JSON and API
 clients keep the `401`. `auth.ReturnPath(candidate, fallback)` accepts only
 local paths (`web.IsLocalPath`: no scheme, host, `//` or `/\` prefix,

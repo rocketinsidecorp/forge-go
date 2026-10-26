@@ -67,10 +67,11 @@ type App struct {
 	closed        bool
 
 	// middlewareMu guards middlewares and serving's transition to true;
-	// chain is the composed handler the server dispatches to.
+	// chain is the composed handler the server dispatches to, with the
+	// request rewrites of its middleware.
 	middlewareMu sync.Mutex
 	middlewares  []httpserver.Middleware
-	chain        atomic.Pointer[http.Handler]
+	chain        atomic.Pointer[pipeline]
 	serving      atomic.Bool
 
 	// apiMu guards the OpenAPI info and the document served at
@@ -79,6 +80,14 @@ type App struct {
 	apiInfo    openapi.Info
 	apiServed  *openapi.Document
 	apiHandler http.Handler
+}
+
+// pipeline is the handler built from the middleware added with Use and the
+// routes, and the RewriteRequest methods of the httpserver.Rewriter handlers
+// those middleware returned, in registration order.
+type pipeline struct {
+	handler  http.Handler
+	rewrites []httpserver.Rewriter
 }
 
 // ShutdownHook releases a resource, such as a database pool, after the HTTP
@@ -141,8 +150,7 @@ func (a *App) build(settings options) error {
 	if err := a.registerHealthRoutes(); err != nil {
 		return err
 	}
-	var routes http.Handler = a.router
-	a.chain.Store(&routes)
+	a.chain.Store(&pipeline{handler: a.router})
 	instrument, err := a.telemetry.ServerMiddleware()
 	if err != nil {
 		return err
@@ -150,6 +158,7 @@ func (a *App) build(settings options) error {
 	server, err := httpserver.NewWithOptions(a.config, http.HandlerFunc(a.dispatch), a.logger, httpserver.Options{
 		Instrument:  instrument,
 		Middlewares: settings.httpMiddlewares,
+		Rewrite:     a.rewrite,
 	})
 	if err != nil {
 		return err
@@ -188,6 +197,10 @@ func WithTelemetry(t *telemetry.Telemetry) Option {
 }
 
 // WithHTTPMiddleware adds middleware to the application's HTTP handler chain.
+// Request rewrites of middleware added here or with App.Use (see
+// httpserver.Rewriter, such as the locale path prefix of
+// i18n.Translator.Middleware) are applied before the first of these
+// middleware runs, so they see the path the router uses.
 // Options are applied in declaration order, outermost first among custom
 // middleware. Forge's request ID and security headers remain outermost; body
 // limits and panic recovery still protect the custom middleware chain.
@@ -257,8 +270,13 @@ func (a *App) Close(ctx context.Context) error {
 // outermost). Configure uses it to install request-wide behavior that must
 // see the request before a route is chosen, such as web.MethodOverride,
 // csrf.Protection.Handler and web.Flash. The chain is rebuilt on every call,
-// so a middleware constructor may run more than once. After the first
-// request has been served, Use returns an error wrapping router.ErrFrozen.
+// so a middleware constructor may run more than once. A middleware whose
+// handler is an httpserver.Rewriter (i18n.Translator.Middleware with
+// PathPrefix) has its request rewrite applied before every middleware,
+// including those given to WithHTTPMiddleware and those added with Use
+// before it, so a path guard anywhere in the chain sees the path the router
+// uses. After the first request has reached the application middleware, Use
+// returns an error wrapping router.ErrFrozen.
 func (a *App) Use(middleware httpserver.Middleware) error {
 	if middleware == nil {
 		return errors.New("HTTP middleware is required")
@@ -270,17 +288,26 @@ func (a *App) Use(middleware httpserver.Middleware) error {
 	}
 	middlewares := append(slices.Clone(a.middlewares), middleware)
 	var handler http.Handler = a.router
+	var rewrites []httpserver.Rewriter
 	for _, current := range slices.Backward(middlewares) {
 		if handler = current(handler); handler == nil {
 			return errors.New("HTTP middleware returned a nil handler")
 		}
+		if rewriter, ok := handler.(httpserver.Rewriter); ok {
+			rewrites = append(rewrites, rewriter)
+		}
 	}
+	slices.Reverse(rewrites)
 	a.middlewares = middlewares
-	a.chain.Store(&handler)
+	a.chain.Store(&pipeline{handler: handler, rewrites: rewrites})
 	return nil
 }
 
-func (a *App) dispatch(w http.ResponseWriter, r *http.Request) {
+// rewrite runs before the middleware given to WithHTTPMiddleware: it freezes
+// the middleware and routes on the first request, then applies the request
+// rewrites of the middleware added with Use, which therefore always match
+// the handler dispatch serves.
+func (a *App) rewrite(r *http.Request) *http.Request {
 	if !a.serving.Load() {
 		a.middlewareMu.Lock()
 		if !a.serving.Load() {
@@ -289,7 +316,14 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request) {
 		}
 		a.middlewareMu.Unlock()
 	}
-	(*a.chain.Load()).ServeHTTP(w, r)
+	for _, rewriter := range a.chain.Load().rewrites {
+		r = rewriter.RewriteRequest(r)
+	}
+	return r
+}
+
+func (a *App) dispatch(w http.ResponseWriter, r *http.Request) {
+	a.chain.Load().handler.ServeHTTP(w, r)
 }
 
 // mountOpenAPI registers GET OpenAPIPath just before the first request, when

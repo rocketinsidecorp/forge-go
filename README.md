@@ -435,6 +435,20 @@ forge i18n check                                    # nothing missing: translate
 FORGE_I18N_DEFAULT_LOCALE=en forge dev              # change the default without a rebuild
 ```
 
+To let the URL choose the locale, set `PathPrefix` where
+`useBrowserPipeline` (`app/bootstrap/bootstrap.go`) builds the middleware:
+`translator.Middleware(i18n.NegotiationOptions{PathPrefix: true})`.
+
+```sh
+curl http://127.0.0.1:8080/en/      # Welcome to shop: GET / in English, whatever Accept-Language says
+curl http://127.0.0.1:8080/pt-BR/   # Bem-vindo ao shop
+```
+
+The locale segment is removed before any application middleware runs
+(request IDs, telemetry and the panic log see the original path), so a path
+guard sees `/admin` for `/pt-BR/admin` wherever it is registered (`App.Use`
+or `forge.WithHTTPMiddleware`, before or after the i18n middleware).
+
 In templates: `{{t "posts.index.title"}}`, `{{t "users.inbox" "count" .Unread}}`
 (CLDR plural forms), `{{l .CreatedAt "short"}}`, `{{number .Total 2}}`,
 `<html lang="{{locale}}">`; in Go: `i18n.T(r.Context(), "posts.flash.created")`.

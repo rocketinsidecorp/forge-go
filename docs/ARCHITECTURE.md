@@ -295,7 +295,9 @@ translation helpers read the translator and locale that
 key each, merged, duplicates refused) from an `fs.FS`; the `Translator` is
 immutable. `Middleware` negotiates the locale (opt-in path prefix and query
 parameter, cookie, `Accept-Language`, default) and stores translator and
-locale in the context for `i18n.T` and the view helpers. Plural rules are
+locale in the context for `i18n.T` and the view helpers; its handler is an
+`httpserver.Rewriter`, so the server removes a locale path prefix before the
+first application middleware runs. Plural rules are
 CLDR 46 cardinal rules in code. Missing keys are visible in development and
 test and fall back to the default locale in production
 ([ADR 0042](adr/0042-internationalization.md)).
