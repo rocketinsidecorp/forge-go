@@ -128,9 +128,20 @@ func TestTelemetryValidation(t *testing.T) {
 			t.Fatalf("HTTP and metrics both on %s rejected: %v", address, err)
 		}
 	}
-	reused := map[string]string{"FORGE_HTTP_ADDR": "127.0.0.1:9464", "FORGE_TELEMETRY_METRICS_ADDR": "127.0.0.1:9464"}
-	if _, err := LoadWithLookup(lookupFrom(reused)); err == nil || !strings.Contains(err.Error(), "must differ from FORGE_HTTP_ADDR") {
-		t.Fatalf("the same fixed port was accepted: %v", err)
+	for _, pair := range [][2]string{
+		{"127.0.0.1:9464", "127.0.0.1:9464"},
+		{"0.0.0.0:9464", "127.0.0.1:9464"},
+		{":9464", "localhost:9464"},
+		{"127.0.0.1:9464", "[::]:9464"},
+	} {
+		reused := map[string]string{"FORGE_HTTP_ADDR": pair[0], "FORGE_TELEMETRY_METRICS_ADDR": pair[1]}
+		if _, err := LoadWithLookup(lookupFrom(reused)); err == nil || !strings.Contains(err.Error(), "must differ from FORGE_HTTP_ADDR") {
+			t.Fatalf("HTTP %s and metrics %s were accepted: %v", pair[0], pair[1], err)
+		}
+	}
+	separate := map[string]string{"FORGE_HTTP_ADDR": "127.0.0.1:9464", "FORGE_TELEMETRY_METRICS_ADDR": "127.0.0.2:9464"}
+	if _, err := LoadWithLookup(lookupFrom(separate)); err != nil {
+		t.Fatalf("different explicit hosts on one port rejected: %v", err)
 	}
 	public := merge(prodMetrics, map[string]string{"FORGE_TELEMETRY_METRICS_ADDR": "0.0.0.0:9464", "FORGE_TELEMETRY_METRICS_PUBLIC": "true"})
 	if _, err := LoadWithLookup(lookupFrom(public)); err != nil {
@@ -161,4 +172,47 @@ func merge(maps ...map[string]string) map[string]string {
 		}
 	}
 	return result
+}
+
+// TestListenAddressesOverlap mirrors Forge-Rust's metrics/HTTP address rule:
+// the same non-zero port with the same host or an unspecified host on either
+// side overlaps; port 0 and different explicit hosts never do.
+func TestListenAddressesOverlap(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"127.0.0.1:8080", "127.0.0.1:8080", true},
+		{"0.0.0.0:8080", "127.0.0.1:8080", true},
+		{"127.0.0.1:8080", "0.0.0.0:8080", true},
+		{":8080", "localhost:8080", true},
+		{"localhost:8080", ":8080", true},
+		{"[::]:8080", "127.0.0.1:8080", true},
+		{"[::]:8080", "[::1]:8080", true},
+		{"[::]:8080", "0.0.0.0:8080", true},
+		{"0.0.0.0:8080", "0.0.0.0:8080", true},
+		{"[::1]:8080", "[0:0:0:0:0:0:0:1]:8080", true},
+		{"localhost:8080", "LOCALHOST:8080", true},
+		{"127.0.0.1:8080", "127.0.0.1:9464", false},
+		{"127.0.0.1:8080", "127.0.0.2:8080", false},
+		{"127.0.0.1:8080", "[::1]:8080", false},
+		{"0.0.0.0:8080", "127.0.0.1:9464", false},
+		{"127.0.0.1:0", "127.0.0.1:0", false},
+		{":0", ":0", false},
+		{"0.0.0.0:0", "127.0.0.1:0", false},
+		{"[::]:0", "[::]:0", false},
+		{"127.0.0.1:0", "127.0.0.1:8080", false},
+		{"0.0.0.0:8080", "127.0.0.1:0", false},
+		{"not an address", "not an address", true},
+		{"not an address", "127.0.0.1:8080", false},
+	}
+	for _, c := range cases {
+		if got := listenAddressesOverlap(c.a, c.b); got != c.want {
+			t.Errorf("listenAddressesOverlap(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+		if got := listenAddressesOverlap(c.b, c.a); got != c.want {
+			t.Errorf("listenAddressesOverlap(%q, %q) = %v, want %v (swapped)", c.b, c.a, got, c.want)
+		}
+	}
 }

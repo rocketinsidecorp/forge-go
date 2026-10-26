@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -174,6 +175,46 @@ func loadTelemetry(lookup func(string) (string, bool), cfg *Telemetry) error {
 	return nil
 }
 
+// listenAddressesOverlap reports whether two host:port listen addresses would
+// compete for the same socket, by Forge-Rust's rule: the same non-zero port
+// and either the same host or an unspecified host (empty, 0.0.0.0 or [::]) on
+// either side. Port 0 never overlaps, because the kernel picks distinct
+// ports; different explicit hosts on one port do not overlap. Host names are
+// not resolved. An address that is not host:port is compared as text.
+func listenAddressesOverlap(a, b string) bool {
+	hostA, portA, errA := net.SplitHostPort(a)
+	hostB, portB, errB := net.SplitHostPort(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	numberA, errA := strconv.Atoi(portA)
+	numberB, errB := strconv.Atoi(portB)
+	if errA != nil || errB != nil || numberA == 0 || numberA != numberB {
+		return false
+	}
+	return sameHost(hostA, hostB) || unspecifiedHost(hostA) || unspecifiedHost(hostB)
+}
+
+// unspecifiedHost is an empty host, 0.0.0.0 or [::]: every interface.
+func unspecifiedHost(host string) bool {
+	if host == "" {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsUnspecified()
+}
+
+// sameHost compares IP literals by value ("::1" and "0:0:0:0:0:0:0:1" are one
+// host) and names by their lower-cased text.
+func sameHost(a, b string) bool {
+	ipA, errA := netip.ParseAddr(a)
+	ipB, errB := netip.ParseAddr(b)
+	if errA == nil && errB == nil {
+		return ipA.Unmap() == ipB.Unmap()
+	}
+	return strings.EqualFold(a, b)
+}
+
 func (t Telemetry) validate(environment Environment, httpAddress string) error {
 	if !t.Enabled {
 		return nil
@@ -193,9 +234,7 @@ func (t Telemetry) validate(environment Environment, httpAddress string) error {
 		if err != nil || convErr != nil || number < 0 || number > 65535 || strings.ContainsAny(host, "/?#@") {
 			return errors.New("FORGE_TELEMETRY_METRICS_ADDR must be host:port, such as 127.0.0.1:9464")
 		}
-		// Port 0 asks the kernel for a free port, so two such addresses
-		// never collide (Forge-Rust does the same).
-		if number != 0 && t.MetricsAddress == httpAddress {
+		if listenAddressesOverlap(t.MetricsAddress, httpAddress) {
 			return errors.New("FORGE_TELEMETRY_METRICS_ADDR must differ from FORGE_HTTP_ADDR: metrics are never served on the application listener")
 		}
 		if environment == Production && !t.MetricsLoopback() && !t.MetricsPublic {
