@@ -5,7 +5,7 @@
 -- app_runtime is the role the application serves with (FORGE_DATABASE_URL):
 -- not a superuser, no BYPASSRLS, it owns nothing and has only data
 -- privileges, so the row-level security policies apply to it and it cannot
--- run DDL. app_migrator owns the database and its schema and applies the
+-- run DDL or create temporary tables. app_migrator owns the database and its schema and applies the
 -- migrations (FORGE_MIGRATION_DATABASE_URL). It may create databases and end
 -- other roles' sessions so that `forge db create`, `drop` and `reset` work
 -- against this container; a production migration role needs neither.
@@ -31,9 +31,15 @@ GRANT USAGE ON SCHEMA public TO app_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_runtime;
 
+-- nextval needs USAGE only; nothing in Forge calls setval.
 ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA public
-    GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO app_runtime;
+    GRANT USAGE, SELECT ON SEQUENCES TO app_runtime;
 
 \connect postgres
 
 CREATE DATABASE "{{.DBName}}" OWNER app_migrator;
+
+-- No temporary tables for the runtime role. Database privileges are not
+-- copied from template1: a database `forge db create` or `reset` makes
+-- later has PostgreSQL's default TEMPORARY for PUBLIC again.
+REVOKE TEMPORARY ON DATABASE "{{.DBName}}" FROM PUBLIC;

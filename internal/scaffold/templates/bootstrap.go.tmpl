@@ -43,8 +43,9 @@ import (
 {{- if .DB}}
 func Configure(ctx context.Context, app *forge.App) error {
 {{- if eq .DB.Adapter "postgres"}}
-	// In production, Open refuses a role that bypasses row-level security
-	// (a superuser or BYPASSRLS): serve as the runtime role.
+	// Outside development and test, Open refuses a role that could bypass
+	// row-level security (superuser, BYPASSRLS, CREATEROLE, a role setting):
+	// serve as the runtime role.
 	database, err := postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),
 		postgres.RequireRowSecurity(app.Config().Environment))
 {{- else}}

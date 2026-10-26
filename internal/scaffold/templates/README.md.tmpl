@@ -470,9 +470,10 @@ docker run --rm -e FORGE_ENV=production -e FORGE_DATABASE_URL=... {{.Name}} migr
 `FORGE_MIGRATION_DATABASE_URL` is the role that owns the schema; give it to
 this step only. The serving containers get `FORGE_DATABASE_URL` alone, for a
 role that is `NOSUPERUSER NOBYPASSRLS`, owns no table and holds only
-`SELECT, INSERT, UPDATE, DELETE`: in production the app refuses to start when
-that role is a superuser or has `BYPASSRLS`, because either would bypass the
-tenant isolation of row-level security. Provisioning both roles is described
+`SELECT, INSERT, UPDATE, DELETE`: in staging and production the app refuses
+to start when that role is a superuser or has `BYPASSRLS` or `CREATEROLE`, or
+when the URL makes the session act as another role, because each could
+bypass the tenant isolation of row-level security. Provisioning both roles is described
 in Forge's
 [Database roles](https://github.com/rocketinsidecorp/forge-go/blob/main/docs/DATABASE.md#database-roles-postgresql).
 {{- end}}

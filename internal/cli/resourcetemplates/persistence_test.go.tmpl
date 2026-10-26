@@ -472,6 +472,7 @@ func Test[[.Title]]RuntimeRoleCannotChangeTheSchema(t *testing.T) {
 	ctx := context.Background()
 	for _, statement := range []string{
 		`CREATE TABLE [[.Q "intruders"]] ([[.Q "id"]] uuid)`,
+		`CREATE TEMPORARY TABLE [[.Q "scratch"]] ([[.Q "id"]] uuid)`,
 		`ALTER TABLE [[.Q .Plural]] ADD COLUMN [[.Q "intruder"]] text`,
 [[- if .Tenant]]
 		`ALTER TABLE [[.Q .Plural]] DISABLE ROW LEVEL SECURITY`,

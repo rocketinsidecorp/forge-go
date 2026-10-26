@@ -71,6 +71,8 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"GRANT USAGE ON SCHEMA public TO app_runtime;",
 			"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_runtime;",
 			`CREATE DATABASE "billing_api_development" OWNER app_migrator;`,
+			"GRANT USAGE, SELECT ON SEQUENCES TO app_runtime;",
+			`REVOKE TEMPORARY ON DATABASE "billing_api_development" FROM PUBLIC;`,
 		},
 		".env.local": {"FORGE_AUTH_MFA_KEY="},
 		".gitignore": {".env.local"},

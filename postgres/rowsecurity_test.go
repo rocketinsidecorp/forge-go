@@ -121,6 +121,7 @@ func TestRuntimeRoleIsConfinedByRowLevelSecurity(t *testing.T) {
 	ctx := context.Background()
 	for _, ddl := range []string{
 		"CREATE TABLE intruder (id int)",
+		"CREATE TEMPORARY TABLE scratch (id int)",
 		"ALTER TABLE notes DISABLE ROW LEVEL SECURITY",
 		"ALTER TABLE notes NO FORCE ROW LEVEL SECURITY",
 		"DROP POLICY notes_tenant_isolation ON notes",

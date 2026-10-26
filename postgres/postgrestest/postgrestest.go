@@ -151,8 +151,8 @@ type RLS struct {
 	Migrator *postgres.DB
 	// Runtime is the role an application serves with (FORGE_DATABASE_URL):
 	// NOSUPERUSER NOBYPASSRLS, it owns nothing and holds only SELECT,
-	// INSERT, UPDATE and DELETE on the tables and USAGE, SELECT and UPDATE
-	// on the sequences the migrator creates.
+	// INSERT, UPDATE and DELETE on the tables and USAGE and SELECT on the
+	// sequences the migrator creates, and no temporary tables.
 	Runtime *postgres.DB
 	// RuntimeConfig is Runtime's configuration, for code that opens its
 	// own pool (for example the application's Configure).
@@ -210,7 +210,8 @@ func NewRLS(t testing.TB, sets ...fs.FS) *RLS {
 		"GRANT ALL ON SCHEMA public TO " + migrator,
 		"GRANT USAGE ON SCHEMA public TO " + runtime,
 		"ALTER DEFAULT PRIVILEGES FOR ROLE " + migrator + " IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO " + runtime,
-		"ALTER DEFAULT PRIVILEGES FOR ROLE " + migrator + " IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO " + runtime,
+		"ALTER DEFAULT PRIVILEGES FOR ROLE " + migrator + " IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO " + runtime,
+		"REVOKE TEMPORARY ON DATABASE " + database + " FROM PUBLIC",
 	} {
 		if _, err := admin.Exec(ctx, statement); err != nil {
 			t.Fatalf("create the migrator and runtime roles: %v", err)
