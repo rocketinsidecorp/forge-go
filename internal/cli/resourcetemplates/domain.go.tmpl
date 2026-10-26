@@ -198,7 +198,7 @@ func [[.Name]]Time(value time.Time) (time.Time, bool) {
 
 func [[.Normalizer]](value *string) (*string, error) {
 	if value == nil {
-		return value, nil
+		return nil, nil
 	}
 	trimmed := strings.TrimSpace(*value)
 	if ![[$.Name]]TextValid(trimmed, false) || utf8.RuneCountInString(trimmed) > Max[[$.Title]]StringLength {
@@ -221,7 +221,7 @@ func [[.Normalizer]](value string) (string, error) {
 
 func [[.Normalizer]](value *string) (*string, error) {
 	if value == nil {
-		return value, nil
+		return nil, nil
 	}
 	if ![[$.Name]]TextValid(*value, true) || len(*value) > Max[[$.Title]]TextBytes {
 		return nil, [[.Err]]
@@ -242,7 +242,7 @@ func [[.Normalizer]](value string) (string, error) {
 
 func [[.Normalizer]](value *time.Time) (*time.Time, error) {
 	if value == nil {
-		return value, nil
+		return nil, nil
 	}
 	normalized, ok := [[$.Name]]Time(*value)
 	if !ok {
@@ -265,7 +265,7 @@ func [[.Normalizer]](value time.Time) (time.Time, error) {
 
 func [[.Normalizer]](value *uuid.UUID) (*uuid.UUID, error) {
 	if value == nil {
-		return value, nil
+		return nil, nil
 	}
 	if value.Version() != 7 || value.Variant() != 2 {
 		return nil, [[.Err]]

@@ -99,7 +99,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("ACME cache: %w", err)
 		}
 	}
-	controlListener, err := ListenControl(*controlPath)
+	controlListener, err := ListenControl(ctx, *controlPath)
 	if err != nil {
 		return err
 	}
@@ -133,7 +133,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	plain := newHTTPServer(*httpAddr, handler, nil, *readHeaderTimeout, *idleTimeout, *maxHeaderBytes, logger)
 	servers = append([]*http.Server{plain}, servers...)
 	for _, srv := range servers {
-		tcp, err := net.Listen("tcp", srv.Addr)
+		tcp, err := (&net.ListenConfig{}).Listen(ctx, "tcp", srv.Addr)
 		if err != nil {
 			return err
 		}
@@ -157,7 +157,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	case runErr = <-errs:
 	}
 	cancel()
-	shutdownCtx, stop := context.WithTimeout(context.Background(), *shutdownTimeout)
+	shutdownCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), *shutdownTimeout)
 	defer stop()
 	for _, srv := range servers {
 		if err := srv.Shutdown(shutdownCtx); err != nil && runErr == nil {

@@ -24,7 +24,7 @@ func Parse(value string) (UUID, error) {
 	}
 	compact := value[0:8] + value[9:13] + value[14:18] + value[19:23] + value[24:36]
 	if _, err := hex.Decode(id[:], []byte(compact)); err != nil {
-		return UUID{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return UUID{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if id.Version() != 7 || id.Variant() != 2 {
 		return UUID{}, ErrInvalid

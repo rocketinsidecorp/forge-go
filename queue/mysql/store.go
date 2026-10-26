@@ -197,7 +197,7 @@ func (s *Store) ClaimBatch(ctx context.Context, request queue.ClaimRequest, limi
 				payload string
 			)
 			if err := rows.Scan(&job.ID, &job.Kind, &job.Queue, &payload, &job.Attempt, &job.MaxAttempts, &job.Priority, &job.RunAt, &job.EnqueuedAt, &job.Key); err != nil {
-				_ = rows.Close()
+				_ = rows.Close() //nolint:sqlclosecheck // rows must be closed before the next statement on this transaction connection, so the error paths close them explicitly
 				return fmt.Errorf("scan next job: %w", err)
 			}
 			job.Attempt++
@@ -263,7 +263,7 @@ func (s *Store) Recover(ctx context.Context) (int64, error) {
 		for rows.Next() {
 			var id uuid.UUID
 			if err := rows.Scan(&id); err != nil {
-				_ = rows.Close()
+				_ = rows.Close() //nolint:sqlclosecheck // rows must be closed before the next statement on this transaction connection, so the error paths close them explicitly
 				return err
 			}
 			ids = append(ids, id)

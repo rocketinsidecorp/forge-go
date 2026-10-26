@@ -151,7 +151,7 @@ func TestDecodeFormRequiresNonPointerValues(t *testing.T) {
 
 func TestDecodeFormRejectsMalformedRequests(t *testing.T) {
 	t.Parallel()
-	var formsWithBody = func(body string) *http.Request { return formRequest(body) }
+	formsWithBody := formRequest
 	tests := []struct {
 		name    string
 		request *http.Request

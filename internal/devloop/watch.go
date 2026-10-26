@@ -212,7 +212,7 @@ func scan(root string, rules Rules, maxFiles int) (map[string]fileState, error) 
 		}
 		rel, err := filepath.Rel(root, name)
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // a path that cannot be made relative is not watched; the next poll tries again
 		}
 		rel = filepath.ToSlash(rel)
 		watched, envOnly := rules.classify(rel)
@@ -221,7 +221,7 @@ func scan(root string, rules Rules, maxFiles int) (map[string]fileState, error) 
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // a file that vanished between the listing and the stat is simply not watched
 		}
 		if len(files) >= maxFiles {
 			return fmt.Errorf("%w: more than %d files under %s", ErrTooManyFiles, maxFiles, root)

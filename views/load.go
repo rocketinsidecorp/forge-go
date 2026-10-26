@@ -280,7 +280,8 @@ func parsePage(base *template.Template, funcs template.FuncMap, setup *setup, fi
 		return nil, fmt.Errorf("views: parse %s: %w", file.name, err)
 	}
 	parsed := &page{entry: entry, pristine: pristine, setup: setup}
-	return parsed, parsed.probe(file.name)
+	err = parsed.probe(file.name)
+	return parsed, err
 }
 
 // parseFragment makes a partial renderable on its own (Renderer.Fragment).
@@ -290,7 +291,8 @@ func parseFragment(base *template.Template, setup *setup, name string) (*page, e
 		return nil, fmt.Errorf("views: clone templates for %s: %w", name, err)
 	}
 	fragment := &page{entry: name, pristine: pristine, setup: setup}
-	return fragment, fragment.probe(name)
+	err = fragment.probe(name)
+	return fragment, err
 }
 
 // probe escapes a throwaway clone now: html/template escapes lazily, and a

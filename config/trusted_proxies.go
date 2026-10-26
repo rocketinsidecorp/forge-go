@@ -38,7 +38,7 @@ func ParseTrustedProxies(list string) ([]netip.Prefix, error) {
 			return nil, fmt.Errorf("invalid FORGE_HTTP_TRUSTED_PROXIES: entry %d is not an IP address or CIDR prefix such as 172.18.0.0/16", i+1)
 		}
 		if err := CheckTrustedProxy(prefix); err != nil {
-			return nil, fmt.Errorf("invalid FORGE_HTTP_TRUSTED_PROXIES: entry %d %s", i+1, err)
+			return nil, fmt.Errorf("invalid FORGE_HTTP_TRUSTED_PROXIES: entry %d %w", i+1, err)
 		}
 		prefixes = append(prefixes, prefix.Masked())
 	}

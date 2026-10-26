@@ -92,11 +92,11 @@ func TestStartReloadProxyNeedsItsAddress(t *testing.T) {
 	}
 	defer func() { _ = taken.Close() }()
 	logf := func(string, ...any) {}
-	proxy, listener, err := startReloadProxy([]string{"FORGE_ENV=development", "FORGE_HTTP_ADDR=" + taken.Addr().String()}, logf)
+	proxy, listener, err := startReloadProxy(context.Background(), []string{"FORGE_ENV=development", "FORGE_HTTP_ADDR=" + taken.Addr().String()}, logf)
 	if err == nil || proxy != nil || listener != nil || !strings.Contains(err.Error(), "listen on "+taken.Addr().String()+" (FORGE_HTTP_ADDR)") {
 		t.Errorf("an address in use: %v", err)
 	}
-	proxy, listener, err = startReloadProxy([]string{"FORGE_ENV=development", "FORGE_HTTP_ADDR=127.0.0.1:0"}, logf)
+	proxy, listener, err = startReloadProxy(context.Background(), []string{"FORGE_ENV=development", "FORGE_HTTP_ADDR=127.0.0.1:0"}, logf)
 	if err != nil || proxy == nil || listener == nil {
 		t.Fatalf("proxy %v listener %v err %v", proxy, listener, err)
 	}

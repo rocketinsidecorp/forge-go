@@ -78,7 +78,7 @@ func CommandsFromSets(migrationSets []fs.FS, open Opener) []forge.Command {
 			flags.SetOutput(env.Stderr)
 			steps := flags.Int("steps", 1, "number of application migrations to revert")
 			if err := flags.Parse(args); err != nil {
-				return fmt.Errorf("%w: %v", forge.ErrUsage, err)
+				return fmt.Errorf("%w: %w", forge.ErrUsage, err)
 			}
 			if flags.NArg() != 0 || *steps < 1 {
 				return fmt.Errorf("%w: rollback [-steps N] with N >= 1", forge.ErrUsage)

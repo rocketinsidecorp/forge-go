@@ -108,7 +108,7 @@ func devLoop(ctx context.Context, root, name string, env []string, options devOp
 	}
 	defer func() { _ = os.RemoveAll(buildDir) }()
 
-	proxy, listener, err := startReloadProxy(env, logf)
+	proxy, listener, err := startReloadProxy(ctx, env, logf)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func devLoop(ctx context.Context, root, name string, env []string, options devOp
 // that itself). The listener takes the address the application is configured
 // for, so the URL people know keeps working; the application moves to a
 // private loopback port.
-func startReloadProxy(env []string, logf func(string, ...any)) (*devloop.Proxy, net.Listener, error) {
+func startReloadProxy(ctx context.Context, env []string, logf func(string, ...any)) (*devloop.Proxy, net.Listener, error) {
 	cfg, err := config.LoadWithLookup(lookupIn(env))
 	if err != nil {
 		logf("browser reload is off: the configuration is invalid (%v); fix it and the application restarts, then restart forge dev for reload", err)
@@ -175,7 +175,7 @@ func startReloadProxy(env []string, logf func(string, ...any)) (*devloop.Proxy, 
 	if err != nil {
 		return nil, nil, err
 	}
-	listener, err := net.Listen("tcp", cfg.HTTP.Address)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.HTTP.Address)
 	if err != nil {
 		return nil, nil, fmt.Errorf("listen on %s (FORGE_HTTP_ADDR): %w", cfg.HTTP.Address, err)
 	}
@@ -224,7 +224,7 @@ func (a *devApp) build(ctx context.Context, output string) error {
 	return &devloop.BuildError{Output: strings.TrimSpace(out.String())}
 }
 
-func (a *devApp) start(_ context.Context, binary string) (devloop.Instance, error) {
+func (a *devApp) start(ctx context.Context, binary string) (devloop.Instance, error) {
 	// The environment is read again on every start, so an edited .env.local
 	// takes effect on the restart it triggers.
 	env, err := developmentEnvironment(a.root)
@@ -232,7 +232,7 @@ func (a *devApp) start(_ context.Context, binary string) (devloop.Instance, erro
 		return nil, err
 	}
 	if a.proxy != nil {
-		port, err := freeLoopbackPort()
+		port, err := freeLoopbackPort(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -306,8 +306,8 @@ func (a *devApp) observer() devloop.Observer {
 }
 
 // freeLoopbackPort returns a loopback address with a currently free port.
-func freeLoopbackPort() (string, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+func freeLoopbackPort(ctx context.Context) (string, error) {
+	l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", fmt.Errorf("find a free port: %w", err)
 	}

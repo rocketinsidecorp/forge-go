@@ -193,6 +193,7 @@ func editorEnvironment(environ []string) []string {
 // SIGHUP stop the editor so the caller can clean up.
 func runEditorProcess(editor []string, path string) error {
 	args := append(append([]string(nil), editor[1:]...), path)
+	//nolint:noctx // the editor owns the terminal: this function forwards SIGTERM/SIGHUP and leaves SIGINT to it, instead of a context kill
 	cmd := exec.Command(editor[0], args...) // #nosec G204 -- the editor is the user's own $VISUAL/$EDITOR
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = editorEnvironment(os.Environ())
@@ -238,7 +239,7 @@ func shredDir(dir string) error {
 	var firstErr error
 	walkErr := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || !entry.Type().IsRegular() {
-			return nil
+			return nil //nolint:nilerr // an unreadable entry is skipped: the walk still removes the tree, and shredDir reports the first shred failure
 		}
 		if err := shredFile(path); err != nil && firstErr == nil {
 			firstErr = err

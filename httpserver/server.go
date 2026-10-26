@@ -176,7 +176,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		return fmt.Errorf("serve HTTP: %w", err)
 	case <-ctx.Done():
-		shutdownContext, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+		shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.shutdownTimeout)
 		defer cancel()
 		if err := s.server.Shutdown(shutdownContext); err != nil {
 			// The drain deadline passed. Closing the connections cancels the
@@ -250,9 +250,9 @@ func requestID(logger *slog.Logger, next http.Handler) http.Handler {
 
 func recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
+		defer func() { //nolint:contextcheck // false positive: the deferred closure uses the request context
 			if recovered := recover(); recovered != nil {
-				if recovered == http.ErrAbortHandler {
+				if recovered == http.ErrAbortHandler { //nolint:errorlint // net/http documents this sentinel panic value as compared with ==
 					panic(recovered)
 				}
 				web.Logger(r.Context()).Error("request panic", "method", r.Method, "path", r.URL.Path, "panic", recovered, "stack", string(debug.Stack()))

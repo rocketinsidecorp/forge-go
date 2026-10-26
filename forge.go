@@ -499,7 +499,7 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 	var runErr error
-	stopMetrics, err := a.serveMetrics()
+	stopMetrics, err := a.serveMetrics(ctx)
 	if err == nil {
 		runErr = errors.Join(a.server.Run(ctx), stopMetrics())
 	} else {
@@ -563,7 +563,7 @@ const (
 // is separate from the application's so metrics are never reachable through
 // the public router; it serves GET /metrics only, over plain HTTP, without
 // authentication, and must be bound to a private interface.
-func (a *App) serveMetrics() (func() error, error) {
+func (a *App) serveMetrics(ctx context.Context) (func() error, error) {
 	address := a.config.Telemetry.MetricsAddress
 	if a.telemetry == nil || address == "" {
 		return func() error { return nil }, nil
@@ -571,7 +571,7 @@ func (a *App) serveMetrics() (func() error, error) {
 	if !a.config.Telemetry.MetricsLoopback() && !a.config.Telemetry.MetricsPublic {
 		a.logger.Warn("the metrics listener has no authentication and is not bound to loopback; keep its port off public networks and set FORGE_TELEMETRY_METRICS_PUBLIC=true to confirm (production refuses to start otherwise)", "address", address)
 	}
-	listener, err := net.Listen("tcp", address)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("listen for metrics: %w", err)
 	}
@@ -595,9 +595,10 @@ func (a *App) serveMetrics() (func() error, error) {
 	}()
 	a.logger.Info("serving metrics", "address", listener.Addr().String(), "path", metricsPath)
 	return func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), metricsShutdownTimeout)
+		// Called after ctx has ended: keep its values, not its cancellation.
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), metricsShutdownTimeout)
 		defer cancel()
-		shutdownErr := server.Shutdown(ctx)
+		shutdownErr := server.Shutdown(shutdownCtx)
 		if shutdownErr != nil {
 			shutdownErr = errors.Join(fmt.Errorf("shutdown metrics listener: %w", shutdownErr), server.Close())
 		}

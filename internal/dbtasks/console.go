@@ -123,6 +123,7 @@ func (t *Target) mysqlFlavor(toolName string) string {
 	if err != nil {
 		return "mysql"
 	}
+	//nolint:noctx // a one-shot --version query deep in a call chain that has no context; it never waits on the network
 	out, err := exec.Command(path, "--version").Output() // #nosec G204 -- a vendor tool found on PATH
 	if err == nil && strings.Contains(strings.ToLower(string(out)), "mariadb") {
 		return "mariadb"

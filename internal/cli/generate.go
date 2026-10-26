@@ -62,10 +62,10 @@ func revendor(ctx context.Context, root string, args []string, stdout, stderr io
 		return nil
 	}
 	if info, err := os.Stat(filepath.Join(root, "vendor")); err != nil || !info.IsDir() {
-		return nil
+		return nil //nolint:nilerr // no vendor/ directory (or not a directory) means there is nothing to re-vendor
 	}
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
-		return nil
+		return nil //nolint:nilerr // no go.mod means there is nothing to re-vendor
 	}
 	if _, err := fmt.Fprintln(stdout, "  run     go mod vendor"); err != nil {
 		return err

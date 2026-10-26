@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
@@ -589,7 +590,7 @@ func wireParts(t *testing.T, dir string, partsList []resourceWiringParts) {
 		if block == "" {
 			return
 		}
-		if match := declaredName.FindStringSubmatch(block); match != nil && regexp.MustCompile(`(?m)^\t`+regexp.QuoteMeta(match[1])+`(, err)? := `).MatchString(guard) {
+		if match := declaredName.FindStringSubmatch(block); len(match) > 1 && regexp.MustCompile(`(?m)^\t`+regexp.QuoteMeta(match[1])+`(, err)? := `).MatchString(guard) {
 			return
 		}
 		guard += "\n" + block
@@ -687,12 +688,8 @@ func main() {
 	done := make(chan error, 1)
 	go func() { done <- runApp(ctx, root, "sig", nil, os.Environ(), output, output) }()
 
-	deadline := time.Now().Add(60 * time.Second)
-	for !strings.Contains(output.String(), "ready") {
-		if time.Now().After(deadline) {
-			t.Fatalf("application never started: %s", output.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !waittest.Poll(60*time.Second, func() bool { return strings.Contains(output.String(), "ready") }) {
+		t.Fatalf("application never started: %s", output.String())
 	}
 	cancel()
 	select {

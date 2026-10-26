@@ -34,6 +34,7 @@ type Process struct {
 // The goroutine waiting for it ends when the process exits, which Stop and
 // the caller's shutdown guarantee.
 func StartProcess(binary string, args []string, dir string, env []string, stdout, stderr io.Writer) (*Process, error) {
+	//nolint:noctx // the process lifetime is owned by Process.Stop (graceful interrupt, then kill), not by a context
 	cmd := exec.Command(binary, args...) // #nosec G204 -- the binary forge built from the application's own source
 	cmd.Dir = dir
 	cmd.Env = env

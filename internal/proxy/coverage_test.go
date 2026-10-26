@@ -19,6 +19,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 // shortDir returns a temporary directory with a path short enough for a Unix
@@ -170,7 +172,7 @@ func TestListenControlReplacesAStaleSocketAndRefusesBadPaths(t *testing.T) {
 	if _, err := os.Lstat(path); err != nil {
 		t.Fatalf("the stale socket is gone: %v", err)
 	}
-	listener, err := ListenControl(path)
+	listener, err := ListenControl(context.Background(), path)
 	if err != nil {
 		t.Fatalf("a stale socket must be replaced: %v", err)
 	}
@@ -180,11 +182,11 @@ func TestListenControlReplacesAStaleSocketAndRefusesBadPaths(t *testing.T) {
 	if err := os.WriteFile(notADir, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ListenControl(filepath.Join(notADir, "c.sock")); err == nil || !strings.Contains(err.Error(), "control directory: create") {
+	if _, err := ListenControl(context.Background(), filepath.Join(notADir, "c.sock")); err == nil || !strings.Contains(err.Error(), "control directory: create") {
 		t.Errorf("a directory that cannot be created: %v", err)
 	}
 	tooLong := filepath.Join(dir, strings.Repeat("d", 120), "c.sock")
-	if _, err := ListenControl(tooLong); err == nil || !strings.Contains(err.Error(), "listen on control socket") {
+	if _, err := ListenControl(context.Background(), tooLong); err == nil || !strings.Contains(err.Error(), "listen on control socket") {
 		t.Errorf("a path longer than a socket address allows: %v", err)
 	}
 }
@@ -215,7 +217,7 @@ func TestServeControlReturnsAnAcceptFailure(t *testing.T) {
 func serveControlOn(t *testing.T, srv *Server) (string, context.Context) {
 	t.Helper()
 	socket := filepath.Join(shortDir(t), "c.sock")
-	listener, err := ListenControl(socket)
+	listener, err := ListenControl(context.Background(), socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,16 +539,10 @@ func (b *syncBuffer) String() string {
 
 func waitForControl(t *testing.T, ctx context.Context, socket string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if response, err := Call(ctx, socket, ControlRequest{Op: "status"}); err == nil && response.OK {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the proxy did not start")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waittest.Until(t, 10*time.Second, "the proxy to start", func() bool {
+		response, err := Call(ctx, socket, ControlRequest{Op: "status"})
+		return err == nil && response.OK
+	})
 }
 
 // --- forwarding ---

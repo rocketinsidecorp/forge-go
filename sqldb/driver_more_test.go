@@ -195,7 +195,8 @@ func TestInstrumentedConnWithoutOptionalInterfacesBehavesLikeDatabaseSQL(t *test
 	if _, err := execer.ExecContext(context.Background(), named); err == nil {
 		t.Error("named parameters reached a driver that cannot take them (Exec)")
 	}
-	if _, err := queryer.QueryContext(context.Background(), named); err == nil {
+	if rows, err := queryer.QueryContext(context.Background(), named); err == nil {
+		_ = rows.Close()
 		t.Error("named parameters reached a driver that cannot take them (Query)")
 	}
 	// A canceled context stops the statement before it reaches the driver.
@@ -205,8 +206,10 @@ func TestInstrumentedConnWithoutOptionalInterfacesBehavesLikeDatabaseSQL(t *test
 	if _, err := execer.ExecContext(canceled, nil); !errors.Is(err, context.Canceled) {
 		t.Errorf("canceled Exec = %v", err)
 	}
-	if _, err := queryer.QueryContext(canceled, nil); !errors.Is(err, context.Canceled) {
+	if rows, err := queryer.QueryContext(canceled, nil); !errors.Is(err, context.Canceled) {
 		t.Errorf("canceled Query = %v", err)
+	} else if rows != nil {
+		_ = rows.Close()
 	}
 	if len(base.stmt.execs) != before {
 		t.Error("a canceled statement reached the driver")
@@ -220,8 +223,10 @@ func TestInstrumentedConnWithoutOptionalInterfacesBehavesLikeDatabaseSQL(t *test
 	if _, err := conn.(driver.ExecerContext).ExecContext(context.Background(), "UPDATE t SET a = 1", nil); !errors.Is(err, driver.ErrSkip) {
 		t.Errorf("ExecContext = %v, want ErrSkip", err)
 	}
-	if _, err := conn.(driver.QueryerContext).QueryContext(context.Background(), "SELECT 1", nil); !errors.Is(err, driver.ErrSkip) {
+	if rows, err := conn.(driver.QueryerContext).QueryContext(context.Background(), "SELECT 1", nil); !errors.Is(err, driver.ErrSkip) {
 		t.Errorf("QueryContext = %v, want ErrSkip", err)
+	} else if rows != nil {
+		_ = rows.Close()
 	}
 	// Optional connection interfaces fall back to their defaults.
 	if err := conn.(driver.Pinger).Ping(context.Background()); err != nil {

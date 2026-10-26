@@ -99,11 +99,12 @@ func TestGenerateRemovesWhatItCreatedWhenAWriteFails(t *testing.T) {
 		o := opts
 		o.Dir = dir
 		_, err := Generate(o)
-		if err == nil {
+		switch {
+		case err == nil:
 			t.Errorf("%s: the generation succeeded with a %d byte directory", phase.name, len(dir))
-		} else if !errors.Is(err, syscall.ENAMETOOLONG) {
+		case !errors.Is(err, syscall.ENAMETOOLONG):
 			t.Errorf("%s: err = %v, want the path to be too long", phase.name, err)
-		} else if phase.want != "" && !strings.Contains(err.Error(), phase.want) {
+		case phase.want != "" && !strings.Contains(err.Error(), phase.want):
 			t.Errorf("%s: err = %v, want it to mention %q", phase.name, err, phase.want)
 		}
 		if _, statErr := os.Stat(dir); statErr == nil {

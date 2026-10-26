@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 func TestLimitListenerAdmitsBeforeAcceptAndFreesSlotsOnClose(t *testing.T) {
@@ -85,7 +87,7 @@ func TestLimitListenerCloseWakesAWaitingAccept(t *testing.T) {
 	}
 	result := make(chan error, 1)
 	go func() { _, err := listener.Accept(); result <- err }()
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // real-clock: a second Accept must be blocked inside the listener before it is closed
 	_ = listener.Close()
 	select {
 	case err := <-result:
@@ -141,16 +143,14 @@ func TestRunAppliesHeaderAndConnectionLimits(t *testing.T) {
 		done <- Main(ctx, []string{"run", "-http-addr", addr, "-https-addr", "", "-control", socket, "-state", "",
 			"-max-header-bytes", "4096", "-max-connections", "1"}, &stdout, &stderr)
 	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if conn, err := net.Dial("tcp", addr); err == nil {
+	if !waittest.Poll(5*time.Second, func() bool {
+		conn, err := net.Dial("tcp", addr)
+		if err == nil {
 			_ = conn.Close()
-			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("proxy did not start: %s", stderr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
+		return err == nil
+	}) {
+		t.Fatalf("proxy did not start: %s", stderr.String())
 	}
 
 	request := func(header string) string {
