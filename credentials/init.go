@@ -1,7 +1,6 @@
 package credentials
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -48,11 +47,12 @@ func Init(dir, env string) ([]string, error) {
 	case err != nil:
 		return nil, err
 	}
-	doc, err := skeleton()
+	material, err := encryption.GenerateKey()
 	if err != nil {
 		return created, err
 	}
-	sealed, err := Seal(env, doc, keys[0])
+	sealed, err := Seal(env, skeleton(material), keys[0])
+	clear(material)
 	if err != nil {
 		return created, err
 	}
@@ -65,19 +65,8 @@ func Init(dir, env string) ([]string, error) {
 	return append(created, filepath.Join(dir, FileName(env))), nil
 }
 
-func skeleton() ([]byte, error) {
-	material, err := encryption.GenerateKey()
-	if err != nil {
-		return nil, err
-	}
-	defer clear(material)
-	doc := map[string]any{"encryption": map[string]any{
-		"active": "k1",
-		"keys":   map[string]string{"k1": encryption.EncodeKey(material)},
-	}}
-	out, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(out, '\n'), nil
+// skeleton is the document Init seals: a key ring whose only key, "k1", is
+// material. The key is base64url text, which needs no JSON escaping.
+func skeleton(material []byte) []byte {
+	return fmt.Appendf(nil, "{\n  \"encryption\": {\n    \"active\": \"k1\",\n    \"keys\": {\n      \"k1\": %q\n    }\n  }\n}\n", encryption.EncodeKey(material))
 }
