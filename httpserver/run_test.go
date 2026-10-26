@@ -245,6 +245,36 @@ func TestRunServesTLSWithHSTS(t *testing.T) {
 	}
 }
 
+func TestRunReleasesTheListenerWhenTheCertificateCannotBeLoaded(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	for _, name := range []string{certFile, keyFile} {
+		if err := os.WriteFile(name, []byte("not PEM"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logger, logs := newLogs()
+	cfg := config.Default()
+	cfg.HTTP.Address = anyAddress
+	cfg.HTTP.Transport = config.TransportTLS
+	cfg.HTTP.TLSCertFile, cfg.HTTP.TLSKeyFile = certFile, keyFile
+	server, err := httpserver.New(cfg, http.NotFoundHandler(), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Run(t.Context()); err == nil || !strings.Contains(err.Error(), "serve HTTP") {
+		t.Fatalf("Run with an unreadable certificate = %v", err)
+	}
+	address := listenAddress(t, logs, nil)
+	// The bound port is free again: binding it succeeds.
+	again, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("the listener of a failed run still holds %s: %v", address, err)
+	}
+	_ = again.Close()
+}
+
 func TestRunReportsAnAddressThatCannotBeServed(t *testing.T) {
 	t.Parallel()
 	taken, err := net.Listen("tcp", "127.0.0.1:0")

@@ -163,8 +163,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// report the address the kernel bound: with port 0 the configured address
 	// does not say which port was chosen.
 	address := s.server.Addr
-	if address == "" {
-		address = ":http" // what ListenAndServe uses for an empty address
+	if address == "" { // what ListenAndServe and ListenAndServeTLS use
+		address = ":http"
+		if s.transport == config.TransportTLS {
+			address = ":https"
+		}
 	}
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -173,6 +176,10 @@ func (s *Server) Run(ctx context.Context) error {
 	s.logger.Info("serving HTTP", "address", listener.Addr().String())
 	errorsChannel := make(chan error, 1)
 	go func() {
+		// Serve closes the listener when it stops, but ServeTLS returns
+		// before serving when the certificate cannot be loaded; close it then
+		// too, as ListenAndServeTLS does, so the port is not held.
+		defer func() { _ = listener.Close() }()
 		if s.transport == config.TransportTLS {
 			errorsChannel <- s.server.ServeTLS(listener, s.certFile, s.keyFile)
 		} else {
