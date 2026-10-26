@@ -281,6 +281,9 @@ func planView(root, name string) ([]generatedFile, error) {
 	if err != nil {
 		return nil, errors.New("go.mod not found: run this inside a Forge application")
 	}
+	if apiOnlyApplication(projectRoot) {
+		return nil, errors.New(apiOnlyViewRefusal)
+	}
 	module, _, _ := inspectGoMod(goMod)
 	viewPath := filepath.Join("app", "views", dir, base+".gohtml")
 	files := []generatedFile{{path: viewPath, content: generatedView}}

@@ -446,7 +446,7 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 		return resourceSpec{}, nil, errors.New("FORGE_DATABASE_URL does not select a supported database (postgres, mysql or sqlite)")
 	}
 	spec := resourceSpec{resourceRequest: request, Module: module, Database: adapter}
-	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot)
+	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot) && !apiOnlyApplication(projectRoot)
 	spec.BearerSignIn = spec.Identity && hasBearerSignIn(projectRoot)
 
 	rendered, err := renderResource(spec)
@@ -611,7 +611,10 @@ func checkPlannedFiles(projectRoot *os.Root, files []generatedFile, destroy bool
 
 // hasIdentityMigrations reports whether the application composes the Forge
 // identity migrations, which create the forge_permissions table the generated
-// migration seeds. PostgreSQL applications from `forge new` always do.
+// migration seeds. PostgreSQL applications from `forge new` always do, API-only
+// ones (`forge new --api`) included; those have no identity wiring
+// (identityRoutes, the auth middleware), so the generators also check
+// apiOnlyApplication before printing wiring that needs it.
 func hasIdentityMigrations(projectRoot *os.Root) bool {
 	entries, err := fs.ReadDir(projectRoot.FS(), "cmd")
 	if err != nil {

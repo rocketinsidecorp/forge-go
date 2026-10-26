@@ -4,9 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
 // The generators that do not take a resource command line (controller,
@@ -38,6 +41,37 @@ func openApplication(root string) (*os.Root, string, error) {
 		return nil, "", errors.New("go.mod has no module declaration")
 	}
 	return projectRoot, module, nil
+}
+
+// Refusals of the generators that write pages in an API-only application
+// (`forge new --api`), worded after Forge-Rust's: it has no views package,
+// layout, assets or browser middleware, and a generator never adds them to
+// such an application.
+const (
+	apiOnlyViewRefusal           = "this application has no views (it was created with `forge new --api`): pages need the layout, the assets and the browser middleware (CSRF, method override, flash) of a full-stack application. Create one with `forge new NAME` and move your code into it"
+	apiOnlyScaffoldRefusal       = "this application has no views (it was created with `forge new --api`). The scaffold generates server-rendered HTML pages next to its JSON API; `forge generate resource` writes the JSON API alone"
+	apiOnlyControllerRefusal     = "this application has no views (it was created with `forge new --api`): an HTML controller renders pages. Pass --api for JSON endpoints under /v1/NAME"
+	apiOnlyAuthenticationRefusal = "this application has no views (it was created with `forge new --api`). The generator adds server-rendered sign-in pages, which need the views and the browser middleware (CSRF) of a full-stack application, and the JSON authentication APIs of --api-auth sit beside them. Create one with `forge new NAME` and move your code into it"
+)
+
+// apiOnlyApplication reports whether the application was created with `forge
+// new --api`: its app/bootstrap/bootstrap.go carries scaffold.APIOnlyMarker.
+// An application without that file, or whose bootstrap.go lost the marker, is
+// treated as full-stack, so the generators may add the views base to it.
+func apiOnlyApplication(projectRoot *os.Root) bool {
+	source, err := projectRoot.ReadFile(filepath.Join("app", "bootstrap", "bootstrap.go"))
+	return err == nil && strings.Contains(string(source), scaffold.APIOnlyMarker)
+}
+
+// apiOnlyAt is apiOnlyApplication for the application in root. A root that
+// cannot be opened is not API-only: the generator reports it itself.
+func apiOnlyAt(root string) bool {
+	projectRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = projectRoot.Close() }()
+	return apiOnlyApplication(projectRoot)
 }
 
 // validateGeneratorWord checks a name that becomes a Go identifier, a file

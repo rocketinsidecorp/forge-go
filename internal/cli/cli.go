@@ -322,7 +322,8 @@ commands:
   new NAME            generate an application with Dockerfile, compose and CI;
                       --database postgresql (default), mysql, mariadb, sqlite or none;
                       --locale en (default), es or pt-BR;
-                      --api-auth also mounts the JSON sign-in APIs (PostgreSQL)
+                      --api-auth also mounts the JSON sign-in APIs (PostgreSQL);
+                      --api generates a JSON-only application (no views)
   dev [NAME] [--no-reload] [--poll-interval D]
                       run the application; rebuild, restart gracefully and
                       reload the browser when files change

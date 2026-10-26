@@ -115,6 +115,23 @@ curl -i http://127.0.0.1:8080/v1/status
 curl -i http://127.0.0.1:8080/health/ready   # includes the "database" check
 ```
 
+An API-only application, like `rails new --api`: JSON handlers with no views,
+assets, JavaScript, translations, sign-in pages or browser middleware (CSRF,
+method override, flash). Every `-d` works with it.
+
+```sh
+forge new myapi --api           # or: forge new myapi --api -d sqlite
+cd myapi
+docker compose up --build       # or, without Docker: forge migrate && forge dev
+curl -s http://127.0.0.1:8080/            # {"application":"myapi","version":"0.1.0"}
+curl -s http://127.0.0.1:8080/v1/status   # {"service":"myapi","status":"ok"}
+curl -s http://127.0.0.1:8080/health      # JSON liveness and readiness
+curl -s http://127.0.0.1:8080/openapi.json
+forge generate resource post title:string --tenant-scoped   # a JSON API under /v1/posts
+forge generate controller status_checks index --api         # read-only JSON endpoints
+forge generate scaffold post title:string --global          # refused: an --api application has no pages
+```
+
 | `--database` (`-d`) | Compose service | Adapter |
 | ------------------- | --------------- | ------- |
 | `postgresql` (default; also `postgres`, `pg`) | `postgres:18-alpine` | `postgres` |
@@ -682,7 +699,7 @@ response against the document. Details, type mapping and tags:
 
 | Command | Description |
 | ------- | ----------- |
-| `forge new NAME [--database DB] [--locale LOCALE] [--api-auth] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps \| --skip-lockfile] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. `--skip-lockfile` is Forge-Rust's name for `--skip-deps` |
+| `forge new NAME [--database DB] [--locale LOCALE] [--api-auth \| --api] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps \| --skip-lockfile] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. `--skip-lockfile` is Forge-Rust's name for `--skip-deps` |
 | `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge check` | Type-check the application: `go build ./...` then `go vet ./...` (Forge-Rust: `cargo check --all-targets`) |
@@ -751,6 +768,21 @@ Flags for `forge new`:
   login and logout, MFA completion, JSON password recovery,
   `GET /v1/auth/session`) beside the HTML sign-in pages; PostgreSQL only.
   Without it the pages are the only way to sign in.
+- `--api` generates an API-only application, like `rails new --api` and
+  Forge-Rust's `forge new --api`: `GET /` answers
+  `{"application":"NAME","version":"0.1.0"}`, `GET /v1/status`, the health
+  routes and the OpenAPI document stay, and there is no `app/views`,
+  `app/assets`, `app/javascript`, `config/locales`, `app/adapters/htmlauth`,
+  `setup` command or browser middleware (CSRF, method override, flash,
+  locale negotiation). On PostgreSQL `migrate` still applies Forge's
+  identity, audit and session schema (`authpostgres.Migrations()`), as
+  Forge-Rust's `--api` applications do, so authentication can be added
+  later without rewriting migrations. The database flags are unchanged. `--api-auth` and
+  `--locale` cannot be combined with it (usage error, exit 2), as in
+  Forge-Rust. In such an application `forge generate view`, `scaffold`,
+  `authentication` and `controller` without `--api` refuse and write
+  nothing; `resource`, `model`, `controller --api`, `mailer`, `job` and
+  `migration` work and write no view or asset.
 - `--forge-path DIR` is for framework contributors: it adds a `replace`
   directive pointing at a local checkout, then runs `go mod tidy` and
   `go mod vendor` so the Docker build context is self-contained. In such an

@@ -202,12 +202,15 @@ func planController(root string, request controllerRequest, env []string, now ti
 		return controllerSpec{}, nil, err
 	}
 	defer func() { _ = projectRoot.Close() }()
+	if !request.API && !request.Destroy && apiOnlyApplication(projectRoot) {
+		return controllerSpec{}, nil, errors.New(apiOnlyControllerRefusal)
+	}
 	adapter, err := databaseAdapter(root, env)
 	if err != nil {
 		return controllerSpec{}, nil, errors.New("environment files could not be loaded: check .env.development and .env.local syntax")
 	}
 	spec := controllerSpec{controllerRequest: request, Module: module}
-	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot)
+	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot) && !apiOnlyApplication(projectRoot)
 	spec.BearerSignIn = spec.Identity && hasBearerSignIn(projectRoot)
 	spec.NoDatabase = adapter == "none"
 	if !request.API {
@@ -357,7 +360,7 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 		parts.Guard = identityPagesGuard
 		arguments += ", protectCookie"
 	default:
-		parts.Imports = append(parts.Imports, "github.com/rocketinsidecorp/forge-go/fault")
+		parts.Imports = append(parts.Imports, "github.com/rocketinsidecorp/forge-go/fault", "github.com/rocketinsidecorp/forge-go/web")
 		parts.Guard = denyAllGuard(fmt.Sprintf("%q", spec.Name+":read"), "")
 		parts.Notes = append(parts.Notes, "This application has no Forge identity, so the guard is yours to write; the generator never opens the routes to the public (use --public to say that is what you want).")
 		arguments += ", protect"
