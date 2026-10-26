@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 func TestNormalizePostgresDumpRemovesRunToRunNoise(t *testing.T) {
@@ -90,7 +92,7 @@ case "$*" in
 esac
 `
 	path := filepath.Join(dir, "sqlite3")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil { // #nosec G306 -- test script must be executable
+	if err := exectest.Write(path, script); err != nil {
 		t.Fatal(err)
 	}
 	return func(name string) (string, error) {

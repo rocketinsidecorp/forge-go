@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // shellRunner runs each host's commands with sh in its own directory, the
@@ -311,15 +313,14 @@ func TestStaleRecoveryInterleavedRaceHasOneWinner(t *testing.T) {
 	if err != nil {
 		t.Skip("no find on PATH")
 	}
-	write("find", `#!/bin/sh
+	if err := exectest.Write(filepath.Join(shimDir, "find"), `#!/bin/sh
 if [ -n "$FORGE_SHIM_ACTIVE" ]; then
 	exec "$FORGE_REAL_FIND" "$@"
 fi
 FORGE_SHIM_ACTIVE=1 sh "$FORGE_SHIM_SCRIPT" < "$FORGE_SHIM_RECORD" >/dev/null 2>&1
 echo $? > "$FORGE_SHIM_STATUS"
 echo "$1"
-`)
-	if err := os.Chmod(filepath.Join(shimDir, "find"), 0o700); err != nil { // #nosec G302 -- test shim must be executable.
+`); err != nil {
 		t.Fatal(err)
 	}
 	runner := d.Runner.(shellRunner)

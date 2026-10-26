@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -199,40 +200,64 @@ func TestSlowClientThatKeepsReadingIsNotCutOff(t *testing.T) {
 // A tunnel whose client side is busy receiving one long write that keeps
 // progressing is not idle: the read side, waiting for client data, sees
 // that activity chunk by chunk.
+//
+// It runs on the bubble's fake clock: the client takes 100 ms per chunk
+// against a 200 ms idle timeout, a margin that real time cannot guarantee on
+// a loaded runner (a descheduled client made the write, or the read, time
+// out) but that fake time keeps exactly.
 func TestIdleConnCountsAProgressingWriteAsActivity(t *testing.T) {
-	proxySide, clientSide := net.Pipe()
-	t.Cleanup(func() { _ = proxySide.Close(); _ = clientSide.Close() })
-	conn := newIdleConn(proxySide, 200*time.Millisecond)
-	readErr := make(chan error, 1)
-	go func() {
-		_, err := conn.Read(make([]byte, 1))
-		readErr <- err
-	}()
-	go func() {
-		buffer := make([]byte, 4<<10)
-		for {
-			time.Sleep(100 * time.Millisecond)
-			if _, err := io.ReadFull(clientSide, buffer); err != nil {
-				return
+	synctest.Test(t, func(t *testing.T) {
+		const idle, chunkEvery = 200 * time.Millisecond, 100 * time.Millisecond
+		proxySide, clientSide := net.Pipe()
+		stop := make(chan struct{})
+		defer func() {
+			// Both goroutines return, so a failed assertion is reported as
+			// itself, not as a leaked goroutine.
+			close(stop)
+			_ = proxySide.Close()
+			_ = clientSide.Close()
+			synctest.Wait()
+		}()
+		conn := newIdleConn(proxySide, idle)
+		readErr := make(chan error, 1)
+		go func() {
+			_, err := conn.Read(make([]byte, 1))
+			readErr <- err
+		}()
+		go func() {
+			buffer := make([]byte, writeChunk)
+			for {
+				select {
+				case <-time.After(chunkEvery):
+				case <-stop:
+					return
+				}
+				if _, err := io.ReadFull(clientSide, buffer); err != nil {
+					return
+				}
 			}
+		}()
+		// 16 chunks at 100 ms each: well past the idle timeout in total.
+		start := time.Now()
+		if _, err := conn.Write(make([]byte, 16*writeChunk)); err != nil {
+			t.Fatalf("progressing write failed: %v", err)
 		}
-	}()
-	// 16 chunks at 100 ms each: well past the idle timeout in total.
-	if _, err := conn.Write(make([]byte, 64<<10)); err != nil {
-		t.Fatalf("progressing write failed: %v", err)
-	}
-	select {
-	case err := <-readErr:
-		t.Fatalf("read gave up during the write: %v", err)
-	default:
-	}
-	// Once nothing moves, the read gives up.
-	select {
-	case err := <-readErr:
-		if err == nil {
+		if took := time.Since(start); took < 4*idle {
+			t.Fatalf("the write took %v: not long enough to outlast the idle timeout", took)
+		}
+		select {
+		case err := <-readErr:
+			t.Fatalf("read gave up during the write: %v", err)
+		default:
+		}
+		// Once nothing moves, the read gives up one idle timeout after the
+		// last chunk, and not before.
+		finished := time.Now()
+		if err := <-readErr; err == nil {
 			t.Fatal("read returned without data or error")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("idle read kept waiting")
-	}
+		if waited := time.Since(finished); waited < idle || waited > 2*idle {
+			t.Fatalf("the read gave up %v after the last chunk, want about %v", waited, idle)
+		}
+	})
 }

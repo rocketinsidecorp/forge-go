@@ -16,6 +16,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/dbtest"
 	"github.com/rocketinsidecorp/forge-go/internal/dbtasks"
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // fakeApp stands in for the application binary: it records the commands the
@@ -500,7 +501,7 @@ func TestDBPostgresConsoleRunsPsqlWithoutPasswordArguments(t *testing.T) {
 func fakeClient(t *testing.T, h *dbHarness, script string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "client")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil { // #nosec G306 -- test client must be executable
+	if err := exectest.Write(path, "#!/bin/sh\n"+script); err != nil {
 		t.Fatal(err)
 	}
 	inner := h.target
@@ -517,13 +518,30 @@ func fakeClient(t *testing.T, h *dbHarness, script string) {
 func TestDBConsoleSurvivesACancelledContext(t *testing.T) {
 	t.Parallel()
 	// Ctrl-C cancels forge's context; the client handles the keystroke itself
-	// and must keep running.
+	// and must keep running. The client announces it is running and then waits
+	// for the test to cancel, so the cancellation provably lands mid-run.
 	h := newDBHarness(t, "FORGE_DATABASE_URL=sqlite:storage/dev.db\n")
-	fakeClient(t, h, "sleep 0.4\necho client-finished\n")
+	dir := t.TempDir()
+	started, proceed := filepath.Join(dir, "started"), filepath.Join(dir, "proceed")
+	fakeClient(t, h, ": > '"+started+"'\nwhile [ ! -e '"+proceed+"' ]; do sleep 0.02; done\necho client-finished\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			if _, err := os.Stat(started); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Error("the client never started")
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 		cancel()
+		// Let the client finish only after the cancellation was delivered.
+		if err := os.WriteFile(proceed, nil, 0o600); err != nil {
+			t.Error(err)
+		}
 	}()
 	if err := h.run(ctx, []string{"console"}); err != nil {
 		t.Fatalf("console: %v (the client was killed with the context)", err)

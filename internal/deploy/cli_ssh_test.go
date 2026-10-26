@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // The command line (`forge deploy ...`, `forge logs`, `forge app ...`) runs
@@ -36,7 +38,7 @@ func newCLICluster(t *testing.T) *cliCluster {
 		t.Fatal(err)
 	}
 	wrapper := "#!/bin/sh\nexec " + realSSH + " -F " + cluster.sshConfig + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(wrapper), 0o700); err != nil { // #nosec G306 -- test wrapper must be executable.
+	if err := exectest.Write(filepath.Join(bin, "ssh"), wrapper); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rocketinsidecorp/forge-go/internal/dbtasks"
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 const sqliteEnv = "FORGE_DATABASE_URL=sqlite:storage/dev.db\n"
@@ -33,7 +34,7 @@ func withTools(h *dbHarness, tools func(name string) string) {
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				return "", err
 			}
-			return path, os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700) // #nosec G306 -- test tool must be executable
+			return path, exectest.Write(path, "#!/bin/sh\n"+body+"\n")
 		})
 		return target, nil
 	}

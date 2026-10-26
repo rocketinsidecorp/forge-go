@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // The SSH integration tests run the real system ssh client against private
@@ -141,7 +143,7 @@ func startCluster(t *testing.T, names ...string) *sshCluster {
 		}
 		wrapper := filepath.Join(dir, name, "session.sh")
 		script := fmt.Sprintf("#!/bin/sh\nexport PATH=%s:/usr/bin:/bin HOME=%s FAKE_DOCKER_STATE=%s\ncd \"$HOME\" || exit 1\nexec /bin/sh -c \"$SSH_ORIGINAL_COMMAND\"\n", bin, host.home, host.state)
-		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil { // #nosec G306 -- test wrapper must be executable.
+		if err := exectest.Write(wrapper, script); err != nil {
 			t.Fatal(err)
 		}
 		port := startSSHD(t, sshd, filepath.Join(dir, name), filepath.Join(dir, "hostkey"), filepath.Join(dir, "authorized_keys"), wrapper)

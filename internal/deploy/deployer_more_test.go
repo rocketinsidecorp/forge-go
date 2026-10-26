@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // queryLocal answers Output from a table and records Run calls with their
@@ -120,7 +122,7 @@ func TestHooksRunInOrderWithTheirEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"pre-build", "pre-deploy", "post-deploy"} {
-		if err := os.WriteFile(filepath.Join(hooks, name), []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- hooks must be executable.
+		if err := exectest.Write(filepath.Join(hooks, name), "#!/bin/sh\n"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -162,7 +164,7 @@ func TestHookFailuresAbortWithTheHookExitCode(t *testing.T) {
 	t.Run("a hook that exits non-zero", func(t *testing.T) {
 		t.Parallel()
 		d, runner, local, hooks := setup(t)
-		if err := os.WriteFile(filepath.Join(hooks, "pre-deploy"), []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- hooks must be executable.
+		if err := exectest.Write(filepath.Join(hooks, "pre-deploy"), "#!/bin/sh\n"); err != nil {
 			t.Fatal(err)
 		}
 		local.runErr = errors.New("exit status 9")

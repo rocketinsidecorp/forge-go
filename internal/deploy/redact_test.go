@@ -4,10 +4,11 @@ package deploy
 
 import (
 	"bytes"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // A failing remote command whose stderr carries a secret must not leak it
@@ -17,7 +18,7 @@ func TestRemoteErrorsAreRedactedOnEveryRunnerPath(t *testing.T) {
 	dir := t.TempDir()
 	fakeSSH := filepath.Join(dir, "ssh")
 	script := "#!/bin/sh\necho 'connect failed: " + secret + "' >&2\nexit 3\n"
-	if err := os.WriteFile(fakeSSH, []byte(script), 0o700); err != nil { // #nosec G306 -- fake ssh must be executable.
+	if err := exectest.Write(fakeSSH, script); err != nil {
 		t.Fatal(err)
 	}
 	d, _, _, _ := planFixture(t, false)

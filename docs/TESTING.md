@@ -25,6 +25,27 @@ is set. A test of your own that calls `uuidv7()` starts with
 `postgrestest.RequireUUIDv7(t, db)`; `postgrestest.NewMigrated`, `NewMigratedSets`
 and `NewRLS` check the migrations they apply themselves.
 
+## Deterministic tests
+
+The suite runs in parallel on loaded CI runners, so a test may not depend on
+how fast the machine is:
+
+- **Executable fixtures.** A fake `ssh`, database client or hook script that
+  a test runs as a process is created with `internal/exectest.Write`, never
+  `os.WriteFile` followed by an exec. Writing in-process lets a parallel
+  test's `fork` inherit the write descriptor, and the exec then fails with
+  `text file busy` (ETXTBSY, golang/go#22315); `Write` creates the file in a
+  child process, so this process never holds it open for writing.
+- **No sleep as synchronization.** Wait for the event itself: a channel, a
+  marker file or a condition polled against a deadline. Code driven by timers
+  and goroutines runs inside `testing/synctest`, where the clock is fake and
+  `synctest.Wait` says when every goroutine is blocked. Real sockets and
+  processes cannot run in a bubble, so those tests keep real time and give
+  every timeout a wide margin over the pause it must outlast.
+- **Sleeps that remain** only wait for a time-based expiry to pass (a lower
+  bound that load can only lengthen) or bound a negative check ("nothing
+  happened within N ms").
+
 ## Coverage
 
 CI's `coverage` job measures statement coverage of the module and fails when
