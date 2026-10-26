@@ -162,7 +162,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// Listening here, rather than through ListenAndServe, lets the log below
 	// report the address the kernel bound: with port 0 the configured address
 	// does not say which port was chosen.
-	listener, err := net.Listen("tcp", s.server.Addr)
+	address := s.server.Addr
+	if address == "" {
+		address = ":http" // what ListenAndServe uses for an empty address
+	}
+	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return fmt.Errorf("serve HTTP: %w", err)
 	}
