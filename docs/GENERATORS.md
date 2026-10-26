@@ -207,6 +207,38 @@ The printed wiring registers the handler where you build the `queue.Registry`.
 An application that does not run the queue yet needs its tables, command and
 worker first: [docs/JOBS.md](JOBS.md), sections 1 and 4.
 
+## In an API-only application
+
+An application created with `forge new --api` has no views, layout, assets,
+translations or browser middleware, and no generator adds them to it (as in
+Forge-Rust). The generators that write pages refuse it with the reason and
+write nothing, `--dry-run` included:
+
+| Generator | In a `forge new --api` application |
+| --------- | ---------------------------------- |
+| `generate view` | refused: pages need the layout, assets and browser middleware |
+| `generate scaffold` | refused: it writes HTML pages; `generate resource` writes the JSON API alone |
+| `generate controller NAME ACTION...` | refused; with `--api` it writes JSON endpoints under `/v1/NAME` |
+| `generate authentication [--api-auth]` | refused: the sign-in pages need views and CSRF, and the JSON APIs sit beside them |
+| `generate resource`, `model`, `controller --api`, `mailer`, `job`, `migration` | as in a full-stack application; nothing under `app/views`, `app/assets` or `config/locales` |
+
+```sh
+forge new shop --api && cd shop
+forge generate resource product name:string --tenant-scoped   # JSON under /v1/products
+forge generate controller status_checks index --api           # JSON under /v1/status_checks
+forge generate scaffold product name:string --tenant-scoped   # refused
+forge generate view about                                     # refused
+```
+
+The printed wiring goes into `Configure`, after the `routes(ctx, app)` call
+(`routes`, before its final `return nil`, without a database). An API-only
+application has no Forge identity, so the guard is the deny-all placeholder
+you replace with the authentication of your API clients. Forge-Go recognizes
+the application by the phrase `API-only application (forge new --api)` in the
+package comment of `app/bootstrap/bootstrap.go`; without it, `generate view`
+and `scaffold` add the views base as they do in any application that lacks
+one.
+
 ## Permission ownership
 
 With Forge identity, generated migrations register the permissions their

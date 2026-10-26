@@ -11,6 +11,7 @@ Forge is a Go framework with Rails conventions, so the names carry over:
 | Rails | Forge |
 | ----- | ----- |
 | `rails new blog` | `forge new blog` |
+| `rails new api --api` | `forge new api --api` |
 | `bin/rails server` | `forge dev` (rebuilds and reloads the browser on save) |
 | `bin/rails db:prepare`, `db:migrate` | `forge db prepare`, `forge migrate` |
 | `rails g scaffold`, `g model`, `g controller`, `g mailer`, `g job` | `forge generate scaffold`, `model`, `controller`, `mailer`, `job` |
@@ -204,6 +205,39 @@ experiments only, replace the body of that `protect` function with
 never deploy that.
 Sections 5 (without sign-in), 8, 11, 12 and 15 apply; the rest of this guide was run
 on PostgreSQL.
+
+### An API-only application
+
+`--api` generates a JSON service instead, like `rails new --api`: no views,
+assets, JavaScript, translations, sign-in pages or browser middleware (CSRF,
+method override, flash). It takes the same `-d` flags; `--api-auth` and
+`--locale` cannot be combined with it.
+
+```sh
+forge new blogapi --api
+cd blogapi
+docker compose up -d postgres
+forge migrate
+forge dev
+curl -s http://127.0.0.1:8080/            # {"application":"blogapi","version":"0.1.0"}
+curl -s http://127.0.0.1:8080/v1/status   # {"service":"blogapi","status":"ok"}
+curl -s http://127.0.0.1:8080/health      # JSON liveness and readiness
+```
+
+Instead of section 5's scaffold, generate the JSON layer alone and paste the
+printed wiring into `Configure`, after the `routes(ctx, app)` call:
+
+```sh
+forge generate resource post title:string body:text --global   # /v1/posts
+forge generate scaffold post title:string --global             # refused: no pages in an --api application
+```
+
+`forge generate view`, `scaffold`, `authentication` and `controller` without
+`--api` are refused the same way and write nothing. `model`, `controller
+--api`, `mailer`, `job` and `migration` work as in the rest of this guide.
+The routes stay closed behind the deny-all guard the wiring prints until you
+write the authentication of your API clients (a bearer token header, never a
+cookie: nothing checks CSRF here).
 
 ## 5. Scaffold posts
 

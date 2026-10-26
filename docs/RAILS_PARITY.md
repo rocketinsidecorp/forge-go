@@ -12,6 +12,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | New application with Docker and CI | `rails new` | Done | Done |
 | Database selection | `rails new -d` | Done (PostgreSQL, MySQL, MariaDB, SQLite) | Done (PostgreSQL, MySQL, MariaDB, SQLite) |
 | Server-rendered HTML, layouts, partials, forms, flash, CSRF | Action View | Done | Done |
+| API-only application | `rails new --api` | Done (`forge new --api [-d DB]`: JSON `GET /`, `/v1/status`, health and OpenAPI; no `app/views`, `app/assets`, `app/javascript`, `config/locales`, sign-in pages or browser middleware; `--api-auth` and `--locale` conflict with it; `generate view\|scaffold\|authentication` and HTML `controller` refuse it, [GENERATORS.md](GENERATORS.md#in-an-api-only-application)) | Done (`forge new --api`: same flag, conflicts and refusals; `generate resource` and `controller --api` are refused too, see the follow-ups) |
 | HTML + JSON CRUD generator | `rails g scaffold` | Done | Done |
 | Authentication pages, password reset | `rails g authentication` | Done | Done |
 | Sign-in through the HTML pages only by default; JSON login opt-in | (`rails new --api` for API-only apps) | Done (`forge new --api-auth`, `forge generate authentication --api-auth`; without the flag no JSON login is mounted) | Done (no JSON login exists; `--api-auth` not needed until one does) |
@@ -69,8 +70,19 @@ the work is finished and waiting for its review; **Planned** means not started.
     (no `Dockerfile`, `.dockerignore`, `compose.yaml`,
     `compose.observability.yaml`, `observability/`, `docker/`; no
     `.github/`) in a change that owns the scaffold templates. Not started.
-  - `forge new --api` (Forge-Rust) does not exist in Forge-Go; `--api-auth`
-    is the closest, see the Sign-in row above. Not started.
+  - `forge new --api` exists in both (forge-go QG11, audit P-1) with the same
+    conflicts (`--api-auth`, `--locale`) and the same refusals (`generate
+    view`, `scaffold`, `authentication`, an HTML `controller`). Two
+    differences remain. (1) In a Forge-Go `--api` application `generate
+    resource` and `controller --api` write their JSON layer and print wiring
+    for `Configure`; Forge-Rust refuses both because its `--api` bootstrap has
+    no `fn compose` to wire them into (`crates/forge-cli/src/scaffold/mod.rs`
+    and `controller.rs`). Forge-Rust adopts Forge-Go's behaviour by giving
+    `--api` applications a `compose` hook. Not started. (2) A Forge-Rust
+    `--api` PostgreSQL application keeps the audit, identity and session
+    migrations and the session store; a Forge-Go one composes no Forge
+    identity (no `authpostgres.Migrations()`, no `setup`), because Forge-Go's
+    identity wiring is the sign-in pages. Not started; decided together with (1).
   - `forge inspect` and `forge help --json` exist in Forge-Go only.
 
 - Queue and scheduler throughput (forge-go QG4c, audit PF-1, PF-2, PF-5,
