@@ -103,13 +103,19 @@ func TestLayoutRendersFlashAndCSRF(t *testing.T) {
 		`<link rel="stylesheet" href="` + stylesheet + `">`,
 		string(bundle.ImportMap.Tag()),
 		`<script type="module" src="` + entry + `"></script>`,
-		`<meta name="csrf-token" content="` + token + `">`,
-		`<input type="hidden" name="authenticity_token" value="` + token + `">`,
 		`<p class="flash flash-notice" role="status">Saved &lt;b&gt;draft&lt;/b&gt;</p>`,
 	} {
 		if token == "" || !strings.Contains(body, want) {
 			t.Fatalf("missing %q in:\n%s", want, body)
 		}
+	}
+	// The page embeds the cookie's token masked with a fresh pad on every
+	// call (csrf.Token), so no two renders, nor the meta tag and the form
+	// field, carry the same bytes, and neither is the token itself.
+	meta := embeddedValue(body, `<meta name="csrf-token" content="`)
+	field := embeddedValue(body, `<input type="hidden" name="authenticity_token" value="`)
+	if !csrf.Match(token, meta) || !csrf.Match(token, field) || meta == field || meta == token || field == token {
+		t.Fatalf("the embedded CSRF tokens do not carry the cookie token masked: meta=%q field=%q", meta, field)
 	}
 	// The import map is the one inline script, allowed by its hash alone.
 	policy := recorder.Header().Get("Content-Security-Policy")
@@ -120,4 +126,14 @@ func TestLayoutRendersFlashAndCSRF(t *testing.T) {
 	if scripts != 2 || strings.Count(body, `<script type="importmap">`) != 1 || strings.Contains(body, " style=") || strings.Contains(body, "<style") {
 		t.Fatalf("the layout must have only the import map and the module script, and no inline styles:\n%s", body)
 	}
+}
+
+// embeddedValue is the attribute value that follows prefix in body.
+func embeddedValue(body, prefix string) string {
+	_, rest, found := strings.Cut(body, prefix)
+	if !found {
+		return ""
+	}
+	value, _, _ := strings.Cut(rest, `"`)
+	return value
 }

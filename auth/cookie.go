@@ -226,8 +226,9 @@ func NewCookieMFACompletionHandler(service *MFAService) (http.Handler, error) {
 }
 
 // RequireCSRF protects unsafe cookie-authenticated routes using a double-submit
-// token: the __Host- CSRF cookie and X-CSRF-Token header must
-// contain the same canonical 256-bit value. Safe methods pass through.
+// token: the X-CSRF-Token header must carry the 256-bit value of the __Host-
+// CSRF cookie, as it is or masked (csrf.MaskToken, the form pages embed).
+// Safe methods pass through.
 func RequireCSRF(next http.Handler) (http.Handler, error) {
 	if next == nil {
 		return nil, errors.New("CSRF handler is required")
@@ -339,7 +340,9 @@ func validateCSRF(r *http.Request) error {
 	if err != nil {
 		return ErrCSRFInvalid
 	}
-	headerToken, err := parseCSRFToken(headers[0])
+	// The header carries the cookie value (a script that read the cookie) or
+	// a masked token (the csrf-token meta tag of a page, csrf.Token).
+	headerToken, err := csrf.UnmaskToken(headers[0])
 	if err != nil {
 		return ErrCSRFInvalid
 	}

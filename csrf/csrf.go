@@ -7,6 +7,15 @@
 // 32 random bytes, base64url without padding, in a Secure, SameSite=Lax,
 // host-only cookie that same-origin JavaScript may read. HTML forms send it
 // in the authenticity_token field and scripts in the X-CSRF-Token header.
+//
+// Pages never embed the token itself. Token returns it masked, as Rails
+// does: a fresh 32-byte one-time pad followed by the token XOR the pad,
+// base64url without padding (86 characters). Every render therefore embeds
+// different bytes, so a response compressed together with reflected input
+// does not leak the token through its compressed length (BREACH). Match
+// accepts the masked form and the canonical one: scripts that read the
+// cookie send it unmasked, and pages rendered before an upgrade embed it
+// unmasked.
 package csrf
 
 import (
@@ -34,6 +43,9 @@ const (
 	FormField = web.CSRFTokenField
 
 	tokenBytes = 32
+	// maskedTokenBytes is a masked token decoded: the one-time pad, then the
+	// token XOR the pad.
+	maskedTokenBytes = 2 * tokenBytes
 )
 
 var (
@@ -65,14 +77,56 @@ func ParseToken(value string) ([]byte, error) {
 	return decoded, nil
 }
 
-// Match reports whether submitted is a canonical token equal to the
-// canonical cookie token, comparing in constant time.
+// MaskToken returns token masked with a fresh one-time pad: the canonical
+// unpadded base64url encoding of the pad followed by token XOR pad. Each call
+// returns a different value for the same token; UnmaskToken and Match turn
+// any of them back into the token. Pages embed masked tokens so their bytes
+// change on every render (BREACH). token must be canonical (ParseToken).
+func MaskToken(token string) (string, error) {
+	raw, err := ParseToken(token)
+	if err != nil {
+		return "", err
+	}
+	masked := make([]byte, maskedTokenBytes)
+	if _, err := rand.Read(masked[:tokenBytes]); err != nil {
+		return "", err
+	}
+	subtle.XORBytes(masked[tokenBytes:], raw, masked[:tokenBytes])
+	return base64.RawURLEncoding.EncodeToString(masked), nil
+}
+
+// UnmaskToken decodes a submitted token: a masked token (MaskToken) or a
+// canonical one (ParseToken). It accepts only the canonical unpadded
+// base64url encoding of exactly 32 or 64 bytes and returns ErrInvalid
+// otherwise.
+//
+// The canonical form stays accepted: scripts that read the double-submit
+// cookie send it as it is (cookies are not part of a compressed body, so
+// BREACH does not reach them), and forms rendered before the upgrade to
+// masked tokens embed it. Accepting it weakens nothing, since a response no
+// longer contains it; the transition for embedded forms is meant to last one
+// release (docs/VIEWS.md).
+func UnmaskToken(value string) ([]byte, error) {
+	if len(value) == base64.RawURLEncoding.EncodedLen(tokenBytes) {
+		return ParseToken(value)
+	}
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(value)
+	if err != nil || len(decoded) != maskedTokenBytes || base64.RawURLEncoding.EncodeToString(decoded) != value {
+		return nil, ErrInvalid
+	}
+	token := make([]byte, tokenBytes)
+	subtle.XORBytes(token, decoded[tokenBytes:], decoded[:tokenBytes])
+	return token, nil
+}
+
+// Match reports whether submitted, masked (MaskToken) or canonical, carries
+// the canonical cookie token, comparing in constant time.
 func Match(cookieToken, submitted string) bool {
 	expected, err := ParseToken(cookieToken)
 	if err != nil {
 		return false
 	}
-	actual, err := ParseToken(submitted)
+	actual, err := UnmaskToken(submitted)
 	if err != nil {
 		return false
 	}
@@ -169,8 +223,8 @@ type state struct {
 //     clients) pass this check.
 //  2. Token: the X-CSRF-Token header, or, only when there is no such header
 //     and the body is application/x-www-form-urlencoded, the
-//     authenticity_token form field, must equal the cookie token (constant
-//     time). Query-string values are never read. A missing, repeated,
+//     authenticity_token form field, must carry the cookie token, masked
+//     (Token) or canonical (Match, constant time). Query-string values are never read. A missing, repeated,
 //     malformed or mismatched token is 403 csrf_invalid. Requests a
 //     cross-site page cannot produce skip this check: those with an
 //     "Authorization: Bearer" header, and those with a JSON body
@@ -283,7 +337,9 @@ func submittedToken(r *http.Request) (string, error) {
 }
 
 // Token returns the request's CSRF token for a form field, meta tag or
-// script. When the request has no valid CSRF cookie it creates a token and
+// script, masked with a fresh one-time pad on every call (MaskToken), so no
+// two renders embed the same bytes. When the request has no valid CSRF
+// cookie it creates a token and
 // sets the cookie on w, so call it before the response is written (views
 // render into a buffer first, so template helpers qualify). Only pages that
 // embed a token issue the cookie; health checks, assets and API responses
@@ -308,7 +364,7 @@ func Token(w http.ResponseWriter, r *http.Request) (string, error) {
 	if cacheControl := strings.ToLower(w.Header().Get("Cache-Control")); !strings.Contains(cacheControl, "private") && !strings.Contains(cacheControl, "no-store") {
 		w.Header().Set("Cache-Control", "private")
 	}
-	return current.token, nil
+	return MaskToken(current.token)
 }
 
 func cookieFor(token string) *http.Cookie {

@@ -97,7 +97,7 @@ func TestLoadRendersPagesInsideTheLayout(t *testing.T) {
 		t.Fatalf("headers = %v", recorder.Header())
 	}
 	cookie := recorder.Result().Cookies()
-	if len(cookie) != 1 || cookie[0].Name != csrf.CookieName || !strings.Contains(body, `<meta name="csrf-token" content="`+cookie[0].Value+`">`) {
+	if len(cookie) != 1 || cookie[0].Name != csrf.CookieName || !csrf.Match(cookie[0].Value, embeddedValue(body, `<meta name="csrf-token" content="`)) {
 		t.Fatalf("token meta does not match the issued cookie: %v\n%s", cookie, body)
 	}
 }
@@ -125,12 +125,15 @@ func TestLoadKeepsEachPagesBlocksSeparate(t *testing.T) {
 		"<title>App</title>", "<h1>Edit</h1>",
 		`action="/posts/` + existing.ID.String() + `"`,
 		`<input type="hidden" name="_method" value="PATCH">`,
-		`<input type="hidden" name="authenticity_token" value="` + token + `">`,
 		`value="&#34;quoted&#34; &amp; &lt;b&gt;"`,
 	} {
 		if !strings.Contains(editBody, want) {
 			t.Fatalf("edit: missing %q in %s", want, editBody)
 		}
+	}
+	// The form carries the cookie's token, masked (csrf.Token).
+	if field := embeddedValue(editBody, `<input type="hidden" name="authenticity_token" value="`); field == token || !csrf.Match(token, field) {
+		t.Fatalf("edit: the form field %q does not carry the token masked", field)
 	}
 	if !strings.Contains(index.Body.String(), "<title>Posts</title>") || strings.Contains(index.Body.String(), "Edit") {
 		t.Fatalf("index: %s", index.Body.String())
@@ -307,10 +310,20 @@ func TestConcurrentRendersKeepTheirOwnRequest(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, request)
 			body := recorder.Body.String()
-			if !strings.Contains(body, `value="`+token+`"`) || !strings.Contains(body, fmt.Sprintf(`value="t%d"`, i)) {
+			if !csrf.Match(token, embeddedValue(body, `name="authenticity_token" value="`)) || !strings.Contains(body, fmt.Sprintf(`value="t%d"`, i)) {
 				t.Errorf("render %d mixed requests: %s", i, body)
 			}
 		})
 	}
 	wg.Wait()
+}
+
+// embeddedValue is the attribute value that follows prefix in body.
+func embeddedValue(body, prefix string) string {
+	_, rest, found := strings.Cut(body, prefix)
+	if !found {
+		return ""
+	}
+	value, _, _ := strings.Cut(rest, `"`)
+	return value
 }

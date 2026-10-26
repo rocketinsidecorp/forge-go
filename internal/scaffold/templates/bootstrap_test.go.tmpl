@@ -206,7 +206,10 @@ func TestBrowserPipelineRequiresCSRFToken(t *testing.T) {
 	form := httptest.NewRecorder()
 	app.Handler().ServeHTTP(form, httptest.NewRequest(http.MethodGet, "/items/new", nil))
 	cookies := form.Result().Cookies()
-	if form.Code != http.StatusOK || len(cookies) != 1 || cookies[0].Name != csrf.CookieName || cookies[0].Value != form.Body.String() {
+	// The page gets the cookie's token masked with a fresh pad (csrf.Token),
+	// never the token itself.
+	if form.Code != http.StatusOK || len(cookies) != 1 || cookies[0].Name != csrf.CookieName ||
+		cookies[0].Value == form.Body.String() || !csrf.Match(cookies[0].Value, form.Body.String()) {
 		t.Fatalf("form status=%d cookies=%v body=%q", form.Code, cookies, form.Body.String())
 	}
 	token := form.Body.String()

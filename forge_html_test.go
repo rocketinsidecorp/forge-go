@@ -172,7 +172,9 @@ func TestHTMLRequestPipeline(t *testing.T) {
 
 	page := send(http.MethodGet, "/posts/new", "", nil)
 	match := tokenField.FindStringSubmatch(page.Body.String())
-	if page.Code != http.StatusOK || match == nil || cookies[csrf.CookieName] == nil || cookies[csrf.CookieName].Value != match[1] {
+	// The form embeds the cookie's token masked (csrf.Token), never as is.
+	if page.Code != http.StatusOK || match == nil || cookies[csrf.CookieName] == nil ||
+		cookies[csrf.CookieName].Value == match[1] || !csrf.Match(cookies[csrf.CookieName].Value, match[1]) {
 		t.Fatalf("new: %d %v %s", page.Code, cookies, page.Body.String())
 	}
 	token := match[1]

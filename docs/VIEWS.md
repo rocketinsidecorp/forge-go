@@ -503,6 +503,19 @@ Unsafe requests are rejected with `403` when:
 - the token is missing, repeated, malformed or does not match the
   `__Host-forge_csrf` cookie.
 
+Pages never embed the token itself. `{{csrfField}}`, `{{csrfMeta}}` and
+`{{csrfToken}}` (all through `csrf.Token`) write it masked, as Rails does:
+a fresh 32-byte one-time pad followed by the token XOR the pad, 86
+characters of base64url. Every render embeds different bytes, so a page
+compressed together with reflected input cannot leak the token through its
+size (BREACH). The middleware and `auth.RequireCSRF` unmask what they receive
+and compare it with the cookie in constant time. They also accept the token
+unmasked: scripts that read the cookie send it so (cookies are not part of a
+compressed body), and forms rendered before the upgrade to masked tokens
+carry it, so pages open during a deploy keep working. Accepting the unmasked
+form in `authenticity_token` is a transition for one release;
+`csrf.MaskToken` and `csrf.UnmaskToken` are there for custom renderers.
+
 The token check does not apply to requests with an `Authorization: Bearer`
 header or a JSON body, which cross-site pages cannot send, so JSON APIs keep
 working; cookie-authenticated JSON routes still use `auth.RequireCSRF`.
