@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 const testPassword = "p@ss\"w'rd\\"
@@ -153,7 +155,7 @@ func TestMySQLDumpReadsOnlyForgesOptionFile(t *testing.T) {
 		"if [ \"$1\" = --version ]; then echo 'mysqldump  Ver 8.4'; exit 0; fi\n" +
 		"{ for arg in \"$@\"; do printf '%s\\n' \"$arg\"; done; echo ---; cat \"${1#--defaults-file=}\"; echo ---; " +
 		"echo \"$MYSQL_TEST_LOGIN_FILE\"; [ -e \"$MYSQL_TEST_LOGIN_FILE\" ] && echo exists; } > '" + recorded + "'\n"
-	if err := os.WriteFile(script, []byte(body), 0o700); err != nil { // #nosec G306 -- an executable test fixture
+	if err := exectest.Write(script, body); err != nil {
 		t.Fatal(err)
 	}
 	target, err := NewTarget(t.TempDir(), lookupOf(map[string]string{

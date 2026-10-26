@@ -50,11 +50,11 @@ func TestBatcherExportsFullBatchesWithoutWaitingForTheTimer(t *testing.T) {
 }
 
 func TestBatcherDropsWhenTheQueueIsFull(t *testing.T) {
-	exporter := &recordingExporter{block: make(chan struct{})}
+	exporter := &recordingExporter{block: make(chan struct{}), entered: make(chan struct{}, 1)}
 	tel := newTestTelemetry(t, Options{SampleRatio: 1, SpanExporter: exporter, MaxQueueSize: 8, MaxExportBatch: 4, BatchTimeout: time.Hour})
 	// The first full batch blocks in the exporter; the queue then fills.
 	endSpans(tel, 4)
-	time.Sleep(20 * time.Millisecond)
+	awaitEntered(t, exporter.entered)
 	start := time.Now()
 	endSpans(tel, 100)
 	if time.Since(start) > time.Second {
@@ -245,21 +245,24 @@ func (e *hangingExporter) Shutdown(context.Context) error { return nil }
 
 func TestShutdownWithAHungCollectorAndAFullQueueMeetsItsDeadline(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		exporter func(*hangingExporter) Options
+		name string
+		// exporter returns the options and the channel that signals the
+		// first export has started.
+		exporter func(*hangingExporter) (Options, <-chan struct{})
 	}{
-		{"exporter ignoring its context", func(e *hangingExporter) Options {
-			return Options{SpanExporter: e, MetricExporter: e}
+		{"exporter ignoring its context", func(e *hangingExporter) (Options, <-chan struct{}) {
+			return Options{SpanExporter: e, MetricExporter: e}, e.calls
 		}},
-		{"exporter honoring its context", func(*hangingExporter) Options {
-			return Options{SpanExporter: &recordingExporter{block: make(chan struct{})}}
+		{"exporter honoring its context", func(*hangingExporter) (Options, <-chan struct{}) {
+			exporter := &recordingExporter{block: make(chan struct{}), entered: make(chan struct{}, 1)}
+			return Options{SpanExporter: exporter}, exporter.entered
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exporter := &hangingExporter{release: make(chan struct{}), calls: make(chan struct{}, 1)}
 			release := sync.OnceFunc(func() { close(exporter.release) })
 			defer release()
-			opts := tc.exporter(exporter)
+			opts, entered := tc.exporter(exporter)
 			opts.ServiceName = "s"
 			opts.SampleRatio = 1
 			opts.MaxQueueSize = 16
@@ -271,7 +274,7 @@ func TestShutdownWithAHungCollectorAndAFullQueueMeetsItsDeadline(t *testing.T) {
 				t.Fatal(err)
 			}
 			endSpans(tel, 4) // a full batch: the exporter starts and hangs
-			time.Sleep(20 * time.Millisecond)
+			awaitEntered(t, entered)
 			endSpans(tel, 30) // fills the queue and overflows it
 
 			const budget = 300 * time.Millisecond

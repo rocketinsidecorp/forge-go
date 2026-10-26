@@ -19,11 +19,13 @@ type recordingExporter struct {
 	spans    []SpanData
 	batches  []int
 	block    chan struct{}
+	entered  chan struct{} // when set (buffered), receives a value as an export starts
 	err      error
 	shutdown int
 }
 
 func (e *recordingExporter) ExportSpans(ctx context.Context, _ Resource, spans []SpanData) error {
+	signalEntered(e.entered)
 	if e.block != nil {
 		select {
 		case <-e.block:
@@ -39,6 +41,29 @@ func (e *recordingExporter) ExportSpans(ctx context.Context, _ Resource, spans [
 	e.spans = append(e.spans, spans...)
 	e.batches = append(e.batches, len(spans))
 	return nil
+}
+
+// signalEntered tells a test that an export has started, without ever
+// blocking the exporter.
+func signalEntered(entered chan struct{}) {
+	if entered == nil {
+		return
+	}
+	select {
+	case entered <- struct{}{}:
+	default:
+	}
+}
+
+// awaitEntered waits until an export has started: the deterministic
+// replacement for sleeping until the batcher goroutine has picked up a batch.
+func awaitEntered(t *testing.T, entered <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the exporter was never called")
+	}
 }
 
 func (e *recordingExporter) Shutdown(context.Context) error {

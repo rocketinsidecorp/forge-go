@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/credentials"
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // sealPlaintext replaces the credentials of env with plaintext, sealed with
@@ -246,7 +247,7 @@ func TestCredentialsEditLeavesAnInterruptTypedInTheEditorToTheEditor(t *testing.
 	dir := t.TempDir()
 	started, proceed := filepath.Join(dir, "started"), filepath.Join(dir, "proceed")
 	script := filepath.Join(dir, "editor.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\n: > '"+started+"'\nwhile [ ! -e '"+proceed+"' ]; do sleep 0.02; done\n"), 0o700); err != nil { // #nosec G306 -- test editor must be executable
+	if err := exectest.Write(script, "#!/bin/sh\n: > '"+started+"'\nwhile [ ! -e '"+proceed+"' ]; do sleep 0.02; done\n"); err != nil {
 		t.Fatal(err)
 	}
 	h.env["EDITOR"] = script

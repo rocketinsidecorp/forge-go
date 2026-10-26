@@ -25,11 +25,13 @@ type recordingLogExporter struct {
 	records  []LogRecord
 	batches  []int
 	block    chan struct{}
+	entered  chan struct{} // when set (buffered), receives a value as an export starts
 	err      error
 	shutdown int
 }
 
 func (e *recordingLogExporter) ExportLogs(ctx context.Context, _ Resource, records []LogRecord) error {
+	signalEntered(e.entered)
 	if e.block != nil {
 		select {
 		case <-e.block:
@@ -227,14 +229,14 @@ func TestLogRecordsAreBounded(t *testing.T) {
 }
 
 func TestLogExportNeverBlocksWhenTheQueueIsFullAndCountsDrops(t *testing.T) {
-	exporter := &recordingLogExporter{block: make(chan struct{})}
+	exporter := &recordingLogExporter{block: make(chan struct{}), entered: make(chan struct{}, 1)}
 	tel := newTestTelemetry(t, Options{LogExporter: exporter, LogMaxQueueSize: 8, LogMaxExportBatch: 4, LogBatchTimeout: time.Hour})
 	logger := logsLogger(tel)
 	// The first full batch blocks in the exporter; the queue then fills.
 	for range 4 {
 		logger.Info("x")
 	}
-	time.Sleep(20 * time.Millisecond)
+	awaitEntered(t, exporter.entered)
 	start := time.Now()
 	for range 100 {
 		logger.Info("y")

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -269,34 +270,46 @@ func TestFetchThroughReportsCallerBugsInsteadOfSwallowingThem(t *testing.T) {
 	}
 }
 
+// A computation that panics releases the callers waiting on it. The test
+// runs in a synctest bubble so "the waiter has joined the flight" is
+// observable: once the leader is asleep inside its computation and every
+// other goroutine is blocked, the waiter is parked on the in-flight call.
 func TestFlightPanicReleasesWaiters(t *testing.T) {
-	var f Flight
-	started := make(chan struct{})
-	waiter := make(chan error, 1)
-	go func() {
+	synctest.Test(t, func(t *testing.T) {
+		var f Flight
+		started := make(chan struct{})
+		waiter := make(chan error, 1)
+		leaderDone := make(chan struct{})
+		go func() {
+			defer close(leaderDone)
+			defer func() { _ = recover() }()
+			_, _ = f.Do(bg, "k", func(context.Context) ([]byte, error) {
+				close(started)
+				time.Sleep(100 * time.Millisecond)
+				panic("boom")
+			})
+		}()
 		<-started
-		_, err := f.Do(bg, "k", func(context.Context) ([]byte, error) { return []byte("x"), nil })
-		waiter <- err
-	}()
-	func() {
-		defer func() { _ = recover() }()
-		_, _ = f.Do(bg, "k", func(context.Context) ([]byte, error) {
-			close(started)
-			time.Sleep(100 * time.Millisecond)
-			panic("boom")
-		})
-	}()
-	select {
-	case err := <-waiter:
-		_ = err
-	case <-time.After(5 * time.Second):
-		t.Fatal("a panicking computation left its waiters blocked")
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.calls) != 0 {
-		t.Fatal("flight leaked a call")
-	}
+		go func() {
+			_, err := f.Do(bg, "k", func(context.Context) ([]byte, error) { return []byte("x"), nil })
+			waiter <- err
+		}()
+		synctest.Wait() // the waiter is blocked on the leader's call
+		select {
+		case err := <-waiter:
+			if err == nil || !strings.Contains(err.Error(), "panicked") {
+				t.Fatalf("waiter err = %v, want the leader's panic reported", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a panicking computation left its waiters blocked")
+		}
+		<-leaderDone
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if len(f.calls) != 0 {
+			t.Fatal("flight leaked a call")
+		}
+	})
 }
 
 func TestFlightWaiterStopsWhenItsContextEnds(t *testing.T) {

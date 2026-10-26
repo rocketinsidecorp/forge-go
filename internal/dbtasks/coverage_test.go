@@ -14,6 +14,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/dbtest"
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // scriptTools installs shell scripts as the vendor tools of target and
@@ -26,7 +27,7 @@ func scriptTools(t *testing.T, target *Target, scripts map[string]string) (argsF
 	for name, body := range scripts {
 		path := filepath.Join(dir, name)
 		script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + argsFile + "'\ncat >> '" + stdinFile + "'\n" + body + "\n"
-		if err := os.WriteFile(path, []byte(script), 0o700); err != nil { // #nosec G306 -- test script must be executable
+		if err := exectest.Write(path, script); err != nil {
 			t.Fatal(err)
 		}
 		paths[name] = path

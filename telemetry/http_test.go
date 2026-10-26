@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/router"
@@ -324,29 +325,36 @@ func TestStatusClassAndRoutePath(t *testing.T) {
 // middleware has already read it for a timed-out request. Run with -race.
 func TestRouteRecordingIsRaceFreeWithTimeoutHandler(t *testing.T) {
 	tel := newTelemetry(t, &spanSink{}, false)
-	routes := router.New()
-	if err := routes.HandleFunc("GET /slow", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }); err != nil {
-		t.Fatal(err)
-	}
-	routed := make(chan struct{})
-	delayed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer close(routed)
-		time.Sleep(50 * time.Millisecond)
-		routes.ServeHTTP(w, r)
+	// The bubble's fake clock makes the order certain: the 5 ms timeout
+	// fires and the request is answered and measured before the handler,
+	// asleep for 50 ms, wakes and records its route. On a loaded runner real
+	// time could let the handler finish first, and then the request would
+	// not time out at all.
+	synctest.Test(t, func(t *testing.T) {
+		routes := router.New()
+		if err := routes.HandleFunc("GET /slow", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }); err != nil {
+			t.Fatal(err)
+		}
+		routed := make(chan struct{})
+		delayed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer close(routed)
+			time.Sleep(50 * time.Millisecond)
+			routes.ServeHTTP(w, r)
+		})
+		middleware, err := tel.ServerMiddleware()
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler := middleware(http.TimeoutHandler(delayed, 5*time.Millisecond, "timeout"))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/slow", nil))
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status %d, want the timeout response", recorder.Code)
+		}
+		<-routed
+		series := durationSeries(t, tel)
+		if series["GET  5xx"] != 1 {
+			t.Fatalf("a timed-out request is measured without a route: %v", series)
+		}
 	})
-	middleware, err := tel.ServerMiddleware()
-	if err != nil {
-		t.Fatal(err)
-	}
-	handler := middleware(http.TimeoutHandler(delayed, 5*time.Millisecond, "timeout"))
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/slow", nil))
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status %d, want the timeout response", recorder.Code)
-	}
-	<-routed
-	series := durationSeries(t, tel)
-	if series["GET  5xx"] != 1 {
-		t.Fatalf("a timed-out request is measured without a route: %v", series)
-	}
 }

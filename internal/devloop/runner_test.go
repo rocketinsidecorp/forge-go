@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -225,32 +226,37 @@ func TestRunnerRestartsWithoutRebuildingForEnvOnlyChanges(t *testing.T) {
 
 func TestRunnerDiscardsABuildThatIsStaleBecauseTheTreeChangedMeanwhile(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	released := make(chan struct{})
-	h.buildHook = func(n int) {
-		if n == 1 {
-			<-released
+	// The runner polls for a newer change once, without blocking, when the
+	// build ends: the sender must already be parked on the channel. A bubble
+	// lets the test know that, where a sleep only hoped for it.
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		released := make(chan struct{})
+		h.buildHook = func(n int) {
+			if n == 1 {
+				<-released
+			}
 		}
-	}
-	h.start()
-	h.expect("build 1")
-	// The runner is busy building; the next change waits for it.
-	sent := make(chan struct{})
-	go func() {
-		h.changes <- Change{Count: 1}
-		close(sent)
-	}()
-	time.Sleep(50 * time.Millisecond)
-	close(released)
-	<-sent
+		h.start()
+		h.expect("build 1")
+		// The runner is busy building; the next change waits for it.
+		sent := make(chan struct{})
+		go func() {
+			h.changes <- Change{Count: 1}
+			close(sent)
+		}()
+		synctest.Wait() // the build is held and the sender is parked
+		close(released)
+		<-sent
 
-	// The first build is stale: no process starts from it.
-	h.expect("build 2", "start app-2", "started app-2")
-	if _, err := os.Stat(filepath.Join(h.dir, "app-1")); !os.IsNotExist(err) {
-		t.Fatalf("the stale binary must be removed, stat err = %v", err)
-	}
-	h.stop()
-	h.expect("stop app-2")
+		// The first build is stale: no process starts from it.
+		h.expect("build 2", "start app-2", "started app-2")
+		if _, err := os.Stat(filepath.Join(h.dir, "app-1")); !os.IsNotExist(err) {
+			t.Fatalf("the stale binary must be removed, stat err = %v", err)
+		}
+		h.stop()
+		h.expect("stop app-2")
+	})
 }
 
 func TestRunnerDoesNotRestartACrashedApplicationUntilTheNextChange(t *testing.T) {

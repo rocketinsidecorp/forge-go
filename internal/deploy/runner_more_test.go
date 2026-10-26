@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/internal/exectest"
 )
 
 // fakeSSH writes a shell script that records its arguments and stdin and
@@ -26,7 +28,7 @@ func fakeSSH(t *testing.T, stdout, stderr string, code int, readStdin ...bool) (
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >> %s\n%sprintf '%%s' %s\nprintf '%%s' %s >&2\nexit %d\n",
 		argsFile, read, Quote(stdout), Quote(stderr), code)
 	binary = filepath.Join(dir, "ssh")
-	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil { // #nosec G306 -- the stand-in must be executable.
+	if err := exectest.Write(binary, script); err != nil {
 		t.Fatal(err)
 	}
 	return binary, argsFile, stdinFile

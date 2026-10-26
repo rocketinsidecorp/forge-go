@@ -119,7 +119,10 @@ func TestIdleTunnelIsClosed(t *testing.T) {
 		}
 	})
 	srv, front := newTestServer(t, "")
-	srv.idleTimeout = 400 * time.Millisecond
+	// Real sockets, so real time: the idle timeout is ten times the pause
+	// between echoes, a margin a loaded runner does not eat.
+	const idle, pause = time.Second, 100 * time.Millisecond
+	srv.idleTimeout = idle
 	if _, err := srv.Deploy(t.Context(), fastRequest(app.addr())); err != nil {
 		t.Fatal(err)
 	}
@@ -133,8 +136,8 @@ func TestIdleTunnelIsClosed(t *testing.T) {
 	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("upgrade: %v %v", resp, err)
 	}
-	// Traffic every 100 ms for twice the idle timeout keeps it open.
-	for round := range 8 {
+	// Traffic every 100 ms for longer than the idle timeout keeps it open.
+	for round := range 12 {
 		message := strings.Repeat("m", round+1) + "\n"
 		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 		if _, err := io.WriteString(conn, message); err != nil {
@@ -144,7 +147,7 @@ func TestIdleTunnelIsClosed(t *testing.T) {
 		if err != nil || got != message {
 			t.Fatalf("round %d: %q %v", round, got, err)
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(pause)
 	}
 	if got := srv.Status()[0].InFlight; got != 1 {
 		t.Fatalf("in flight %d during the tunnel", got)
@@ -154,8 +157,8 @@ func TestIdleTunnelIsClosed(t *testing.T) {
 	if _, closed := closedWithin(conn, 5*time.Second); !closed {
 		t.Fatal("idle tunnel kept open")
 	}
-	// The last echo was 100 ms before silent: about 300 ms remain.
-	if elapsed := time.Since(silent); elapsed < 200*time.Millisecond {
+	// The last echo was one pause before silent: most of the timeout remains.
+	if elapsed := time.Since(silent); elapsed < idle/2 {
 		t.Fatalf("closed after %s, before the idle timeout", elapsed)
 	}
 	waitInFlight(t, srv, 0, 5*time.Second)
