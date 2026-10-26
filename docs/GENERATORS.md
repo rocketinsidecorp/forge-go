@@ -23,7 +23,7 @@
 
 | Command | Creates | Rails |
 | ------- | ------- | ----- |
-| `forge generate migration NAME` | an empty up/down migration pair | `rails g migration` |
+| `forge generate migration NAME [field:type...]` | an up/down migration pair: `ALTER TABLE` statements for `add_COLUMNS_to_TABLE` and `remove_COLUMNS_from_TABLE` with fields, else blank (with a warning to fill it in) | `rails g migration` |
 | `forge generate model NAME field:type...` | migration, domain entity, repository port and use cases, persistence adapter, tests | `rails g model` |
 | `forge generate controller NAME ACTION...` | HTTP handlers, routes, views, tests; no persistence | `rails g controller` |
 | `forge generate mailer NAME METHOD...` | a mailer with text and HTML templates, previews, tests | `rails g mailer` |
@@ -32,6 +32,29 @@
 | `forge generate resource` / `scaffold` | model plus JSON API / plus HTML CRUD | `rails g scaffold` |
 | `forge generate view`, `authentication` | one page; the sign-in pages | |
 | `forge destroy GENERATOR ARGUMENTS...` | removes what a generator created | `rails d` |
+
+`forge g` is short for `forge generate` and `forge d` for `forge destroy`, as
+in Rails (`forge g scaffold post title:string --global`).
+
+## Migration
+
+```sh
+forge g migration add_sku_to_products sku:string stock:int 'released_at:time?'
+forge g migration remove_sku_from_products sku:string
+forge g migration backfill_prices
+```
+
+`add_COLUMNS_to_TABLE` with fields writes one `ALTER TABLE TABLE ADD COLUMN`
+per field in the application's dialect (the same column types, constraints
+and quoting as a generated table), and `DROP COLUMN` in the down migration;
+`remove_COLUMNS_from_TABLE` is the reverse (its down brings the columns back,
+not their values). Rows that already exist need a value, so a required
+column gets its type's zero value as default (`''`, `0`, false); a required
+`time` or `uuid` column has none and is refused: declare it optional
+(`released_at:time?`). Any other name, or no fields, writes the blank pair and
+warns: fill in both files before `forge migrate` or `forge test`, because the
+migrator refuses a migration with no statements. Fields with a name that
+infers no table are refused (for a new table use `forge generate model`).
 
 ## Model
 

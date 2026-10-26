@@ -19,7 +19,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/migrate"
 )
 
-const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate job NAME [field:type...] --queue [--dry-run]\n       forge generate model NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate controller NAME ACTION... [--api] [--public] [--dry-run]\n       forge generate mailer NAME METHOD[:field,field...]... [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate authentication [--api-auth] [--dry-run]"
+const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate migration NAME [field:type...] [--dry-run]\n       forge generate job NAME [field:type...] --queue [--dry-run]\n       forge generate model NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate controller NAME ACTION... [--api] [--public] [--dry-run]\n       forge generate mailer NAME METHOD[:field,field...]... [--dry-run]\n       forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]\n       forge generate authentication [--api-auth] [--dry-run]"
 
 var migrationName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,99}$`)
 var viewName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -97,6 +97,9 @@ func generateFiles(args []string, stdout io.Writer, root string, env []string, n
 	}
 	if len(args) > 0 && args[0] == "authentication" {
 		return runGenerateAuthentication(args[1:], stdout, root, env)
+	}
+	if len(args) > 0 && args[0] == "migration" {
+		return runGenerateMigration(args[1:], stdout, root, env, now)
 	}
 	dryRun := len(args) == 3 && args[2] == "--dry-run"
 	if (len(args) != 2 && !dryRun) || (len(args) == 3 && !dryRun) {
@@ -459,6 +462,74 @@ func exportedJobName(name string) string {
 		parts[i] = strings.ToUpper(part[:1]) + part[1:]
 	}
 	return strings.Join(parts, "")
+}
+
+const migrationUsage = "usage: forge generate migration NAME [field:type...] [--dry-run]"
+
+// runGenerateMigration is `forge generate migration`: the up/down pair, with
+// the ALTER TABLE statements an add_X_to_TABLE or remove_X_from_TABLE name
+// and its fields infer, or blank with a warning.
+func runGenerateMigration(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
+	flags, positional, err := splitFlags(args, migrationUsage, "--dry-run")
+	if err != nil {
+		return err
+	}
+	if len(positional) == 0 {
+		return usageError{migrationUsage}
+	}
+	name := positional[0]
+	if !migrationName.MatchString(name) {
+		return errors.New("migration name must be snake_case: lowercase letters, digits and underscores, starting with a letter")
+	}
+	var fields []resourceField
+	seen := make(map[string]bool)
+	for _, declaration := range positional[1:] {
+		field, err := parseResourceField(declaration)
+		if err != nil {
+			return err
+		}
+		if seen[field.Name] {
+			return fmt.Errorf("field %q is declared twice", field.Name)
+		}
+		seen[field.Name] = true
+		fields = append(fields, field)
+	}
+	change, inferred, err := inferColumnChange(name, fields)
+	if err != nil {
+		return err
+	}
+	files, err := planMigration(root, name, now)
+	if err != nil {
+		return err
+	}
+	if inferred {
+		adapter, err := databaseAdapter(root, env)
+		if err != nil {
+			return errors.New("environment files could not be loaded: check .env.development and .env.local syntax")
+		}
+		switch adapter {
+		case "postgres", "mysql", "sqlite":
+		default:
+			return errMigrationDatabase
+		}
+		up, down, err := renderColumnMigration(adapter, name, change)
+		if err != nil {
+			return err
+		}
+		files[0].content, files[1].content = up, down
+	}
+	if !flags["--dry-run"] {
+		if err := applyGeneratedFiles(root, []string{"db/migrations"}, files); err != nil {
+			return err
+		}
+	}
+	if err := reportFiles(stdout, flags["--dry-run"], files, ""); err != nil {
+		return err
+	}
+	if !inferred {
+		_, err = io.WriteString(stdout, blankMigrationWarning(filepath.ToSlash(files[0].path)))
+	}
+	return err
 }
 
 // generateMigration writes an empty up/down pair under db/migrations. The

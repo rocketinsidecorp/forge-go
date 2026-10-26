@@ -191,7 +191,9 @@ forge generate resource post title:string --tenant-scoped # a JSON API under /v1
 {{- end}}
 forge generate model post title:string --tenant-scoped # migration, domain, application and persistence layers
 forge generate migration create_widgets --dry-run # preview exact migration files
-forge generate migration create_widgets  # new db/migrations/<timestamp>_create_widgets.{up,down}.sql
+forge generate migration create_widgets  # new db/migrations/<timestamp>_create_widgets.{up,down}.sql, blank: fill both in
+forge g migration add_sku_to_products sku:string # g is short for generate: ALTER TABLE ... ADD COLUMN, and DROP COLUMN in down
+forge d model post title:string --tenant-scoped # d is short for destroy
 forge migrate                            # apply pending migrations
 forge migrate status
 forge rollback                           # revert the latest migration

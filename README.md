@@ -544,6 +544,15 @@ get the wiring printed to paste. The mailer and job generators print theirs. Fie
 full reference is [docs/GENERATORS.md](docs/GENERATORS.md).
 
 ```sh
+# g is short for generate and d for destroy, as in Rails
+forge g scaffold product name:string price:int --tenant-scoped
+forge d scaffold product name:string price:int --tenant-scoped
+
+# Migration: add_COLUMNS_to_TABLE / remove_COLUMNS_from_TABLE with fields write the ALTER TABLE
+forge g migration add_sku_to_products sku:string 'discontinued_at:time?'
+forge g migration remove_sku_from_products sku:string
+forge g migration backfill_prices   # blank: fill in both files before forge migrate (an empty migration is refused)
+
 # Model: migration, domain entity, repository port and use cases, persistence adapter, tests; no HTTP
 forge generate model post title:string 'body:text?' published:bool --tenant-scoped --dry-run
 forge generate model post title:string 'body:text?' published:bool --tenant-scoped
