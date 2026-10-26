@@ -405,7 +405,7 @@ func TestSMTPInvalidMessageNeverConnects(t *testing.T) {
 	if !errors.Is(err, forgemail.ErrInvalid) {
 		t.Fatalf("err = %v", err)
 	}
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) // real-clock: negative check: no connection may be made, and one would take real time to appear
 	if len(server.Sessions()) != 0 {
 		t.Fatal("connected before validating the message")
 	}

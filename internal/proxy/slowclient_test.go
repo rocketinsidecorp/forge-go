@@ -88,7 +88,7 @@ func postChunked(t *testing.T, front string, chunks [][]byte, pause time.Duratio
 			if _, err := writer.Write(chunk); err != nil {
 				return
 			}
-			time.Sleep(pause)
+			time.Sleep(pause) // real-clock: a slow client writing on a real connection against the body deadline
 		}
 		_ = writer.Close()
 	}()

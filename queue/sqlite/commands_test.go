@@ -11,6 +11,7 @@ import (
 
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/dbtest"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/migrate"
 	"github.com/rocketinsidecorp/forge-go/queue"
 	queuesqlite "github.com/rocketinsidecorp/forge-go/queue/sqlite"
@@ -69,16 +70,10 @@ func TestJobsCommand(t *testing.T) {
 	if err := worker.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		if info, err := store.Get(ctx, result.ID); err == nil && info.State == queue.StateDead {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("job did not die")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waittest.Until(t, 15*time.Second, "the job to die", func() bool {
+		info, err := store.Get(ctx, result.ID)
+		return err == nil && info.State == queue.StateDead
+	})
 	stop, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := worker.Shutdown(stop); err != nil {

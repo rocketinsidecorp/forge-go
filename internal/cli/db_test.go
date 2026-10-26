@@ -17,6 +17,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/dbtest"
 	"github.com/rocketinsidecorp/forge-go/internal/dbtasks"
 	"github.com/rocketinsidecorp/forge-go/internal/exectest"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 // fakeApp stands in for the application binary: it records the commands the
@@ -448,7 +449,7 @@ INSERT INTO forge_schema_migrations VALUES (20260101000000, 'create_widgets', '`
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1100 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond) // real-clock: pg_dump stamps the second; a timestamp in the output would differ after the pause
 	if err := h.do("schema:dump"); err != nil {
 		t.Fatal(err)
 	}
@@ -526,16 +527,8 @@ func TestDBConsoleSurvivesACancelledContext(t *testing.T) {
 	fakeClient(t, h, ": > '"+started+"'\nwhile [ ! -e '"+proceed+"' ]; do sleep 0.02; done\necho client-finished\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		deadline := time.Now().Add(20 * time.Second)
-		for {
-			if _, err := os.Stat(started); err == nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Error("the client never started")
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
+		if !waittest.Poll(20*time.Second, func() bool { _, err := os.Stat(started); return err == nil }) {
+			t.Error("the client never started")
 		}
 		cancel()
 		// Let the client finish only after the cancellation was delivered.
@@ -565,16 +558,7 @@ while :; do sleep 0.05; done
 	done := make(chan error, 1)
 	go func() { done <- h.run(context.Background(), []string{"console"}) }()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(ready); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the client never started")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waittest.Until(t, 10*time.Second, "the client to start", func() bool { _, err := os.Stat(ready); return err == nil })
 	optionFile, err := os.ReadFile(recorded)
 	if err != nil {
 		t.Fatal(err)

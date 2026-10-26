@@ -66,7 +66,7 @@ func TestConcurrentKeyedEnqueueInTransactionsConverges(t *testing.T) {
 					if _, err := tx.Exec(context.Background(), "SELECT 1"); err != nil { // take the snapshot first
 						return err
 					}
-					time.Sleep(time.Duration(i) * time.Millisecond)
+					time.Sleep(time.Duration(i) * time.Millisecond) // real-clock: staggers concurrent transactions so their snapshots differ
 					r, err := queue.Enqueue(context.Background(), store.In(tx), registry, "order.confirm", order{ID: "x"}, queue.WithKey("same"))
 					if err != nil {
 						return err

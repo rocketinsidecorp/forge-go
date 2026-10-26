@@ -16,6 +16,7 @@ import (
 
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
@@ -81,17 +82,14 @@ func TestExecuteServeHealthcheckAndGracefulShutdown(t *testing.T) {
 	done := make(chan int, 1)
 	go func() { done <- forge.Execute(ctx, nil, lookup, &serveOutput, &serveErrors, configure) }()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		var stdout, stderr bytes.Buffer
-		if forge.Execute(context.Background(), []string{"healthcheck"}, lookup, &stdout, &stderr, configure) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("server never became healthy: %s", stderr.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+	var healthcheckErrors bytes.Buffer
+	if !waittest.Poll(5*time.Second, func() bool {
+		var stdout bytes.Buffer
+		healthcheckErrors.Reset()
+		return forge.Execute(context.Background(), []string{"healthcheck"}, lookup, &stdout, &healthcheckErrors, configure) == 0
+	}) {
+		cancel()
+		t.Fatalf("server never became healthy: %s", healthcheckErrors.String())
 	}
 
 	cancel()

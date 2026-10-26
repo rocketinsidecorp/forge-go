@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 // serveApp prints "ready" and then waits to be interrupted.
@@ -168,12 +170,8 @@ func TestRunAppStopsTheApplicationWhenTheContextEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- runApp(ctx, root, "shop", nil, os.Environ(), &out, &out) }()
-	deadline := time.Now().Add(60 * time.Second)
-	for !strings.Contains(out.String(), "ready") {
-		if time.Now().After(deadline) {
-			t.Fatal("the application never started")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !waittest.Poll(60*time.Second, func() bool { return strings.Contains(out.String(), "ready") }) {
+		t.Fatal("the application never started")
 	}
 	cancel()
 	select {

@@ -16,6 +16,7 @@ import (
 
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/openapi"
 )
 
@@ -242,17 +243,16 @@ func TestServedDocumentIncludesRoutesAddedBeforeTheFirstRequest(t *testing.T) {
 		}
 	}()
 	// Wait for the listener without sending a request.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		connection, err := net.Dial("tcp", cfg.HTTP.Address)
-		if err == nil {
+	var dialErr error
+	if !waittest.Poll(5*time.Second, func() bool {
+		var connection net.Conn
+		connection, dialErr = net.Dial("tcp", cfg.HTTP.Address)
+		if dialErr == nil {
 			_ = connection.Close()
-			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server did not listen: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+		return dialErr == nil
+	}) {
+		t.Fatalf("the server did not listen: %v", dialErr)
 	}
 	select {
 	case err := <-done:

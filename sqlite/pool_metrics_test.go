@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/sqldb"
 	"github.com/rocketinsidecorp/forge-go/sqlite"
 	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
@@ -154,12 +155,7 @@ func waitForTheOnlyConnection(t *testing.T, db *sqldb.DB) {
 		done <- db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
 	}()
 	// database/sql counts the wait when the query starts waiting.
-	for deadline := time.Now().Add(5 * time.Second); db.SQL().Stats().WaitCount == waits; {
-		if time.Now().After(deadline) {
-			t.Fatal("the query never waited for the connection")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waittest.Until(t, 5*time.Second, "the query to wait for the connection", func() bool { return db.SQL().Stats().WaitCount != waits })
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}

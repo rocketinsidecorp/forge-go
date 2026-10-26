@@ -14,6 +14,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/broadcast"
 	bcpostgres "github.com/rocketinsidecorp/forge-go/broadcast/postgres"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	forgepostgres "github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -45,12 +46,8 @@ func newBroker(t *testing.T, db *forgepostgres.DB, opts bcpostgres.Options) *bcp
 
 func waitListening(t *testing.T, broker *bcpostgres.Broker) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for !broker.Listening() {
-		if time.Now().After(deadline) {
-			t.Fatal("the broker never started listening")
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !waittest.Poll(15*time.Second, broker.Listening) {
+		t.Fatal("the broker never started listening")
 	}
 }
 
@@ -276,15 +273,12 @@ func TestListenerReconnectsAfterTheConnectionIsKilled(t *testing.T) {
 		_ = db.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'LISTEN %' AND datname = current_database()`).Scan(&count)
 		return count
 	}
-	deadline := time.Now().Add(20 * time.Second)
-	for !a.Listening() || !b.Listening() || listeners() < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("listeners did not reconnect")
-		}
-		time.Sleep(50 * time.Millisecond)
+	if !waittest.Poll(20*time.Second, func() bool { return a.Listening() && b.Listening() && listeners() >= 2 }) {
+		t.Fatal("listeners did not reconnect")
 	}
 	// Notifications sent while a listener is still reconnecting are lost by
 	// design, so publish until one arrives.
+	giveUp := time.Now().Add(15 * time.Second)
 	for {
 		if err := b.Publish(ctx, channel, broadcast.Message{Data: "after reconnect"}); err != nil {
 			t.Fatal(err)
@@ -297,7 +291,7 @@ func TestListenerReconnectsAfterTheConnectionIsKilled(t *testing.T) {
 			return
 		case <-time.After(500 * time.Millisecond):
 		}
-		if time.Now().After(deadline.Add(15 * time.Second)) {
+		if time.Now().After(giveUp) {
 			t.Fatal("no message arrived after the reconnect")
 		}
 	}
@@ -331,16 +325,13 @@ func TestShutdownStopsTheListenerAndEndsSubscriptions(t *testing.T) {
 	// The dedicated connection went back to the server, not to the pool.
 	// The server notices the closed socket asynchronously.
 	var listeners int
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+	if !waittest.Poll(10*time.Second, func() bool {
 		if err := db.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'LISTEN %' AND datname = current_database()`).Scan(&listeners); err != nil {
 			t.Fatal(err)
 		}
-		if listeners == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("listening sessions = %d", listeners)
-		}
+		return listeners == 0
+	}) {
+		t.Fatalf("listening sessions = %d", listeners)
 	}
 }
 

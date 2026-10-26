@@ -24,6 +24,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/httpserver"
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -86,22 +87,20 @@ func get(t *testing.T, client *http.Client, url string) (*http.Response, error) 
 // waitServing retries until the server at url answers.
 func waitServing(t *testing.T, client *http.Client, url string, failed <-chan error) *http.Response {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		response, err := get(t, client, url)
-		if err == nil {
-			return response
-		}
+	var response *http.Response
+	var err error
+	if !waittest.Poll(20*time.Second, func() bool {
 		select {
 		case runErr := <-failed:
 			t.Fatalf("the server stopped before it answered: %v", runErr)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server never answered: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+		response, err = get(t, client, url)
+		return err == nil
+	}) {
+		t.Fatalf("the server never answered: %v", err)
 	}
+	return response
 }
 
 func TestNewWithOptionsRejectsMissingPieces(t *testing.T) {

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 const (
@@ -106,7 +108,7 @@ func TestWatchKeepsExtendingTheBatchWhileFilesKeepChanging(t *testing.T) {
 		for i := 1; i <= 6; i++ {
 			write(t, root, "main.go", "package main\n// "+strings.Repeat("x", i)+"\n")
 			lastWrite = time.Now()
-			time.Sleep(60 * time.Millisecond)
+			time.Sleep(60 * time.Millisecond) // fake-clock: the 60ms write cadence stays inside the 300ms debounce on the bubble clock
 		}
 		change := expectChange(t, changes)
 		if change.Count != 1 {
@@ -235,11 +237,8 @@ func TestWatchReportsScanFailuresOncePerRun(t *testing.T) {
 	count := func() int { return len(snapshot()) }
 
 	write(t, root, "c.go", "package x\n") // now beyond the bound: every poll fails
-	deadline := time.Now().Add(testWait)
-	for count() == 0 && time.Now().Before(deadline) {
-		time.Sleep(testPoll)
-	}
-	time.Sleep(20 * testPoll) // many more failing polls
+	waittest.Poll(testWait, func() bool { return count() > 0 })
+	time.Sleep(20 * testPoll) // real-clock: absence check, many more failing polls of the watcher's own real poll interval must not repeat the message
 	if got := snapshot(); len(got) != 1 || !strings.Contains(got[0], "cannot scan") {
 		t.Fatalf("want exactly one \"cannot scan\" message for one run of failures, got %v", got)
 	}
@@ -247,10 +246,7 @@ func TestWatchReportsScanFailuresOncePerRun(t *testing.T) {
 	if err := os.Remove(filepath.Join(root, "c.go")); err != nil {
 		t.Fatal(err)
 	}
-	deadline = time.Now().Add(testWait)
-	for count() < 2 && time.Now().Before(deadline) {
-		time.Sleep(testPoll)
-	}
+	waittest.Poll(testWait, func() bool { return count() >= 2 })
 	if got := snapshot(); len(got) != 2 || !strings.Contains(got[1], "again") {
 		t.Fatalf("recovery must be reported once: %v", got)
 	}

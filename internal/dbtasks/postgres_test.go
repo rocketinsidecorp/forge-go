@@ -201,7 +201,7 @@ func TestPostgresSchemaDumpIsDeterministicAndLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(1100 * time.Millisecond) // a timestamp in the output would differ now
+	time.Sleep(1100 * time.Millisecond) // real-clock: pg_dump stamps the second; a timestamp in the output would differ after the pause
 	second, err := source.DumpSchema(ctx)
 	if err != nil {
 		t.Fatal(err)

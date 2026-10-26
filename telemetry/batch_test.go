@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 )
 
 func endSpans(tel *Telemetry, n int) {
@@ -25,12 +27,8 @@ func TestBatcherExportsFullBatchesWithoutWaitingForTheTimer(t *testing.T) {
 	exporter := &recordingExporter{}
 	tel := newTestTelemetry(t, Options{SampleRatio: 1, SpanExporter: exporter, MaxExportBatch: 10, BatchTimeout: time.Hour})
 	endSpans(tel, 25)
-	deadline := time.Now().Add(5 * time.Second)
-	for len(exporter.exported()) < 20 {
-		if time.Now().After(deadline) {
-			t.Fatalf("full batches were not exported: %d", len(exporter.exported()))
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !waittest.Poll(5*time.Second, func() bool { return len(exporter.exported()) >= 20 }) {
+		t.Fatalf("full batches were not exported: %d", len(exporter.exported()))
 	}
 	shutdown(t, tel)
 	if got := len(exporter.exported()); got != 25 {
@@ -340,12 +338,8 @@ func TestExportFailuresAreCountedAndLogged(t *testing.T) {
 
 func waitForGoroutines(t *testing.T, want int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > want {
-		if time.Now().After(deadline) {
-			t.Fatalf("goroutines leaked: %d > %d", runtime.NumGoroutine(), want)
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !waittest.Poll(2*time.Second, func() bool { return runtime.NumGoroutine() <= want }) {
+		t.Fatalf("goroutines leaked: %d > %d", runtime.NumGoroutine(), want)
 	}
 }
 

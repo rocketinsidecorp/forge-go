@@ -40,7 +40,7 @@ func holdLockUntilKilled(path string) {
 		os.Exit(2)
 	}
 	fmt.Println("locked")
-	time.Sleep(time.Minute) // the test kills the process long before
+	time.Sleep(time.Minute) // real-clock: helper process that holds the lock until the test kills it
 	os.Exit(3)
 }
 
