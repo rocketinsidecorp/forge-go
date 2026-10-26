@@ -203,7 +203,10 @@ then dead-lettered without having been delivered. Lower `BatchSize` or raise
 (`jobspostgres`/`jobsmysql` `.Migrations()` and `.NewTickClaimer`): each tick
 of a job runs on exactly one replica, the first with a free slot to record
 it, whatever the replicas' clocks, and no connection is held while the job
-runs. Two replicas can run consecutive ticks of one job at the same time.
+runs. Two replicas can run consecutive ticks of one job at the same time. A
+replica whose clock runs ahead of the database waits for it, holding the
+job's concurrency slot for up to about two minutes before it gives the tick
+up and reports it; keep clocks synchronized (NTP).
 
 ## 5. Operate
 
