@@ -158,7 +158,7 @@ forge test                        # repository and sign-in tests run as a fresh 
 docker compose down --volumes     # once, for a volume created before the roles existed
 ```
 
-Only `forge migrate` reads `PGOPTIONS`, as for `psql`; every command that
+Only `forge migrate` and `forge rollback` read `PGOPTIONS`, as for `psql`; every command that
 opens the application's pool (`forge dev`, `seed`, `jobs`, `setup`) refuses to
 start while it is set, naming the variable and never its value, because a
 `forge.tenant_id` in it would give every session a default tenant:
