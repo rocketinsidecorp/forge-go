@@ -13,6 +13,7 @@ import (
 // scheme.
 type Adapter string
 
+// The database adapters.
 const (
 	AdapterPostgres Adapter = "postgres"
 	// AdapterMySQL serves both MySQL and MariaDB.

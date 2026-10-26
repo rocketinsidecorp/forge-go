@@ -59,7 +59,7 @@ type CommandEnv struct {
 
 const healthcheckTimeout = 2 * time.Second
 
-var reservedCommands = map[string]bool{"serve": true, "healthcheck": true, "openapi": true, "help": true}
+var reservedCommands = map[string]bool{"serve": true, "healthcheck": true, "openapi": true, "routes": true, "help": true}
 
 // Main is the conventional entrypoint for Forge applications:
 //
@@ -68,7 +68,8 @@ var reservedCommands = map[string]bool{"serve": true, "healthcheck": true, "open
 // The binary serves HTTP by default ("serve") and also answers "healthcheck",
 // which lets minimal container images (no shell, no curl) run a Docker
 // HEALTHCHECK against the process itself, "openapi", which prints the OpenAPI
-// document of the configured routes without serving them, plus any extra
+// document of the configured routes without serving them, "routes", which
+// prints the table of those routes, plus any extra
 // commands. Main exits the process.
 func Main(configure Configure, commands ...Command) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -136,6 +137,8 @@ func execute(ctx context.Context, args []string, lookup func(string) (string, bo
 	case name == "openapi":
 		// The document may go to stdout: logs go to stderr.
 		return describeAPI(ctx, cfg, newLogger(cfg.Environment, stderr), configure, describe, stdout, stderr)
+	case name == "routes":
+		return describeRoutes(ctx, cfg, newLogger(cfg.Environment, stderr), configure, stdout, stderr)
 	case isExtra:
 		env := CommandEnv{Config: cfg, Logger: logger, Stdout: stdout, Stderr: stderr, Stdin: stdin, LookupEnv: lookup}
 		if err := command.Run(ctx, env, args); err != nil {
@@ -178,6 +181,7 @@ func printCommands(output io.Writer, commands []Command) {
 	fmt.Fprintf(output, "  %-12s %s\n", "serve", "serve HTTP until SIGINT/SIGTERM (default)")
 	fmt.Fprintf(output, "  %-12s %s\n", "healthcheck", "probe the running server's liveness endpoint")
 	fmt.Fprintf(output, "  %-12s %s\n", "openapi", "print the OpenAPI document ([--output FILE | --check FILE])")
+	fmt.Fprintf(output, "  %-12s %s\n", "routes", "print the routes registered while composing the application")
 	for _, command := range commands {
 		fmt.Fprintf(output, "  %-12s %s\n", command.Name, command.Summary)
 	}
@@ -230,26 +234,40 @@ func parseOpenAPIArgs(args []string, stderr io.Writer) (openapiOptions, error) {
 	return options, nil
 }
 
+// composeWithoutServing builds the application and runs Configure as serve
+// does, without listening. It returns the application and the function that
+// releases its resources; on failure it reports on stderr, prefixed with
+// command, and returns false.
+func composeWithoutServing(ctx context.Context, cfg config.Config, logger *slog.Logger, configure Configure, command string, stderr io.Writer) (*App, func(), bool) {
+	app, err := New(WithConfig(cfg), WithLogger(logger))
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: build application: %v\n", command, err)
+		return nil, nil, false
+	}
+	release := func() {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.HTTP.ShutdownTimeout)
+		defer cancel()
+		if err := app.Close(closeCtx); err != nil {
+			fmt.Fprintf(stderr, "%s: release resources: %v\n", command, err)
+		}
+	}
+	if err := configure(ctx, app); err != nil {
+		fmt.Fprintf(stderr, "%s: configure application: %v\n", command, err)
+		release()
+		return nil, nil, false
+	}
+	return app, release, true
+}
+
 // describeAPI configures the application without serving it and writes its
 // OpenAPI document. Configure runs as for serve, so it may need the
 // database; nothing listens on the network.
 func describeAPI(ctx context.Context, cfg config.Config, logger *slog.Logger, configure Configure, options openapiOptions, stdout, stderr io.Writer) int {
-	app, err := New(WithConfig(cfg), WithLogger(logger))
-	if err != nil {
-		fmt.Fprintf(stderr, "openapi: build application: %v\n", err)
+	app, release, ok := composeWithoutServing(ctx, cfg, logger, configure, "openapi", stderr)
+	if !ok {
 		return 1
 	}
-	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.HTTP.ShutdownTimeout)
-	defer cancel()
-	defer func() {
-		if err := app.Close(closeCtx); err != nil {
-			fmt.Fprintf(stderr, "openapi: release resources: %v\n", err)
-		}
-	}()
-	if err := configure(ctx, app); err != nil {
-		fmt.Fprintf(stderr, "openapi: configure application: %v\n", err)
-		return 1
-	}
+	defer release()
 	document, err := app.OpenAPI()
 	if err != nil {
 		fmt.Fprintf(stderr, "openapi: %v\n", err)

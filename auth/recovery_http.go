@@ -22,6 +22,8 @@ type passwordResetBody struct {
 	NewPassword string `json:"new_password" doc:"The new password."`
 }
 
+// NewPasswordRecoveryRequestHandler returns the handler that requests a reset message. It answers
+// 202 whether or not an account matched, so it does not reveal which accounts exist.
 func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("recovery service is required")
@@ -63,6 +65,8 @@ func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, 
 	}), passwordRecoveryRequestOperation), nil
 }
 
+// NewPasswordResetHandler returns the handler that completes a reset with the token and the new
+// password; it answers 204.
 func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("recovery service is required")

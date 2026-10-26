@@ -7,8 +7,11 @@ import (
 	"net/http"
 )
 
+// Category is the class of an Error; it selects the default HTTP status.
 type Category string
 
+// The categories of Error and their default HTTP statuses: 400, 401, 403, 404, 409, 503, 429 and
+// 500.
 const (
 	CategoryInvalid      Category = "invalid"
 	CategoryUnauthorized Category = "unauthorized"
@@ -20,6 +23,8 @@ const (
 	CategoryInternal     Category = "internal"
 )
 
+// Error is a stable application error: a machine-readable Code and a safe Message for clients, with
+// an optional Cause and Metadata that stay internal.
 type Error struct {
 	Code       string
 	Message    string
@@ -30,6 +35,7 @@ type Error struct {
 	HTTPStatus int
 }
 
+// New returns an Error. A status of 0 selects the default for the category.
 func New(code, message string, category Category, status int) *Error {
 	return &Error{Code: code, Message: message, Category: category, HTTPStatus: status}
 }
@@ -50,6 +56,7 @@ func (e *Error) Is(target error) bool {
 	return ok && e != nil && other != nil && e.Code == other.Code
 }
 
+// WithCause returns a copy of e with cause set; e itself is unchanged.
 func (e *Error) WithCause(cause error) *Error {
 	copy := *e
 	copy.Cause = cause

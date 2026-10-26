@@ -20,6 +20,7 @@ const (
 // SpanKind is the OpenTelemetry span kind; values match the OTLP enum.
 type SpanKind uint8
 
+// The span kinds.
 const (
 	SpanKindInternal SpanKind = iota + 1
 	SpanKindServer
@@ -46,6 +47,7 @@ func (k SpanKind) String() string {
 // StatusCode is a span status; values match the OTLP enum.
 type StatusCode uint8
 
+// The span status codes: unset until the work is known to have finished, then ok or error.
 const (
 	StatusUnset StatusCode = iota
 	StatusOK

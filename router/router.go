@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
+	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -14,24 +17,52 @@ import (
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
+// ErrFrozen is returned when a route is registered after the router served its
+// first request.
 var ErrFrozen = errors.New("router is frozen")
 
+// Route identifies a registered route by HTTP method and path pattern.
 type Route struct {
 	Method  string
 	Pattern string
 }
 
-type Router struct {
-	mu       sync.RWMutex
-	mux      *http.ServeMux
-	routes   []Route
-	handlers map[Route]http.Handler
-	frozen   atomic.Bool
+// Registration is a registered route together with how it got there, which
+// `forge routes` prints.
+type Registration struct {
+	Route
+	// Action is the resource action for a route that Resources registered,
+	// and empty for a route registered with Handle.
+	Action Action
+	// Source is the "file.go:line" of the application code that registered
+	// the route. It is empty for routes the framework registers itself.
+	Source string
 }
 
-func New() *Router { return &Router{mux: http.NewServeMux(), handlers: map[Route]http.Handler{}} }
+// Router is the route registry. Routes are registered before the first
+// request; after that the router is frozen.
+type Router struct {
+	mu            sync.RWMutex
+	mux           *http.ServeMux
+	routes        []Route
+	handlers      map[Route]http.Handler
+	registrations map[Route]Registration
+	frozen        atomic.Bool
+}
 
-func (r *Router) Handle(pattern string, handler http.Handler) (err error) {
+// New returns an empty router.
+func New() *Router {
+	return &Router{mux: http.NewServeMux(), handlers: map[Route]http.Handler{}, registrations: map[Route]Registration{}}
+}
+
+// Handle registers handler for pattern, a net/http.ServeMux pattern such as
+// "GET /posts/{id}". It returns an error for an invalid or conflicting
+// pattern, a nil handler, or when the router is already frozen.
+func (r *Router) Handle(pattern string, handler http.Handler) error {
+	return r.handle(pattern, handler, "")
+}
+
+func (r *Router) handle(pattern string, handler http.Handler, action Action) (err error) {
 	if handler == nil {
 		return errors.New("route handler is required")
 	}
@@ -54,7 +85,86 @@ func (r *Router) Handle(pattern string, handler http.Handler) (err error) {
 	route := Route{Method: method, Pattern: path}
 	r.routes = append(r.routes, route)
 	r.handlers[route] = handler
+	r.registrations[route] = Registration{Route: route, Action: action, Source: registrationSource()}
 	return nil
+}
+
+// frameworkPackage is the import path prefix of the Forge module, which
+// registrationSource skips to find the application's registering code.
+var frameworkPackage = strings.TrimSuffix(reflect.TypeOf(Router{}).PkgPath(), "/router")
+
+// registrationSource returns the file and line of the nearest caller outside
+// the framework and the standard library, or "" when only they registered the
+// route.
+func registrationSource() string {
+	var pcs [16]uintptr
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs[:])])
+	for {
+		frame, more := frames.Next()
+		if frame.Function != "" && !skippedFrame(frame.Function, mainModulePath()) {
+			return fmt.Sprintf("%s:%d", frame.File, frame.Line)
+		}
+		if !more {
+			return ""
+		}
+	}
+}
+
+// mainModulePath is the module path of the running binary's main module, or
+// "" when the build information is unavailable.
+var mainModulePath = sync.OnceValue(func() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		return info.Main.Path
+	}
+	return ""
+})
+
+// skippedFrame reports whether a fully qualified function name belongs to
+// the framework's own packages or to the standard library and the runtime
+// (sync.Once, runtime.goexit, testing.tRunner): neither is the application
+// code that registered a route. Examples and tests of the framework are
+// application code, and so is every package of the main module, whatever its
+// path: a module created with `forge new myapp` is simply "myapp".
+func skippedFrame(function, mainModule string) bool {
+	if rest, ok := strings.CutPrefix(function, frameworkPackage); ok && rest != "" && (rest[0] == '/' || rest[0] == '.') {
+		if strings.HasPrefix(rest, "/examples/") {
+			return false
+		}
+		if i := strings.Index(rest, "."); i >= 0 && strings.HasSuffix(rest[:i], "_test") {
+			return false
+		}
+		return true
+	}
+	if mainModule != "" && (strings.HasPrefix(function, mainModule+"/") || strings.HasPrefix(function, mainModule+".")) {
+		return false
+	}
+	return standardLibraryFunction(function)
+}
+
+// standardLibraryFunction reports whether function is in a package whose
+// import path has no dot in its first element, which Go reserves for the
+// standard library and the runtime. Package main is the application.
+func standardLibraryFunction(function string) bool {
+	first := function
+	if i := strings.IndexByte(first, '/'); i >= 0 {
+		first = first[:i]
+	} else if i := strings.IndexByte(first, '.'); i >= 0 {
+		first = first[:i]
+	}
+	return first != "main" && !strings.Contains(first, ".")
+}
+
+// Registrations returns every registered route with its resource action and
+// the source location that registered it, sorted like Routes.
+func (r *Router) Registrations() []Registration {
+	routes := r.Routes()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]Registration, 0, len(routes))
+	for _, route := range routes {
+		result = append(result, r.registrations[route])
+	}
+	return result
 }
 
 // Lookup returns the handler registered for route exactly as it was given to
@@ -67,10 +177,12 @@ func (r *Router) Lookup(route Route) (http.Handler, bool) {
 	return handler, ok
 }
 
+// HandleFunc is Handle for a handler function.
 func (r *Router) HandleFunc(pattern string, handler http.HandlerFunc) error {
 	return r.Handle(pattern, handler)
 }
 
+// Routes returns the registered routes sorted by path, then method.
 func (r *Router) Routes() []Route {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

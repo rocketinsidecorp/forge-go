@@ -9,8 +9,12 @@ import (
 	"time"
 )
 
+// ErrSequenceExhausted is returned when more UUIDs are requested within one millisecond than the
+// monotonic sequence can number.
 var ErrSequenceExhausted = errors.New("UUIDv7 sequence exhausted for millisecond")
 
+// Generator creates UUIDv7 values that increase monotonically, also within one millisecond. It is
+// safe for concurrent use.
 type Generator struct {
 	mu     sync.Mutex
 	now    func() time.Time
@@ -20,6 +24,8 @@ type Generator struct {
 	randB  uint64
 }
 
+// NewGenerator returns a Generator that reads the time from clock and random bytes from random;
+// both are required.
 func NewGenerator(clock func() time.Time, random io.Reader) (*Generator, error) {
 	if clock == nil || random == nil {
 		return nil, errors.New("UUIDv7 clock and entropy source are required")
@@ -29,10 +35,13 @@ func NewGenerator(clock func() time.Time, random io.Reader) (*Generator, error) 
 
 var defaultGenerator, _ = NewGenerator(time.Now, rand.Reader)
 
+// New returns a new UUIDv7 from the default generator, which uses the system clock and crypto/rand.
 func New() (UUID, error) { return defaultGenerator.New() }
 
+// NewV7 is New.
 func NewV7() (UUID, error) { return New() }
 
+// MustNew is New, and panics when the system entropy source fails. Use it in tests and fixtures.
 func MustNew() UUID {
 	id, err := New()
 	if err != nil {
@@ -41,6 +50,8 @@ func MustNew() UUID {
 	return id
 }
 
+// New returns the next UUIDv7: the generator's clock in milliseconds, with a sequence that
+// increases within the same millisecond or when the clock does not move forward.
 func (g *Generator) New() (UUID, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

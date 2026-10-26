@@ -12,6 +12,8 @@ import (
 	"github.com/rocketinsidecorp/forge-go/postgres"
 )
 
+// LoginThrottler is an auth.LoginThrottler that keeps its counters in PostgreSQL, so every replica
+// of an application shares them.
 type LoginThrottler struct {
 	db     *postgres.DB
 	config auth.LoginThrottleConfig
@@ -19,10 +21,12 @@ type LoginThrottler struct {
 
 var _ auth.LoginThrottler = (*LoginThrottler)(nil)
 
+// NewRecoveryThrottler returns a LoginThrottler with auth.DefaultRecoveryThrottleConfig.
 func NewRecoveryThrottler(db *postgres.DB) (*LoginThrottler, error) {
 	return NewLoginThrottler(db, auth.DefaultRecoveryThrottleConfig())
 }
 
+// NewLoginThrottler returns a LoginThrottler for config, which must be valid.
 func NewLoginThrottler(db *postgres.DB, config auth.LoginThrottleConfig) (*LoginThrottler, error) {
 	if db == nil {
 		return nil, errors.New("login throttle database is required")

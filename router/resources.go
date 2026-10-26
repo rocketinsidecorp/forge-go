@@ -10,6 +10,7 @@ import (
 // Action is one conventional resource action.
 type Action string
 
+// The conventional resource actions.
 const (
 	ActionIndex   Action = "index"
 	ActionNew     Action = "new"
@@ -33,24 +34,31 @@ func (a Action) ReadOnly() bool {
 // A resource handler implements any subset of these interfaces; Resources
 // registers a route for each one it implements.
 type (
+	// ResourceIndex serves the index action: GET on the collection.
 	ResourceIndex interface {
 		Index(http.ResponseWriter, *http.Request)
 	}
+	// ResourceNew serves the new action: the form for a new member.
 	ResourceNew interface {
 		New(http.ResponseWriter, *http.Request)
 	}
+	// ResourceCreate serves the create action: POST on the collection.
 	ResourceCreate interface {
 		Create(http.ResponseWriter, *http.Request)
 	}
+	// ResourceShow serves the show action: GET on one member.
 	ResourceShow interface {
 		Show(http.ResponseWriter, *http.Request)
 	}
+	// ResourceEdit serves the edit action: the form for an existing member.
 	ResourceEdit interface {
 		Edit(http.ResponseWriter, *http.Request)
 	}
+	// ResourceUpdate serves the update action: PATCH and PUT on one member.
 	ResourceUpdate interface {
 		Update(http.ResponseWriter, *http.Request)
 	}
+	// ResourceDestroy serves the destroy action: DELETE on one member.
 	ResourceDestroy interface {
 		Destroy(http.ResponseWriter, *http.Request)
 	}
@@ -118,6 +126,7 @@ func (r *Router) Resources(path string, handler any, middleware ...ResourceMiddl
 	}
 	type registration struct {
 		pattern string
+		action  Action
 		handler http.Handler
 	}
 	var registrations []registration
@@ -138,13 +147,13 @@ func (r *Router) Resources(path string, handler any, middleware ...ResourceMiddl
 				return fmt.Errorf("resource %s %s: middleware returned a nil handler", route.Action, path)
 			}
 		}
-		registrations = append(registrations, registration{route.Method + " " + route.Pattern, wrapped})
+		registrations = append(registrations, registration{route.Method + " " + route.Pattern, route.Action, wrapped})
 	}
 	if len(registrations) == 0 {
 		return fmt.Errorf("resource handler %T implements no resource action", handler)
 	}
 	for _, current := range registrations {
-		if err := r.Handle(current.pattern, current.handler); err != nil {
+		if err := r.handle(current.pattern, current.handler, current.action); err != nil {
 			return err
 		}
 	}

@@ -23,6 +23,7 @@ const (
 	CSRFHeaderName    = csrf.HeaderName
 )
 
+// ErrCSRFInvalid is the error for a missing or mismatched CSRF token; it is csrf.ErrInvalid.
 var ErrCSRFInvalid = csrf.ErrInvalid
 
 type cookieLoginResponse struct {

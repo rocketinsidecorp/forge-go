@@ -16,26 +16,45 @@ import (
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
+// MaxIntentInputBytes is the largest Intent.Input the engine accepts.
 const MaxIntentInputBytes = 64 << 10
 const journalWriteTimeout = 5 * time.Second
 
+// PermissionReconcile is the permission required to list and reconcile executions whose outcome is
+// unresolved.
 const PermissionReconcile auth.Permission = "agent:reconcile"
 
 var (
-	ErrInvalidIntent       = errors.New("agent intent is invalid")
-	ErrUnknownAction       = errors.New("agent action is not registered")
-	ErrPolicyDenied        = errors.New("agent action denied by policy")
-	ErrPermissionDenied    = errors.New("agent action permission denied")
-	ErrApprovalDenied      = errors.New("agent action approval denied")
-	ErrIntentReplayed      = errors.New("agent intent was already processed")
-	ErrAuditUnavailable    = errors.New("agent execution journal unavailable")
-	ErrExecutionFailed     = errors.New("agent action execution failed")
+	// ErrInvalidIntent is returned for an intent that is malformed, has invalid JSON input or fails
+	// the action's validation.
+	ErrInvalidIntent = errors.New("agent intent is invalid")
+	// ErrUnknownAction is returned for an intent that names an action that is not registered.
+	ErrUnknownAction = errors.New("agent action is not registered")
+	// ErrPolicyDenied is returned when the policy does not allow the action.
+	ErrPolicyDenied = errors.New("agent action denied by policy")
+	// ErrPermissionDenied is returned when the principal lacks the permission the action requires.
+	ErrPermissionDenied = errors.New("agent action permission denied")
+	// ErrApprovalDenied is returned when the approver refuses a destructive or external action.
+	ErrApprovalDenied = errors.New("agent action approval denied")
+	// ErrIntentReplayed is returned for an intent the actor already submitted in the tenant; it is
+	// never executed twice.
+	ErrIntentReplayed = errors.New("agent intent was already processed")
+	// ErrAuditUnavailable is returned when the journal cannot record the attempt, so the action
+	// does not run.
+	ErrAuditUnavailable = errors.New("agent execution journal unavailable")
+	// ErrExecutionFailed is returned when the action's executor returned an error.
+	ErrExecutionFailed = errors.New("agent action execution failed")
+	// ErrExecutionUnresolved is returned when the action ran but the journal could not record its
+	// completion, so its outcome is unresolved.
 	ErrExecutionUnresolved = errors.New("agent action execution outcome unresolved")
 	namePattern            = regexp.MustCompile(`^[a-z][a-z0-9_.-]{1,62}$`)
 )
 
+// Effect classifies what an action does to the world. The zero value, EffectUnknown, is not valid
+// for a registered action.
 type Effect uint8
 
+// The effect classes. Destructive and external actions require explicit approval before they run.
 const (
 	EffectUnknown Effect = iota
 	EffectReadOnly
@@ -44,8 +63,12 @@ const (
 	EffectExternal
 )
 
+// Outcome is how an execution ended, as recorded in the journal.
 type Outcome string
 
+// The outcomes: denied before execution, succeeded, failed before the executor started, or
+// unresolved when the executor started and its result is unknown, so the action may have taken
+// effect.
 const (
 	OutcomeDenied     Outcome = "denied"
 	OutcomeSucceeded  Outcome = "succeeded"
@@ -71,16 +94,22 @@ type Action struct {
 	Execute    func(context.Context, auth.Principal, json.RawMessage) (json.RawMessage, error)
 }
 
+// Decision is a policy's verdict on one action for one principal; only Allowed lets the action
+// proceed.
 type Decision struct {
 	Allowed bool
 }
 
+// Policy decides whether a principal may run an action for an intent. An error is treated as a
+// denial.
 type Policy interface {
 	Evaluate(context.Context, auth.Principal, Intent, Action) (Decision, error)
 }
 
+// PolicyFunc adapts a function to Policy.
 type PolicyFunc func(context.Context, auth.Principal, Intent, Action) (Decision, error)
 
+// Evaluate calls fn; a nil fn returns an error.
 func (fn PolicyFunc) Evaluate(ctx context.Context, principal auth.Principal, intent Intent, action Action) (Decision, error) {
 	if fn == nil {
 		return Decision{}, errors.New("agent policy is nil")
@@ -94,8 +123,10 @@ type Approver interface {
 	Approve(context.Context, auth.Principal, Intent, Action) error
 }
 
+// ApproverFunc adapts a function to Approver.
 type ApproverFunc func(context.Context, auth.Principal, Intent, Action) error
 
+// Approve calls fn; a nil fn returns an error.
 func (fn ApproverFunc) Approve(ctx context.Context, principal auth.Principal, intent Intent, action Action) error {
 	if fn == nil {
 		return errors.New("agent approver is nil")
@@ -114,6 +145,8 @@ type Attempt struct {
 	Effect      Effect
 }
 
+// Validate reports ErrInvalidIntent unless every ID is a UUIDv7, the action name is well formed and
+// the effect is a known class.
 func (a Attempt) Validate() error {
 	if a.ExecutionID.Version() != 7 || a.ExecutionID.Variant() != 2 ||
 		a.IntentID.Version() != 7 || a.IntentID.Variant() != 2 ||
@@ -134,6 +167,10 @@ type Journal interface {
 	Finish(context.Context, uuid.UUID, uuid.UUID, Outcome, string) error
 }
 
+// Engine runs registered actions behind a fixed sequence of checks: authentication and tenant,
+// policy, input validation, permission, approval for destructive and external effects, then a
+// durable journal entry before the action executes. It rejects replayed intents and fails closed at
+// each step.
 type Engine struct {
 	actions  map[string]Action
 	policy   Policy
@@ -141,6 +178,9 @@ type Engine struct {
 	journal  Journal
 }
 
+// New builds an Engine from an allowlist of actions. Every action needs a unique valid name, a
+// known effect, a valid permission and Validate and Execute functions; policy, approver and a
+// durable journal are all required.
 func New(actions []Action, policy Policy, approver Approver, journal Journal) (*Engine, error) {
 	if len(actions) == 0 {
 		return nil, errors.New("at least one agent action is required")
@@ -196,6 +236,10 @@ func (e *ActionError) Error() string { return e.Code }
 
 func (e *ActionError) Unwrap() error { return e.cause }
 
+// Execute runs the action that intent names for the authenticated principal in the request's
+// tenant, and returns its output and execution ID. Every refusal is an *ActionError with a stable
+// code and is recorded in the journal; after the executor starts, a failure leaves the execution
+// unresolved for reconciliation.
 func (e *Engine) Execute(ctx context.Context, intent Intent) (Result, error) {
 	if ctx == nil || !validIntent(intent) {
 		return Result{}, &ActionError{Code: "intent.invalid", cause: ErrInvalidIntent}

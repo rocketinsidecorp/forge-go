@@ -14,6 +14,7 @@ const MaxAttributeValueLength = 1024
 // ValueKind is the type held by a Value.
 type ValueKind uint8
 
+// The kinds of Value.
 const (
 	KindString ValueKind = iota + 1
 	KindInt64

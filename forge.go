@@ -43,6 +43,7 @@ func NewViewRenderer(templates fs.FS) (*ViewRenderer, error) {
 	return htmlviews.New(templates)
 }
 
+// Option configures an App built by New.
 type Option func(*options) error
 
 type options struct {
@@ -53,6 +54,9 @@ type options struct {
 	telemetrySet    bool
 }
 
+// App is a Forge application: the router, the health registry, the HTTP server with its fixed
+// security chain, telemetry and the shutdown hooks. Register routes, middleware and readiness
+// checks on it before it serves its first request, then call Run.
 type App struct {
 	config config.Config
 	logger *slog.Logger
@@ -94,6 +98,9 @@ type pipeline struct {
 // server has drained. ctx is bounded by the configured shutdown timeout.
 type ShutdownHook func(ctx context.Context) error
 
+// New builds an App from the options, which default to config.Default and a discarding logger. It
+// validates the configuration, registers the built-in health routes (GET /health, /health/live and
+// /health/ready) and constructs the HTTP server without listening; Run starts it.
 func New(opts ...Option) (*App, error) {
 	settings := options{
 		config: config.Default(),
@@ -167,6 +174,7 @@ func (a *App) build(settings options) error {
 	return nil
 }
 
+// WithConfig sets the configuration, for example one from config.Load. New validates it.
 func WithConfig(cfg config.Config) Option {
 	return func(settings *options) error {
 		settings.config = cfg
@@ -174,6 +182,7 @@ func WithConfig(cfg config.Config) Option {
 	}
 }
 
+// WithLogger sets the application logger; it must not be nil.
 func WithLogger(logger *slog.Logger) Option {
 	return func(settings *options) error {
 		if logger == nil {
@@ -345,18 +354,25 @@ func (a *App) Resources(path string, handler any, middleware ...router.ResourceM
 	return a.router.Resources(path, handler, middleware...)
 }
 
+// Handle registers handler for pattern, a net/http.ServeMux pattern such as "GET /posts/{id}". It
+// returns an error for an invalid or conflicting pattern, or once the application has served its
+// first request.
 func (a *App) Handle(pattern string, handler http.Handler) error {
 	return a.router.Handle(pattern, handler)
 }
 
+// HandleFunc is Handle for a handler function.
 func (a *App) HandleFunc(pattern string, handler http.HandlerFunc) error {
 	return a.router.HandleFunc(pattern, handler)
 }
 
+// Readiness registers a named readiness check. GET /health/ready and GET /health run every check
+// and answer 503 while any of them fails. Names must be unique.
 func (a *App) Readiness(name string, check health.Check) error {
 	return a.health.Register(name, check)
 }
 
+// Routes returns the registered routes sorted by path, then method.
 func (a *App) Routes() []router.Route { return a.router.Routes() }
 
 // SetAPIInfo sets the title, version and description of the application's
@@ -450,6 +466,8 @@ func (a *App) serveOpenAPI(w http.ResponseWriter, r *http.Request) {
 	handler.ServeHTTP(w, r)
 }
 
+// Handler returns the application's full HTTP handler, including the security headers and the
+// middleware, without listening. Use it to test the application with httptest.
 func (a *App) Handler() http.Handler { return a.server.Handler() }
 
 // Run serves HTTP until ctx is cancelled, then drains in-flight requests and

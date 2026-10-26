@@ -87,8 +87,10 @@ type Key struct {
 
 func (Key) String() string { return "encryption.Key(" + redacted + ")" }
 
+// GoString prints [REDACTED] in %#v output.
 func (Key) GoString() string { return "encryption.Key(" + redacted + ")" }
 
+// LogValue logs [REDACTED].
 func (Key) LogValue() slog.Value { return slog.StringValue(redacted) }
 
 // KeyRing holds the active key, used for every new ciphertext, and previous

@@ -14,6 +14,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/encryption"
 )
 
+// MaxFileBytes bounds the encrypted file; MaxPlaintextBytes bounds the document inside it.
 const (
 	// FormatVersion is the version of the encrypted file format. It is
 	// authenticated, so a file cannot be downgraded or reinterpreted.

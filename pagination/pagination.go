@@ -15,6 +15,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
+// The default and the largest page size.
 const (
 	DefaultLimit = 50
 	MaxLimit     = 200

@@ -37,17 +37,28 @@ const (
 )
 
 var (
-	ErrMFAInvalid           = fault.New("mfa_invalid", "multi-factor code or challenge is invalid or expired", fault.CategoryUnauthorized, 0)
+	// ErrMFAInvalid is the error for a wrong, replayed or expired MFA code or challenge; it does
+	// not say which.
+	ErrMFAInvalid = fault.New("mfa_invalid", "multi-factor code or challenge is invalid or expired", fault.CategoryUnauthorized, 0)
+	// ErrMFAEnrollmentInvalid is the error for a pending enrollment that is missing, expired or
+	// whose first code is wrong.
 	ErrMFAEnrollmentInvalid = fault.New("mfa_enrollment_invalid", "MFA enrollment is invalid or expired", fault.CategoryInvalid, 0)
-	ErrMFAAlreadyEnabled    = fault.New("mfa_already_enabled", "MFA is already enabled", fault.CategoryConflict, 0)
-	ErrMFANotEnabled        = fault.New("mfa_not_enabled", "MFA is not enabled", fault.CategoryConflict, 0)
+	// ErrMFAAlreadyEnabled is the 409 error for enrolling an account that already has an active
+	// factor.
+	ErrMFAAlreadyEnabled = fault.New("mfa_already_enabled", "MFA is already enabled", fault.CategoryConflict, 0)
+	// ErrMFANotEnabled is the 409 error for changing or disabling the factor of an account that has
+	// none.
+	ErrMFANotEnabled = fault.New("mfa_not_enabled", "MFA is not enabled", fault.CategoryConflict, 0)
 )
 
+// MFAChallengeToken is the one-time secret handed to a client that passed the password step and
+// still owes a second factor. Persist Digest, never the token; it formats and logs as redacted.
 type MFAChallengeToken struct {
 	secret string
 	digest Digest
 }
 
+// NewMFAChallengeToken returns a token made of 32 random bytes.
 func NewMFAChallengeToken() (MFAChallengeToken, error) {
 	raw := make([]byte, tokenBytes)
 	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
@@ -59,6 +70,8 @@ func NewMFAChallengeToken() (MFAChallengeToken, error) {
 	}, nil
 }
 
+// ParseMFAChallengeToken parses the canonical text of a token and returns ErrMFAInvalid for
+// anything else.
 func ParseMFAChallengeToken(secret string) (MFAChallengeToken, error) {
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(secret)
 	if err != nil || len(raw) != tokenBytes || base64.RawURLEncoding.EncodeToString(raw) != secret {
@@ -67,14 +80,18 @@ func ParseMFAChallengeToken(secret string) (MFAChallengeToken, error) {
 	return MFAChallengeToken{secret: secret, digest: sha256.Sum256(raw)}, nil
 }
 
+// Reveal returns the token text, for delivery to the client.
 func (t MFAChallengeToken) Reveal() string { return t.secret }
 
 func (MFAChallengeToken) String() string { return "[REDACTED]" }
 
+// GoString redacts the token in %#v output.
 func (MFAChallengeToken) GoString() string { return "auth.MFAChallengeToken([REDACTED])" }
 
+// LogValue redacts the token in structured logs.
 func (MFAChallengeToken) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
 
+// Digest returns the SHA-256 lookup key a store persists.
 func (t MFAChallengeToken) Digest() Digest { return t.digest }
 
 // SecretCipher protects MFA seed material before it reaches persistence.
@@ -84,6 +101,7 @@ type SecretCipher interface {
 	Open(ciphertext []byte) ([]byte, error)
 }
 
+// AESGCMSecretCipher is a SecretCipher that encrypts with AES-256-GCM.
 type AESGCMSecretCipher struct {
 	aead cipher.AEAD
 }
@@ -115,6 +133,7 @@ func NewAESGCMSecretCipher(key []byte) (*AESGCMSecretCipher, error) {
 	return &AESGCMSecretCipher{aead: aead}, nil
 }
 
+// Seal encrypts plaintext; the result is the nonce followed by the ciphertext.
 func (c *AESGCMSecretCipher) Seal(plaintext []byte) ([]byte, error) {
 	if c == nil || c.aead == nil {
 		return nil, errors.New("MFA secret cipher is not configured")
@@ -122,6 +141,7 @@ func (c *AESGCMSecretCipher) Seal(plaintext []byte) ([]byte, error) {
 	return encryption.SealPrefixed(c.aead, plaintext, nil)
 }
 
+// Open decrypts the output of Seal; any failure is reported as an invalid encrypted MFA secret.
 func (c *AESGCMSecretCipher) Open(ciphertext []byte) ([]byte, error) {
 	if c == nil || c.aead == nil {
 		return nil, errors.New("MFA secret cipher is not configured")
@@ -133,6 +153,8 @@ func (c *AESGCMSecretCipher) Open(ciphertext []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
+// TOTPSecretRecord is a stored TOTP secret: encrypted, with its digest and the last accepted
+// time-step counter.
 type TOTPSecretRecord struct {
 	SubjectID        uuid.UUID
 	SecretDigest     Digest
@@ -147,6 +169,8 @@ type TOTPSecretRecord struct {
 	FactorActive bool
 }
 
+// MFAChallengeRecord is a stored login challenge together with the factor secret needed to verify
+// its code.
 type MFAChallengeRecord struct {
 	SubjectID         uuid.UUID
 	MembershipID      uuid.UUID
@@ -172,8 +196,8 @@ type MFAStore interface {
 	ConsumeMFABackupChallenge(ctx context.Context, digest Digest, backupCodeDigest Digest) (membershipID uuid.UUID, consumed bool, err error)
 }
 
-// MFAChallengeIssuer is the narrow LoginService dependency used after a
-// correct password for an account that has MFA enabled.
+// MFALifecycleStore is the optional MFAStore capability that rotates and
+// disables an active factor.
 //
 // stepUp, when not nil, is the digest of a backup code given for step-up
 // authentication of the change: the store uses it up in the transaction that
@@ -185,52 +209,70 @@ type MFALifecycleStore interface {
 	DisableMFA(ctx context.Context, subjectID uuid.UUID, stepUp *Digest) (disabled bool, err error)
 }
 
+// MFAChallengeIssuer is the narrow LoginService dependency used after a
+// correct password for an account that has MFA enabled.
 type MFAChallengeIssuer interface {
 	IssueMFAChallenge(ctx context.Context, membershipID uuid.UUID, credentialVersion int64, sessionExpiresAt time.Time) (token MFAChallengeToken, expiresAt time.Time, err error)
 }
 
+// TOTPSecret is the base32 text of a TOTP seed, shown once at enrollment. It formats and logs as
+// redacted.
 type TOTPSecret struct {
 	value string
 }
 
+// Reveal returns the seed text.
 func (s TOTPSecret) Reveal() string { return s.value }
 
 func (TOTPSecret) String() string { return "[REDACTED]" }
 
+// GoString redacts the seed in %#v output.
 func (TOTPSecret) GoString() string { return "auth.TOTPSecret([REDACTED])" }
 
+// LogValue redacts the seed in structured logs.
 func (TOTPSecret) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
 
+// TOTPProvisioningURI is the otpauth URI, usually rendered as a QR code, that carries the seed to
+// an authenticator app. It contains the secret, so it formats and logs as redacted.
 type TOTPProvisioningURI struct {
 	value string
 }
 
+// Reveal returns the URI text.
 func (u TOTPProvisioningURI) Reveal() string { return u.value }
 
 func (TOTPProvisioningURI) String() string { return "[REDACTED]" }
 
+// GoString redacts the URI in %#v output.
 func (TOTPProvisioningURI) GoString() string {
 	return "auth.TOTPProvisioningURI([REDACTED])"
 }
 
+// LogValue redacts the URI in structured logs.
 func (TOTPProvisioningURI) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
 
+// TOTPEnrollment is a pending TOTP factor: the secret, its provisioning URI and when the enrollment
+// expires.
 type TOTPEnrollment struct {
 	Secret          TOTPSecret
 	ProvisioningURI TOTPProvisioningURI
 	ExpiresAt       time.Time
 }
 
+// TOTPConfirmation is the result of confirming a factor: the one-time backup codes, shown once.
 type TOTPConfirmation struct {
 	BackupCodes []MFABackupCode
 }
 
+// MFACompletion is the second step of an MFA sign-in: the challenge token, a TOTP or backup code,
+// and the client address (Source) used for throttling.
 type MFACompletion struct {
 	ChallengeToken string
 	Code           string
 	Source         string
 }
 
+// MFAService enrolls, rotates and disables TOTP factors and completes MFA sign-ins.
 type MFAService struct {
 	store        MFAStore
 	sessions     CredentialSessionCreator
@@ -242,8 +284,10 @@ type MFAService struct {
 	challengeTTL time.Duration
 }
 
+// MFAOption configures an MFAService.
 type MFAOption func(*MFAService) error
 
+// WithMFAClock sets the clock MFAService uses; the default is time.Now.
 func WithMFAClock(now func() time.Time) MFAOption {
 	return func(service *MFAService) error {
 		if now == nil {
@@ -254,6 +298,8 @@ func WithMFAClock(now func() time.Time) MFAOption {
 	}
 }
 
+// WithMFAChallengeTTL sets how long a login challenge lasts, between 1 and 15 minutes; the default
+// is 5.
 func WithMFAChallengeTTL(ttl time.Duration) MFAOption {
 	return func(service *MFAService) error {
 		if ttl < minMFAChallengeTTL || ttl > maxMFAChallengeTTL {
@@ -264,6 +310,7 @@ func WithMFAChallengeTTL(ttl time.Duration) MFAOption {
 	}
 }
 
+// WithMFAThrottler replaces the default in-memory throttler that limits code attempts.
 func WithMFAThrottler(throttler LoginThrottler) MFAOption {
 	return func(service *MFAService) error {
 		if throttler == nil {
@@ -274,6 +321,7 @@ func WithMFAThrottler(throttler LoginThrottler) MFAOption {
 	}
 }
 
+// WithMFAAuditor makes MFAService record its MFA events.
 func WithMFAAuditor(auditor SecurityAuditor) MFAOption {
 	return func(service *MFAService) error {
 		if auditor == nil {
@@ -296,6 +344,8 @@ func DefaultMFAThrottleConfig() LoginThrottleConfig {
 	}
 }
 
+// NewMFAService builds an MFAService. store persists factors and challenges, sessions creates the
+// session after a correct code and secretCipher protects TOTP seeds at rest.
 func NewMFAService(store MFAStore, sessions CredentialSessionCreator, secretCipher SecretCipher, options ...MFAOption) (*MFAService, error) {
 	if store == nil || sessions == nil || secretCipher == nil {
 		return nil, errors.New("MFA store, session creator and secret cipher are required")
@@ -554,6 +604,9 @@ func (s *MFAService) lifecycleStore() (MFALifecycleStore, error) {
 	return store, nil
 }
 
+// IssueMFAChallenge creates a login challenge for membershipID at credentialVersion; the session
+// created on completion expires at sessionExpiresAt. It returns the token and when the challenge
+// expires.
 func (s *MFAService) IssueMFAChallenge(ctx context.Context, membershipID uuid.UUID, credentialVersion int64, sessionExpiresAt time.Time) (MFAChallengeToken, time.Time, error) {
 	if membershipID.Version() != 7 || membershipID.Variant() != 2 {
 		return MFAChallengeToken{}, time.Time{}, errors.New("MFA membership ID must be a UUIDv7")

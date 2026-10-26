@@ -13,6 +13,8 @@ import (
 
 var _ auth.SecurityAuditor = (*Repository)(nil)
 
+// RecordSecurityEvent stores event in forge_security_events after validating it. It implements
+// auth.SecurityAuditor.
 func (r *Repository) RecordSecurityEvent(ctx context.Context, event auth.SecurityEvent) error {
 	return recordSecurityEvent(ctx, r.db, event)
 }

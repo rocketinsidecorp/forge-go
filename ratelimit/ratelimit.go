@@ -40,6 +40,7 @@ type Limit struct {
 	Per time.Duration
 }
 
+// The bounds of a Limit's period: it must lie between MinPer and MaxPer.
 const (
 	// MaxN is the largest Limit.N.
 	MaxN = 1 << 30

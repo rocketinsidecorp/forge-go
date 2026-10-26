@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,7 +33,7 @@ func TestRunRoutesPrintsATable(t *testing.T) {
 	t.Parallel()
 	root := writeRoutesProject(t)
 	var output bytes.Buffer
-	if err := runRoutesAt(nil, &output, root); err != nil {
+	if err := runRoutesAt(nil, &output, io.Discard, root); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(output.String(), "\n")
@@ -70,10 +71,10 @@ func TestRunRoutesPrintsATable(t *testing.T) {
 
 func TestRunRoutesRejectsArgumentsAndNonProjects(t *testing.T) {
 	t.Parallel()
-	if err := runRoutesAt([]string{"--json"}, &bytes.Buffer{}, writeRoutesProject(t)); err == nil {
+	if err := runRoutesAt([]string{"--json"}, &bytes.Buffer{}, io.Discard, writeRoutesProject(t)); err == nil {
 		t.Fatal("accepted arguments")
 	}
-	if err := runRoutesAt(nil, &bytes.Buffer{}, t.TempDir()); err == nil || !strings.Contains(err.Error(), "go.mod") {
+	if err := runRoutesAt(nil, &bytes.Buffer{}, io.Discard, t.TempDir()); err == nil || !strings.Contains(err.Error(), "go.mod") {
 		t.Fatalf("outside a project: %v", err)
 	}
 }
@@ -83,7 +84,7 @@ func TestRunRoutesWarnsAboutUnparsableSource(t *testing.T) {
 	root := writeRoutesProject(t)
 	writeFile(t, filepath.Join(root, "app", "broken.go"), "package app\nfunc {\n")
 	var output bytes.Buffer
-	if err := runRoutesAt(nil, &output, root); err != nil {
+	if err := runRoutesAt(nil, &output, io.Discard, root); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "warning: Some Go files could not be parsed") || !strings.Contains(output.String(), "/posts/{id}/edit") {
@@ -121,7 +122,7 @@ func newTestServer(mux interface{ Handle(string, any) }) {
 }
 `)
 	var table bytes.Buffer
-	if err := runRoutesAt(nil, &table, root); err != nil {
+	if err := runRoutesAt(nil, &table, io.Discard, root); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(table.String(), "/items") || strings.Contains(table.String(), "_test.go") {

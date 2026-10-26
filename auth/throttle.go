@@ -16,6 +16,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/fault"
 )
 
+// ErrLoginThrottled is the error for attempts that exceed the throttle's limits.
 var ErrLoginThrottled = fault.New("login_throttled", "too many login attempts", fault.CategoryRateLimited, 0)
 
 // LoginThrottleKey is the digest identity of one attempt. The throttle never
@@ -36,6 +37,8 @@ type LoginThrottleKey struct {
 	HasPair   bool
 }
 
+// LoginThrottleDecision is the throttle's answer for one attempt: whether it may proceed and, when
+// it may not, how long until a counter resets.
 type LoginThrottleDecision struct {
 	Allowed    bool
 	RetryAfter time.Duration
@@ -51,6 +54,8 @@ type LoginThrottler interface {
 	Success(ctx context.Context, key LoginThrottleKey) error
 }
 
+// LoginThrottledError reports a throttled attempt and how long to wait. It matches
+// ErrLoginThrottled.
 type LoginThrottledError struct {
 	RetryAfter time.Duration
 }
@@ -94,6 +99,8 @@ func DefaultLoginThrottleConfig() LoginThrottleConfig {
 	}
 }
 
+// Validate reports whether the policy is usable: a positive window and limits, a pair limit between
+// zero and the account limit, and room for at least three counters.
 func (config LoginThrottleConfig) Validate() error {
 	if config.Window <= 0 {
 		return errors.New("login throttle window must be positive")
@@ -192,6 +199,8 @@ func warnProcessLocalThrottle(logger *slog.Logger, service string, throttler Log
 		"service", service, "environment", "production")
 }
 
+// NewMemoryLoginThrottler returns an in-process LoginThrottler for the policy. Its counters are not
+// shared between processes.
 func NewMemoryLoginThrottler(config LoginThrottleConfig) (*MemoryLoginThrottler, error) {
 	return newMemoryLoginThrottler(config, time.Now)
 }
@@ -211,6 +220,8 @@ func newMemoryLoginThrottler(config LoginThrottleConfig, now func() time.Time) (
 	}, nil
 }
 
+// Attempt counts one attempt against the key's counters, or refuses it without counting when one of
+// them is exhausted.
 func (m *MemoryLoginThrottler) Attempt(ctx context.Context, key LoginThrottleKey) (LoginThrottleDecision, error) {
 	if err := ctx.Err(); err != nil {
 		return LoginThrottleDecision{}, err
@@ -265,6 +276,7 @@ func (m *MemoryLoginThrottler) Attempt(ctx context.Context, key LoginThrottleKey
 	return LoginThrottleDecision{Allowed: true}, nil
 }
 
+// Success clears the account and pair counters of key, never its source counter.
 func (m *MemoryLoginThrottler) Success(ctx context.Context, key LoginThrottleKey) error {
 	if err := ctx.Err(); err != nil {
 		return err

@@ -46,10 +46,12 @@ type TaskRepository struct {
 
 var _ application.TaskRepository = (*TaskRepository)(nil)
 
+// NewTaskRepository returns a TaskRepository on db, a pool or a transaction.
 func NewTaskRepository(db postgres.DBTX) *TaskRepository {
 	return &TaskRepository{db: db}
 }
 
+// Create inserts task and returns the stored row.
 func (r *TaskRepository) Create(ctx context.Context, task domain.Task) (domain.Task, error) {
 	row := r.db.QueryRow(ctx, insertTask, task.ID, task.Title, task.Done, task.Version, task.CreatedAt, task.UpdatedAt)
 	created, err := scanTask(row)
@@ -59,6 +61,7 @@ func (r *TaskRepository) Create(ctx context.Context, task domain.Task) (domain.T
 	return created, nil
 }
 
+// Get returns the task with id, or domain.ErrTaskNotFound.
 func (r *TaskRepository) Get(ctx context.Context, id uuid.UUID) (domain.Task, error) {
 	task, err := scanTask(r.db.QueryRow(ctx, selectTask, id))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -70,6 +73,8 @@ func (r *TaskRepository) Get(ctx context.Context, id uuid.UUID) (domain.Task, er
 	return task, nil
 }
 
+// List returns up to limit tasks, newest first, starting after the task with ID after (the zero
+// UUID for the first page).
 func (r *TaskRepository) List(ctx context.Context, after uuid.UUID, limit int) ([]domain.Task, error) {
 	var rows pgx.Rows
 	var err error
@@ -88,6 +93,9 @@ func (r *TaskRepository) List(ctx context.Context, after uuid.UUID, limit int) (
 	return tasks, nil
 }
 
+// Update writes task only if its version is still the stored one (optimistic locking) and returns
+// the stored row. It returns domain.ErrTaskNotFound for a deleted task and domain.ErrStaleVersion
+// when someone wrote it first.
 func (r *TaskRepository) Update(ctx context.Context, task domain.Task) (domain.Task, error) {
 	updated, err := scanTask(r.db.QueryRow(ctx, updateTask, task.ID, task.Version, task.Title, task.Done, task.UpdatedAt))
 	if errors.Is(err, pgx.ErrNoRows) {
