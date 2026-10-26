@@ -79,6 +79,15 @@ Rules enforced at startup ([ADR 0005](adr/0005-environment-configuration-fail-fa
   rejected too: libpq's default, `prefer`, falls back to plaintext silently.
   Only `verify-full` also checks the server's host name; for a private CA add
   `sslrootcert`.
+- **PostgreSQL ignores the `PG*` TLS variables:** `PGSSLMODE`,
+  `PGSSLROOTCERT`, `PGSSLCERT`, `PGSSLKEY`, `PGSSLPASSWORD`, `PGSSLSNI`,
+  `PGSSLNEGOTIATION`, `PGCHANNELBINDING` and `PGREQUIREAUTH` (and a service
+  file named by `PGSERVICE`) cannot change what `FORGE_DATABASE_URL` says. A
+  URL without `sslmode` gets libpq's default, `prefer`, whatever
+  `PGSSLMODE` holds. The other `PG*` variables (`PGUSER`, `PGPASSWORD`,
+  `PGAPPNAME`, ...) still fill what the URL leaves out, as for `psql`.
+  Forge does this without editing its own environment: it writes the default
+  of each such parameter into the URL it gives pgx.
 - **MySQL/MariaDB in `production`:** `tls=true`, which verifies the server
   certificate. `skip-verify` and `preferred` encrypt without verifying and are
   rejected in production.
@@ -899,6 +908,9 @@ and any other parameter pgx would send as a session setting such as
 variables of forge's own environment (`PGSSLMODE`, `PGOPTIONS`,
 `PGSERVICE`, `PGUSER` and the rest) for its PostgreSQL connection, as for
 `psql` and `pg_dump`: a URL without `sslmode` uses libpq's default `prefer`.
+The variables are neutralized by naming the default of each in the URL given
+to pgx (a service named by `PGSERVICE` is replaced by an empty one), never by
+unsetting them in the running process.
 Put `sslmode` and the other settings in the URL. A missing `sslrootcert`,
 `sslcert` or `sslkey` file is reported as an invalid TLS setting.
 

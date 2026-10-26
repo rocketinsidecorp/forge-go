@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io/fs"
 	"net"
-	"os"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/rocketinsidecorp/forge-go/internal/pgurl"
 )
 
 const (
@@ -88,38 +88,34 @@ func (t *Target) pgConnConfig(name string) (*pgx.ConnConfig, error) {
 	return cfg, nil
 }
 
-// pgEnvironmentLock serializes parsePgConfig, which briefly edits the
-// process environment.
-var pgEnvironmentLock sync.Mutex
-
 // parsePgConfig parses an administration URL with pgx without letting forge's
 // own environment decide anything. pgx reads PGSSLMODE, PGOPTIONS,
 // PGTARGETSESSIONATTRS, PGSERVICE, PGUSER and every other PG* variable
 // straight from the process environment as defaults for what the URL leaves
-// unset, and has no option to ignore them; a value written into the URL
-// cannot stand in for all of them (an empty service or file name is not
-// "none"). So they are unset for the duration of the parse and restored
-// after, as pgEnvironment drops them for the vendor tools: a URL without
-// sslmode gets the libpq default (prefer) from both, never a lower PGSSLMODE.
-// The lock keeps concurrent parses from seeing one another's edits.
+// unset, and has no option to ignore them. They are not unset around the
+// parse (that would edit the environment of the whole process under every
+// concurrent reader): pgurl.Isolate writes the libpq default of each such
+// parameter the environment sets into the URL, which pgx prefers to the
+// environment, and a service named by PGSERVICE is replaced by an empty one.
+// A URL without sslmode therefore gets the libpq default (prefer) from both
+// pgx and the vendor tools (pgEnvironment drops the variables for them),
+// never a lower PGSSLMODE. Session settings the URL does not name (PGOPTIONS,
+// PGTZ, PGAPPNAME) are removed after the parse.
 func parsePgConfig(connString string) (*pgx.ConnConfig, error) {
-	pgEnvironmentLock.Lock()
-	defer pgEnvironmentLock.Unlock()
-	var saved [][2]string
-	for _, entry := range os.Environ() {
-		if name, value, _ := strings.Cut(entry, "="); strings.HasPrefix(name, "PG") {
-			saved = append(saved, [2]string{name, value})
-			_ = os.Unsetenv(name)
-		}
+	allowed := append([]string{"host", "port", "database"}, pgOptionKeys...)
+	iso, err := pgurl.Isolate(connString, pgurl.Everything, allowed)
+	if err != nil {
+		return nil, errors.New("the PostgreSQL connection URL is not valid")
 	}
-	defer func() {
-		for _, kv := range saved {
-			_ = os.Setenv(kv[0], kv[1])
-		}
-	}()
-	return pgx.ParseConfigWithOptions(connString, pgx.ParseConfigOptions{
-		ParseConfigOptions: pgconn.ParseConfigOptions{ConnStringAllowedKeys: append([]string{"host", "port", "database"}, pgOptionKeys...)},
+	defer iso.Close()
+	cfg, err := pgx.ParseConfigWithOptions(iso.URL, pgx.ParseConfigOptions{
+		ParseConfigOptions: pgconn.ParseConfigOptions{ConnStringAllowedKeys: append(allowed, iso.PinnedKeys()...)},
 	})
+	if err != nil {
+		return nil, err
+	}
+	iso.StripSession(cfg.RuntimeParams)
+	return cfg, nil
 }
 
 // pgAdmin connects to a maintenance database: the one place from which the

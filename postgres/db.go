@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/pgurl"
 	"github.com/rocketinsidecorp/forge-go/sqldb"
 )
 
@@ -114,7 +115,16 @@ func parseConfig(cfg config.Database) (*pgxpool.Config, error) {
 	if adapter := cfg.Adapter(); adapter != config.AdapterPostgres {
 		return nil, fmt.Errorf("FORGE_DATABASE_URL selects the %s adapter, but this application uses postgres", adapter)
 	}
-	poolConfig, err := pgxpool.ParseConfig(cfg.URL.Reveal())
+	// PG* variables fill what the URL leaves out, but TLS (sslmode, the
+	// certificate files, channel binding, required authentication) is the
+	// URL's alone: a PGSSLMODE in the process environment must not weaken or
+	// redirect it. See pgurl.Isolate.
+	iso, err := pgurl.Isolate(cfg.URL.Reveal(), pgurl.TLSOnly, nil)
+	if err != nil {
+		return nil, errors.New("FORGE_DATABASE_URL is not a valid PostgreSQL connection string")
+	}
+	defer iso.Close()
+	poolConfig, err := pgxpool.ParseConfig(iso.URL)
 	if err != nil {
 		// Not wrapped: parse errors can quote the connection string.
 		return nil, errors.New("FORGE_DATABASE_URL is not a valid PostgreSQL connection string")
