@@ -69,8 +69,8 @@ func AllowRowSecurityBypass() Option {
 	return func(o *openOptions) { o.rowSecurity = &check }
 }
 
-// Lazy, with true, makes Open return without connecting: the pool connects
-// on its first query, and each connection it opens is checked for
+// Lazy makes Open, when lazy is true, return without connecting: the pool
+// connects on its first query, and each connection it opens is checked for
 // row-level security (RequireRowSecurity) before its first use, where Open
 // would check the pool. A wrong URL or an unreachable database is then
 // reported by that query, not by Open. Generated applications pass

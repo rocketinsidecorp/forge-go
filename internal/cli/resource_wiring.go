@@ -49,11 +49,11 @@ const identityJSONGuard = `	protect := func(permission string, next http.Handler
 	}
 `
 
-// bearerlessJSONGuard is the guard of JSON routes in an application with
+// closedJSONGuard is the guard of JSON routes in an application with
 // Forge identity that issues no bearer tokens (created without --api-auth):
 // it refuses every request, as forge-rust's DenyAll does in the same case,
 // rather than mounting routes behind a credential nobody can obtain.
-const bearerlessJSONGuard = `	// The JSON routes authenticate bearer tokens, and this application issues
+const closedJSONGuard = `	// The JSON routes authenticate bearer tokens, and this application issues
 	// none (forge new --api-auth mounts POST /auth/login), so they stay
 	// closed: protect refuses every request until the application signs API
 	// clients in.
@@ -64,9 +64,9 @@ const bearerlessJSONGuard = `	// The JSON routes authenticate bearer tokens, and
 	}
 `
 
-// bearerlessJSONNote tells how to open JSON routes wired with
-// bearerlessJSONGuard.
-const bearerlessJSONNote = "This application issues no bearer tokens (it was created without --api-auth), so the JSON routes are mounted closed: protect refuses every request, as forge-rust's DenyAll does. To open them to API clients, run `forge generate authentication --api-auth`, mount the routes it prints, then replace protect with the bearer guard:\n\n" + identityJSONGuard
+// closedJSONNote tells how to open JSON routes wired with
+// closedJSONGuard.
+const closedJSONNote = "This application issues no bearer tokens (it was created without --api-auth), so the JSON routes are mounted closed: protect refuses every request, as forge-rust's DenyAll does. To open them to API clients, run `forge generate authentication --api-auth`, mount the routes it prints, then replace protect with the bearer guard:\n\n" + identityJSONGuard
 
 // hasBearerSignIn reports that app/bootstrap/bootstrap.go mounts the
 // bearer-token login, POST /auth/login (forge new --api-auth, or the wiring
@@ -145,8 +145,8 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 			fmt.Sprintf("The migration registers the permissions %s:read and %s:write; grant them to a role before callers can use the routes.", spec.Plural, spec.Plural),
 		}
 		if !spec.BearerSignIn {
-			parts.Guard = bearerlessJSONGuard
-			parts.Notes = append(parts.Notes, bearerlessJSONNote)
+			parts.Guard = closedJSONGuard
+			parts.Notes = append(parts.Notes, closedJSONNote)
 		}
 		if !spec.TenantScoped {
 			// Roles belong to tenants, so a tenant administrator can grant

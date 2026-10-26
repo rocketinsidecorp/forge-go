@@ -220,9 +220,10 @@ const (
 
 // Validate reports options NewScheduler would silently change: a negative
 // MaxConcurrentJobs, or one above 256 (zero is valid and means the default,
-// 4), and a negative MaxLateness. Call it where the options are built to refuse a misconfigured scheduler
-// at startup, like the other constructors that return an error; NewScheduler
-// itself keeps clamping, so existing callers are unaffected.
+// 4), and a negative MaxLateness. Call it where the options are built to
+// refuse a misconfigured scheduler at startup, like the other constructors
+// that return an error; NewScheduler itself keeps clamping, so existing
+// callers are unaffected.
 func (o SchedulerOptions) Validate() error {
 	if o.MaxConcurrentJobs < 0 || o.MaxConcurrentJobs > maxConcurrentJobs {
 		return fmt.Errorf("jobs: MaxConcurrentJobs must be between 0 (the default, %d) and %d, got %d", defaultConcurrentJobs, maxConcurrentJobs, o.MaxConcurrentJobs)

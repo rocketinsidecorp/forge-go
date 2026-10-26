@@ -347,8 +347,8 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 	case spec.Public:
 		parts.Notes = append(parts.Notes, fmt.Sprintf("WARNING: --public mounts the %s routes without a guard: anyone who can reach the server can call them.", spec.Name))
 	case spec.Identity && spec.API && !spec.BearerSignIn:
-		parts.Guard = bearerlessJSONGuard
-		parts.Notes = append(parts.Notes, bearerlessJSONNote)
+		parts.Guard = closedJSONGuard
+		parts.Notes = append(parts.Notes, closedJSONNote)
 		arguments += ", protect"
 	case spec.Identity && spec.API:
 		parts.Guard = identityJSONGuard

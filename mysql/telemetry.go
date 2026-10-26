@@ -35,8 +35,8 @@ func WithPoolName(name string) Option {
 	return func(o *openOptions) { o.poolName = name }
 }
 
-// Lazy, with true, makes Open return without connecting: the pool connects
-// on its first query, which then reports a wrong URL or an unreachable
+// Lazy makes Open, when lazy is true, return without connecting: the pool
+// connects on its first query, which then reports a wrong URL or an unreachable
 // server instead of Open. Generated applications pass Lazy(!app.Serving()),
 // so `routes` and `openapi`, which compose the application without serving
 // it, need no reachable database. Lazy(false) is Open's default.
