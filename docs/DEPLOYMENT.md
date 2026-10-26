@@ -378,6 +378,14 @@ file of `migrate.role`, which is the runtime role's, and the migration fails
 closed on PostgreSQL when that role cannot run DDL. `migrate.env` with
 `migrate.enabled: false` is an error.
 
+Moving the credential out of `env` into `migrate.env` does not reach the
+containers already deployed: the stopped ones kept for `forge deploy rollback`
+were created from the old env file and still hold it, and rolling back to a
+version deployed before the change starts one of them again. They age out as
+later deploys push them past `retain` (`forge deploy prune` removes them then);
+to drop them sooner, `docker rm` the stopped containers of those versions on
+each host, and do not roll back past the change.
+
 `forge app exec` still uses the role's env file, never `migrate.env`:
 `forge app exec migrate status` runs as the runtime role. To roll a migration
 back by hand, run the one-off container yourself with the credential from
