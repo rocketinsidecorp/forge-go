@@ -905,10 +905,9 @@ Rotating the key without breaking open pages takes two redeploys, with the old
 key kept for verification only (`FORGE_STREAMS_PREVIOUS_KEYS`, up to 3 keys,
 comma-separated; why two steps:
 [docs/VIEWS.md](docs/VIEWS.md#rotating-the-stream-signing-key)).
-`OLD_STREAMS_KEY` is the key in use now; `NEW_STREAMS_KEY=$(openssl rand -base64 32)`
-creates the new one.
-
 ```sh
+OLD_STREAMS_KEY="$FORGE_STREAMS_KEY"              # the key every replica uses now
+NEW_STREAMS_KEY="$(openssl rand -base64 32)"      # keep both somewhere safe
 # step 1: every replica learns the new key, but still signs with the old one
 export FORGE_STREAMS_KEY=$OLD_STREAMS_KEY
 export FORGE_STREAMS_PREVIOUS_KEYS=$NEW_STREAMS_KEY

@@ -814,11 +814,11 @@ that is already open: its next reconnect gets `403 stream_invalid` and stops
 updating until the page is reloaded. To rotate without that, move the old key
 to `FORGE_STREAMS_PREVIOUS_KEYS` (comma-separated, at most 3, same format).
 Previous keys only verify, never sign; the current key signs. Do it in two
-steps. `OLD_STREAMS_KEY` is the key in use now.
-
-`NEW_STREAMS_KEY=$(openssl rand -base64 32)` creates the new key.
+steps:
 
 ```sh
+OLD_STREAMS_KEY="$FORGE_STREAMS_KEY"              # the key every replica uses now
+NEW_STREAMS_KEY="$(openssl rand -base64 32)"      # keep both somewhere safe
 # step 1: every replica learns the new key, but still signs with the old one
 export FORGE_STREAMS_KEY=$OLD_STREAMS_KEY
 export FORGE_STREAMS_PREVIOUS_KEYS=$NEW_STREAMS_KEY
