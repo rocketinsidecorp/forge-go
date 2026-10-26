@@ -42,8 +42,10 @@ const (
 	maxPruneRounds = 10
 	maxClaimErrGap = 30 * time.Second
 
-	// A worker's listener reconnects after minListenBackoff, doubling up to
-	// maxListenBackoff while it keeps failing; polling covers the gap.
+	// A worker's listener reconnects after a jittered wait in
+	// [backoff/2, backoff], backoff starting at minListenBackoff (so 0.5s to
+	// 1s) and doubling up to maxListenBackoff (15s to 30s) while it keeps
+	// failing; polling covers the gap.
 	minListenBackoff = time.Second
 	maxListenBackoff = 30 * time.Second
 	// minWakeGap spaces claims that announcements trigger, so a flood of

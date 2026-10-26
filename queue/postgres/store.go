@@ -70,8 +70,10 @@ type Option func(*Store)
 // transaction pooling mode (connect workers directly or use session
 // pooling); and PostgreSQL serializes the commits of transactions that sent
 // a notification, which matters only at thousands of enqueues per second.
-// Notifications are hints: anyone who can NOTIFY on the database can wake
-// workers (they then claim once), and polling still finds every job.
+// Notifications are hints: each one wakes every idle worker polling that
+// queue, and each of them claims once (at most one claim per 10ms per
+// poller); anyone who can NOTIFY on the database can wake workers; and
+// polling still finds every job.
 func WithNotify() Option { return func(s *Store) { s.notify = true } }
 
 // NewStore returns a store on db's pool. The tables come from Migrations.

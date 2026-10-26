@@ -317,7 +317,9 @@ type Store interface {
 	Admin
 	// Claim leases the next eligible job of the request, or reports false.
 	// It does not recover expired leases: Recover does, and every Worker
-	// calls it on its own schedule.
+	// calls it on its own schedule. Code that drives a Store without a
+	// Worker must call Recover itself, or jobs of crashed workers stay
+	// leased forever.
 	Claim(ctx context.Context, request ClaimRequest) (Claimed, bool, error)
 	// Renew extends the lease to now+extend, or returns ErrLeaseLost.
 	Renew(ctx context.Context, lease Lease, extend time.Duration) error
@@ -346,8 +348,9 @@ const MaxClaimBatch = 100
 // trip. A Worker uses it when present and falls back to Claim otherwise.
 type BatchClaimer interface {
 	// ClaimBatch leases up to limit (1 to MaxClaimBatch) eligible jobs of the
-	// request, in the order Claim would return them one by one, and returns
-	// them, possibly none. Each job is leased exactly as Claim leases one:
+	// request, the ones Claim would return one by one, and returns them,
+	// possibly none, in no particular order (UPDATE ... RETURNING does not
+	// keep one). Each job is leased exactly as Claim leases one:
 	// same lease duration, attempt count and token fencing. The jobs may
 	// share one lease token; acknowledgements stay fenced because a lease
 	// names the job and the token.
