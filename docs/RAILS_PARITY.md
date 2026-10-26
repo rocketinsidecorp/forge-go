@@ -117,8 +117,10 @@ the work is finished and waiting for its review; **Planned** means not started.
   privilege; the Compose superuser's password is `development`. Forge-Rust
   adopts the refusal and both tests in
   [forge-rust#70](https://github.com/rocketinsidecorp/forge-rust/issues/70).
-  `forge deploy` giving the migration credential to the migrate step alone
-  is [forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57).
+  `forge deploy` gives the migration credential to the migrate step alone
+  through `migrate.env`
+  ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57));
+  Forge-Rust's `forge deploy` has no `migrate.env` yet.
 
 ## Review gate
 

@@ -952,10 +952,8 @@ Migrations are an explicit release step; `serve` never applies them.
    On PostgreSQL, `FORGE_MIGRATION_DATABASE_URL` is the migration role that
    owns the schema; never give it to the serving containers, which get only
    `FORGE_DATABASE_URL` ([Database roles](#database-roles-postgresql)).
-   `forge deploy` cannot yet give it to the migrate step alone
-   ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57));
-   [DEPLOYMENT.md](DEPLOYMENT.md#database-roles) has the interim
-   configuration and its cost.
+   `forge deploy` gives it to the migrate step alone through `migrate.env`
+   in `config/deploy.yml` ([DEPLOYMENT.md](DEPLOYMENT.md#database-roles)).
 
    For SQLite, mount the same volume the application uses:
 
