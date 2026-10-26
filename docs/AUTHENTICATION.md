@@ -58,14 +58,124 @@ principal and its validated tenant in the request context.
 
 ## Password hashing
 
-`auth.HashPassword` uses the Go 1.27 standard-library `crypto/pbkdf2`
-implementation with HMAC-SHA-256, a random 128-bit salt, a 256-bit derived key,
-and a default work factor of 600,000 iterations. The encoded form carries a
-version and work factor so future releases can identify hashes that should be
-upgraded after successful authentication.
+`auth.HashPassword` (`auth.DefaultPasswordHasher`) writes Argon2id v19
+(RFC 9106, `golang.org/x/crypto/argon2`) with Forge-Rust's parameters: 19,456
+KiB of memory, 2 passes, 1 lane, a random 16-byte salt from `crypto/rand` and a
+32-byte key, as a PHC string in unpadded standard base64:
 
-Forge never trims or normalizes passwords before hashing. Malformed hashes are
-rejected fail-closed and comparisons use constant-time equality.
+```text
+$argon2id$v=19$m=19456,t=2,p=1$<salt>$<key>
+```
+
+Either framework verifies the other's hashes (a test verifies a hash written
+by Forge-Rust). Verification uses the cost the stored hash names, within
+bounds that cap what one stored hash can demand: only version 19; `m`, `t`
+and `p` in that order as canonical decimals; `m` from `8p` to 65,536 KiB, `t`
+from 1 to 10, `p` from 1 to 8; a salt of 8 to 64 bytes; a 32-byte key; no
+padding, other alphabet or extra parameter; at most 1,024 characters.
+Anything else is `ErrPasswordHashInvalid`, decided before any hashing.
+
+**Upgrading from PBKDF2.** Hashes written before ([ADR
+0048](adr/0048-argon2id-password-hashing.md)), `$pbkdf2-sha256$v=1$i=…`
+(PBKDF2-HMAC-SHA256, 100,000 to 5,000,000 iterations), still verify. When a
+sign-in succeeds with a hash that is not Argon2id with the current parameters
+(PBKDF2, or Argon2id with any other `m`, `t` or `p`, or a salt that is not
+16 bytes), `LoginService` hashes the password again and stores it through
+`PasswordStore.ReplacePasswordHash`, which replaces it only if the stored hash
+is still the one verified; if it changed concurrently, no session is issued.
+Nothing needs to be migrated by hand: each account moves to Argon2id at its
+next sign-in. That first sign-in costs a PBKDF2 verification plus an Argon2id
+hash (about 120 + 50 ms). If hashing is saturated at that moment the rehash is
+skipped, the sign-in still succeeds, and the next one tries again.
+
+**Legacy timing floor.** A wrong password against a PBKDF2 hash costs about
+120 ms, against an Argon2id hash or an unknown account about 30 ms: without
+more, the difference would tell accounts that still have a PBKDF2 hash (that
+exist and have not signed in since the upgrade) from unknown ones. So while a
+hasher writes Argon2id, every failed check of `LoginService` and of the
+`auth.Browser` step-up (unknown account or tenant, malformed login, wrong
+password against any hash) is padded, from the credential lookup on, up to the
+cost of one PBKDF2-600k verification plus 25% (one verification varies from
+call to call by some 10-20%). The floor is calibrated once per hasher, on the
+first failure, as the slowest of two PBKDF2 verifications, and rises with the
+slowest legacy verification seen since, at most to twice the calibration:
+observations only raise it, so a slow outlier must not slow every later
+failure for the life of the process. The calibration itself is not capped: a
+CPU flood during the first failure after start makes every failed check
+slower until the process restarts, which costs latency only. Measured on a
+4-CPU container: unknown account, wrong password on an Argon2id account and
+wrong password on a PBKDF2 account all answered in 185 ms (medians within
+0.5 ms; 33, 31 and 130 ms without the floor). The failure is audited first
+(`auth.login_failed`, or the step-up's denied event), then padded, so a client
+that hangs up during the padding, having learned the guess was wrong, still
+leaves the record. The padding is a timer: it holds no `PasswordWorkLimiter`
+slot, burns no CPU and ends with the request's context. Successful sign-ins
+are not padded.
+
+An application created with this release or later never stored a PBKDF2 hash,
+and one whose `$pbkdf2-sha256$` hashes are all gone (below) no longer needs the
+floor. Turn it off where `identityRoutes` (`app/bootstrap/bootstrap.go`)
+builds the login service:
+
+```go
+hasher, err := auth.NewPasswordHasher(auth.WithLegacyHashTimingFloor(false))
+login, err := auth.NewLoginService(repository, repository, auth.WithLoginPasswordHasher(hasher))
+```
+
+A `forge_pbkdf2` build needs no floor: every check already costs PBKDF2.
+
+**Dormant PBKDF2 accounts.** To stop waiting for accounts that never sign in,
+count them and make them choose a new password through "Forgot your
+password?". This sets a hash no password matches (all-zero key) and ends their
+sessions:
+
+```sql
+SELECT count(*) FROM forge_users WHERE password_hash LIKE '$pbkdf2-sha256$%';
+
+UPDATE forge_users
+SET password_hash = '$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    session_version = session_version + 1,
+    updated_at = now()
+WHERE password_hash LIKE '$pbkdf2-sha256$%';
+```
+
+Do this only where reset emails are configured (`FORGE_AUTH_PASSWORD_RESET_URL`
+and `FORGE_MAIL_*`); then turn the floor off.
+
+**Bounded work.** Each hash holds about 19 MiB while it runs, so every hash and
+verification (unknown accounts included) runs through one process-wide
+`auth.PasswordWorkLimiter`, as Forge-Rust's `PasswordWorkLimiter`: one slot per
+CPU (`GOMAXPROCS`), at most `auth.MaxDefaultPasswordWork` (16), and an attempt
+that waits `auth.DefaultPasswordWorkWait` (2 s) for a slot fails with
+`auth.ErrPasswordHashingUnavailable`: `503 authentication_unavailable` with
+`Retry-After: 5` from the JSON handlers and `auth.Browser` (the generated
+pages answer it through `web.Error`). The slot is held by the hashing
+itself. Applications that need another bound build their own:
+
+```go
+limiter, err := auth.NewPasswordWorkLimiter(4, time.Second)
+hasher, err := auth.NewPasswordHasher(auth.WithPasswordWorkLimiter(limiter))
+login, err := auth.NewLoginService(repository, repository, auth.WithLoginPasswordHasher(hasher))
+recovery, err := auth.NewRecoveryService(repository, delivery, auth.WithRecoveryPasswordHasher(hasher))
+```
+
+`auth.Browser` checks step-up passwords with its login service's hasher.
+
+**FIPS 140.** Argon2id is not a FIPS-approved algorithm. Build the
+application with the `forge_pbkdf2` tag to write PBKDF2-HMAC-SHA256 (600,000
+iterations, the Go standard library's FIPS module) instead:
+
+```sh
+go build -tags forge_pbkdf2 -o bin/myapp ./cmd/myapp
+```
+
+Such a build still verifies Argon2id hashes, and rewrites them as PBKDF2 at
+the next sign-in. `auth.WithPasswordAlgorithm(auth.PasswordAlgorithmPBKDF2SHA256)`
+chooses PBKDF2 for one `PasswordHasher` only; the tag also covers `forge setup`
+and every service left on the default hasher.
+
+Forge never trims or normalizes passwords before hashing. Comparisons use
+constant-time equality (`crypto/subtle`).
 
 ## PostgreSQL identity schema
 
@@ -191,7 +301,8 @@ disabled organization/tenant, or inactive membership all produce the same
 public `credentials_invalid` result and the same work: the attempt is
 throttled, the credential store is queried (with random identifiers when the
 login or tenant is malformed, so malformed input is not cheaper than a miss)
-and PBKDF2 runs against a dummy hash.
+and the password is verified against a dummy hash with the current algorithm
+and cost (Argon2id, m=19456, t=2, p=1), through the same limiter.
 
 **Upgrading existing data.** An account stored before this rule with a
 non-ASCII `email_normalized` can no longer sign in or receive a reset (a

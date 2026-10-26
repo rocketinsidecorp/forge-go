@@ -161,6 +161,7 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 			case errors.Is(err, ErrCredentialsInvalid):
 				web.Error(w, r, ErrCredentialsInvalid)
 			default:
+				setPasswordWorkRetryAfter(w, err)
 				web.Error(w, r, err)
 			}
 			return

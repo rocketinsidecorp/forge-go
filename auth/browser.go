@@ -94,7 +94,9 @@ type BrowserOptions struct {
 // Every method that changes credentials requires csrf.Verified: the route
 // must sit behind csrf.Protection and must not be exempted, otherwise the
 // method fails closed with ErrCSRFInvalid. Every method marks the response
-// Cache-Control: no-store, and throttled calls set Retry-After. After a
+// Cache-Control: no-store, and throttled calls set Retry-After, as do calls
+// refused because password hashing is saturated (ErrPasswordHashingUnavailable,
+// a 503 through web.Error). After a
 // method that sets cookies succeeds, redirect: the CSRF token was rotated, so
 // a page rendered in the same response would embed the old one.
 type Browser struct {
@@ -158,6 +160,7 @@ func (b *Browser) SignIn(w http.ResponseWriter, r *http.Request, credentials Sig
 		case errors.Is(err, ErrCredentialsInvalid):
 			return 0, ErrCredentialsInvalid
 		default:
+			setPasswordWorkRetryAfter(w, err)
 			return 0, err
 		}
 	}
@@ -306,6 +309,7 @@ func (b *Browser) ResetPassword(w http.ResponseWriter, r *http.Request, token, n
 			case errors.Is(err, ErrPasswordInvalid):
 				return ErrPasswordInvalid
 			default:
+				setPasswordWorkRetryAfter(w, err)
 				return err
 			}
 		}

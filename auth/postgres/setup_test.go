@@ -58,7 +58,7 @@ func TestProvisionOwnerCreatesAnOwnerWhoCanSignIn(t *testing.T) {
 		Scan(&storedHash, &organization); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(storedHash, ownerPassword) || !strings.HasPrefix(storedHash, "$pbkdf2-sha256$") || organization != "Acme Inc" {
+	if strings.Contains(storedHash, ownerPassword) || !strings.HasPrefix(storedHash, "$"+string(auth.DefaultPasswordAlgorithm)+"$") || organization != "Acme Inc" {
 		t.Fatalf("hash=%q organization=%q", storedHash, organization)
 	}
 

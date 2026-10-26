@@ -55,8 +55,8 @@ type OwnerAccount struct {
 	TenantSlug string
 	// Email is the owner's sign-in email.
 	Email string
-	// Password is hashed with auth.HashPassword before the transaction
-	// starts; it is never stored or logged.
+	// Password is hashed with auth.DefaultPasswordHasher (Argon2id) before
+	// the transaction starts; it is never stored or logged.
 	Password string
 }
 
@@ -88,7 +88,7 @@ func (r *Repository) ProvisionOwner(ctx context.Context, account OwnerAccount) (
 	if err := validOrganizationName(organization); err != nil {
 		return ProvisionedOwner{}, err
 	}
-	passwordHash, err := auth.HashPassword(account.Password)
+	passwordHash, err := auth.DefaultPasswordHasher().Hash(ctx, account.Password)
 	if err != nil {
 		return ProvisionedOwner{}, fmt.Errorf("owner password: %w", err)
 	}
