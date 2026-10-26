@@ -312,6 +312,17 @@ forge migrate
 psql "$FORGE_DATABASE_URL" -c "SELECT id, email FROM forge_users WHERE email_normalized !~ '^[!-~]+\$' OR email_normalized <> lower(email_normalized)"
 ```
 
+Sessions end after two hours without a request (and at the latest 24 hours
+after sign-in). Set another idle limit, from `5m` to `720h`, with
+`FORGE_AUTH_SESSION_IDLE_TIMEOUT`. Existing applications run `forge migrate`
+first: sessions gain their last use, and those open during the upgrade count
+as used then ([docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#session-idle-timeout)):
+
+```sh
+forge migrate
+echo 'FORGE_AUTH_SESSION_IDLE_TIMEOUT=30m' >> .env.local
+```
+
 In production set `FORGE_MAIL_URL=smtps://user:password@smtp.example.com:465`
 (or `smtp://...:587` for STARTTLS), `FORGE_MAIL_FROM` and
 `FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit`; see

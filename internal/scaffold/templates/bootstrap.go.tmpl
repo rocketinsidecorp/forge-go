@@ -200,7 +200,9 @@ func status(*http.Request, openapi.NoBody) (statusResponse, error) {
 {{- if and .DB .DB.Identity}}
 
 func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, translator *i18n.Translator) error {
-	repository, err := authpostgres.New(database)
+	// Sessions end after FORGE_AUTH_SESSION_IDLE_TIMEOUT (default 2h) without
+	// a request, before their absolute expiry.
+	repository, err := authpostgres.New(database, authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))
 	if err != nil {
 		return err
 	}

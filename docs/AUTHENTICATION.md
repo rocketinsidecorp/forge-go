@@ -76,7 +76,8 @@ rejected fail-closed and comparisons use constant-time equality.
 - organizations and tenants;
 - memberships, roles, permissions, and role assignments;
 - sessions containing only token digests, membership, credential version,
-  expiry, and revocation time.
+  expiry, revocation time and last use (`last_seen_at`, for the idle
+  timeout).
 
 All entity identifiers default to PostgreSQL `uuidv7()` (the repositories
 supply them from Go; the default covers rows inserted in SQL, such as the
@@ -90,6 +91,35 @@ joins the live session, user, organization, tenant and membership state and
 recomputes permissions from current role assignments. `RevokeSession` is
 idempotent, while `RevokeUserSessions` increments the user's credential
 version and revokes existing sessions atomically.
+
+### Session idle timeout
+
+A session also ends when nobody used it for the idle timeout, two hours by
+default, before its absolute expiry. Resolution refuses a session whose
+`last_seen_at` is older than the timeout, exactly as it refuses a revoked one
+(the middleware answers `401`, browser pages redirect to the sign-in page),
+and signing in again creates a new session. Resolving records the use at most
+once a minute per session: a conditional `UPDATE` runs only when the stored
+use is more than a minute old, so most requests only read and concurrent
+requests record one use. The database clock decides both, so replicas with
+skewed clocks agree.
+
+```go
+repository, err := authpostgres.New(database,
+	authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))
+```
+
+`FORGE_AUTH_SESSION_IDLE_TIMEOUT` sets it (a duration from `5m` to `720h`;
+`720h`, the longest session lifetime, effectively turns it off). Generated
+applications pass it as above. The migration `20261026090000_session_idle_timeout`
+adds the column; sessions that exist when it runs count as used at that
+moment, so upgrading signs nobody out. Run `forge migrate` before deploying
+the new code: the resolver reads the column.
+
+```sh
+forge migrate
+echo 'FORGE_AUTH_SESSION_IDLE_TIMEOUT=30m' >> .env.local   # shorter, for example
+```
 
 The plaintext bearer token is never stored.
 
@@ -201,7 +231,6 @@ follows the live windows however many logins and sources an attacker cycles
 through, with no scheduled job; `PruneExpired` still deletes expired counters in
 bounded batches using `SKIP LOCKED` to empty a table that stopped receiving
 attempts. `MaxEntries` bounds only the in-memory throttler.
-
 A blocked login returns `login_throttled` with HTTP `429`; the HTTP adapter
 also sends `Retry-After`. The source is the client address the HTTP server
 resolved (`web.ClientIP`): the socket peer, unless the peer is a trusted proxy

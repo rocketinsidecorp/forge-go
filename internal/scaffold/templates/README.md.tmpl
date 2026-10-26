@@ -233,6 +233,17 @@ FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit
 variables; `FORGE_MAIL_URL` without `FORGE_AUTH_PASSWORD_RESET_URL` stops the
 application at startup. See the Forge mail guide (`docs/MAIL.md`).
 
+### Session lifetime
+
+A session ends 24 hours after sign-in, or earlier after two hours without a
+request. Change the idle limit (from `5m` to `720h`) with
+`FORGE_AUTH_SESSION_IDLE_TIMEOUT`, in `.env.local` or the deployment's
+environment:
+
+```bash
+FORGE_AUTH_SESSION_IDLE_TIMEOUT=30m
+```
+
 `db/seeds.go` holds `db.Seed`, which `forge seed` (`{{.Name}} seed`) runs in
 one transaction. Keep it idempotent.
 

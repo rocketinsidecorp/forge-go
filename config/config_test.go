@@ -218,6 +218,36 @@ func TestPasswordResetURLIsValidated(t *testing.T) {
 	}
 }
 
+// TestSessionIdleTimeout: two hours unless FORGE_AUTH_SESSION_IDLE_TIMEOUT
+// says otherwise, within five minutes and 30 days; there is no value that
+// turns the idle limit off.
+func TestSessionIdleTimeout(t *testing.T) {
+	t.Parallel()
+	if got := config.Default().Auth.SessionIdleTimeout; got != 2*time.Hour {
+		t.Fatalf("default idle timeout = %s, want 2h", got)
+	}
+	for value, want := range map[string]time.Duration{
+		"5m": 5 * time.Minute, "30m": 30 * time.Minute, "2h": 2 * time.Hour, "720h": 720 * time.Hour,
+		"4m59s": 0, "721h": 0, "0": 0, "-1h": 0, "two hours": 0, "": 0,
+	} {
+		cfg, err := config.LoadWithLookup(func(key string) (string, bool) {
+			if key == "FORGE_AUTH_SESSION_IDLE_TIMEOUT" {
+				return value, true
+			}
+			return "", false
+		})
+		if want == 0 {
+			if err == nil || !strings.Contains(err.Error(), "FORGE_AUTH_SESSION_IDLE_TIMEOUT") {
+				t.Errorf("FORGE_AUTH_SESSION_IDLE_TIMEOUT=%q: err=%v, want a refusal naming the variable", value, err)
+			}
+			continue
+		}
+		if err != nil || cfg.Auth.SessionIdleTimeout != want {
+			t.Errorf("FORGE_AUTH_SESSION_IDLE_TIMEOUT=%q: %s, %v; want %s", value, cfg.Auth.SessionIdleTimeout, err, want)
+		}
+	}
+}
+
 // The OpenAPI document discloses every documented route, so it is served by
 // default only where a developer is at the keyboard.
 func TestOpenAPIIsServedOnlyInDevelopmentAndTestByDefault(t *testing.T) {

@@ -21,17 +21,63 @@ var (
 	_                     auth.CredentialSessionCreator = (*Repository)(nil)
 )
 
+// Session idle timeout bounds and the default (config.Auth.SessionIdleTimeout,
+// FORGE_AUTH_SESSION_IDLE_TIMEOUT).
+const (
+	DefaultSessionIdleTimeout = 2 * time.Hour
+	minSessionIdleTimeout     = 5 * time.Minute
+	maxSessionIdleTimeout     = 30 * 24 * time.Hour
+	// sessionTouchInterval is how stale last_seen_at may get before a
+	// resolution records the use: at most one write per session and
+	// interval, however many requests the session makes.
+	sessionTouchInterval = time.Minute
+)
+
 type Repository struct {
-	db  *postgres.DB
-	now func() time.Time
+	db          *postgres.DB
+	now         func() time.Time
+	idleTimeout time.Duration
 }
 
-func New(db *postgres.DB) (*Repository, error) {
+// Option configures a Repository.
+type Option func(*Repository) error
+
+// WithSessionIdleTimeout ends a session nobody used for timeout, before its
+// absolute expiry: ResolveSession no longer finds it (fail closed), and
+// signing in again creates a new one. timeout must be between five minutes
+// and 30 days; New uses DefaultSessionIdleTimeout (two hours) without this
+// option. Pass config.Auth.SessionIdleTimeout (FORGE_AUTH_SESSION_IDLE_TIMEOUT).
+func WithSessionIdleTimeout(timeout time.Duration) Option {
+	return func(r *Repository) error {
+		if timeout < minSessionIdleTimeout || timeout > maxSessionIdleTimeout {
+			return errors.New("session idle timeout must be between 5 minutes and 30 days")
+		}
+		r.idleTimeout = timeout
+		return nil
+	}
+}
+
+// New returns the PostgreSQL identity repository. Sessions expire after
+// DefaultSessionIdleTimeout without use unless WithSessionIdleTimeout says
+// otherwise.
+func New(db *postgres.DB, options ...Option) (*Repository, error) {
 	if db == nil {
 		return nil, errors.New("authentication database is required")
 	}
-	return &Repository{db: db, now: time.Now}, nil
+	repository := &Repository{db: db, now: time.Now, idleTimeout: DefaultSessionIdleTimeout}
+	for _, option := range options {
+		if option == nil {
+			return nil, errors.New("nil repository option")
+		}
+		if err := option(repository); err != nil {
+			return nil, err
+		}
+	}
+	return repository, nil
 }
+
+// SessionIdleTimeout reports how long a session may go unused.
+func (r *Repository) SessionIdleTimeout() time.Duration { return r.idleTimeout }
 
 func (r *Repository) LookupPassword(ctx context.Context, emailNormalized, tenantSlug string) (auth.PasswordIdentity, bool, error) {
 	var identity auth.PasswordIdentity
@@ -197,19 +243,30 @@ func (r *Repository) RevokeUserSessions(ctx context.Context, userID uuid.UUID) e
 	})
 }
 
+// ResolveSession returns the live session for digest. A session that is
+// revoked, expired, unused for the idle timeout (WithSessionIdleTimeout), or
+// whose user, membership, tenant or organization is no longer active is not
+// found. Resolving records the use in last_seen_at at most once a minute per
+// session, so most requests only read; that write, conditional on the
+// stored value still being stale, makes concurrent requests record one use.
+// The database clock decides both the idle limit and the throttle, so
+// replicas with skewed clocks agree.
 func (r *Repository) ResolveSession(ctx context.Context, digest auth.Digest) (auth.Session, bool, error) {
 	var (
 		subjectID       uuid.UUID
 		tenantID        uuid.UUID
 		expiresAt       time.Time
 		permissionNames []string
+		stale           bool
 	)
+	idle := r.idleTimeout.Microseconds()
 	err := r.db.QueryRow(ctx, `
 		SELECT
 			u.id,
 			t.id,
 			s.expires_at,
-			COALESCE(array_agg(DISTINCT rp.permission) FILTER (WHERE rp.permission IS NOT NULL), ARRAY[]::text[])
+			COALESCE(array_agg(DISTINCT rp.permission) FILTER (WHERE rp.permission IS NOT NULL), ARRAY[]::text[]),
+			s.last_seen_at <= now() - $3::bigint * interval '1 microsecond'
 		FROM forge_sessions s
 		JOIN forge_memberships m ON m.id = s.membership_id
 		JOIN forge_users u ON u.id = m.user_id
@@ -220,18 +277,33 @@ func (r *Repository) ResolveSession(ctx context.Context, digest auth.Digest) (au
 		LEFT JOIN forge_role_permissions rp ON rp.role_id = mr.role_id
 		WHERE s.token_digest = $1
 		  AND s.revoked_at IS NULL
+		  AND s.last_seen_at > now() - $2::bigint * interval '1 microsecond'
 		  AND s.credential_version = u.session_version
 		  AND m.status = 'active'
 		  AND u.status = 'active'
 		  AND t.status = 'active'
 		  AND o.status = 'active'
-		GROUP BY u.id, t.id, s.expires_at
-	`, digest[:]).Scan(&subjectID, &tenantID, &expiresAt, &permissionNames)
+		GROUP BY u.id, t.id, s.expires_at, s.last_seen_at
+	`, digest[:], idle, sessionTouchInterval.Microseconds()).Scan(&subjectID, &tenantID, &expiresAt, &permissionNames, &stale)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auth.Session{}, false, nil
 	}
 	if err != nil {
 		return auth.Session{}, false, postgres.Translate(err)
+	}
+	if stale {
+		// Only a session that is still live is touched: one revoked or gone
+		// idle meanwhile keeps its last use.
+		if _, err := r.db.Exec(ctx, `
+			UPDATE forge_sessions
+			SET last_seen_at = now()
+			WHERE token_digest = $1
+			  AND revoked_at IS NULL
+			  AND last_seen_at > now() - $2::bigint * interval '1 microsecond'
+			  AND last_seen_at <= now() - $3::bigint * interval '1 microsecond'
+		`, digest[:], idle, sessionTouchInterval.Microseconds()); err != nil {
+			return auth.Session{}, false, postgres.Translate(err)
+		}
 	}
 	tenant, err := tenancy.New(tenantID)
 	if err != nil {

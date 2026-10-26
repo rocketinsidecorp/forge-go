@@ -62,6 +62,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"FORGE_DATABASE_URL=postgres://app_runtime:app_runtime@127.0.0.1:" + port + "/billing_api_development?sslmode=disable",
 			"FORGE_MIGRATION_DATABASE_URL=postgres://app_migrator:app_migrator@127.0.0.1:" + port + "/billing_api_development?sslmode=disable",
 			"FORGE_TEST_DATABASE_URL=postgres://postgres:development@127.0.0.1:" + port + "/postgres?sslmode=disable",
+			"# FORGE_AUTH_SESSION_IDLE_TIMEOUT=2h",
 		},
 		"docker/postgres/init.sql": {
 			"CREATE ROLE app_migrator\n    LOGIN PASSWORD 'app_migrator'\n    NOSUPERUSER CREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;",
@@ -85,7 +86,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		"app/bootstrap/bootstrap.go": {
 			"postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),\n\t\tpostgres.RequireRowSecurity(app.Config().Environment))",
 			`app.Readiness("database", database.Ping)`,
-			"authpostgres.New(database)",
+			"authpostgres.New(database, authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))",
 			"authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())",
 			"auth.NewLoginService(",
 			"auth.WithSecurityAuditor(repository)",
@@ -115,6 +116,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"GET /v1/auth/session",
 			"POST /auth/mfa/complete",
 			"FORGE_AUTH_MFA_KEY",
+			"FORGE_AUTH_SESSION_IDLE_TIMEOUT=30m",
 			"Forge's identity migrations",
 		},
 		".github/workflows/ci.yml": {"go test -race ./...", "tags: billing-api:ci", "image: postgres:18-alpine", "POSTGRES_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: postgres://forge:forge@127.0.0.1:5432/postgres?sslmode=disable", `FORGE_TEST_REQUIRE_DATABASE: "true"`,
