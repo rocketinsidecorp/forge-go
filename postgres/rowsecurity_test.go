@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -135,7 +136,22 @@ func TestRuntimeRoleIsConfinedByRowLevelSecurity(t *testing.T) {
 	}
 }
 
-func TestRequireRowSecurityRefusesBypassingRolesInProduction(t *testing.T) {
+// actingAs returns cfg with a role setting in its URL (options=-c role=...):
+// the session logs in as cfg's user and then acts as role.
+func actingAs(t *testing.T, cfg config.Database, role string) config.Database {
+	t.Helper()
+	parsed, err := url.Parse(cfg.URL.Reveal())
+	if err != nil {
+		t.Fatal("invalid test database URL")
+	}
+	query := parsed.Query()
+	query.Set("options", "-c role="+role)
+	parsed.RawQuery = strings.ReplaceAll(query.Encode(), "+", "%20")
+	cfg.URL = config.NewSecret(parsed.String())
+	return cfg
+}
+
+func TestRequireRowSecurityRefusesBypassingRolesOutsideDevelopmentAndTest(t *testing.T) {
 	db := postgrestest.NewRLS(t, rlsMigrations)
 	ctx := context.Background()
 	open := func(cfg config.Database, environment config.Environment) error {
@@ -152,9 +168,12 @@ func TestRequireRowSecurityRefusesBypassingRolesInProduction(t *testing.T) {
 			t.Errorf("%s: err = %v, want ErrRowSecurityBypass naming %q", name, err, reason)
 		}
 	}
+	served := []config.Environment{config.Staging, config.Production}
 
-	if err := open(db.RuntimeConfig, config.Production); err != nil {
-		t.Fatalf("the runtime role in production: %v", err)
+	for _, environment := range served {
+		if err := open(db.RuntimeConfig, environment); err != nil {
+			t.Fatalf("the runtime role in %s: %v", environment, err)
+		}
 	}
 
 	var superuser bool
@@ -163,9 +182,14 @@ func TestRequireRowSecurityRefusesBypassingRolesInProduction(t *testing.T) {
 	}
 	admin := postgrestest.Config(t) // the test server's own user
 	if superuser {
-		refused("superuser in production", open(admin, config.Production), "is a superuser")
+		for _, environment := range served {
+			refused("superuser in "+string(environment), open(admin, environment), "is a superuser")
+		}
+		// Logged in as the superuser but acting as the runtime role:
+		// current_user alone looks harmless, SET ROLE NONE would not be.
+		refused("superuser acting as the runtime role", open(actingAs(t, admin, strings.Trim(db.RuntimeRole, `"`)), config.Production), "is a superuser")
 	}
-	for _, environment := range []config.Environment{config.Development, config.Test, config.Staging} {
+	for _, environment := range []config.Environment{config.Development, config.Test} {
 		if err := open(admin, environment); err != nil {
 			t.Errorf("the test server's user in %s: %v", environment, err)
 		}
@@ -184,12 +208,27 @@ func TestRequireRowSecurityRefusesBypassingRolesInProduction(t *testing.T) {
 	}
 	exec("ALTER ROLE " + db.RuntimeRole + " NOBYPASSRLS")
 
+	exec("ALTER ROLE " + db.RuntimeRole + " CREATEROLE")
+	refused("CREATEROLE in staging", open(db.RuntimeConfig, config.Staging), "has CREATEROLE")
+	exec("ALTER ROLE " + db.RuntimeRole + " NOCREATEROLE")
+
 	bypass := pgx.Identifier{"forge_test_bypass_" + strings.ReplaceAll(uuid.MustNew().String(), "-", "")}.Sanitize()
 	exec("CREATE ROLE " + bypass + " NOLOGIN BYPASSRLS")
 	t.Cleanup(func() { _, _ = db.Admin.Exec(context.Background(), "DROP ROLE IF EXISTS "+bypass) })
 	exec("GRANT " + bypass + " TO " + db.RuntimeRole)
 	refused("member of a BYPASSRLS role in production", open(db.RuntimeConfig, config.Production), "can SET ROLE")
 	exec("REVOKE " + bypass + " FROM " + db.RuntimeRole)
+
+	// Two unprivileged roles, but the session acts as another role than the
+	// one it logged in as: only a login as the serving role itself passes.
+	var migrator string
+	if err := db.Migrator.QueryRow(ctx, "SELECT current_user").Scan(&migrator); err != nil {
+		t.Fatal(err)
+	}
+	quotedMigrator := pgx.Identifier{migrator}.Sanitize()
+	exec("GRANT " + quotedMigrator + " TO " + db.RuntimeRole)
+	refused("runtime role acting as another role", open(actingAs(t, db.RuntimeConfig, migrator), config.Production), "acting as")
+	exec("REVOKE " + quotedMigrator + " FROM " + db.RuntimeRole)
 
 	if err := open(db.RuntimeConfig, config.Production); err != nil {
 		t.Fatalf("the runtime role in production after the revocations: %v", err)
