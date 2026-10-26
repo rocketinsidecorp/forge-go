@@ -180,7 +180,7 @@ func TestGeneratedMatrixCompilesAndLints(t *testing.T) {
 			}
 			golangciLint.Lock()
 			defer golangciLint.Unlock()
-			command := exec.Command(lint, "run", "./app/domain/...", "./app/application/...", "./app/adapters/...")
+			command := exec.Command(lint, "run", "--allow-parallel-runners", "./app/domain/...", "./app/application/...", "./app/adapters/...")
 			command.Dir = dir
 			command.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off")
 			if output, err := command.CombinedOutput(); err != nil {

@@ -44,7 +44,7 @@ func TestGeneratedHTMLApplicationBuildsVetsLintsAndTests(t *testing.T) {
 			}
 			golangciLint.Lock()
 			defer golangciLint.Unlock()
-			command = exec.Command(lint, "run", "./...")
+			command = exec.Command(lint, "run", "--allow-parallel-runners", "./...")
 			command.Dir = dir
 			command.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off")
 			if output, err := command.CombinedOutput(); err != nil {
@@ -101,7 +101,7 @@ func TestGeneratedAPIAuthApplicationBuildsAndPasses(t *testing.T) {
 	}
 	golangciLint.Lock()
 	defer golangciLint.Unlock()
-	runGo(t, dir, lint, "run", "./...")
+	runGo(t, dir, lint, "run", "--allow-parallel-runners", "./...")
 }
 
 // TestPrintedAPIAuthWiringCompiles pastes the JSON API wiring that

@@ -9,7 +9,7 @@ import (
 )
 
 // vendoredApp is a directory shaped like an application with a database: a
-// go.mod, db/migrations and, optionally, the vendor directory forge new --framework-path creates.
+// go.mod, db/migrations and, optionally, the vendor directory forge new --forge-path creates.
 func vendoredApp(t *testing.T, vendor bool) string {
 	t.Helper()
 	root := t.TempDir()

@@ -111,7 +111,7 @@ func TestRunNewRefusesConflictingOrUnusableArguments(t *testing.T) {
 	}{
 		"skip-database and database": {[]string{"shop", "--skip-database", "--database", "mysql", "--skip-deps", "--dir", filepath.Join(dir, "a")}, "conflicts"},
 		"skip-database and -d":       {[]string{"shop", "--skip-database", "-d", "sqlite", "--skip-deps", "--dir", filepath.Join(dir, "b")}, "conflicts"},
-		"framework path is missing":  {[]string{"shop", "--framework-path", filepath.Join(dir, "none"), "--skip-deps", "--dir", filepath.Join(dir, "c")}, "framework path:"},
+		"framework path is missing":  {[]string{"shop", "--forge-path", filepath.Join(dir, "none"), "--skip-deps", "--dir", filepath.Join(dir, "c")}, "framework path:"},
 		"target directory in use": {func() []string {
 			used := filepath.Join(dir, "used")
 			writeFile(t, filepath.Join(used, "keep.txt"), "x")
@@ -241,5 +241,43 @@ func TestResolveDependenciesPinsTheBuildInfoVersionButNotALocalCheckout(t *testi
 	}
 	if (*steps)[0][1] != "github.com/rocketinsidecorp/forge-go@latest" {
 		t.Errorf("checkout build: steps = %v, want @latest", *steps)
+	}
+}
+
+func TestRunNewFrameworkPathIsADeprecatedAlias(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := t.TempDir()
+	run := func(args ...string) (string, error) {
+		var stderr strings.Builder
+		err := runNew(append([]string{"shop", "--skip-deps", "--dir", filepath.Join(t.TempDir(), "app")}, args...), io.Discard, &stderr)
+		return stderr.String(), err
+	}
+
+	if stderr, err := run("--forge-path", root); err != nil || stderr != "" {
+		t.Errorf("canonical flag: stderr %q, err %v", stderr, err)
+	}
+	for name, args := range map[string][]string{
+		"alias":                  {"--framework-path", root},
+		"alias and same value":   {"--forge-path", root, "--framework-path", root},
+		"alias before canonical": {"--framework-path", root, "--forge-path", root},
+	} {
+		stderr, err := run(args...)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+		if strings.Count(stderr, "deprecated") != 1 || strings.Count(stderr, "\n") != 1 || !strings.Contains(stderr, "--forge-path") {
+			t.Errorf("%s: want exactly one deprecation line, got %q", name, stderr)
+		}
+	}
+	_, err = run("--forge-path", root, "--framework-path", other)
+	if err == nil || !strings.Contains(err.Error(), "--forge-path") || !strings.Contains(err.Error(), "--framework-path") {
+		t.Errorf("different values: %v, want an error naming both flags", err)
+	}
+	if _, err := run("--framework-path", filepath.Join(other, "none")); err == nil || !strings.Contains(err.Error(), "framework path:") {
+		t.Errorf("alias with a missing directory: %v", err)
 	}
 }

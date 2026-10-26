@@ -2,7 +2,7 @@
 # End-to-end HTTP benchmark of Forge-Go (docs/BENCHMARKS.md).
 #
 # Builds the forge CLI, generates an application against this checkout
-# (`forge new --framework-path`), scaffolds a tenant-scoped "post" resource,
+# (`forge new --forge-path`), scaffolds a tenant-scoped "post" resource,
 # wires it, runs it against PostgreSQL as a non-superuser role (so row-level
 # security applies, as in production) and measures it with the standard
 # library load generator in internal/loadgen: requests per second and
@@ -80,7 +80,7 @@ echo "generating the application" >&2
 export GOFLAGS=-mod=mod
 app="$work/benchapp"
 # --api-auth: loadgen signs in once through the bearer POST /auth/login.
-"$work/forge" new benchapp --dir "$app" --framework-path "$root" --api-auth >/dev/null
+"$work/forge" new benchapp --dir "$app" --forge-path "$root" --api-auth >/dev/null
 (cd "$app" && "$work/forge" generate scaffold post title:string body:text --tenant-scoped >/dev/null)
 
 # The generators never edit bootstrap.go; paste what the scaffold prints,

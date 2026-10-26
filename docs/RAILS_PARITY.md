@@ -15,33 +15,38 @@ the work is finished and waiting for its review; **Planned** means not started.
 | HTML + JSON CRUD generator | `rails g scaffold` | Done | Done |
 | Authentication pages, password reset | `rails g authentication` | Done | Done |
 | Sign-in through the HTML pages only by default; JSON login opt-in | (`rails new --api` for API-only apps) | Done (`forge new --api-auth`, `forge generate authentication --api-auth`; without the flag no JSON login is mounted) | Done (no JSON login exists; `--api-auth` not needed until one does) |
-| Session idle timeout | (gems, e.g. Devise `timeoutable`) | Done (`FORGE_AUTH_SESSION_IDLE_TIMEOUT`, default 2h; `last_seen_at` written at most once a minute) | Planned (see Parity follow-ups) |
-| CSRF token masked per render (BREACH) | `masked_authenticity_token` | Done (`csrf.Token`, `csrf.MaskToken`) | Planned (see Parity follow-ups) |
+| Session idle timeout | (gems, e.g. Devise `timeoutable`) | Done (`FORGE_AUTH_SESSION_IDLE_TIMEOUT`, default 2h; `last_seen_at` written at most once a minute) | Done (`FORGE_AUTH_SESSION_IDLE_TIMEOUT`, default 2h, `5m` to `720h`; `forge_sessions.last_seen_at` written at most once a minute, [forge-rust#75](https://github.com/rocketinsidecorp/forge-rust/issues/75), merged in forge-rust#78) |
+| CSRF token masked per render (BREACH) | `masked_authenticity_token` | Done (`csrf.Token`, `csrf.MaskToken`) | Done (`csrf_meta`, `csrf_field`, `forge::views::mask_csrf_token`/`unmask_csrf_token`; same encoding, forge-rust#78) |
 | First tenant and owner, seeds | `db:seed` | Done (`forge setup`, `forge seed`) | In review (`forge setup`, `forge seed`; the application commands `setup` and `seed` are Done) |
 | Multi-tenancy with database enforcement | (gems) | Done (PostgreSQL RLS; `app_migrator`/`app_runtime` roles, staging and production refuse a serving role that could bypass RLS, tests run as the runtime role; [ADR 0046](adr/0046-postgresql-runtime-and-migration-roles.md)) | Done (PostgreSQL RLS; `app_migrator`/`app_runtime` roles, Forge-Rust ADR 0011; production refusal, [forge-rust#70](https://github.com/rocketinsidecorp/forge-rust/issues/70), [forge-rust#76](https://github.com/rocketinsidecorp/forge-rust/pull/76)) |
 | TOTP MFA | (gems) | Done (sign-in code step and generated `/mfa` settings pages: enrollment, rotation, backup codes, disable; [ADR 0045](adr/0045-generated-mfa-settings-pages.md)) | Done (`FORGE_AUTH_MFA_KEY`, `/session/mfa`, generated `/mfa` settings pages; Forge-Rust ADR 0040) |
-| Persistent jobs, cron, outbox | Solid Queue | Done | Done (framework crates; `forge new` wiring planned) |
+| Persistent jobs, cron, outbox | Solid Queue | Done | Done (framework crates; `forge new` wires the job queue into PostgreSQL applications: `jobs` feature, `.jobs(WorkerMode::InServe)`, `jobs_configure`, forge-rust#48) |
 | Batch claims, `LISTEN/NOTIFY` wake-up, one replica per scheduled tick | Solid Queue (`batch_size`, `polling_interval`, recurring tasks run once) | Done (`WorkerOptions.BatchSize`, `queuepostgres.WithNotify`, `DispatcherOptions.BatchSize`, `jobs.SchedulerOptions.Ticks` with `forge_job_schedules`, wired by `forge new`; [ADR 0047](adr/0047-batch-claims-notify-and-recorded-ticks.md)) | Partial (jobs claim up to the free slots, outbox `DispatcherSettings::batch` 50, ticks recorded once in a table; no wake-up; see Parity follow-ups) |
 | Mailer with previews | Action Mailer | Done | Done (`forge::mail`, password-reset emails, `/_mail` previews, `forge generate mailer`; Forge-Rust ADR 0035 and 0038) |
 | Rate limiting | `rate_limit` | Done | Done |
-| Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | Done (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Done (`FORGE_HTTP_TRUSTED_PROXIES`, Forge-Rust ADR 0032; `forge deploy` sets it once ported) |
+| Client address behind trusted proxies | `request.remote_ip`, `trusted_proxies` | Done (`FORGE_HTTP_TRUSTED_PROXIES`, ADR 0037) | Done (`FORGE_HTTP_TRUSTED_PROXIES`, Forge-Rust ADR 0032; `forge deploy` sets it for the proxied role, Forge-Rust ADR 0042) |
 | Cache | Solid Cache | Done | Done |
 | File storage with signed URLs | Active Storage | Done (disk) | Done (disk) |
 | Import maps, Turbo, Stimulus | Hotwire | Done | Done |
 | Turbo Streams over SSE | Action Cable | Done | Done (`scaffold --broadcast`, Forge-Rust ADR 0031) |
 | Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Done (OpenTelemetry, Prometheus; Forge-Rust ADR 0033) |
 | Preconfigured Prometheus, Grafana, Tempo, Loki | — | Done (`compose.observability.yaml`, [ADR 0038](adr/0038-local-observability-stack.md)) | Done (`compose.observability.yaml`, Forge-Rust ADR 0034) |
-| Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge-proxy`) | Planned |
-| Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | In review (`forge dev`, `forge db create\|drop\|reset\|setup\|prepare\|migrate\|rollback\|status\|seed`, `forge migrate\|rollback\|setup\|seed`, `forge doctor`, `forge version`; `forge routes`, `forge db schema:dump\|schema:load\|console`, browser reload and `.env` files are still open; Forge-Rust ADR 0036) |
+| Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge-proxy`) | In review (`forge deploy`, `forge logs`, `forge app`, `forge-proxy` with ACME TLS, same `config/deploy.yml`, Forge-Rust ADR 0042) |
+| Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | In review (`forge dev`, `forge db create\|drop\|reset\|setup\|prepare\|migrate\|rollback\|status\|seed`, `forge migrate\|rollback\|setup\|seed`, `forge doctor`, `forge version`; `forge db console`, `forge routes` and the `.env.development`/`.env.local` files are Done (`forge routes` and the `.env` files in forge-rust#81); `forge db schema:dump\|schema:load` and browser reload are still open; Forge-Rust ADR 0036) |
+| One name per setting and command (naming decision D2) | — | Done (`FORGE_HTTP_*`, `FORGE_DATABASE_*`, `FORGE_CACHE_DEFAULT_TTL`, `FORGE_STORAGE_LINK_TTL`; `forge uuid [--count N]`; `forge new --forge-path`, with `--framework-path` a deprecated alias for one minor version) | Done (forge-rust#81: reads the same `FORGE_HTTP_*`, `FORGE_CACHE_DEFAULT_TTL` and `FORGE_STORAGE_LINK_TTL` names and duration formats, `forge uuid [--count N]`; its older spellings are deprecated aliases until the next minor version) |
+| Development environment files | `dotenv` gems, `.env.development` | Done (`.env.development` then `.env.local`, process environment wins, `forge dev\|test\|db\|migrate\|rollback\|doctor`) | Done (forge-rust#81: same files, format, precedence and line-only errors; `forge new` writes `.env.development`; differences: no `FORGE_TEST_DATABASE_URL` or generated `.env.local`) |
+| Catch-all route segment | `get "files/*path"` | Done (`GET /files/{key...}`, `http.ServeMux`) | Done (forge-rust#81: `{name...}` as the last segment; see the `/files` difference under Parity follow-ups) |
+| List the application's routes | `rails routes` | Done (`forge routes`: the routes registered while the application composes, including the `/v1/<plural>` routes of generated resources) | Done (forge-rust#81: same command and columns, also from the composed application) |
+| One page generator | — | Done (`forge generate view [DIR/]NAME`, `forge destroy view`) | Done (forge-rust#81: same command and arguments; refuses `--api` applications instead of adding a views base) |
 | Rollback never reverts framework migrations; disabled framework sets tolerated | (engine migrations copied into the app) | Done (`rollback`, `Migrator.DownFramework`, ADR 0039) | Done (`rollback`, `rollback_framework`, ADR 0030) |
 | Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`; PostgreSQL tenant tables rotate per tenant with `postgres.WithTenant`, unscoped runs under row-level security are refused) | Done (`forge credentials init\|edit\|show\|rotate-key`, `forge::credentials`, `forge::encryption`; PostgreSQL tenant tables rotate per tenant with `EncryptedColumn::tenant`, unscoped runs under row-level security are refused; forge-rust#37, Forge-Rust ADR 0041) |
 | i18n | I18n | Done (`config/locales/*.json`, `t`, CLDR plurals, `forge new --locale`, `forge i18n check`, [ADR 0042](adr/0042-internationalization.md)) | Done (`config/locales/*.json`, `layout.i18n.t`, CLDR plurals, `forge new --locale`, `forge i18n check`, Forge-Rust ADR 0037) |
-| Locale path prefix removed before every middleware (no path-guard bypass in any order) | — | In review (`httpserver.Rewriter`, forge-go#56) | In review (`Middleware::rewrite`, forge-rust#69) |
+| Locale path prefix removed before every middleware (no path-guard bypass in any order) | — | In review (`httpserver.Rewriter`, forge-go#56) | Done (`Middleware::rewrite`, forge-rust#69) |
 | OpenAPI from typed routes | — | Done (`openapi.Describe`, `openapi.Typed`, `GET /openapi.json`, `forge openapi [--output\|--check]`, `FORGE_OPENAPI_ENABLED`, [ADR 0043](adr/0043-openapi-from-typed-routes.md)) | Done (`#[derive(OpenApiSchema)]`, `forge::openapi::typed`/`describe`, `GET /openapi.json`, `FORGE_OPENAPI_ENABLED`, `forge openapi`, Forge-Rust ADR 0039) |
 | Controller, model, mailer and job generators, `destroy` | `rails g`, `rails d` | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, [ADR 0041](adr/0041-generators-and-destroy.md)) | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, Forge-Rust ADR 0038) |
-| Continuous fuzzing, SBOM, signed images | — | Done (every fuzz target per PR and nightly, `scripts/fuzz.sh`; CycloneDX/SPDX SBOMs; keyless cosign-signed images from `v*` tags; [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), [ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)) | Planned |
-| Published benchmarks | — | In review (`go test -bench`, `scripts/bench.sh`, [BENCHMARKS.md](BENCHMARKS.md)) | Planned |
-| Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Planned |
+| Continuous fuzzing, SBOM, signed images | — | Done (every fuzz target per PR and nightly, `scripts/fuzz.sh`; CycloneDX/SPDX SBOMs; keyless cosign-signed images from `v*` tags; [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), [ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)) | Done (`scripts/fuzz.sh`, `scripts/sbom.sh`, signed forge-proxy image, SHA/digest pins enforced by `crates/forge/tests/supply_chain.rs`, Forge-Rust ADR 0043) |
+| Published benchmarks | — | In review (`go test -bench`, `scripts/bench.sh`, [BENCHMARKS.md](BENCHMARKS.md)) | Done (`cargo bench -p forge-bench`, `scripts/bench.sh`) |
+| Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Done (`docs/getting-started.md`) |
 
 ## Parity follow-ups
 
@@ -194,7 +199,9 @@ the work is finished and waiting for its review; **Planned** means not started.
   `forge deploy` gives the migration credential to the migrate step alone
   through `migrate.env`
   ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57));
-  Forge-Rust's `forge deploy` has no `migrate.env` yet (tracked in [forge-rust#73](https://github.com/rocketinsidecorp/forge-rust/issues/73)).
+  Forge-Rust's `forge deploy` has the same `migrate.env`
+  ([forge-rust#73](https://github.com/rocketinsidecorp/forge-rust/issues/73),
+  merged in forge-rust#74).
 
 - Security defaults (QG4a, audit findings S-3, S-4, S-7 and PF-3). Forge-Go
   now: ends a session after `FORGE_AUTH_SESSION_IDLE_TIMEOUT` without a
@@ -211,8 +218,8 @@ the work is finished and waiting for its review; **Planned** means not started.
   a production process (`FORGE_ENV=production`) builds its sign-in, MFA or
   password-reset service on the in-memory throttler (generated applications
   already use the PostgreSQL throttler, as Forge-Rust's do since QR2).
-  Forge-Rust status and follow-ups, tracked in
-  [forge-rust#75](https://github.com/rocketinsidecorp/forge-rust/issues/75):
+  Forge-Rust shipped all three in forge-rust#78 (for
+  [forge-rust#75](https://github.com/rocketinsidecorp/forge-rust/issues/75)):
   (1) the same idle timeout, variable name and default in its generated
   session store (a `last_seen_at` column in a new migration, the same
   once-a-minute write); (2) masked CSRF tokens from `csrf_field`/`csrf_meta`
@@ -220,6 +227,12 @@ the work is finished and waiting for its review; **Planned** means not started.
   (3) the production warning for `MemoryLoginThrottle` in custom wiring.
   `--api-auth` needs nothing in Forge-Rust while it has no JSON login; if it
   gains one, it is opt-in under the same flag name.
+
+- Catch-all segment and the bare prefix (forge-rust#81, documented difference):
+  with only `/files/{key...}` registered, Go's `http.ServeMux` answers a request
+  for `/files` with a redirect to `/files/`, while Forge-Rust's router
+  (catch-all merged in forge-rust#81) answers `404`. This is a documented difference, not a
+  gap: each framework follows its own router.
 
 ## Review gate
 
