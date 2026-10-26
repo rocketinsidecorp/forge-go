@@ -50,6 +50,9 @@ var ErrPasswordHashingUnavailable = &fault.Error{
 type PasswordWorkLimiter struct {
 	slots   chan struct{}
 	maxWait time.Duration
+	// refuse, when set (tests only), makes Do fail as saturated when it
+	// returns true.
+	refuse func() bool
 }
 
 // NewPasswordWorkLimiter returns a limiter running at most maxConcurrent
@@ -92,6 +95,9 @@ func (l *PasswordWorkLimiter) MaxConcurrent() int {
 // when no slot frees up within the wait, or ctx's error when ctx ends first;
 // work has not run then.
 func (l *PasswordWorkLimiter) Do(ctx context.Context, work func()) error {
+	if l.refuse != nil && l.refuse() {
+		return ErrPasswordHashingUnavailable
+	}
 	select {
 	case l.slots <- struct{}{}:
 	default:

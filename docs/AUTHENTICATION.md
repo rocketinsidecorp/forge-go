@@ -79,11 +79,57 @@ Anything else is `ErrPasswordHashInvalid`, decided before any hashing.
 0048](adr/0048-argon2id-password-hashing.md)), `$pbkdf2-sha256$v=1$i=…`
 (PBKDF2-HMAC-SHA256, 100,000 to 5,000,000 iterations), still verify. When a
 sign-in succeeds with a hash that is not Argon2id with the current parameters
-(PBKDF2, or Argon2id with any other cost), `LoginService` hashes the password
-again and stores it through `PasswordStore.ReplacePasswordHash`, which
-replaces it only if the stored hash is still the one verified; if it changed
-concurrently, no session is issued. Nothing needs to be migrated by hand:
-each account moves to Argon2id at its next sign-in.
+(PBKDF2, or Argon2id with any other `m`, `t` or `p`, or a salt that is not
+16 bytes), `LoginService` hashes the password again and stores it through
+`PasswordStore.ReplacePasswordHash`, which replaces it only if the stored hash
+is still the one verified; if it changed concurrently, no session is issued.
+Nothing needs to be migrated by hand: each account moves to Argon2id at its
+next sign-in. That first sign-in costs a PBKDF2 verification plus an Argon2id
+hash (about 120 + 50 ms). If hashing is saturated at that moment the rehash is
+skipped, the sign-in still succeeds, and the next one tries again.
+
+**Legacy timing floor.** A wrong password against a PBKDF2 hash costs about
+120 ms, against an Argon2id hash or an unknown account about 30 ms: without
+more, the difference would tell accounts that still have a PBKDF2 hash (that
+exist and have not signed in since the upgrade) from unknown ones. So while a
+hasher writes Argon2id, every failed check of `LoginService` and of the
+`auth.Browser` step-up (unknown account or tenant, malformed login, wrong
+password against any hash) is padded, from the credential lookup on, up to the
+cost of one PBKDF2-600k verification plus 25% (one verification varies from
+call to call by some 10-20%). The floor is calibrated once per hasher, on the
+first failure, as the slowest of two PBKDF2 verifications, and rises with the
+slowest legacy verification seen since (at most tenfold). Measured on a 4-CPU
+container: unknown account, wrong password on an Argon2id account and wrong
+password on a PBKDF2 account all answered in 185 ms (medians within 0.5 ms;
+33, 31 and 130 ms without the floor). The padding
+is a timer: it holds no `PasswordWorkLimiter` slot, burns no CPU and ends with
+the request's context. Successful sign-ins are not padded. Once no
+`$pbkdf2-sha256$` hash remains, turn it off:
+
+```go
+hasher, err := auth.NewPasswordHasher(auth.WithLegacyHashTimingFloor(false))
+login, err := auth.NewLoginService(repository, repository, auth.WithLoginPasswordHasher(hasher))
+```
+
+A `forge_pbkdf2` build needs no floor: every check already costs PBKDF2.
+
+**Dormant PBKDF2 accounts.** To stop waiting for accounts that never sign in,
+count them and make them choose a new password through "Forgot your
+password?". This sets a hash no password matches (all-zero key) and ends their
+sessions:
+
+```sql
+SELECT count(*) FROM forge_users WHERE password_hash LIKE '$pbkdf2-sha256$%';
+
+UPDATE forge_users
+SET password_hash = '$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    session_version = session_version + 1,
+    updated_at = now()
+WHERE password_hash LIKE '$pbkdf2-sha256$%';
+```
+
+Do this only where reset emails are configured (`FORGE_AUTH_PASSWORD_RESET_URL`
+and `FORGE_MAIL_*`); then turn the floor off.
 
 **Bounded work.** Each hash holds about 19 MiB while it runs, so every hash and
 verification (unknown accounts included) runs through one process-wide

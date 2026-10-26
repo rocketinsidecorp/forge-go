@@ -104,6 +104,10 @@ type PasswordHasher struct {
 	// that no password matches: a sign-in for an unknown account verifies
 	// against it, so it costs what a known account costs.
 	dummy string
+	// floor pads failed checks while legacy PBKDF2 hashes may exist; nil
+	// when off (WithLegacyHashTimingFloor).
+	floor                  *legacyTimingFloor
+	floorSet, floorEnabled bool
 }
 
 // PasswordHasherOption configures NewPasswordHasher.
@@ -151,6 +155,9 @@ func NewPasswordHasher(options ...PasswordHasherOption) (*PasswordHasher, error)
 	}
 	if h.work == nil {
 		h.work = DefaultPasswordWorkLimiter()
+	}
+	if (h.floorSet && h.floorEnabled) || (!h.floorSet && h.algorithm == PasswordAlgorithmArgon2id) {
+		h.floor = newLegacyTimingFloor()
 	}
 	h.setDummy()
 	return h, nil
@@ -249,7 +256,17 @@ func (h *PasswordHasher) Verify(ctx context.Context, encoded, password string) (
 	}
 	var derived []byte
 	var deriveErr error
-	if err := h.work.Do(ctx, func() { derived, deriveErr = stored.derive(password) }); err != nil {
+	if err := h.work.Do(ctx, func() {
+		if h.floor == nil || stored.algorithm != PasswordAlgorithmPBKDF2SHA256 {
+			derived, deriveErr = stored.derive(password)
+			return
+		}
+		// A legacy verification may be slower than the calibrated floor
+		// (more iterations, a slower moment): the floor follows it.
+		start := h.floor.now()
+		derived, deriveErr = stored.derive(password)
+		h.floor.observe(h.floor.now().Sub(start))
+	}); err != nil {
 		return false, false, err
 	}
 	if deriveErr != nil {

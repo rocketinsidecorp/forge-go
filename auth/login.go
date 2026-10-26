@@ -202,6 +202,19 @@ func NewLoginService(passwords PasswordStore, sessions CredentialSessionCreator,
 // it is throttled, the credential store is queried with random identifiers
 // and a password hash is computed, so neither the response nor its timing
 // tells a malformed organization from an unknown one or a wrong password.
+//
+// While the hasher's legacy timing floor is on (WithLegacyHashTimingFloor,
+// the default with Argon2id), every failed check (unknown account or tenant,
+// malformed login, wrong password against an Argon2id or a PBKDF2 hash) is
+// then padded by a timer, holding no hashing slot, until one PBKDF2-600k
+// verification (plus 25%) would have finished since the lookup began, so an
+// account that still has a PBKDF2 hash is not told apart by its slower
+// verification.
+// If ctx ends during the padding, Login returns ctx's error. A successful
+// check is not padded; the first one of a PBKDF2 account costs PBKDF2 plus
+// the Argon2id rehash. A rehash refused because hashing is saturated
+// (ErrPasswordHashingUnavailable) is skipped, not an error: the password was
+// right, and the next sign-in tries again.
 func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult, error) {
 	if input.Password == "" || len(input.Password) > maxPasswordBytes {
 		return LoginResult{}, ErrCredentialsInvalid
@@ -225,6 +238,7 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, errors.Join(throttled, auditErr)
 	}
 
+	started := s.hasher.checkStarted()
 	lookupEmail, lookupTenant := email, tenant
 	if !wellFormed {
 		lookupEmail, lookupTenant = randomLookup()
@@ -238,6 +252,9 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		// matches, so it costs what a known account costs.
 		if verifyErr := s.hasher.verifyDummy(ctx, input.Password); verifyErr != nil {
 			return LoginResult{}, verifyErr
+		}
+		if err := s.hasher.padFailedCheck(ctx, started); err != nil {
+			return LoginResult{}, err
 		}
 		auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, uuid.UUID{}, uuid.UUID{}, throttleKey)
 		return LoginResult{}, errors.Join(ErrCredentialsInvalid, auditErr)
@@ -253,25 +270,17 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, err
 	}
 	if !match {
+		if err := s.hasher.padFailedCheck(ctx, started); err != nil {
+			return LoginResult{}, err
+		}
 		auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, identity.SubjectID, identity.MembershipID, throttleKey)
 		return LoginResult{}, errors.Join(ErrCredentialsInvalid, auditErr)
 	}
 	if needsRehash {
 		// An older algorithm (PBKDF2) or older parameters: store the
 		// password in the current ones, only if the credential is unchanged.
-		nextHash, err := s.hasher.Hash(ctx, input.Password)
-		if err != nil {
+		if err := s.rehash(ctx, identity, input.Password, throttleKey); err != nil {
 			return LoginResult{}, err
-		}
-		replaced, err := s.passwords.ReplacePasswordHash(ctx, identity.SubjectID, identity.PasswordHash, nextHash)
-		if err != nil {
-			return LoginResult{}, err
-		}
-		if !replaced {
-			// A concurrent password reset or credential update won the race.
-			// Do not issue a session from the stale credential we verified.
-			auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, identity.SubjectID, identity.MembershipID, throttleKey)
-			return LoginResult{}, errors.Join(ErrCredentialsInvalid, auditErr)
 		}
 	}
 
@@ -304,6 +313,29 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, err
 	}
 	return LoginResult{Token: token, ExpiresAt: expiresAt}, nil
+}
+
+// rehash stores password in the hasher's current algorithm and parameters
+// if the credential is still the one verified. Saturated hashing skips it.
+func (s *LoginService) rehash(ctx context.Context, identity PasswordIdentity, password string, throttleKey LoginThrottleKey) error {
+	nextHash, err := s.hasher.Hash(ctx, password)
+	if errors.Is(err, ErrPasswordHashingUnavailable) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	replaced, err := s.passwords.ReplacePasswordHash(ctx, identity.SubjectID, identity.PasswordHash, nextHash)
+	if err != nil {
+		return err
+	}
+	if !replaced {
+		// A concurrent password reset or credential update won the race.
+		// Do not issue a session from the stale credential we verified.
+		auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, identity.SubjectID, identity.MembershipID, throttleKey)
+		return errors.Join(ErrCredentialsInvalid, auditErr)
+	}
+	return nil
 }
 
 func (s *LoginService) recordLoginEvent(

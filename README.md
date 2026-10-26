@@ -418,7 +418,9 @@ forge generate authentication --api-auth  # the same, and the wiring of the JSON
 
 Passwords are stored as Argon2id (`m=19456,t=2,p=1`, the same hashes
 Forge-Rust writes); PBKDF2 hashes from earlier releases are upgraded at the
-next sign-in, and at most one hash per CPU (16 at most) runs at once, beyond
+next sign-in (until none remain, failed sign-ins wait as long as a PBKDF2
+check, so dormant accounts cannot be told from unknown ones; the guide has
+the SQL that resets dormant accounts), and at most one hash per CPU (16 at most) runs at once, beyond
 which sign-ins answer `503` with `Retry-After`. A FIPS 140 build writes
 PBKDF2-HMAC-SHA256 instead
 ([docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#password-hashing)):

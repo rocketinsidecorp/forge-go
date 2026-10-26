@@ -28,7 +28,9 @@ cryptography, which Forge refuses.
   for forge-proxy, ADR 0030). With it the core links exactly three packages
   outside the standard library: `x/crypto/argon2`, `x/crypto/blake2b` and
   `x/sys/cpu`. `architecture_test.go` lists those three packages, not the
-  modules, so anything else from `golang.org/x` still fails the test.
+  modules, and lets only `auth` import `argon2` (the other two only through
+  it), so anything else from `golang.org/x`, or another core package
+  importing them, still fails the test.
 - New hashes are `$argon2id$v=19$m=19456,t=2,p=1$<salt>$<key>`: Forge-Rust's
   parameters, a 16-byte random salt (`crypto/rand`), a 32-byte key, unpadded
   standard base64, so either framework verifies the other's hashes (a test
@@ -39,8 +41,16 @@ cryptography, which Forge refuses.
   characters. A stored hash names its own cost, so the bounds limit what a
   planted hash can demand of the process.
 - PBKDF2 hashes still verify. A successful sign-in rewrites a hash that is not
-  Argon2id with the current parameters through the existing conditional
-  `ReplacePasswordHash`.
+  Argon2id with the current parameters (or whose salt is not 16 bytes)
+  through the existing conditional `ReplacePasswordHash`; if hashing is
+  saturated then, the rewrite waits for the next sign-in.
+- While PBKDF2 hashes may remain, verifying one (about 120 ms) is slower than
+  an Argon2id one or an unknown account (about 30 ms), which would tell
+  dormant accounts from unknown ones. Every failed sign-in or step-up check is
+  therefore padded by a timer (no limiter slot, no CPU, cancelled with the
+  request) to one PBKDF2-600k verification plus 25%, calibrated once per
+  hasher and raised by slower legacy verifications. `WithLegacyHashTimingFloor` (on by
+  default with Argon2id) turns it off once no `$pbkdf2-sha256$` hash remains.
 - Every hash and verification runs through a `PasswordWorkLimiter`: one slot
   per CPU (`GOMAXPROCS`), at most 16, a two-second wait, then
   `ErrPasswordHashingUnavailable` (`503`, `Retry-After: 5`), as in Forge-Rust.
@@ -56,4 +66,8 @@ cryptography, which Forge refuses.
   never sign in keep PBKDF2 hashes, which stay valid.
 - A sign-in costs about 19 MiB for its hash; the limiter bounds the total.
 - A `forge_pbkdf2` build still links Argon2 to verify (and then rewrite)
-  Argon2id hashes written before the switch.
+  Argon2id hashes written before the switch, and that verification uses
+  `golang.org/x/crypto/argon2`, which is not part of a FIPS 140 validated
+  module.
+- A legacy account's first sign-in costs PBKDF2 plus Argon2id; failed checks
+  take at least one PBKDF2 verification until the floor is turned off.

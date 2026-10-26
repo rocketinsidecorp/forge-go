@@ -18,11 +18,22 @@ func cheapPasswordHash(password string) (string, error) {
 // asserted by TestPasswordHashDefaultsToArgon2idWithForgeRustParameters.
 var testArgon2Params = argon2Params{memoryKiB: 8, iterations: 1, parallelism: 1}
 
+// The package's tests fail sign-ins and step-ups hundreds of times through
+// services on DefaultPasswordHasher. Under -race one PBKDF2 calibration of
+// the legacy timing floor takes over a second, which every failure would
+// then wait, so the default hasher has no floor here. The floor's tests
+// (password_floor_test.go) build hashers with it on, in synctest bubbles.
+func init() {
+	DefaultPasswordHasher().floor = nil
+}
+
 // cheapPasswordHasher is NewPasswordHasher(options...) writing Argon2id at
-// testArgon2Params.
+// testArgon2Params, without the legacy timing floor unless options turn it
+// on.
 func cheapPasswordHasher(t testing.TB, options ...PasswordHasherOption) *PasswordHasher {
 	t.Helper()
-	hasher, err := NewPasswordHasher(append([]PasswordHasherOption{WithPasswordAlgorithm(PasswordAlgorithmArgon2id)}, options...)...)
+	defaults := []PasswordHasherOption{WithPasswordAlgorithm(PasswordAlgorithmArgon2id), WithLegacyHashTimingFloor(false)}
+	hasher, err := NewPasswordHasher(append(defaults, options...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
