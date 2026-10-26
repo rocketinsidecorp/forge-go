@@ -94,7 +94,6 @@ type Scheduler struct {
 	jobs       map[string]scheduledJob
 	opts       SchedulerOptions
 	mu         sync.Mutex
-	wg         sync.WaitGroup
 	ctx        context.Context
 	cancel     context.CancelFunc
 	concurrent chan struct{}
@@ -102,7 +101,8 @@ type Scheduler struct {
 	duration   *telemetry.Histogram
 	started    bool
 	stopped    bool
-	drained    chan struct{} // closed when every job goroutine has returned; set by StopContext
+	running    int           // job goroutines that have not returned
+	drained    chan struct{} // closed once the scheduler is stopped and no job goroutine is running
 }
 
 type scheduledJob struct {
@@ -147,6 +147,7 @@ func NewScheduler(opts SchedulerOptions) *Scheduler {
 		ctx:        ctx,
 		cancel:     cancel,
 		concurrent: make(chan struct{}, opts.MaxConcurrentJobs),
+		drained:    make(chan struct{}),
 	}
 	if opts.Telemetry != nil {
 		s.tracer = opts.Telemetry.Tracer(telemetry.ScopeName + "/jobs")
@@ -234,7 +235,7 @@ func (s *Scheduler) Start() {
 	for name, sj := range s.jobs {
 		jobs[name] = sj
 	}
-	s.wg.Add(len(jobs))
+	s.running = len(jobs)
 	s.mu.Unlock()
 	for name, sj := range jobs {
 		go s.runJob(name, sj)
@@ -251,32 +252,23 @@ func (s *Scheduler) Stop() error {
 // StopContext stops scheduling, cancels the context every job receives and
 // waits for running jobs to return until ctx is done. It returns nil once all
 // jobs have returned and ctx.Err() when ctx ended first, in which case jobs
-// that ignore cancellation keep running; the scheduler starts nothing new and
-// owns no goroutine beyond those jobs and one that waits for them, which
-// returns when the last of them does. It is safe to call more than once and
-// concurrently, and a later call may wait again for the same jobs.
+// that ignore cancellation keep running: the scheduler starts nothing new and
+// owns no goroutine beyond those jobs' own, which end when the jobs return. It
+// is safe to call more than once and concurrently, and a later call may wait
+// again for the same jobs.
 func (s *Scheduler) StopContext(ctx context.Context) error {
 	s.mu.Lock()
 	s.stopped = true
 	s.cancel()
-	if s.drained == nil {
-		drained := make(chan struct{})
-		s.drained = drained
-		// No Add can follow: Start and Register refuse once stopped is set.
-		go func() {
-			s.wg.Wait()
-			close(drained)
-		}()
-	}
-	drained := s.drained
+	s.closeDrainedLocked()
 	s.mu.Unlock()
 	select {
-	case <-drained:
+	case <-s.drained:
 		return nil
 	case <-ctx.Done():
 		// Finishing together with the deadline is not a timeout.
 		select {
-		case <-drained:
+		case <-s.drained:
 			return nil
 		default:
 			return ctx.Err()
@@ -284,8 +276,30 @@ func (s *Scheduler) StopContext(ctx context.Context) error {
 	}
 }
 
+// jobGoroutineDone records that a job goroutine returned.
+func (s *Scheduler) jobGoroutineDone() {
+	s.mu.Lock()
+	s.running--
+	s.closeDrainedLocked()
+	s.mu.Unlock()
+}
+
+// closeDrainedLocked closes drained once the scheduler is stopped and no job
+// goroutine runs. Start and Register refuse once stopped is set, so running
+// cannot grow afterwards. s.mu must be held.
+func (s *Scheduler) closeDrainedLocked() {
+	if !s.stopped || s.running > 0 {
+		return
+	}
+	select {
+	case <-s.drained:
+	default:
+		close(s.drained)
+	}
+}
+
 func (s *Scheduler) runJob(name string, sj scheduledJob) {
-	defer s.wg.Done()
+	defer s.jobGoroutineDone()
 	nextRun := time.Now().UTC()
 	for {
 		var err error
