@@ -82,7 +82,7 @@ the work is finished and waiting for its review; **Planned** means not started.
   application commands such as `seed` and `setup` get an unchecked pool),
   with an opt-out named like `AllowRowSecurityBypass`; digest-pinned bases in its generated
   `Dockerfile`; a counter and one warning per key for undecodable cache
-  values; and agreeing the `max_lateness` default.
+  values.
 
 - CLI differences that remain after `forge check`, `forge format` and
   `forge lint` (forge-go QG10, audit gap 3). Flag-parse and usage errors of
@@ -117,8 +117,10 @@ the work is finished and waiting for its review; **Planned** means not started.
   a job. Both skip stale ticks instead of replaying them (Rust
   `Schedule::max_lateness`, Go `SchedulerOptions.MaxLateness` since forge-go
   QG9: the latest due tick runs once, earlier ones are skipped and reported);
-  the defaults differ (Rust five minutes, at least one; Go one interval of
-  the schedule), to be agreed. Rust lacks the
+  the default is one interval of the schedule in both (decision D14), and an
+  explicit `MaxLateness` below a minute is raised to a minute in both
+  (decision D18; Rust also floors the default, which only matters for a Go
+  `Every` below a minute). Rust lacks the
   wake-up: it adopts `NOTIFY forge_jobs` (payload: the queue name, sent in
   `forge_jobs_enqueue` for due jobs) and a worker `LISTEN` owned by `Jobs::run`
   with the same reconnect backoff (0.5s to 1s, doubling to 15s to 30s) behind

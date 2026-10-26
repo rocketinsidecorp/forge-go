@@ -797,7 +797,9 @@ same time. A job that falls behind its schedule (a run longer than its
 interval, a paused VM, a slow tick claim, a wait for a free slot) does not
 replay the ticks it missed back to back: only the latest tick due runs, once,
 and only while it is at most `jobs.SchedulerOptions.MaxLateness` late (zero,
-the default, means one interval of the job's schedule); the others are skipped
+the default, means one interval of the job's schedule; an explicit value below
+a minute is raised to a minute, as in Forge-Rust's `Schedule::max_lateness`);
+the others are skipped
 and reported to `OnError` as a `*jobs.SkippedTicksError`, which the generated
 `JobsConfigure` logs as a warning. To skip a tick that is more than ten
 minutes late, even for a daily job:

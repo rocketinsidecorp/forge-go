@@ -152,9 +152,12 @@ type SchedulerOptions struct {
 	// number skipped is reported to OnError as a *SkippedTicksError. Zero
 	// means one interval of the job's schedule (Every, a day for DailyAt,
 	// the gap to the following tick for Cron), so after a stall the latest
-	// missed tick still runs once. Forge-Rust's Schedule::max_lateness has
-	// the same meaning. Validate refuses a negative value; NewScheduler
-	// treats it as zero.
+	// missed tick still runs once. An explicit value below a minute is
+	// raised to a minute (the database clock decides, and a replica may
+	// notice a tick up to a pass late), as in Forge-Rust's
+	// Schedule::max_lateness, which has the same meaning and the same floor.
+	// The default is not floored. Validate refuses a negative value;
+	// NewScheduler treats it as zero.
 	MaxLateness time.Duration
 }
 
@@ -216,6 +219,10 @@ const (
 const (
 	maxConcurrentJobs     = 256
 	defaultConcurrentJobs = 4
+	// minMaxLateness is the shortest explicit MaxLateness (Forge-Rust's
+	// MIN_LATENESS): the database clock decides whether a tick is late, and
+	// a replica may notice a tick up to a pass late.
+	minMaxLateness = time.Minute
 )
 
 // Validate reports options NewScheduler would silently change: a negative
@@ -236,8 +243,9 @@ func (o SchedulerOptions) Validate() error {
 
 // NewScheduler creates a scheduler with the given options. Zero or negative
 // MaxConcurrentJobs uses the default and a value above 256 is lowered to 256,
-// and a negative MaxLateness means the default; SchedulerOptions.Validate
-// reports these instead.
+// and a negative MaxLateness means the default; an explicit MaxLateness below
+// a minute is raised to a minute (as Forge-Rust's Schedule::max_lateness does).
+// SchedulerOptions.Validate reports the first two instead.
 func NewScheduler(opts SchedulerOptions) *Scheduler {
 	if opts.MaxConcurrentJobs < 1 {
 		opts.MaxConcurrentJobs = defaultConcurrentJobs
@@ -247,6 +255,9 @@ func NewScheduler(opts SchedulerOptions) *Scheduler {
 	}
 	if opts.MaxLateness < 0 {
 		opts.MaxLateness = 0
+	}
+	if opts.MaxLateness > 0 && opts.MaxLateness < minMaxLateness {
+		opts.MaxLateness = minMaxLateness
 	}
 	if opts.OnError == nil {
 		opts.OnError = func(name string, err error) {
