@@ -54,6 +54,11 @@ func TestDeployCommandsRefuseMalformedCommandLinesBeforeConnecting(t *testing.T)
 		if tc.want != "" && !strings.Contains(err.Error()+stderr.String(), tc.want) {
 			t.Errorf("%s: err = %v / stderr %q, want %q", name, err, stderr.String(), tc.want)
 		}
+		// An invalid command line exits 2, as the README documents, and not
+		// with the 1 of a failed deploy.
+		if tc.want != "" && ExitCodeOf(err) != ExitUsage {
+			t.Errorf("%s: exit code %d, want %d", name, ExitCodeOf(err), ExitUsage)
+		}
 		if stdout.Len() != 0 {
 			t.Errorf("%s: printed %q before failing", name, stdout.String())
 		}
@@ -150,8 +155,12 @@ func TestFinishReportPrintsWarningsFailuresAndEncodingErrors(t *testing.T) {
 	if err := finishReport(&commonFlags{json: true}, brokenWriter{}, report, failure, "x"); !errors.Is(err, failure) {
 		t.Errorf("an unwritable report hid the failure: %v", err)
 	}
+	out.Reset()
 	if err := finishReport(&commonFlags{}, &out, report, failure, "x"); !errors.Is(err, failure) {
 		t.Errorf("a failure without --json: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "warning: old image kept") || strings.Contains(got, "(1.5s)") {
+		t.Errorf("a failure prints its warnings and no summary, got %q", got)
 	}
 	if err := finishReport(&commonFlags{}, &out, nil, nil, "x"); err != nil {
 		t.Errorf("no report, no error: %v", err)

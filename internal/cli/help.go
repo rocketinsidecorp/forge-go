@@ -323,7 +323,7 @@ func currentCommandCatalog() commandCatalog {
 		ProcessExitCodes: append([]exitCodeDetail{
 			{Code: 0, Meaning: "The requested command completed successfully."},
 			{Code: 1, Meaning: "A command failed or its arguments/configuration were invalid."},
-			{Code: 2, Meaning: "No command was supplied, the top-level command is unknown, or forge help was given an unknown command or invalid arguments."},
+			{Code: 2, Meaning: "No command was supplied, the top-level command is unknown, forge help was given an unknown command or invalid arguments, or forge deploy, logs or app got an unknown flag or subcommand or a missing or extra argument."},
 		}, deployExitCodes...),
 		Commands: commands,
 	}

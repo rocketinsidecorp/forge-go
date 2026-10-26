@@ -17,6 +17,14 @@ FORGE_TEST_REQUIRE_SSHD=true go test ./internal/deploy/  # deploy over a real ss
 missing server or `sshd` into a failure instead of a skip; CI sets both, so
 these tests can never silently stop running there.
 
+The PostgreSQL tests that need `uuidv7()` (the identity migrations, and any
+application table with `DEFAULT uuidv7()`) require PostgreSQL 18. On an older
+server they skip with `requires PostgreSQL 18 (uuidv7()): the test server is
+PostgreSQL 16.x`, or fail with that reason when `FORGE_TEST_REQUIRE_DATABASE=true`
+is set. A test of your own that calls `uuidv7()` starts with
+`postgrestest.RequireUUIDv7(t, db)`; `postgrestest.NewMigrated`, `NewMigratedSets`
+and `NewRLS` check the migrations they apply themselves.
+
 ## Coverage
 
 CI's `coverage` job measures statement coverage of the module and fails when

@@ -169,6 +169,7 @@ func TestProvisionOwnerIsAtomicAndSerialized(t *testing.T) {
 
 func TestSetupCommandReadsThePasswordSafely(t *testing.T) {
 	db, database := postgrestest.NewWithConfig(t)
+	postgrestest.RequireUUIDv7(t, db) // the identity migrations use DEFAULT uuidv7()
 	dbtest.Migrate(t, authpostgres.Migrations(), func(loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
 		return postgres.NewMigrator(database, loaded, logger)
 	})

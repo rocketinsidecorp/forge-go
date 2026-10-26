@@ -261,7 +261,7 @@ All edits are inside `identityRoutes` unless noted.
 and give the renderer the signer so pages can sign their stream names:
 
 ```go
-	streamSigner, err := htmlstreams.NewSigner(app.Config().Environment, os.Getenv(htmlstreams.KeyEnvironment), app.Logger())
+	streamSigner, err := htmlstreams.NewSigner(app.Config().Environment, os.Getenv(htmlstreams.KeyEnvironment), os.Getenv(htmlstreams.PreviousKeysEnvironment), app.Logger())
 	if err != nil {
 		return err
 	}

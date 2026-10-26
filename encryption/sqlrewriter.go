@@ -51,32 +51,55 @@ func (c SQLColumn) placeholder(n int) string {
 	return "?"
 }
 
+// quote wraps an identifier that Validate accepted in the quotes of the
+// column's dialect: "x" for PostgreSQL (DollarPlaceholders), `x` for MySQL,
+// MariaDB and SQLite, which accepts backticks as MySQL does. Quoting keeps
+// valid names that are reserved words (order, user) working.
+func (c SQLColumn) quote(name string) string {
+	if c.DollarPlaceholders {
+		return `"` + name + `"`
+	}
+	return "`" + name + "`"
+}
+
 // PageSQL is the statement behind Rewriter.Page. With after set it takes one
 // argument, the id after which to read; for the first page (after false) it
 // takes none, which also suits uuid columns that cannot compare with "".
-func (c SQLColumn) PageSQL(limit int, after bool) string {
-	condition := fmt.Sprintf("%s IS NOT NULL", c.Column)
+// Identifiers are validated here, whatever the caller did before, and quoted
+// for the dialect; an invalid one is an error, never interpolated.
+func (c SQLColumn) PageSQL(limit int, after bool) (string, error) {
+	c, err := c.Validate()
+	if err != nil {
+		return "", err
+	}
+	column, id := c.quote(c.Column), c.quote(c.IDColumn)
+	condition := column + " IS NOT NULL"
 	if after {
-		condition = fmt.Sprintf("%s > %s AND %s", c.IDColumn, c.placeholder(1), condition)
+		condition = fmt.Sprintf("%s > %s AND %s", id, c.placeholder(1), condition)
 	}
 	return fmt.Sprintf("SELECT %s, %s FROM %s WHERE %s ORDER BY %s LIMIT %d",
-		c.IDColumn, c.Column, c.Table, condition, c.IDColumn, limit) // #nosec G201 -- identifiers are validated, limit is an int
+		id, column, c.quote(c.Table), condition, id, limit), nil // #nosec G201 -- identifiers are validated and quoted, limit is an int
 }
 
 // ReplaceSQL is the statement behind Rewriter.Replace, a compare-and-set on
 // the old ciphertext. Its arguments are, in order: the new ciphertext, the new
 // blind index (only when withIndex), the id and the old ciphertext.
+// Identifiers are validated and quoted like PageSQL's.
 func (c SQLColumn) ReplaceSQL(withIndex bool) (string, error) {
-	set, n := fmt.Sprintf("%s = %s", c.Column, c.placeholder(1)), 1
+	c, err := c.Validate()
+	if err != nil {
+		return "", err
+	}
+	set, n := fmt.Sprintf("%s = %s", c.quote(c.Column), c.placeholder(1)), 1
 	if withIndex {
 		if c.IndexColumn == "" {
 			return "", errors.New("encryption: a blind index was requested but no index column is configured")
 		}
 		n++
-		set += fmt.Sprintf(", %s = %s", c.IndexColumn, c.placeholder(n))
+		set += fmt.Sprintf(", %s = %s", c.quote(c.IndexColumn), c.placeholder(n))
 	}
 	return fmt.Sprintf("UPDATE %s SET %s WHERE %s = %s AND %s = %s",
-		c.Table, set, c.IDColumn, c.placeholder(n+1), c.Column, c.placeholder(n+2)), nil // #nosec G201 -- identifiers are validated
+		c.quote(c.Table), set, c.quote(c.IDColumn), c.placeholder(n+1), c.quote(c.Column), c.placeholder(n+2)), nil // #nosec G201 -- identifiers are validated and quoted
 }
 
 // Queryer is the part of *sql.DB and *sql.Tx a SQLRewriter needs.
@@ -119,7 +142,11 @@ func (r *SQLRewriter) Page(ctx context.Context, after string, limit int) ([]Reco
 	if after != "" {
 		args = append(args, after)
 	}
-	rows, err := r.db.QueryContext(ctx, r.spec.PageSQL(limit, after != ""), args...)
+	query, err := r.spec.PageSQL(limit, after != "")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

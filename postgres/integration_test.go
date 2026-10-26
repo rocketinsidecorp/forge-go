@@ -33,6 +33,7 @@ var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 func TestUUIDv7RoundTripAndOrdering(t *testing.T) {
 	t.Parallel()
 	db := postgrestest.New(t)
+	postgrestest.RequireUUIDv7(t, db)
 	ctx := context.Background()
 	if _, err := db.Exec(ctx, "CREATE TABLE items (id uuid PRIMARY KEY DEFAULT uuidv7(), seq int NOT NULL)"); err != nil {
 		t.Fatal(err)
@@ -390,6 +391,7 @@ func newMigrator(t *testing.T, cfg config.Database, fsys fstest.MapFS) *migrate.
 func TestMigratorLifecycle(t *testing.T) {
 	t.Parallel()
 	db, cfg := postgrestest.NewWithConfig(t)
+	postgrestest.RequireUUIDv7(t, db) // migrationFS creates a table DEFAULT uuidv7()
 	ctx := context.Background()
 	migrator := newMigrator(t, cfg, migrationFS())
 
@@ -437,7 +439,8 @@ func TestMigratorFailsClosed(t *testing.T) {
 
 	t.Run("modified migration", func(t *testing.T) {
 		t.Parallel()
-		_, cfg := postgrestest.NewWithConfig(t)
+		db, cfg := postgrestest.NewWithConfig(t)
+		postgrestest.RequireUUIDv7(t, db) // migrationFS creates a table DEFAULT uuidv7()
 		if _, err := newMigrator(t, cfg, migrationFS()).Up(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -450,7 +453,8 @@ func TestMigratorFailsClosed(t *testing.T) {
 
 	t.Run("database ahead of build", func(t *testing.T) {
 		t.Parallel()
-		_, cfg := postgrestest.NewWithConfig(t)
+		db, cfg := postgrestest.NewWithConfig(t)
+		postgrestest.RequireUUIDv7(t, db) // migrationFS creates a table DEFAULT uuidv7()
 		if _, err := newMigrator(t, cfg, migrationFS()).Up(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -464,7 +468,8 @@ func TestMigratorFailsClosed(t *testing.T) {
 
 	t.Run("irreversible rollback reverts nothing", func(t *testing.T) {
 		t.Parallel()
-		_, cfg := postgrestest.NewWithConfig(t)
+		db, cfg := postgrestest.NewWithConfig(t)
+		postgrestest.RequireUUIDv7(t, db) // migrationFS creates a table DEFAULT uuidv7()
 		fsys := migrationFS()
 		delete(fsys, "20260102000000_index_accounts.down.sql")
 		migrator := newMigrator(t, cfg, fsys)
@@ -483,7 +488,8 @@ func TestMigratorFailsClosed(t *testing.T) {
 
 func TestConcurrentMigratorsApplyOnce(t *testing.T) {
 	t.Parallel()
-	_, cfg := postgrestest.NewWithConfig(t)
+	db, cfg := postgrestest.NewWithConfig(t)
+	postgrestest.RequireUUIDv7(t, db) // migrationFS creates a table DEFAULT uuidv7()
 	var total sync.WaitGroup
 	results := make(chan int, 5)
 	for range 5 {
@@ -508,7 +514,8 @@ func TestConcurrentMigratorsApplyOnce(t *testing.T) {
 
 func TestCommandsThroughApplicationBinary(t *testing.T) {
 	t.Parallel()
-	cfg := postgrestest.Config(t)
+	db, cfg := postgrestest.NewWithConfig(t)
+	postgrestest.RequireUUIDv7(t, db) // migrationFS creates a table DEFAULT uuidv7()
 	lookup := func(key string) (string, bool) {
 		switch key {
 		case "FORGE_ENV":

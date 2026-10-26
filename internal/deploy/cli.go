@@ -41,13 +41,15 @@ func newFlags(name string, stderr io.Writer, withJSON bool) (*flag.FlagSet, *com
 }
 
 // parseFlags is flags.Parse that, for an invalid command line, also lists the
-// flags on the flag set's output as the flag package would. For -h and --help
-// it prints nothing and returns flag.ErrHelp.
+// flags on the flag set's output as the flag package would and returns an
+// error that exits with ExitUsage (2). For -h and --help it prints nothing
+// and returns flag.ErrHelp.
 func parseFlags(flags *flag.FlagSet, args []string) error {
 	err := flags.Parse(args)
 	if err != nil && !errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintf(flags.Output(), "Usage of %s:\n", flags.Name())
 		flags.PrintDefaults()
+		return withCode(ExitUsage, err)
 	}
 	return err
 }
@@ -128,7 +130,7 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 	case "maintenance":
 		return runMaintenance(ctx, args, stdout, stderr)
 	default:
-		return fmt.Errorf("unknown deploy command %q (setup, rollback, prune, details, lock, maintenance, init)", sub)
+		return usageError("unknown deploy command %q (setup, rollback, prune, details, lock, maintenance, init)", sub)
 	}
 }
 
@@ -141,7 +143,7 @@ func runDeployCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 		return err
 	}
 	if len(positional) != 0 {
-		return errors.New("usage: forge deploy [--version V] [--skip-build] [--dry-run] [--json]")
+		return usageError("usage: forge deploy [--version V] [--skip-build] [--dry-run] [--json]")
 	}
 	d, err := common.deployer(stdout, stderr)
 	if err != nil {
@@ -163,7 +165,7 @@ func runSimple(ctx context.Context, name string, args []string, stdout, stderr i
 		return err
 	}
 	if len(positional) != 0 {
-		return fmt.Errorf("usage: forge deploy %s [--dry-run] [--json]", name)
+		return usageError("usage: forge deploy %s [--dry-run] [--json]", name)
 	}
 	d, err := common.deployer(stdout, stderr)
 	if err != nil {
@@ -186,7 +188,7 @@ func runRollback(ctx context.Context, args []string, stdout, stderr io.Writer) e
 		return err
 	}
 	if len(positional) != 1 {
-		return errors.New("usage: forge deploy rollback VERSION [--dry-run] [--json]")
+		return usageError("usage: forge deploy rollback VERSION [--dry-run] [--json]")
 	}
 	d, err := common.deployer(stdout, stderr)
 	if err != nil {
@@ -198,7 +200,8 @@ func runRollback(ctx context.Context, args []string, stdout, stderr io.Writer) e
 }
 
 // finishReport prints the report (always in --json mode, also on failure)
-// and passes err through.
+// and passes err through. In text mode the warnings are printed either way;
+// the summary only on success.
 func finishReport(common *commonFlags, stdout io.Writer, report *Report, err error, summary string) error {
 	if common.json && report != nil {
 		type output struct {
@@ -216,13 +219,18 @@ func finishReport(common *commonFlags, stdout io.Writer, report *Report, err err
 		}
 		return err
 	}
-	if err != nil {
-		return err
-	}
+	// Warnings print on failure too: one may name a file the operator must
+	// delete by hand (a migrate env file that could not be removed), and a
+	// failed deploy is the likeliest case.
 	if report != nil {
 		for _, warning := range report.Warnings {
 			fmt.Fprintf(stdout, "warning: %s\n", warning)
 		}
+	}
+	if err != nil {
+		return err
+	}
+	if report != nil {
 		if common.dryRun {
 			summary = "dry run: nothing was changed"
 		}
@@ -238,7 +246,7 @@ func runDetails(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return err
 	}
 	if len(positional) != 0 || common.dryRun {
-		return errors.New("usage: forge deploy details [--json]")
+		return usageError("usage: forge deploy details [--json]")
 	}
 	d, err := common.deployer(stdout, stderr)
 	if err != nil {
@@ -290,7 +298,7 @@ func runLock(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 	if len(positional) != 1 {
-		return errors.New("usage: forge deploy lock status|acquire|release [--message M] [--force]")
+		return usageError("usage: forge deploy lock status|acquire|release [--message M] [--force]")
 	}
 	d, err := common.deployer(stdout, stderr)
 	if err != nil {
@@ -327,7 +335,7 @@ func runLock(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		fmt.Fprintln(stdout, "lock released")
 		return nil
 	default:
-		return errors.New("usage: forge deploy lock status|acquire|release")
+		return usageError("usage: forge deploy lock status|acquire|release")
 	}
 }
 
@@ -338,7 +346,7 @@ func runMaintenance(ctx context.Context, args []string, stdout, stderr io.Writer
 		return err
 	}
 	if len(positional) != 1 || (positional[0] != "on" && positional[0] != "off") {
-		return errors.New("usage: forge deploy maintenance on|off [--dry-run]")
+		return usageError("usage: forge deploy maintenance on|off [--dry-run]")
 	}
 	d, err := common.deployer(stdout, stderr)
 	if err != nil {
@@ -386,7 +394,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("usage: forge deploy init [--service NAME]")
+		return usageError("usage: forge deploy init [--service NAME]")
 	}
 	if *service == "" {
 		*service = defaultServiceName(".")
@@ -420,7 +428,7 @@ func RunLogs(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if len(positional) != 0 {
-		return errors.New("usage: forge logs [-f] [--role R] [--host H] [--since 1h] [--grep X] [--lines N]")
+		return usageError("usage: forge logs [-f] [--role R] [--host H] [--since 1h] [--grep X] [--lines N]")
 	}
 	d, err := common.deployer(stdout, stderr)
 	if err != nil {
@@ -435,7 +443,7 @@ func RunApp(args []string, stdout, stderr io.Writer) error {
 	ctx, stop := signalContext()
 	defer stop()
 	if len(args) == 0 || (args[0] != "exec" && args[0] != "shell") {
-		return errors.New("usage: forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD... | forge app shell [--image IMAGE]")
+		return usageError("usage: forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD... | forge app shell [--image IMAGE]")
 	}
 	sub := args[0]
 	flags, common := newFlags("app "+sub, stderr, false)
@@ -461,7 +469,7 @@ func RunApp(args []string, stdout, stderr io.Writer) error {
 	defer closeRunner(d)
 	if sub == "shell" {
 		if flags.NArg() != 0 {
-			return errors.New("usage: forge app shell [--role R] [--host H] [--image IMAGE]")
+			return usageError("usage: forge app shell [--role R] [--host H] [--image IMAGE]")
 		}
 		return d.Shell(ctx, opts.Role, opts.Host, image)
 	}

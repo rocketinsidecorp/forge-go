@@ -54,6 +54,9 @@ func TestGeneratedJobsConfigureExampleCompiles(t *testing.T) {
 			if strings.Contains(source, "app.InTx") {
 				t.Error("the example calls app.InTx, which forge.App does not have")
 			}
+			if !strings.Contains(source, "options.Validate()") || !strings.Contains(source, "jobs.NewScheduler(options)") {
+				t.Error("the scheduler options are not validated before NewScheduler")
+			}
 			if !strings.Contains(source, "app.OnShutdown(scheduler.StopContext)") {
 				t.Error("the shutdown hook does not use StopContext")
 			}

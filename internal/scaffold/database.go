@@ -65,7 +65,7 @@ func profileFor(name, user, database string) *databaseProfile {
 	case "postgresql":
 		return &databaseProfile{ // #nosec G101 -- throwaway container credentials, see above
 			Name: name, Title: "PostgreSQL 18", Adapter: "postgres", TestPackage: "postgrestest", Server: true, Identity: true, Jobs: true,
-			ProductionTLS: "`sslmode=verify-full` or `verify-ca` (`sslrootcert` for a private CA)",
+			ProductionTLS: "`sslmode=verify-full`, or `verify-ca` with `sslrootcert`",
 			MigrationLock: "a PostgreSQL advisory lock",
 			Service:       "postgres", Image: "postgres:18-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873", ContainerPort: 5432,
 			// The PostgreSQL 18 image keeps its data in a versioned

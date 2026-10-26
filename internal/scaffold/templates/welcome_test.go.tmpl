@@ -1,0 +1,45 @@
+package bootstrap
+
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+var styleElement = regexp.MustCompile(`(?s)<style>(.*?)</style>`)
+
+// assertWelcomeContentSecurityPolicy checks the welcome page's policy
+// against the page that was actually served: no 'unsafe-inline', and the
+// SHA-256 of the served stylesheet, recomputed here, as the only style source.
+func assertWelcomeContentSecurityPolicy(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	styles := styleElement.FindAllStringSubmatch(recorder.Body.String(), -1)
+	if len(styles) != 1 {
+		t.Fatalf("the welcome page has %d inline <style> elements, want 1", len(styles))
+	}
+	sum := sha256.Sum256([]byte(styles[0][1]))
+	want := "default-src 'none'; style-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'; img-src 'self'; frame-ancestors 'none'"
+	got := recorder.Header().Get("Content-Security-Policy")
+	if got != want {
+		t.Fatalf("welcome page CSP = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "unsafe-inline") {
+		t.Fatalf("welcome page CSP allows inline styles by 'unsafe-inline': %q", got)
+	}
+}
+
+// TestWelcomePageContentSecurityPolicyHashesItsStylesheet runs for every
+// application, with or without a database.
+func TestWelcomePageContentSecurityPolicyHashesItsStylesheet(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	welcomeHandler("/assets/logo.png").ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d", recorder.Code)
+	}
+	assertWelcomeContentSecurityPolicy(t, recorder)
+}

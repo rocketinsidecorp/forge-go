@@ -165,6 +165,36 @@ func TestMigrateEnvRemovalFailureIsAWarning(t *testing.T) {
 	}
 }
 
+// A failed deploy still prints the removal warning in text mode: it names
+// the file the operator must delete by hand. The summary stays success-only.
+func TestARemovalFailureIsPrintedEvenWhenTheMigrationFails(t *testing.T) {
+	d, runner, _ := migrateEnvFixture(t, false, migrateEnvConfig)
+	runner.fail = func(_ string, cmd Command) error {
+		switch {
+		case cmd.Script == removeScript:
+			return errors.New("ssh: connection reset")
+		case strings.Contains(cmd.Script, "docker run --rm"):
+			return &RemoteError{Host: "192.0.2.10", ExitCode: 1, Stderr: "migration 0002 failed"}
+		}
+		return nil
+	}
+	report, err := d.Deploy(t.Context(), DeployOptions{Version: "v3", SkipBuild: true})
+	if ExitCodeOf(err) != ExitMigrationFailed {
+		t.Fatalf("err = %v (exit %d)", err, ExitCodeOf(err))
+	}
+	var out bytes.Buffer
+	if got := finishReport(&commonFlags{}, &out, report, err, "deployed v3"); !errors.Is(got, err) {
+		t.Fatalf("finishReport returned %v, want the migration failure", got)
+	}
+	printed := out.String()
+	if !strings.Contains(printed, "warning: 192.0.2.10: could not remove .forge/shop/env/migrate.step.env, delete it by hand") {
+		t.Errorf("the removal warning was not printed:\n%s", printed)
+	}
+	if strings.Contains(printed, "deployed v3") {
+		t.Errorf("a failed deploy printed its summary:\n%s", printed)
+	}
+}
+
 func TestMigrateEnvUploadFailureAbortsBeforeMigratingAndStillRemovesTheFile(t *testing.T) {
 	d, runner, _ := migrateEnvFixture(t, false, migrateEnvConfig)
 	runner.fail = func(_ string, cmd Command) error {

@@ -57,6 +57,52 @@ the work is finished and waiting for its review; **Planned** means not started.
   three in its next pull request that touches `/mfa`, tracked in
   [forge-rust#36](https://github.com/rocketinsidecorp/forge-rust/issues/36).
 
+- Stream signing key rotation (forge-go QG4b,
+  [forge-rust#77](https://github.com/rocketinsidecorp/forge-rust/issues/77)): Forge-Go's
+  generated `htmlstreams.NewSigner` now also reads `FORGE_STREAMS_PREVIOUS_KEYS`
+  (comma-separated base64 keys, at most `broadcast.MaxPreviousKeys` = 3, never
+  echoed in an error), the name Forge-Rust's parity doc already proposes, so
+  rotating `FORGE_STREAMS_KEY` no longer breaks open pages. Forge-Rust's
+  `Signer::new(key, previous)` already verifies previous keys, but its
+  generated applications read `FORGE_STREAMS_KEY` only: it adds the variable
+  with the same name, separator, limit and redaction (tracked in
+  [forge-rust#77](https://github.com/rocketinsidecorp/forge-rust/issues/77),
+  after forge-rust#14).
+  Until then the Rust rotation procedure is in its
+  [deployment](https://github.com/rocketinsidecorp/forge-rust/blob/main/docs/deployment.md#rotating-the-stream-signing-key).
+
+- forge-proxy connection and header limits (forge-go QG4b, audit S-8):
+  Forge-Go's `forge-proxy run` has `-max-header-bytes` (default 65536, 4096 to
+  1048576, `431` above it; was 1 MiB) and `-max-connections` (default 10000
+  per listener, admission before accept). Forge-Rust caps a listener at the
+  same 10,000 connections with a constant and sets hyper's `max_buf_size` to
+  1 MiB: it adopts both flags with the same names, defaults and range and the
+  64 KiB header default (tracked in
+  [forge-rust#77](https://github.com/rocketinsidecorp/forge-rust/issues/77)).
+  Neither framework exposes them in `config/deploy.yml`.
+
+- Welcome page CSP and revendoring (forge-go QG4b,
+  [forge-rust#77](https://github.com/rocketinsidecorp/forge-rust/issues/77)):
+  Forge-Go's generated welcome page allows its one inline stylesheet by
+  SHA-256 hash instead of `style-src 'unsafe-inline'`, with a generated test
+  that recomputes the hash from the served page, and `forge generate ...` runs
+  `go mod vendor` in an application that vendors its dependencies. Forge-Rust
+  adopts the hash (its welcome page and any generated inline style) and checks
+  whether its generators need an equivalent step in a vendored application.
+
+- Production PostgreSQL TLS (forge-go QG4b): both frameworks refuse
+  `sslmode=require`, a missing `sslmode` and, in production, anything that
+  does not verify the server. A deliberate difference remains: Forge-Rust
+  refuses `verify-ca` altogether, because SQLx adds the web roots even with
+  `sslrootcert`, so a certificate from any public CA would pass. Forge-Go
+  keeps `verify-ca`, but only with `sslrootcert` in the URL (config refuses
+  it without): pgx then trusts that file alone. `verify-full` needs neither.
+  Forge-Go also refuses, at startup, a `PGSSLROOTCERT`, `PGSSLCERT`,
+  `PGSSLKEY` or `PGSSLPASSWORD` that the URL does not repeat, instead of
+  ignoring it; Forge-Rust reads PG* defaults through SQLx
+  ([forge-rust#77](https://github.com/rocketinsidecorp/forge-rust/issues/77)
+  records the comparison).
+
 - Benchmarks: [BENCHMARKS.md](BENCHMARKS.md) defines the scenario names, the
   variants and the output format of both suites; Forge-Rust adopts them in
   its own benchmark pull request (tracked in

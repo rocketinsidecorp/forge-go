@@ -726,7 +726,11 @@ Flags for `forge new`:
   Without it the pages are the only way to sign in.
 - `--framework-path DIR` is for framework contributors: it adds a `replace`
   directive pointing at a local checkout, then runs `go mod tidy` and
-  `go mod vendor` so the Docker build context is self-contained. Without it,
+  `go mod vendor` so the Docker build context is self-contained. In such an
+  application (any with a `vendor/` directory) every `forge generate ...` that
+  writes files ends with `go mod vendor` as well, so what it generated, which
+  may import framework packages `vendor/` did not hold, still builds; a
+  `--dry-run` does not. Without it,
   `forge new` runs `go get github.com/rocketinsidecorp/forge-go@<cli version or
   latest>` followed by `go mod tidy`. The CLI version is the release stamped at
   build time or, for a CLI installed from the module proxy with
@@ -848,10 +852,18 @@ Server-Sent Events, with signed, tenant-scoped channel names, and PostgreSQL
 
 ```sh
 export FORGE_STREAMS_KEY=$(openssl rand -base64 32)     # required in staging and production
+# Rotating it without breaking open pages: the old key verifies for 24 hours (up to 3 keys, comma-separated)
+export FORGE_STREAMS_PREVIOUS_KEYS=$OLD_STREAMS_KEY
 forge generate scaffold post title:string body:text --tenant-scoped --broadcast
 forge migrate
 forge test                                              # includes an end-to-end event stream test on PostgreSQL
 ```
+
+Release note: the generated `htmlstreams.NewSigner` now takes the previous
+keys as a third argument (`FORGE_STREAMS_PREVIOUS_KEYS`). `streams.go` is
+written once, so an application generated earlier must update it before the
+newly printed wiring compiles: see
+[docs/VIEWS.md](docs/VIEWS.md#rotating-the-stream-signing-key).
 
 Paste the printed wiring into `app/bootstrap/bootstrap.go` (it defines the
 stream signer, mounts `GET /streams` behind the session cookie and the
@@ -904,8 +916,18 @@ ssh deploy@host docker exec forge-proxy /usr/local/bin/forge-proxy status   # fo
 
 A deploy migrates before any switch, keeps the previous containers running
 until every host passed its health gate, and routes all hosts back if one
-fails. Exit codes: `3` lock held, `4` unhealthy (reverted), `5` migration
-failed, `6` hook failed, `7` not fully reverted.
+fails. Exit codes: `2` invalid arguments (nothing ran), `3` lock held, `4`
+unhealthy (reverted), `5` migration failed, `6` hook failed, `7` not fully
+reverted.
+
+forge-proxy bounds what one client can make it hold: request headers up to
+`-max-header-bytes` (64 KiB; `431` above it) and `-max-connections` open
+connections per listener (10000). They are flags of `forge-proxy run`, with
+those defaults in every deploy:
+
+```sh
+go run ./cmd/forge-proxy run -h   # in a forge-go checkout: lists -max-header-bytes, -max-connections and the rest
+```
 
 On PostgreSQL with separate roles, the schema owner's credential goes to the
 migrate step alone (`migrate.env`, see

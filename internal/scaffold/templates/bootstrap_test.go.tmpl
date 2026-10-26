@@ -60,8 +60,8 @@ func TestRoutes(t *testing.T) {
 		if path == "/" && (!strings.Contains(recorder.Body.String(), "Welcome to {{.Name}}") || !strings.Contains(recorder.Body.String(), `src="/assets/forge-go-logo-`)) {
 			t.Fatalf("welcome page is missing generated branding: %s", recorder.Body.String())
 		}
-		if path == "/" && recorder.Header().Get("Content-Security-Policy") != "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'" {
-			t.Fatalf("welcome page CSP = %q", recorder.Header().Get("Content-Security-Policy"))
+		if path == "/" {
+			assertWelcomeContentSecurityPolicy(t, recorder)
 		}
 	}
 	assertOpenAPI(t, app, "/v1/status", "/health")

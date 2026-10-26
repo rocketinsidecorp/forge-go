@@ -10,9 +10,12 @@ import (
 // of the command contract (forge help --json).
 const (
 	ExitOK = 0
-	// ExitFailed covers invalid arguments or configuration, SSH failures
-	// and failed remote commands.
+	// ExitFailed covers invalid configuration, SSH failures and failed
+	// remote commands.
 	ExitFailed = 1
+	// ExitUsage means the command line was invalid: an unknown flag or
+	// subcommand, or a missing or extra argument. Nothing ran.
+	ExitUsage = 2
 	// ExitLockHeld means another deploy holds the lock; nothing changed.
 	ExitLockHeld = 3
 	// ExitUnhealthy means a new container failed its health check; every
@@ -40,6 +43,11 @@ func (e *ExitError) Unwrap() error { return e.Err }
 
 // ExitCode returns the process exit code.
 func (e *ExitError) ExitCode() int { return e.Code }
+
+// usageError is an invalid command line: it exits with [ExitUsage].
+func usageError(format string, args ...any) error {
+	return &ExitError{Code: ExitUsage, Err: fmt.Errorf(format, args...)}
+}
 
 func withCode(code int, err error) error {
 	if err == nil {

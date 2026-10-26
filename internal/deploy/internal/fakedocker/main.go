@@ -511,13 +511,17 @@ func logs(dir string, args []string) int {
 			secret = value
 		}
 	}
+	// A follower records its pid before it prints anything: a test that sees
+	// the output and stops following must find the pid of every follower.
+	if follow {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("logs-%d.pid", os.Getpid())), []byte(fmt.Sprint(os.Getpid())), 0o600) // #nosec G703 -- test fixture state directory.
+	}
 	fmt.Printf("2026-10-19T10:00:00Z booted %s\n", name)
 	fmt.Printf("2026-10-19T10:00:01Z connecting to %s\n", secret)
 	fmt.Printf("2026-10-19T10:00:02Z ERROR something failed in %s\n", name)
 	if !follow {
 		return 0
 	}
-	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("logs-%d.pid", os.Getpid())), []byte(fmt.Sprint(os.Getpid())), 0o600) // #nosec G703 -- test fixture state directory.
 	for {
 		time.Sleep(time.Hour)
 	}

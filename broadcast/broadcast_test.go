@@ -286,3 +286,37 @@ func TestRandomKeysAreUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDecodePreviousKeys(t *testing.T) {
+	t.Parallel()
+	a := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+	b := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY" // unpadded
+	for _, empty := range []string{"", "  "} {
+		if keys, err := broadcast.DecodePreviousKeys(empty); err != nil || keys != nil {
+			t.Errorf("%q: %v %v", empty, keys, err)
+		}
+	}
+	keys, err := broadcast.DecodePreviousKeys(a + " , " + b + "," + a)
+	if err != nil || len(keys) != broadcast.MaxPreviousKeys || len(keys[0]) != 32 {
+		t.Fatalf("three keys: %d %v", len(keys), err)
+	}
+	for name, list := range map[string]string{
+		"four":       strings.Join([]string{a, a, a, a}, ","),
+		"empty item": a + ",,",
+		"base64":     a + ",%%%secret",
+		"short":      a + ",c2hvcnQ=",
+	} {
+		_, err := broadcast.DecodePreviousKeys(list)
+		if err == nil {
+			t.Errorf("%s accepted", name)
+			continue
+		}
+		if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), a) {
+			t.Errorf("%s: the error echoes a key: %v", name, err)
+		}
+	}
+	signer, err := broadcast.NewSignerFromBase64(a, broadcast.SignerOptions{PreviousKeys: keys})
+	if err != nil || signer == nil {
+		t.Fatalf("signer from decoded keys: %v", err)
+	}
+}

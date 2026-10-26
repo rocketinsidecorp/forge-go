@@ -520,7 +520,8 @@ func TestGenerateServerRenderedHTML(t *testing.T) {
 				"app/javascript/javascript.go":        {"//go:embed application.js controllers/*.js"},
 				"app/javascript/application.js":       {`import "@hotwired/turbo"`, `import "controllers"`},
 				"app/javascript/controllers/index.js": {`application.register("hello", HelloController)`},
-				"app/bootstrap/welcome.go":            {`<meta name="turbo-visit-control" content="reload">`, `src="[[.Logo]]"`, `i18n.T(ctx, "welcome.title", "app", "shop")`},
+				"app/bootstrap/welcome.go":            {`<meta name="turbo-visit-control" content="reload">`, `src="[[.Logo]]"`, `i18n.T(ctx, "welcome.title", "app", "shop")`, "var welcomeContentSecurityPolicy = ", "sha256.Sum256([]byte(style))"},
+				"app/bootstrap/welcome_test.go":       {"func TestWelcomePageContentSecurityPolicyHashesItsStylesheet(t *testing.T) {", "sha256.Sum256([]byte(styles[0][1]))"},
 				"app/bootstrap/bootstrap.go": {
 					"translator, err := locales.New(app.Config(), app.Logger())",
 					"if err := useBrowserPipeline(app, translator); err != nil {",
@@ -533,6 +534,13 @@ func TestGenerateServerRenderedHTML(t *testing.T) {
 				"app/bootstrap/bootstrap_test.go": {"func TestBrowserPipelineRequiresCSRFToken(t *testing.T) {"},
 				"config/locales/locales.go":       {"//go:embed *.json", `const DefaultLocale = "en"`, "cfg.ShowsMissingTranslations()"},
 			})
+			welcome, err := os.ReadFile(filepath.Join(dir, "app", "bootstrap", "welcome.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(welcome), "unsafe-inline") {
+				t.Error("the welcome page must allow its stylesheet by hash, not by 'unsafe-inline'")
+			}
 			for _, path := range []string{"app/views/layouts/application.gohtml", "app/views/shared/_flash.gohtml"} {
 				content, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
 				if err != nil {

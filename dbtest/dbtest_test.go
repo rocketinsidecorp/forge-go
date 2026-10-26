@@ -56,3 +56,33 @@ func TestRequireMustBeABoolean(t *testing.T) {
 		}
 	}
 }
+
+func unsupportedOutcome(t *testing.T) string {
+	t.Helper()
+	r := &recorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		dbtest.Unsupported(r, "requires PostgreSQL %d (uuidv7()): this server is %s", 18, "16.4")
+	}()
+	<-done
+	return r.outcome
+}
+
+// A server that cannot run a test skips it with the reason, and fails it
+// with the reason when the database is required, so a CI job cannot silently
+// stop running a suite.
+func TestUnsupportedSkipsOrFailsWhenTheDatabaseIsRequired(t *testing.T) {
+	const reason = "requires PostgreSQL 18 (uuidv7()): this server is 16.4"
+	for value, want := range map[string]string{
+		"":      "skip: " + reason,
+		"false": "skip: " + reason,
+		"true":  "fatal: " + reason + " (FORGE_TEST_REQUIRE_DATABASE is set)",
+		"yes":   "fatal: FORGE_TEST_REQUIRE_DATABASE must be true or false",
+	} {
+		t.Setenv(dbtest.EnvRequire, value)
+		if got := unsupportedOutcome(t); got != want {
+			t.Errorf("%s=%q: got %q, want %q", dbtest.EnvRequire, value, got, want)
+		}
+	}
+}

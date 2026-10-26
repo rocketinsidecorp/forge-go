@@ -120,6 +120,7 @@ var files = []file{
 	{"bootstrap.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap.go")), everyApplication},
 	{"bootstrap_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap_test.go")), everyApplication},
 	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), everyApplication},
+	{"welcome_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome_test.go")), everyApplication},
 	{"app_assets.go.tmpl", fixed(filepath.Join("app", "assets", "assets.go")), everyApplication},
 	{"app_assets_test.go.tmpl", fixed(filepath.Join("app", "assets", "assets_test.go")), everyApplication},
 	{"javascript.go.tmpl", fixed(filepath.Join("app", "javascript", "javascript.go")), everyApplication},

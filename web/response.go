@@ -1,11 +1,13 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
@@ -24,14 +26,31 @@ type ErrorDetail struct {
 	RequestID string `json:"request_id,omitempty"`
 }
 
-// JSON writes value as a JSON response.
+// JSON writes value as a JSON response. The value is encoded into a buffer
+// first, so the status line and body are written only when encoding
+// succeeded. A value that cannot be encoded (NaN, a channel, a failing
+// MarshalJSON) is logged and answered with a generic 500 instead of a
+// truncated body under the requested status.
 func JSON(w http.ResponseWriter, status int, value any) {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(value); err != nil {
+		slog.Error("json response encoding failed", "status", status, "error", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, encodeFailureBody)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	// The status line is already sent; an encoding failure can only mean the
+	// The status line is already sent; a write failure can only mean the
 	// client went away.
-	_ = json.NewEncoder(w).Encode(value)
+	_, _ = w.Write(body.Bytes())
 }
+
+// encodeFailureBody is the ErrorBody of a JSON response that could not be
+// encoded. It is a constant because encoding an ErrorBody is what just failed
+// for another value, and the request ID is not available here.
+const encodeFailureBody = `{"error":{"code":"internal_error","message":"internal server error"}}` + "\n"
 
 // Error writes err as an ErrorBody. Only *fault.Error code and message reach
 // the client; anything else becomes a generic 500. Server-side failures are

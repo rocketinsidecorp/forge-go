@@ -807,6 +807,55 @@ request. The printed wiring defines the signer and mounts `/streams` behind
 them. Set `FORGE_STREAMS_KEY` (`openssl rand -base64 32`) in staging and
 production; development falls back to a random per-process key.
 
+### Rotating the stream signing key
+
+Changing `FORGE_STREAMS_KEY` alone invalidates the stream name of every page
+that is already open: its next reconnect gets `403 stream_invalid` and stops
+updating until the page is reloaded. To rotate without that, move the old key
+to `FORGE_STREAMS_PREVIOUS_KEYS` (comma-separated, at most 3, same format).
+Previous keys only verify, never sign:
+
+```sh
+export FORGE_STREAMS_PREVIOUS_KEYS=$OLD_STREAMS_KEY      # the key being retired
+export FORGE_STREAMS_KEY=$(openssl rand -base64 32)      # the new key, on every replica
+# redeploy every replica; after 24 hours (the token lifetime) unset FORGE_STREAMS_PREVIOUS_KEYS
+```
+
+The generated `htmlstreams.NewSigner` reads both variables
+(`broadcast.DecodePreviousKeys` parses the list); neither value is ever echoed in an error.
+
+**Upgrading an application generated before `FORGE_STREAMS_PREVIOUS_KEYS`.**
+The generator writes `app/adapters/htmlstreams/streams.go` once, so an older
+application keeps a three-argument `NewSigner(environment, key, logger)`, and
+the wiring printed by a later `forge generate scaffold --broadcast` (four
+arguments) does not compile against it. Either keep calling the old signature
+(rotation then needs the old key added by hand), or update `streams.go`:
+
+```go
+// PreviousKeysEnvironment names the variable bootstrap reads the previous
+// signing keys from while FORGE_STREAMS_KEY is rotated.
+const PreviousKeysEnvironment = "FORGE_STREAMS_PREVIOUS_KEYS"
+
+func NewSigner(environment config.Environment, key, previousKeys string, logger interface{ Warn(string, ...any) }) (*broadcast.Signer, error) {
+	previous, err := broadcast.DecodePreviousKeys(previousKeys)
+	if err != nil {
+		return nil, errors.New(PreviousKeysEnvironment + " is not valid: " + strings.TrimPrefix(err.Error(), "broadcast: "))
+	}
+	if key != "" {
+		return broadcast.NewSignerFromBase64(key, broadcast.SignerOptions{PreviousKeys: previous})
+	}
+	if previous != nil {
+		return nil, errors.New(PreviousKeysEnvironment + " needs " + KeyEnvironment + ": the previous keys only verify, the current key signs")
+	}
+	// ... the rest of the function is unchanged (production and staging
+	// refuse an empty key; development uses a random one).
+}
+```
+
+then pass `os.Getenv(htmlstreams.PreviousKeysEnvironment)` as the new third
+argument in `bootstrap.go` and add `""` to the calls in `streams_test.go`
+(`import "strings"` as well).
+
 Rows are prepended, so a person on page two of the list sees new rows at the
 top of that page; reload to page.
 

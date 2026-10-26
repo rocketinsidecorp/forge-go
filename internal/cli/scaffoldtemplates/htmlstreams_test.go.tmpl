@@ -62,19 +62,78 @@ func onlyPosts(_ *http.Request, channel broadcast.Channel) error {
 func TestSignerRequiresAKeyInProduction(t *testing.T) {
 	t.Parallel()
 	for _, environment := range []config.Environment{config.Production, config.Staging} {
-		if _, err := htmlstreams.NewSigner(environment, "", nil); err == nil {
+		if _, err := htmlstreams.NewSigner(environment, "", "", nil); err == nil {
 			t.Errorf("%s accepted an empty key", environment)
 		}
 	}
-	if _, err := htmlstreams.NewSigner(config.Development, "", nil); err != nil {
+	if _, err := htmlstreams.NewSigner(config.Development, "", "", nil); err != nil {
 		t.Errorf("development without a key: %v", err)
 	}
-	if _, err := htmlstreams.NewSigner(config.Production, "too-short", nil); err == nil {
+	if _, err := htmlstreams.NewSigner(config.Production, "too-short", "", nil); err == nil {
 		t.Error("a short key was accepted")
 	}
 	key := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
-	if _, err := htmlstreams.NewSigner(config.Production, key, nil); err != nil {
+	if _, err := htmlstreams.NewSigner(config.Production, key, "", nil); err != nil {
 		t.Errorf("a valid key: %v", err)
+	}
+}
+
+// TestPreviousKeysKeepOpenPagesWorkingAcrossARotation: a name signed with the
+// old key still verifies once the old key moves to the previous keys, a
+// bad list is refused without echoing a key, and the previous keys never sign.
+func TestPreviousKeysKeepOpenPagesWorkingAcrossARotation(t *testing.T) {
+	t.Parallel()
+	oldKey := "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+	newKey := "ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA="
+	before, err := htmlstreams.NewSigner(config.Production, oldKey, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := broadcast.ForTenant(uuid.MustNew(), "posts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := before.Sign(channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutPrevious, err := htmlstreams.NewSigner(config.Production, newKey, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := withoutPrevious.Verify(token); err == nil {
+		t.Fatal("a name signed with a retired key verified")
+	}
+	after, err := htmlstreams.NewSigner(config.Production, newKey, oldKey, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := after.Verify(token); err != nil || got != channel {
+		t.Fatalf("a page open before the rotation: %v %v", got, err)
+	}
+	// The previous key verifies; it never signs.
+	fresh, err := after.Sign(channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := withoutPrevious.Verify(fresh); err != nil {
+		t.Errorf("a new name was not signed with the new key: %v", err)
+	}
+	for name, list := range map[string]string{
+		"not base64": "%%%",
+		"short":      "c2hvcnQ=",
+		"empty item": oldKey + ",",
+		"too many":   strings.Join([]string{oldKey, oldKey, oldKey, oldKey}, ","),
+	} {
+		_, err := htmlstreams.NewSigner(config.Production, newKey, list, nil)
+		if err == nil {
+			t.Errorf("%s: a bad previous key list was accepted", name)
+		} else if strings.Contains(err.Error(), oldKey) || strings.Contains(err.Error(), "%%%") {
+			t.Errorf("%s: the error echoes a key: %v", name, err)
+		}
+	}
+	if _, err := htmlstreams.NewSigner(config.Development, "", oldKey, nil); err == nil {
+		t.Error("previous keys without a current key were accepted")
 	}
 }
 
@@ -84,7 +143,7 @@ func TestRegisterRequiresAuthenticationAndAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signer, err := htmlstreams.NewSigner(config.Development, "", nil)
+	signer, err := htmlstreams.NewSigner(config.Development, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +167,7 @@ func TestStreamsDeliverOnlyToTheirTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signer, err := htmlstreams.NewSigner(config.Development, "", nil)
+	signer, err := htmlstreams.NewSigner(config.Development, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

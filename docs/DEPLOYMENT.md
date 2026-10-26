@@ -168,6 +168,8 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_STORAGE_SIGNING_KEY`         | (empty)          | HMAC key of signed file links: unpadded base64url of 32-1024 random bytes. Secret. **Required in `production` when `FORGE_STORAGE_ROOT` is set.** |
 | `FORGE_STORAGE_MAX_UPLOAD_BYTES`    | `524288`         | Largest uploaded file; cannot exceed `FORGE_HTTP_MAX_BODY_BYTES` when storage is configured |
 | `FORGE_STORAGE_LINK_TTL`            | `15m`            | Default lifetime of signed links, `1s`-`168h` |
+| `FORGE_STREAMS_KEY`                 | (empty)          | HMAC key of the signed live-update stream names of generated applications (`--broadcast`): base64 of at least 32 random bytes (`openssl rand -base64 32`), the same on every replica. Secret, never echoed. Read by the generated `htmlstreams` package, not by `config.Load`. **Required in `production` and `staging`**; development and test use a random per-process key ([VIEWS.md](VIEWS.md#rotating-the-stream-signing-key)). |
+| `FORGE_STREAMS_PREVIOUS_KEYS`       | (empty)          | While `FORGE_STREAMS_KEY` is rotated: up to 3 older keys, comma-separated, in the same format. They only verify, so pages open during the rotation keep updating; remove them after 24 hours, the token lifetime. Secret, never echoed (an error names the key's position only). Needs `FORGE_STREAMS_KEY`. |
 | `FORGE_I18N_DEFAULT_LOCALE`         | (empty)          | Default locale, canonically spelled (`en`, `pt-BR`); empty uses the application's `locales.DefaultLocale` (`forge new --locale`). It needs a `config/locales/LOCALE.json` ([I18N.md](I18N.md)) |
 | `FORGE_OPENAPI_ENABLED`             | (empty)          | `GET /openapi.json`: empty serves it in `development` and `test` only, `true` everywhere (it lists every documented route; a startup warning outside development and test), `false` never ([OPENAPI.md](OPENAPI.md)) |
 | `FORGE_TELEMETRY_ENABLED`           | `true`           | Traces, metrics and log correlation; `false` costs nothing |
@@ -294,7 +296,7 @@ TLS:
 
 | Database | Required | Notes |
 | -------- | -------- | ----- |
-| PostgreSQL | `sslmode=verify-ca` or `verify-full` | `require` is rejected: it encrypts but does not authenticate the server. `verify-ca` checks the certificate chain; `verify-full` also checks the host name; use it whenever the provider supports it. For a CA that is not publicly trusted, mount it and add `sslrootcert=/path/to/ca.pem`. |
+| PostgreSQL | `sslmode=verify-full`, or `verify-ca` with `sslrootcert` | `require` is rejected: it encrypts but does not authenticate the server. `verify-full` checks the certificate chain and the host name; use it whenever the provider supports it. `verify-ca` checks the chain only, and without `sslrootcert` pgx would trust the system roots, so a certificate any public CA issued for any name would pass: it is refused unless the URL has `sslrootcert=/path/to/ca.pem` (mount the CA; pgx then trusts that file alone). |
 | MySQL / MariaDB | `tls=true` | Verifies the server certificate against the system certificate pool. `skip-verify` and `preferred` do not verify and are rejected in production. Only the `tls` parameter is accepted, so a private CA cannot be configured through the URL. |
 | SQLite | none | A local file; protect it with file permissions and the volume. |
 
@@ -375,6 +377,14 @@ Without a `migrate.env` block nothing changes: the container gets the env
 file of `migrate.role`, which is the runtime role's, and the migration fails
 closed on PostgreSQL when that role cannot run DDL. `migrate.env` with
 `migrate.enabled: false` is an error.
+
+Moving the credential out of `env` into `migrate.env` does not reach the
+containers already deployed: the stopped ones kept for `forge deploy rollback`
+were created from the old env file and still hold it, and rolling back to a
+version deployed before the change starts one of them again. They age out as
+later deploys push them past `retain` (`forge deploy prune` removes them then);
+to drop them sooner, `docker rm` the stopped containers of those versions on
+each host, and do not roll back past the change.
 
 `forge app exec` still uses the role's env file, never `migrate.env`:
 `forge app exec migrate status` runs as the runtime role. To roll a migration
@@ -724,7 +734,8 @@ exact containers that would be stopped or pruned.
 | `forge app shell [--image IMAGE]` | Interactive shell over `ssh -t`. Distroless images have no shell: `--image busybox:1.37` starts a sidecar sharing the container's network and process namespaces, without the application's environment. |
 
 Exit codes: `0` success, `1` failure (invalid configuration, SSH or remote
-command failure), `3` the lock is held (nothing changed), `4` a new container
+command failure), `2` invalid arguments (an unknown flag or subcommand, a
+missing or extra argument; nothing ran), `3` the lock is held (nothing changed), `4` a new container
 failed its health check and every host serves its previous version, `5` the
 migration failed before any switch, `6` a hook failed, `7` a failure could not
 be fully reverted (run `forge deploy details`). With `--json`, the report is
@@ -845,8 +856,15 @@ restart. It:
   should ping more often than that. There is no total time limit per
   connection: like nginx's `send_timeout`, a client that reads or sends a
   little in every interval keeps its connection, bounded only by the
-  container's open-file limit (forge-proxy caps neither connections nor
-  connections per address);
+  container's open-file limit and by `-max-connections` (forge-proxy has no
+  per-address limit);
+- bounds what one client can make it hold: request lines and headers up to
+  `-max-header-bytes` (64 KiB by default, `4096` to `1048576`; larger ones get
+  `431`), and at most `-max-connections` open connections on each listener
+  (10,000 by default, like Forge-Rust's forge-proxy; further clients wait in
+  the kernel's listen backlog until one closes). Both are flags of
+  `forge-proxy run` with those defaults, which every `forge deploy setup`
+  uses; `config/deploy.yml` does not expose them;
 - writes JSON access logs (service, host, method, path without query,
   status, bytes, duration, client IP, target) to `docker logs forge-proxy`;
 - is controlled only through a Unix socket inside the container (directory

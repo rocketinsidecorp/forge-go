@@ -2,16 +2,21 @@ package bootstrap
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"html/template"
 	"net/http"
+	"strings"
 
 	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
-// welcomePage is an html/template with [[ ]] delimiters; its text comes from
-// the welcome.* keys of config/locales.
-var welcomePage = template.Must(template.New("welcome").Delims("[[", "]]").Parse(`<!doctype html>
+// welcomeSource is the welcome page, an html/template with [[ ]] delimiters;
+// its text comes from the welcome.* keys of config/locales. Its one inline
+// stylesheet has no template actions, so its bytes never change and
+// welcomeContentSecurityPolicy can allow it by hash.
+const welcomeSource = `<!doctype html>
 <html lang="[[.Locale]]">
 <head>
 	<meta charset="utf-8">
@@ -80,7 +85,27 @@ var welcomePage = template.Must(template.New("welcome").Delims("[[", "]]").Parse
 		<footer><span>[[.Footer]]</span><span>[[.Tagline]]</span></footer>
 	</div>
 </body>
-</html>`))
+</html>`
+
+var welcomePage = template.Must(template.New("welcome").Delims("[[", "]]").Parse(welcomeSource))
+
+// welcomeContentSecurityPolicy admits the page's inline stylesheet by its
+// SHA-256 hash instead of allowing every inline style, so an injected style element or
+// attribute is still refused.
+var welcomeContentSecurityPolicy = "default-src 'none'; style-src " + inlineStyleSource(welcomeSource) + "; img-src 'self'; frame-ancestors 'none'"
+
+// inlineStyleSource returns the CSP source ('sha256-...') of the one <style>
+// element of page: the hash of the exact bytes between the tags, which is
+// what browsers compare.
+func inlineStyleSource(page string) string {
+	_, rest, ok := strings.Cut(page, "<style>")
+	style, _, closed := strings.Cut(rest, "</style>")
+	if !ok || !closed || strings.Contains(rest[len(style):], "<style") {
+		panic("the welcome page must hold exactly one inline <style> element")
+	}
+	sum := sha256.Sum256([]byte(style))
+	return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+}
 
 // welcomeText is what the welcome page shows, in the request's locale.
 type welcomeText struct {
@@ -122,7 +147,7 @@ func welcomeHandler(logoPath string) http.HandlerFunc {
 		}
 		i18n.SetHeaders(w, ctx)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", welcomeContentSecurityPolicy)
 		_, _ = w.Write(page.Bytes())
 	}
 }
