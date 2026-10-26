@@ -668,9 +668,13 @@ file. The generated stub returns an explicit not-implemented error until it
 is replaced, so registering it cannot silently report successful work. It does
 not edit `bootstrap.JobsConfigure`: choose a schedule and register the handler
 there explicitly. `NAME` must be lowercase snake_case with each segment
-starting with a letter. Scheduler failures are reported but are not retried
-automatically; jobs that run on multiple replicas must be idempotent or use a
-PostgreSQL advisory lock when only one replica may perform a schedule tick.
+starting with a letter. The generated shutdown hook calls
+`scheduler.StopContext(ctx)`, which cancels running jobs and waits for them only
+within the shutdown budget (`FORGE_HTTP_SHUTDOWN_TIMEOUT`); a job that ignores
+its context keeps running and the hook returns the deadline error. Scheduler
+failures are reported but are not retried automatically; jobs that run on
+multiple replicas must be idempotent or use a PostgreSQL advisory lock when only
+one replica may perform a schedule tick.
 
 `forge generate resource NAME field:type... (--tenant-scoped | --global)
 [--plural PLURAL] [--dry-run]` generates a working, tested CRUD resource for
