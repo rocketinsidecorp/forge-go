@@ -428,3 +428,31 @@ func loginRole(t *testing.T, admin *postgres.DB, cfg config.Database, name strin
 	t.Cleanup(db.Close)
 	return quoted, db
 }
+
+// A valid identifier that is a reserved word (order, user, group) is quoted,
+// so rotating it works on PostgreSQL.
+func TestEncryptedColumnQuotesReservedNames(t *testing.T) {
+	t.Parallel()
+	db := postgrestest.New(t)
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, `CREATE TABLE "order" ("group" uuid PRIMARY KEY, "user" text, "select" text)`); err != nil {
+		t.Fatal(err)
+	}
+	before := ringCipher(t, 1)
+	ids := []uuid.UUID{uuid.MustNew(), uuid.MustNew(), uuid.MustNew()}
+	for i, id := range ids {
+		v := encryption.NewValue[string](before, "order", "user").ForRecord(id.String())
+		v.Set(fmt.Sprintf("user-%d", i))
+		if _, err := db.Exec(ctx, `INSERT INTO "order" ("group", "user") VALUES ($1, $2)`, id, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rewriter, err := postgres.EncryptedColumn(db, encryption.SQLColumn{Table: "order", Column: "user", IDColumn: "group", IndexColumn: "select"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := ringCipher(t, 2, 1).Reencrypt(ctx, rewriter, encryption.RotateOptions{BatchSize: 2, BlindIndex: true})
+	if err != nil || report.Rotated != 3 || report.Reindexed != 3 {
+		t.Fatalf("report %+v, %v", report, err)
+	}
+}

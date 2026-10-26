@@ -105,7 +105,11 @@ func (c encryptedColumn) readPage(ctx context.Context, q DBTX, after string, lim
 	if after != "" {
 		args = append(args, after)
 	}
-	rows, err := q.Query(ctx, c.spec.PageSQL(limit, after != ""), args...)
+	query, err := c.spec.PageSQL(limit, after != "")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
