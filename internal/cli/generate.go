@@ -100,7 +100,7 @@ func generateFiles(args []string, stdout io.Writer, root string, env []string, n
 	}
 	dryRun := len(args) == 3 && args[2] == "--dry-run"
 	if (len(args) != 2 && !dryRun) || (len(args) == 3 && !dryRun) {
-		return errors.New(generateUsage)
+		return usageError{generateUsage}
 	}
 	var files []generatedFile
 	var err error
@@ -112,7 +112,7 @@ func generateFiles(args []string, stdout io.Writer, root string, env []string, n
 	case "job":
 		files, err = planJob(root, args[1])
 	default:
-		return errors.New(generateUsage)
+		return usageError{generateUsage}
 	}
 	if err != nil {
 		return err

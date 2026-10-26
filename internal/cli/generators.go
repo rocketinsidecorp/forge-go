@@ -66,7 +66,7 @@ func splitFlags(args []string, usage string, known ...string) (flags map[string]
 			}
 			flags[arg] = true
 		case strings.HasPrefix(arg, "-"):
-			return nil, nil, fmt.Errorf("unknown flag %q\n%s", arg, usage)
+			return nil, nil, usageError{fmt.Sprintf("unknown flag %q\n%s", arg, usage)}
 		default:
 			positional = append(positional, arg)
 		}

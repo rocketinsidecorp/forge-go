@@ -796,6 +796,9 @@ The rest of the toolbox:
 ```sh
 forge test                  # go test ./... with .env.development loaded; arguments pass through
 forge test -run Post ./app/...
+forge check                 # go build ./... and go vet ./...: type-check without writing a binary
+forge format                # gofmt -l -w on your Go files; forge format --check lists them and fails (CI)
+forge lint                  # golangci-lint run ./... (install: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0)
 forge doctor                # validate FORGE_* configuration (secrets redacted); --json for tools
 forge routes                # every registered route, with its action and file:line (builds and composes the app)
 forge inspect --json        # versioned inventory: commands, migrations, routes, modules

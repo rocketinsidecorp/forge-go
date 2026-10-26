@@ -51,12 +51,12 @@ type i18nReport struct {
 
 func runI18n(args []string, stdout io.Writer) error {
 	if len(args) == 0 || args[0] != "check" {
-		return errors.New("usage: forge i18n check [--json]")
+		return usageError{"usage: forge i18n check [--json]"}
 	}
 	jsonOutput := false
 	for _, arg := range args[1:] {
 		if arg != "--json" {
-			return errors.New("usage: forge i18n check [--json]")
+			return usageError{"usage: forge i18n check [--json]"}
 		}
 		jsonOutput = true
 	}

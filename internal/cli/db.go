@@ -81,7 +81,7 @@ type destructiveFlags struct{ forceProduction, yes bool }
 
 func (d *dbCommand) run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New(dbUsage)
+		return usageError{dbUsage}
 	}
 	name, rest := args[0], args[1:]
 	switch name {
@@ -110,13 +110,13 @@ func (d *dbCommand) run(ctx context.Context, args []string) error {
 	case "console":
 		return d.console(ctx, rest)
 	default:
-		return fmt.Errorf("unknown db command %q\n%s", name, dbUsage)
+		return usageError{fmt.Sprintf("unknown db command %q\n%s", name, dbUsage)}
 	}
 }
 
 func (d *dbCommand) noArgs(name string, args []string, run func() error) error {
 	if len(args) != 0 {
-		return fmt.Errorf("usage: forge db %s", name)
+		return usageError{fmt.Sprintf("usage: forge db %s", name)}
 	}
 	return run()
 }
@@ -127,11 +127,11 @@ func (d *dbCommand) destructive(name string, args []string, run func(destructive
 	var f destructiveFlags
 	flags.BoolVar(&f.forceProduction, "force-production", false, "allow this in FORGE_ENV=production, after confirmation")
 	flags.BoolVar(&f.yes, "yes", false, "in production, confirm without a prompt; needs FORGE_ALLOW_DESTRUCTIVE=true in the process environment")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("usage: forge db %s [--force-production [--yes]]", name)
+		return usageError{fmt.Sprintf("usage: forge db %s [--force-production [--yes]]", name)}
 	}
 	return run(f)
 }
@@ -286,7 +286,7 @@ func (d *dbCommand) console(ctx context.Context, args []string) error {
 	var extra []string
 	if len(args) > 0 {
 		if args[0] != "--" {
-			return errors.New("usage: forge db console [-- CLIENT-ARGUMENTS]")
+			return usageError{"usage: forge db console [-- CLIENT-ARGUMENTS]"}
 		}
 		extra = args[1:]
 	}

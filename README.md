@@ -668,9 +668,12 @@ response against the document. Details, type mapping and tags:
 
 | Command | Description |
 | ------- | ----------- |
-| `forge new NAME [--database DB] [--locale LOCALE] [--api-auth] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. |
+| `forge new NAME [--database DB] [--locale LOCALE] [--api-auth] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps \| --skip-lockfile] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. `--skip-lockfile` is Forge-Rust's name for `--skip-deps` |
 | `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
+| `forge check` | Type-check the application: `go build ./...` then `go vet ./...` (Forge-Rust: `cargo check --all-targets`) |
+| `forge format [--check]` | `gofmt -l -w` on the application's Go files (not `vendor/`, `testdata/` or nested modules), listing the files it rewrote; `--check` lists the files that need formatting, writes nothing and exits 1 when there are any (CI) |
+| `forge lint` | `golangci-lint run ./...` with the application's `.golangci.yml`; fails with the install command when `golangci-lint` is not on `PATH` (Forge-Rust: `cargo clippy -D warnings`) |
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
 | `forge db COMMAND` | Database lifecycle like Rails' `db:*`: `create`, `drop`, `reset`, `setup`, `prepare`, `migrate`, `rollback`, `status`, `seed`, `schema:dump`, `schema:load`, `console`; see [Development loop](#development-loop) |
 | `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command (same as `forge db migrate`) |
@@ -1086,7 +1089,7 @@ docker compose run --rm app jobs status                # ready, running and olde
 ```
 
 Exit status is `0` on success, `1` on failure (including invalid
-configuration), and `2` for an unknown command or invalid arguments.
+configuration), and `2` for an unknown command, an unknown or invalid flag, or invalid arguments (the same statuses as Forge-Rust).
 
 For agent and script integrations, prefix any Forge CLI command with
 `--error-format=json` to emit a versioned, secret-safe error object on stderr

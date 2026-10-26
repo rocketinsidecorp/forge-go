@@ -59,7 +59,7 @@ func runCredentials(args []string, stdout, stderr io.Writer) error {
 
 func (c *credentialsContext) run(args []string) error {
 	if len(args) == 0 {
-		return errors.New(commandUsage)
+		return usageError{commandUsage}
 	}
 	flags := flag.NewFlagSet("credentials "+args[0], flag.ContinueOnError)
 	flags.SetOutput(c.stderr)
@@ -79,13 +79,13 @@ func (c *credentialsContext) run(args []string) error {
 		flags.BoolVar(&writeKeyFile, "write-key-file", false, "store the new keys in the environment's key file even when the key came from FORGE_MASTER_KEY")
 	case "init", "edit":
 	default:
-		return fmt.Errorf("unknown credentials command %q\n%s", args[0], commandUsage)
+		return usageError{fmt.Sprintf("unknown credentials command %q\n%s", args[0], commandUsage)}
 	}
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := parseFlags(flags, args[1:]); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+		return usageError{fmt.Sprintf("unexpected arguments: %s", strings.Join(flags.Args(), " "))}
 	}
 	if err := credentials.ValidateEnvironment(*environment); err != nil {
 		return err

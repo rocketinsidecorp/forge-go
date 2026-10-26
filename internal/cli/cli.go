@@ -69,6 +69,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		err = runNew(args[1:], stdout, commandStderr)
 	case "dev":
 		err = runDev(args[1:], stdout, commandStderr)
+	case "check":
+		err = runCheck(args[1:], stdout, commandStderr)
+	case "format":
+		err = runFormat(args[1:], stdout, commandStderr)
+	case "lint":
+		err = runLint(args[1:], stdout, commandStderr)
 	case "build":
 		err = runBuild(args[1:], stdout, commandStderr)
 	case "test":
@@ -163,7 +169,7 @@ func writeCLIError(output io.Writer, code, message string, exitCode int, command
 
 func runVersion(args []string, output io.Writer) error {
 	if len(args) != 0 {
-		return errors.New("version accepts no arguments")
+		return usageError{"version accepts no arguments"}
 	}
 	_, err := fmt.Fprintf(output, "forge %s (%s, %s)\n", effectiveVersion(version.Version, readBuildInfo), version.Commit, version.Date)
 	return err
@@ -173,7 +179,7 @@ func runUUID(args []string, output, errorOutput io.Writer) error {
 	flags := flag.NewFlagSet("uuid", flag.ContinueOnError)
 	flags.SetOutput(errorOutput)
 	count := flags.Int("count", 1, "number of UUIDv7 values")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || *count < 1 || *count > maxUUIDCount {
@@ -213,7 +219,7 @@ type doctorDiagnostic struct {
 func runDoctorAt(args []string, output io.Writer, root string, baseEnv []string) error {
 	jsonOutput := len(args) == 1 && args[0] == "--json"
 	if len(args) != 0 && !jsonOutput {
-		return errors.New("usage: forge doctor [--json]")
+		return usageError{"usage: forge doctor [--json]"}
 	}
 	env, err := environment(root, baseEnv)
 	if err != nil {
@@ -321,6 +327,10 @@ commands:
                       run the application; rebuild, restart gracefully and
                       reload the browser when files change
   test [ARGS]         go test with .env.development loaded (default ./...)
+  check               type-check the application: go build ./... and go vet ./...
+  format [--check]    gofmt -l -w the application's Go files; --check lists
+                      them and fails without writing
+  lint                golangci-lint run ./... (install it when missing)
   build               compile the application into bin/
   db COMMAND          database lifecycle: create, drop, reset, setup, prepare,
                       migrate, rollback, status, seed, schema:dump,

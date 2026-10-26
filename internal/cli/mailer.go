@@ -47,7 +47,7 @@ func parseMailerArgs(args []string) (mailerRequest, error) {
 	}
 	request := mailerRequest{DryRun: flags["--dry-run"]}
 	if len(positional) == 0 {
-		return mailerRequest{}, errors.New(mailerUsage)
+		return mailerRequest{}, usageError{mailerUsage}
 	}
 	request.Name = positional[0]
 	if err := validateMailerName(request.Name); err != nil {

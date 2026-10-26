@@ -27,7 +27,7 @@ func runGenerateAuthentication(args []string, stdout io.Writer, root string, env
 		case arg == "--api-auth" && !apiAuth:
 			apiAuth = true
 		default:
-			return errors.New(authenticationUsage)
+			return usageError{authenticationUsage}
 		}
 	}
 	plan, err := planAuthentication(root, env, apiAuth)

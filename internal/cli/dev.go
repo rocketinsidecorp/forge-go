@@ -78,11 +78,11 @@ func parseDevArgs(args []string, stderr io.Writer) (devOptions, error) {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		options.name, args = args[0], args[1:]
 	}
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
 		return devOptions{}, err
 	}
 	if flags.NArg() > 1 || (flags.NArg() == 1 && options.name != "") {
-		return devOptions{}, errors.New("usage: forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]")
+		return devOptions{}, usageError{"usage: forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]"}
 	}
 	if flags.NArg() == 1 {
 		options.name = flags.Arg(0)

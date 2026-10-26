@@ -35,6 +35,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | In review (`forge dev`, `forge db create\|drop\|reset\|setup\|prepare\|migrate\|rollback\|status\|seed`, `forge migrate\|rollback\|setup\|seed`, `forge doctor`, `forge version`; `forge db console`, `forge routes` and the `.env.development`/`.env.local` files are Done (`forge routes` and the `.env` files in forge-rust#81); `forge db schema:dump\|schema:load` and browser reload are still open; Forge-Rust ADR 0036) |
 | One name per setting and command (naming decision D2) | — | Done (`FORGE_HTTP_*`, `FORGE_DATABASE_*`, `FORGE_CACHE_DEFAULT_TTL`, `FORGE_STORAGE_LINK_TTL`; `forge uuid [--count N]`; `forge new --forge-path`, with `--framework-path` a deprecated alias for one minor version) | Done (forge-rust#81: reads the same `FORGE_HTTP_*`, `FORGE_CACHE_DEFAULT_TTL` and `FORGE_STORAGE_LINK_TTL` names and duration formats, `forge uuid [--count N]`; its older spellings are deprecated aliases until the next minor version) |
 | Development environment files | `dotenv` gems, `.env.development` | Done (`.env.development` then `.env.local`, process environment wins, `forge dev\|test\|db\|migrate\|rollback\|doctor`) | Done (forge-rust#81: same files, format, precedence and line-only errors; `forge new` writes `.env.development`; differences: no `FORGE_TEST_DATABASE_URL` or generated `.env.local`) |
+| Type-check, format and lint the application | `bin/rubocop`, `rails zeitwerk:check` | Done (`forge check`: `go build ./...` and `go vet ./...`; `forge format [--check]`: `gofmt -l -w`; `forge lint`: `golangci-lint run ./...`, a clear error naming the install command when it is missing) | Done (`forge check`, `forge format`, `forge lint`: `cargo check`, `cargo fmt`, `cargo clippy`; no `--check` yet, see Parity follow-ups) |
 | Catch-all route segment | `get "files/*path"` | Done (`GET /files/{key...}`, `http.ServeMux`) | Done (forge-rust#81: `{name...}` as the last segment; see the `/files` difference under Parity follow-ups) |
 | List the application's routes | `rails routes` | Done (`forge routes`: the routes registered while the application composes, including the `/v1/<plural>` routes of generated resources) | Done (forge-rust#81: same command and columns, also from the composed application) |
 | One page generator | — | Done (`forge generate view [DIR/]NAME`, `forge destroy view`) | Done (forge-rust#81: same command and arguments; refuses `--api` applications instead of adding a views base) |
@@ -49,6 +50,28 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Done (`docs/getting-started.md`) |
 
 ## Parity follow-ups
+
+- CLI differences that remain after `forge check`, `forge format` and
+  `forge lint` (forge-go QG10, audit gap 3). Flag-parse and usage errors of
+  every Forge-Go subcommand now exit 2, like Forge-Rust's clap errors.
+  - `forge format --check` (list the files, write nothing, exit 1) exists in
+    Forge-Go; Forge-Rust's `forge format` takes no flags. Forge-Rust adds
+    `--check` (`cargo fmt --all --check`) with the same meaning. Not started.
+  - `forge new --skip-lockfile` (Forge-Rust's name) is accepted by Forge-Go as
+    an alias of `--skip-deps`: neither resolves dependencies (`go get` and
+    `go mod tidy`; `cargo generate-lockfile`). Forge-Rust adopts `--skip-deps`
+    as an alias of `--skip-lockfile`. Not started.
+  - `forge new --skip-docker` and `--skip-ci` (Forge-Rust) do not exist in
+    Forge-Go. The generated README, the deploy configuration and the
+    generated tests assume the Dockerfile, the compose stack and the CI
+    workflow, so the flags need conditional templates and a README that
+    changes with them; Forge-Go adopts both flags with Forge-Rust's meaning
+    (no `Dockerfile`, `.dockerignore`, `compose.yaml`,
+    `compose.observability.yaml`, `observability/`, `docker/`; no
+    `.github/`) in a change that owns the scaffold templates. Not started.
+  - `forge new --api` (Forge-Rust) does not exist in Forge-Go; `--api-auth`
+    is the closest, see the Sign-in row above. Not started.
+  - `forge inspect` and `forge help --json` exist in Forge-Go only.
 
 - Queue and scheduler throughput (forge-go QG4c, audit PF-1, PF-2, PF-5,
   PF-7; [ADR 0047](adr/0047-batch-claims-notify-and-recorded-ticks.md)).

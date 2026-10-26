@@ -45,7 +45,7 @@ func runInspect(args []string, output io.Writer) error {
 
 func runInspectAt(args []string, output io.Writer, root string, baseEnv []string) error {
 	if len(args) != 1 || args[0] != "--json" {
-		return errors.New("usage: forge inspect --json")
+		return usageError{"usage: forge inspect --json"}
 	}
 	report := inspectProject(root, baseEnv)
 	if err := json.NewEncoder(output).Encode(report); err != nil {
