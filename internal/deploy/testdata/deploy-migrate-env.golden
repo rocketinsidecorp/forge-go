@@ -27,7 +27,7 @@ local           $ docker push registry.example.com/acme/shop:v3
 192.0.2.10      $ umask 077 && mkdir -p .forge/shop/env && cat > .forge/shop/env/migrate.step.env.tmp && mv .forge/shop/env/migrate.step.env.tmp .forge/shop/env/migrate.step.env
 192.0.2.10      < stdin: migrate env file: 1 clear, 2 secret (FORGE_DATABASE_URL, FORGE_MIGRATION_DATABASE_URL), values not shown
 192.0.2.10      $ docker run --rm --name shop-migrate-v3-000001 --network forge --env-file .forge/shop/env/migrate.step.env --volume shop-storage:/app/storage registry.example.com/acme/shop:v3 migrate
-192.0.2.10      $ rm -f .forge/shop/env/migrate.step.env
+192.0.2.10      $ rm -f .forge/shop/env/migrate.step.env .forge/shop/env/migrate.step.env.tmp
 192.0.2.10      ? docker ps --all --no-trunc --filter label=forge.service=shop --format '{{json .}}'
 192.0.2.11      ? docker ps --all --no-trunc --filter label=forge.service=shop --format '{{json .}}'
 192.0.2.10      $ forge_proxies=$(docker network inspect --format '{{range $i, $c := .IPAM.Config}}{{if $i}},{{end}}{{$c.Subnet}}{{end}}' forge) || exit 1; [ -n "$forge_proxies" ] || { echo "docker network forge has no subnet; set FORGE_HTTP_TRUSTED_PROXIES in config/deploy.yml" >&2; exit 1; }; docker run --detach --name shop-web-v3-000002 --network forge --restart unless-stopped --stop-timeout 35 --env-file .forge/shop/env/web.env --env "FORGE_HTTP_TRUSTED_PROXIES=$forge_proxies" --label forge.service=shop --label forge.role=web --label forge.version=v3 --volume shop-storage:/app/storage registry.example.com/acme/shop:v3

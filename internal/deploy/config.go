@@ -45,6 +45,10 @@ type Config struct {
 	Hooks       string               `yaml:"hooks"`
 	SSH         SSH                  `yaml:"ssh"`
 	Parallelism int                  `yaml:"parallelism"`
+
+	// migrateEnvNull records an explicit `migrate.env: null` (also `~` or
+	// an empty value), which decodes like an absent block.
+	migrateEnvNull bool
 }
 
 // Registry holds the image registry credentials. Password names a secret.
@@ -96,10 +100,11 @@ type Healthcheck struct {
 //
 // Env is an overlay for that one-off container only: the container gets the
 // environment of Role plus Env, Env winning, and no serving container ever
-// sees it. It is how the schema owner's credential
-// (FORGE_MIGRATION_DATABASE_URL) reaches the migrate step alone. A pointer
-// tells an absent block (the container uses the role's env file, as before)
-// from an empty one (an error).
+// sees it: its names may not appear in any other env block. It is how the
+// schema owner's credential (FORGE_MIGRATION_DATABASE_URL) reaches the
+// migrate step alone. A pointer tells an absent block (the container uses
+// the role's env file, as before) from an empty one (an error); an explicit
+// null is detected in [ParseConfig].
 type Migrate struct {
 	Enabled *bool    `yaml:"enabled"`
 	Cmd     []string `yaml:"cmd"`
@@ -212,10 +217,45 @@ func ParseConfig(content []byte) (*Config, error) {
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		return nil, errors.New("deploy config must contain exactly one YAML document")
 	}
+	cfg.migrateEnvNull = explicitNullMigrateEnv(content)
 	if err := cfg.normalize(); err != nil {
 		return nil, fmt.Errorf("deploy config: %w", err)
 	}
 	return &cfg, nil
+}
+
+// explicitNullMigrateEnv reports whether the document sets migrate.env to
+// null. yaml.v3 skips a null for a pointer field, so a block that was meant
+// to carry the credential would silently turn into "not configured".
+func explicitNullMigrateEnv(content []byte) bool {
+	var doc yaml.Node
+	if err := yaml.NewDecoder(bytes.NewReader(content)).Decode(&doc); err != nil {
+		return false
+	}
+	resolve := func(n *yaml.Node) *yaml.Node {
+		for n != nil && n.Kind == yaml.AliasNode {
+			n = n.Alias
+		}
+		return n
+	}
+	field := func(m *yaml.Node, name string) *yaml.Node {
+		m = resolve(m)
+		if m == nil || m.Kind != yaml.MappingNode {
+			return nil
+		}
+		for i := 0; i+1 < len(m.Content); i += 2 {
+			if m.Content[i].Value == name {
+				return resolve(m.Content[i+1])
+			}
+		}
+		return nil
+	}
+	root := &doc
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) == 1 {
+		root = doc.Content[0]
+	}
+	env := field(field(root, "migrate"), "env")
+	return env != nil && env.Kind == yaml.ScalarNode && env.ShortTag() == "!!null"
 }
 
 func (c *Config) normalize() error {
@@ -307,6 +347,9 @@ func (c *Config) normalize() error {
 	} else if _, ok := c.Servers[c.Migrate.Role]; !ok {
 		add("migrate.role %q is not a role in servers", c.Migrate.Role)
 	}
+	if c.migrateEnvNull {
+		add("migrate.env must set at least one clear value or secret (remove the block to migrate with the role's env file)")
+	}
 	if env := c.Migrate.Env; env != nil {
 		if len(env.Clear) == 0 && len(env.Secret) == 0 {
 			add("migrate.env must set at least one clear value or secret (remove the block to migrate with the role's env file)")
@@ -315,6 +358,7 @@ func (c *Config) normalize() error {
 			add("migrate.env is set but migrate.enabled is false, so nothing would use it")
 		}
 		checkEnv("migrate.env", *env, add)
+		c.checkMigrateEnvIsExclusive(*env, add)
 	}
 
 	for _, name := range sortedKeys(c.Accessories) {
@@ -388,6 +432,32 @@ func (c *Config) normalize() error {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+// checkMigrateEnvIsExclusive refuses a name of migrate.env that another env
+// block also sets: that block's containers would receive it too, which is
+// what migrate.env exists to prevent.
+func (c *Config) checkMigrateEnvIsExclusive(env Env, add func(string, ...any)) {
+	type block struct {
+		path string
+		env  Env
+	}
+	blocks := []block{{"env", c.Env}}
+	for _, name := range sortedKeys(c.Servers) {
+		blocks = append(blocks, block{"servers." + name + ".env", c.Servers[name].Env})
+	}
+	names := slices.Clone(env.Secret)
+	names = append(names, sortedKeys(env.Clear)...)
+	for _, name := range names {
+		for _, b := range blocks {
+			if _, ok := b.env.Clear[name]; ok {
+				add("%s is in migrate.env and in %s.clear: remove it from %s.clear, so only the migrate step receives it", name, b.path, b.path)
+			}
+			if slices.Contains(b.env.Secret, name) {
+				add("%s is in migrate.env and in %s.secret: remove it from %s.secret, so only the migrate step receives it", name, b.path, b.path)
+			}
+		}
+	}
 }
 
 func (c *Config) normalizeProxy(used bool, add func(string, ...any)) {

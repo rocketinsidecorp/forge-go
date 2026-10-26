@@ -138,14 +138,14 @@ type boot struct {
 }
 
 // migrate runs the one-off migrate container on host. With migrate.env it
-// first writes that container's own env file and always removes it
-// afterwards, even when the migration or the context failed; a failed
-// removal is a warning, since the migration itself already finished.
+// writes that container's own env file and always removes it afterwards,
+// even when the upload, the migration or the context failed: an upload that
+// was interrupted (Ctrl-C, a dropped connection) may already have left the
+// file or its temporary copy on the host, so the removal is registered
+// first. A failed removal is a warning, since the migration itself already
+// finished.
 func (d *Deployer) migrate(ctx context.Context, report *Report, host, version string) error {
 	if d.cmds.hasMigrateEnv() {
-		if _, err := d.run(ctx, host, d.cmds.uploadMigrateEnv(d.Secrets)); err != nil {
-			return withCode(ExitMigrationFailed, fmt.Errorf("migration env file: %w", err))
-		}
 		defer func() {
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			defer cancel()
@@ -153,6 +153,9 @@ func (d *Deployer) migrate(ctx context.Context, report *Report, host, version st
 				report.warn("%s: could not remove %s, delete it by hand: %v", host, d.cmds.migrateEnvFile(), err)
 			}
 		}()
+		if _, err := d.run(ctx, host, d.cmds.uploadMigrateEnv(d.Secrets)); err != nil {
+			return withCode(ExitMigrationFailed, fmt.Errorf("migration env file: %w", err))
+		}
 	}
 	if _, err := d.run(ctx, host, d.cmds.migrate(version, d.Suffix())); err != nil {
 		return withCode(ExitMigrationFailed, fmt.Errorf("migration failed; nothing was switched: %w", err))

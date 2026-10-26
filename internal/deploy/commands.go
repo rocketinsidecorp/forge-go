@@ -136,11 +136,10 @@ func (c commands) uploadRoleEnv(role string, secrets Secrets) Command {
 }
 
 // migrateEnv is the environment of the migrate container: the global and
-// migrate-role environment overlaid with migrate.env, which wins. Docker
-// does not define which of two --env-file entries for one name applies, so
-// the overlay is merged into one file instead of passed as a second file. A
-// name set as clear in one layer and secret in the other keeps only the
-// overlay's kind.
+// migrate-role environment plus migrate.env. Config validation keeps the
+// names of migrate.env out of every other env block, so the layers never
+// overlap and the merge is a union; it is written as one file because Docker
+// does not define which of two --env-file entries for one name applies.
 func (c commands) migrateEnv() (map[string]string, []string) {
 	clear, secret := c.roleEnv(c.cfg.Migrate.Role)
 	overlay := c.cfg.Migrate.Env
@@ -149,10 +148,8 @@ func (c commands) migrateEnv() (map[string]string, []string) {
 	}
 	for key, value := range overlay.Clear {
 		clear[key] = value
-		secret = slices.DeleteFunc(secret, func(name string) bool { return name == key })
 	}
 	for _, name := range overlay.Secret {
-		delete(clear, name)
 		if !slices.Contains(secret, name) {
 			secret = append(secret, name)
 		}
@@ -172,10 +169,11 @@ func (c commands) uploadMigrateEnv(secrets Secrets) Command {
 	return c.upload(c.migrateEnvFile(), envContent(clear, secret, secrets), note)
 }
 
-// removeMigrateEnv deletes the migrate env file once the step is over, so
-// the schema owner's credential rests on the host only while it is used.
+// removeMigrateEnv deletes the migrate env file, and the temporary copy an
+// interrupted upload may have left, once the step is over, so the schema
+// owner's credential rests on the host only while it is used.
 func (c commands) removeMigrateEnv() Command {
-	return Command{Script: Join("rm", "-f", c.migrateEnvFile())}
+	return Command{Script: Join("rm", "-f", c.migrateEnvFile(), c.migrateEnvFile()+".tmp")}
 }
 
 func (c commands) roleVolumes(role string) []string {
