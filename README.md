@@ -160,9 +160,12 @@ docker compose down --volumes     # once, for a volume created before the roles 
 
 In production, provision the same two roles once (SQL in
 [Database roles](docs/DATABASE.md#database-roles-postgresql)), migrate with
-the migration role and serve with the runtime role only. The application
-refuses to start in production when its role is a superuser or has
-`BYPASSRLS`:
+the migration role and serve with the runtime role only. In staging and
+production the application refuses to start when the role it logs in as, or
+acts as, is a superuser or has `BYPASSRLS` or `CREATEROLE`, or when the URL
+switches it to another role. With `forge deploy`, see the interim migration
+setup in [DEPLOYMENT.md](docs/DEPLOYMENT.md#database-roles)
+([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)):
 
 ```sh
 docker run --rm -e FORGE_ENV=production \

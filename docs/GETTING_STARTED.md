@@ -133,8 +133,8 @@ forge db prepare
 The Compose database serves as `app_runtime` and migrates as `app_migrator`
 (`.env.development`), two roles its `docker/postgres/init.sql` creates; with
 your own server one user can do both during development. In production keep
-them apart ([Database roles](DATABASE.md#database-roles-postgresql)): the
-application refuses to start there as a superuser.
+them apart ([Database roles](DATABASE.md#database-roles-postgresql)): in
+staging and production the application refuses to start as a superuser.
 
 Then create the first organization, tenant and owner account. The command
 prompts twice for the password (12 or more characters) and never takes it as an

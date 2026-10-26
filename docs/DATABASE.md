@@ -160,8 +160,8 @@ func Configure(ctx context.Context, app *forge.App) error {
 
 This is what `forge new` generates in `app/bootstrap/bootstrap.go`, with the
 adapter chosen by `--database`. For PostgreSQL it also passes
-`postgres.RequireRowSecurity(app.Config().Environment)`, so production refuses
-a serving role that bypasses row-level security ([Database
+`postgres.RequireRowSecurity(app.Config().Environment)`, so staging and
+production refuse a serving role that could bypass row-level security ([Database
 roles](#database-roles-postgresql)).
 
 `Open` fails if `FORGE_DATABASE_URL` is empty or selects another adapter,
@@ -191,7 +191,7 @@ roles ([ADR 0046](adr/0046-postgresql-runtime-and-migration-roles.md)):
 
 | Role | Variable | Attributes and privileges |
 | ---- | -------- | ------------------------- |
-| runtime (`app_runtime` in development) | `FORGE_DATABASE_URL` | `NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`; owns no table or schema; `SELECT, INSERT, UPDATE, DELETE` on the tables and `USAGE, SELECT, UPDATE` on the sequences, nothing else. `FORCE ROW LEVEL SECURITY` policies apply to it and it cannot run DDL. |
+| runtime (`app_runtime` in development) | `FORGE_DATABASE_URL` | `NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`; owns no table or schema; `SELECT, INSERT, UPDATE, DELETE` on the tables and `USAGE, SELECT` on the sequences, no temporary tables, nothing else. `FORCE ROW LEVEL SECURITY` policies apply to it and it cannot run DDL. |
 | migration (`app_migrator` in development) | `FORGE_MIGRATION_DATABASE_URL` | owns the database and the `public` schema and applies the migrations, so it owns every table; `NOSUPERUSER NOBYPASSRLS`. Used only by `migrate` and `rollback` (and `forge db`), never by the serving process. |
 
 `<app> migrate` and `<app> rollback` connect with
@@ -201,15 +201,30 @@ password, host, port and parameters) and is validated like
 (a `dbname`, `database`, `service` or `servicefile` parameter is refused), so
 migrations always change the database the application serves. Unset, they use
 `FORGE_DATABASE_URL`, as before. SQLite has no roles and ignores the variable.
+Unlike `forge db`, which refuses `host`, `hostaddr` and `port` parameters
+because its local-database safety check reads only the URL's host, the
+application's commands accept them like `FORGE_DATABASE_URL` does: they have
+no such check, and Forge still refuses a URL whose parameters would make pgx
+connect elsewhere than its host and port, so a migration role may reach the
+server another way than the serving one (for example directly instead of
+through a connection pooler).
 
-**Production refusal.** With `postgres.RequireRowSecurity(environment)` (the
-generated bootstrap passes it), `Open` in production checks the connected
-role and fails, before anything is served, when it is a superuser, has
-`BYPASSRLS`, or is a member of a role with either (it could `SET ROLE` to
-it); the error wraps `postgres.ErrRowSecurityBypass` and names the role. There
-is no override variable: fix the role, or remove the option from your
-bootstrap knowingly. Other environments are not checked, so local tools can
-connect as an administrator. The check does not refuse a role that owns
+**Refusal outside development and test.** With
+`postgres.RequireRowSecurity(environment)` (the generated bootstrap passes
+it), `Open` in every environment except `development` and `test` (so in
+`staging` and `production`) checks both the role the URL logs in as
+(`session_user`) and the role in effect (`current_user`), and fails before
+anything is served when either is a superuser, has `BYPASSRLS` or
+`CREATEROLE` (before PostgreSQL 16 `CREATEROLE` can grant itself membership
+in a `BYPASSRLS` role), or is a member of a superuser or `BYPASSRLS` role (it
+could `SET ROLE` to it). It also fails when the two differ: a role setting
+(`?options=-c%20role=...`, `ALTER ROLE ... SET role`) makes the session act
+as another role, and `SET ROLE NONE` turns it back into the login role, so
+the URL must log in as the serving role itself. The error wraps
+`postgres.ErrRowSecurityBypass` and names the role. There is no override
+variable: fix the role, or remove the option from your bootstrap knowingly.
+Development and test are not checked, so local tools can connect as an
+administrator. The check does not refuse a role that owns
 tables: `FORCE ROW LEVEL SECURITY` still applies to an owner, but an owner can
 switch it off, so keep the serving role separate from the migration role.
 
@@ -231,7 +246,8 @@ GRANT USAGE ON SCHEMA public TO myapp_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE myapp_migrator IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO myapp_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE myapp_migrator IN SCHEMA public
-    GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO myapp_runtime;
+    GRANT USAGE, SELECT ON SEQUENCES TO myapp_runtime;
+REVOKE TEMPORARY ON DATABASE myapp FROM PUBLIC;
 ```
 
 Tables created before the default privileges existed need an explicit
@@ -934,6 +950,10 @@ Migrations are an explicit release step; `serve` never applies them.
    On PostgreSQL, `FORGE_MIGRATION_DATABASE_URL` is the migration role that
    owns the schema; never give it to the serving containers, which get only
    `FORGE_DATABASE_URL` ([Database roles](#database-roles-postgresql)).
+   `forge deploy` cannot yet give it to the migrate step alone
+   ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57));
+   [DEPLOYMENT.md](DEPLOYMENT.md#database-roles) has the interim
+   configuration and its cost.
 
    For SQLite, mount the same volume the application uses:
 
@@ -1006,10 +1026,12 @@ CREATE TABLE notes (
 
 - Forge's identity tables (`auth/postgres`, released migrations) keep
   `DEFAULT uuidv7()`, a PostgreSQL 18 function, so applications with Forge
-  identity need PostgreSQL 18. On an older server the migrator refuses, before
-  applying anything, any set whose up scripts call `uuidv7()`, naming the
-  migrations and the server version, instead of failing midway with
-  `function uuidv7() does not exist`.
+  identity need PostgreSQL 18. When a migration fails on an older server with
+  `function uuidv7() does not exist` (SQLSTATE 42883), the error adds the
+  server version and the two ways out: PostgreSQL 18, or a `uuidv7()`
+  function defined by an earlier migration. The failed migration is rolled
+  back; the ones before it stay applied. Nothing scans migrations in advance,
+  so an application that defines its own `uuidv7()` keeps working.
 - `uuid.UUID` accepts only version 7 when parsing or scanning. Do not use
   version 4 defaults such as `gen_random_uuid()` or MySQL's `UUID()`
   (version 1).

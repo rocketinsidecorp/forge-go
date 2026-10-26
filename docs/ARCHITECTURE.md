@@ -629,7 +629,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0043](adr/0043-openapi-from-typed-routes.md) | OpenAPI 3.1 from described routes, `GET /openapi.json`, `forge openapi` |
 | [0044](adr/0044-continuous-fuzzing-sbom-signed-images.md) | Continuous fuzzing, SBOMs and keyless-signed release images |
 | [0045](adr/0045-generated-mfa-settings-pages.md) | Generated two-factor settings pages (`/mfa`) with password and code step-up |
-| [0046](adr/0046-postgresql-runtime-and-migration-roles.md) | PostgreSQL runtime and migration roles; production refuses a serving role that bypasses row-level security |
+| [0046](adr/0046-postgresql-runtime-and-migration-roles.md) | PostgreSQL runtime and migration roles; staging and production refuse a serving role that could bypass row-level security |
 
 ## Not yet implemented
 

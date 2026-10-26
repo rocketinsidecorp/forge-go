@@ -34,9 +34,13 @@ WITH CHECK (tenant_id::text = current_setting('forge.tenant_id', true));
 
 The serving database role must not be a superuser or have `BYPASSRLS`, because
 those roles bypass policies. This is enforced, not only advised: the generated
-bootstrap opens its pool with `postgres.RequireRowSecurity`, and in
-`production` the application refuses to start when the role is a superuser,
-has `BYPASSRLS` or is a member of such a role. Generated applications serve as
+bootstrap opens its pool with `postgres.RequireRowSecurity`, and in `staging`
+and `production` the application refuses to start when the role it logs in
+as or acts as is a superuser, has `BYPASSRLS` or `CREATEROLE`, or is a member
+of a superuser or `BYPASSRLS` role, or when the URL switches the session to
+another role. Row-level security protects against a query that forgets its
+tenant predicate; it does not stop SQL injected into the serving process,
+which can set `forge.tenant_id` itself. Generated applications serve as
 a runtime role (`FORGE_DATABASE_URL`, `app_runtime` in development) that owns
 nothing and holds only data privileges, and migrate as a separate role that
 owns the schema (`FORGE_MIGRATION_DATABASE_URL`, `app_migrator`); see

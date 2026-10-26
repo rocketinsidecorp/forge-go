@@ -308,14 +308,45 @@ redacted in logs and formatted output.
 
 ### Database roles
 
-On PostgreSQL, serve as a runtime role that is `NOSUPERUSER NOBYPASSRLS`,
-owns no table and holds only `SELECT, INSERT, UPDATE, DELETE`, and migrate as
-a separate role that owns the schema. In `production` the generated
-application refuses to start when `FORGE_DATABASE_URL`'s role is a superuser,
-has `BYPASSRLS` or is a member of such a role, with an error that wraps
-`postgres.ErrRowSecurityBypass`. [Database
+On PostgreSQL, serve as a runtime role that is `NOSUPERUSER NOBYPASSRLS
+NOCREATEROLE`, owns no table and holds only `SELECT, INSERT, UPDATE, DELETE`,
+and migrate as a separate role that owns the schema. In `staging` and
+`production` (every environment except `development` and `test`) the
+generated application refuses to start when the role `FORGE_DATABASE_URL`
+logs in as, or acts as, is a superuser, has `BYPASSRLS` or `CREATEROLE`, or
+is a member of a superuser or `BYPASSRLS` role, and when the URL makes the
+session act as another role than its login (`options=-c role=...`), with an
+error that wraps `postgres.ErrRowSecurityBypass`. [Database
 roles](DATABASE.md#database-roles-postgresql) has the SQL to provision both
 roles once.
+
+**With `forge deploy`, for now.** `forge deploy` runs `migrate` in a one-off
+container with the env file of the role `migrate.role` names, so the
+migration credential cannot yet be given to the migrate step alone
+([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)).
+Until it can, add `FORGE_MIGRATION_DATABASE_URL` to that role's secrets
+(and to `.forge/secrets`):
+
+```yaml
+servers:
+  web:
+    hosts: [192.0.2.10, 192.0.2.11]
+    env: {secret: [FORGE_MIGRATION_DATABASE_URL]}   # interim, see forge-go#57
+env:
+  clear: {FORGE_ENV: production}
+  secret: [FORGE_DATABASE_URL, FORGE_AUTH_MFA_KEY]
+migrate: {enabled: true, cmd: ["migrate"], role: web}
+```
+
+The cost: every container of that role, the serving ones included, then holds
+the schema owner's credential in its environment. The application still
+serves as the runtime role and row-level security still applies to its
+queries, but anyone who can run code in a serving container can read the
+variable and connect as the owner, who may change or drop tables and switch
+row-level security off. Without it, `forge deploy` migrates as the runtime
+role, which cannot run DDL, so migrations fail. Alternatively run `migrate`
+yourself before `forge deploy` with the credential from your secret store
+(`docker run --rm ... migrate`, below) and set `migrate: {enabled: false}`.
 
 ### Migrations
 
@@ -701,9 +732,11 @@ printed on stdout also on failure, with `ok`, `error` and `exit_code`.
    migrate role. A failure stops here: nothing was started or switched.
    The container gets that role's env file: it does not yet receive a
    separate `FORGE_MIGRATION_DATABASE_URL`, so `forge deploy` migrates as
-   the serving role unless that role's secrets include it (which then also
-   reach the serving containers). A migrate-only credential is a planned
-   `forge deploy` change.
+   the serving role unless that role's secrets include it, which then also
+   reach the serving containers ([Database roles](#database-roles) has the
+   interim configuration and its cost;
+   [forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)
+   tracks a migrate-only credential).
 5. On every host, for each role (the proxied one first), start the new
    container on the `forge` network with no published ports. For the
    proxied role, `forge-proxy deploy` probes `healthcheck.path` until it

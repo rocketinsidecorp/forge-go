@@ -15,7 +15,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | HTML + JSON CRUD generator | `rails g scaffold` | Done | Done |
 | Authentication pages, password reset | `rails g authentication` | Done | Done |
 | First tenant and owner, seeds | `db:seed` | Done (`forge setup`, `forge seed`) | In review (`forge setup`, `forge seed`; the application commands `setup` and `seed` are Done) |
-| Multi-tenancy with database enforcement | (gems) | Done (PostgreSQL RLS; `app_migrator`/`app_runtime` roles, production refuses a serving role that bypasses RLS, tests run as the runtime role; [ADR 0046](adr/0046-postgresql-runtime-and-migration-roles.md)) | Done (PostgreSQL RLS; `app_migrator`/`app_runtime` roles, Forge-Rust ADR 0011; production refusal planned, see follow-ups) |
+| Multi-tenancy with database enforcement | (gems) | Done (PostgreSQL RLS; `app_migrator`/`app_runtime` roles, staging and production refuse a serving role that could bypass RLS, tests run as the runtime role; [ADR 0046](adr/0046-postgresql-runtime-and-migration-roles.md)) | Done (PostgreSQL RLS; `app_migrator`/`app_runtime` roles, Forge-Rust ADR 0011; production refusal planned in [forge-rust#70](https://github.com/rocketinsidecorp/forge-rust/issues/70)) |
 | TOTP MFA | (gems) | Done (sign-in code step and generated `/mfa` settings pages: enrollment, rotation, backup codes, disable; [ADR 0045](adr/0045-generated-mfa-settings-pages.md)) | Done (`FORGE_AUTH_MFA_KEY`, `/session/mfa`, generated `/mfa` settings pages; Forge-Rust ADR 0040) |
 | Persistent jobs, cron, outbox | Solid Queue | Done | Done (framework crates; `forge new` wiring planned) |
 | Mailer with previews | Action Mailer | Done | Done (`forge::mail`, password-reset emails, `/_mail` previews, `forge generate mailer`; Forge-Rust ADR 0035 and 0038) |
@@ -98,22 +98,27 @@ the work is finished and waiting for its review; **Planned** means not started.
   `docker/postgres/init.sql` mounted as
   `/docker-entrypoint-initdb.d/001-forge.sql`, and gives
   `FORGE_MIGRATION_DATABASE_URL` only to the `migrate` container. Forge-Go
-  goes further in three ways Forge-Rust adopts: in production
-  `postgres.RequireRowSecurity` refuses a serving role that is a superuser,
-  has `BYPASSRLS` or is a member of such a role (Forge-Rust's bootstrap has
-  no check yet); the generated repository tests connect as the runtime role
+  goes further in three ways Forge-Rust adopts: outside development and
+  test `postgres.RequireRowSecurity` refuses a serving role that logs in as
+  or acts as a superuser, a `BYPASSRLS` or `CREATEROLE` role or a member of a
+  superuser or `BYPASSRLS` role, or whose URL switches it to another role
+  (Forge-Rust's bootstrap has no check yet); the generated repository tests connect as the runtime role
   (`postgrestest.NewRLS`; Forge-Rust's `tests_repository.rs.tmpl` switches
   to a probe role inside the superuser's transaction); and every PostgreSQL
-  resource gets a test that the runtime role cannot run DDL. Differences
+  resource gets a test that the runtime role cannot run DDL, temporary tables
+  included (Forge-Go's `init.sql` also revokes `TEMPORARY` and grants
+  sequences `USAGE, SELECT` only). Differences
   kept deliberately: without `FORGE_MIGRATION_DATABASE_URL`, Forge-Go's
   `migrate` falls back to `FORGE_DATABASE_URL` (Forge-Rust requires it), and
   the variable's database is ignored as `forge db` already did; Forge-Go puts
   the schema and default privileges in `template1` instead of replaying
   `init.sql` after `forge db reset`; its Compose health check probes TCP
   (open only after `init.sql`) instead of querying the runtime role's schema
-  privilege; the Compose superuser's password is `development`. A
-  Forge-Rust tracking issue for the production refusal and the runtime-role
-  repository test is opened with this change's pull request.
+  privilege; the Compose superuser's password is `development`. Forge-Rust
+  adopts the refusal and both tests in
+  [forge-rust#70](https://github.com/rocketinsidecorp/forge-rust/issues/70).
+  `forge deploy` giving the migration credential to the migrate step alone
+  is [forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57).
 
 ## Review gate
 

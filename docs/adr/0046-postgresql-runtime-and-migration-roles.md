@@ -21,9 +21,9 @@ roles.
 ## Decision
 
 1. **Two roles.** A PostgreSQL application serves as a runtime role
-   (`FORGE_DATABASE_URL`): `NOSUPERUSER NOBYPASSRLS`, owns nothing, holds only
-   `SELECT, INSERT, UPDATE, DELETE` on tables and `USAGE, SELECT, UPDATE` on
-   sequences. It migrates as a migration role
+   (`FORGE_DATABASE_URL`): `NOSUPERUSER NOBYPASSRLS NOCREATEROLE`, owns
+   nothing, holds only `SELECT, INSERT, UPDATE, DELETE` on tables and
+   `USAGE, SELECT` on sequences, and may not create temporary tables. It migrates as a migration role
    (`FORGE_MIGRATION_DATABASE_URL`) that owns the database and its schema.
    The runtime role's grants come from the migration role's default
    privileges.
@@ -40,14 +40,23 @@ roles.
    end the runtime's sessions) and `app_runtime`, sets the schema privileges
    and default privileges in `template1`, then creates the database owned by
    `app_migrator`. Because they are in `template1`, every database `forge db
-   create` or `reset` makes later has the same privileges. Only the `migrate`
-   container gets the migration credential.
-4. **Production refusal.** `postgres.RequireRowSecurity(environment)` makes
-   `Open` fail in production, before serving, when the connected role is a
-   superuser, has `BYPASSRLS`, or is a member of such a role
-   (`ErrRowSecurityBypass`). The generated bootstrap passes it. There is no
-   override variable; removing the option from the bootstrap is a visible,
-   reviewable decision.
+   create` or `reset` makes later has the same privileges. It revokes
+   `TEMPORARY` on the database from `PUBLIC`; database privileges are not
+   copied from `template1`, so a database `forge db reset` recreates has the
+   default back. Only the `migrate` container gets the migration credential.
+4. **Refusal outside development and test.**
+   `postgres.RequireRowSecurity(environment)` makes `Open` fail in every
+   environment except `development` and `test`, before serving, when the
+   login role (`session_user`) or the role in effect (`current_user`) is a
+   superuser, has `BYPASSRLS` or `CREATEROLE` (before PostgreSQL 16 it can
+   grant itself a `BYPASSRLS` membership), or is a member of a superuser or
+   `BYPASSRLS` role (`ErrRowSecurityBypass`). It also fails when the two
+   differ: a role setting (`options=-c role=...`, `ALTER ROLE ... SET role`)
+   makes the session act as a harmless role while `SET ROLE NONE` restores
+   the login role, so the URL must log in as the serving role itself; no
+   legitimate serving setup needs the indirection. The generated bootstrap
+   passes it. There is no override variable; removing the option from the
+   bootstrap is a visible, reviewable decision.
 5. **Tests run as the runtime role.** `postgrestest.NewRLS` creates a
    database owned by a fresh migration role, applies the migrations as it,
    and connects a fresh runtime role. Generated repository, sign-in and
@@ -55,24 +64,35 @@ roles.
    runtime role cannot run DDL; tenant-scoped ones a test that it sees only
    the transaction's tenant and nothing without one.
 6. **IDs from the application.** Generated resource tables have no
-   `DEFAULT uuidv7()`. The released identity migrations keep it, so the
-   migrator refuses, before applying anything, migrations that call
-   `uuidv7()` on a server older than PostgreSQL 18, with the server version
-   in the error.
+   `DEFAULT uuidv7()`. The released identity migrations keep it. When a
+   migration fails with SQLSTATE 42883 naming `uuidv7` (PostgreSQL 17 and
+   older), the dialect's `migrate.ScriptErrorExplainer` adds the server
+   version and the two ways out (PostgreSQL 18, or a `uuidv7()` defined by
+   an earlier migration). Scripts are not scanned in advance: an
+   application with its own `uuidv7()` must keep migrating, and released
+   migrations cannot change.
 
 ## Consequences
 
-- A compromised or injected serving process cannot read across tenants by
-  omitting a predicate, nor switch row-level security off.
+- A query that forgets its tenant predicate still sees only the
+  transaction's tenant, and the serving role cannot switch row-level
+  security off or change the schema. Row-level security is not a defense
+  against arbitrary SQL injected into the serving process: the runtime role
+  can call `set_config('forge.tenant_id', ...)` itself and then read that
+  tenant's rows.
 - Operators manage two credentials; [DATABASE.md](../DATABASE.md#database-roles-postgresql)
   has the SQL. An application that set `FORGE_MIGRATION_DATABASE_URL` to an
   administrator only for `forge db create` now migrates as that role.
 - The refusal does not cover a serving role that owns tables (`FORCE` still
-  applies to it) and runs only in production, at startup.
-- `forge deploy` runs `migrate` with the serving role's env file; a
-  migrate-only credential is a follow-up.
+  applies to it), runs at startup only, and not in development or test.
+- `forge deploy` runs `migrate` with the serving role's env file; until it
+  has a migrate-only credential
+  ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)),
+  the interim configuration in DEPLOYMENT.md puts the owner's credential in
+  the serving containers.
 - Differences from Forge-Rust, kept deliberately: Forge-Rust requires
   `FORGE_MIGRATION_DATABASE_URL` for migrations and restores `init.sql`'s
   grants after `forge db reset`, where Forge-Go falls back to
-  `FORGE_DATABASE_URL` and relies on `template1`; Forge-Rust has no
-  production refusal yet (tracked in [RAILS_PARITY.md](../RAILS_PARITY.md#parity-follow-ups)).
+  `FORGE_DATABASE_URL` and relies on `template1`. Forge-Rust adopts the
+  refusal, the runtime-role repository tests and the DDL test in
+  [forge-rust#70](https://github.com/rocketinsidecorp/forge-rust/issues/70).
