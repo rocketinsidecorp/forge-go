@@ -121,9 +121,10 @@ type Database struct {
 	// Environment is the environment the pool serves in. Outside
 	// development and test, postgres.Open refuses a role that could bypass
 	// row-level security unless postgres.AllowRowSecurityBypass is passed.
-	// Default sets Development, and Load and forge.New copy
-	// Config.Environment into it. The zero value, in a Database built in
-	// code, is neither development nor test, so it is checked: fail closed.
+	// Load and forge.New copy Config.Environment into it. Default leaves it
+	// empty, like a Database built in code: the empty value is neither
+	// development nor test, so such a pool is checked (fail closed) until
+	// the environment is set explicitly.
 	Environment Environment
 }
 
@@ -208,7 +209,6 @@ func Default() Config {
 			MaxBodyBytes:      1 << 20,
 		},
 		Database: Database{
-			Environment:      Development,
 			MaxConns:         10,
 			MinConns:         0,
 			MaxConnLifetime:  30 * time.Minute,

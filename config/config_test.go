@@ -33,8 +33,10 @@ func TestLoadWithLookup(t *testing.T) {
 	if cfg.Database.Environment != config.Staging {
 		t.Fatalf("Database.Environment = %q, want staging", cfg.Database.Environment)
 	}
-	if got := config.Default().Database.Environment; got != config.Development {
-		t.Fatalf("Default().Database.Environment = %q, want development", got)
+	// Default leaves it empty, so a pool built from it by hand is checked
+	// (fail closed) until the environment is set.
+	if got := config.Default().Database.Environment; got != "" {
+		t.Fatalf("Default().Database.Environment = %q, want empty", got)
 	}
 }
 

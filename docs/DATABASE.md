@@ -253,7 +253,8 @@ through a connection pooler).
 environment except `development` and `test` (so in `staging` and
 `production`; the environment is `config.Database.Environment`, which
 `config.Load` and `forge.New` set from `FORGE_ENV`, and a `config.Database`
-built in code without one is checked too), checks both the role the URL logs
+built in code without one, `config.Default().Database` included, is checked
+too), checks both the role the URL logs
 in as
 (`session_user`) and the role in effect (`current_user`), and fails before
 anything is served when either is a superuser, has `BYPASSRLS`,

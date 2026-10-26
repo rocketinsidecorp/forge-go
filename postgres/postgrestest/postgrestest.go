@@ -134,7 +134,8 @@ func requireUUIDv7For(t testing.TB, db *postgres.DB, loaded []migrate.Migration)
 }
 
 // Config returns configuration for a fresh, empty database, for tests of
-// code that opens its own pool (for example Configure).
+// code that opens its own pool (for example Configure). Its Environment is
+// config.Test, as for every configuration this package returns.
 func Config(t testing.TB) config.Database {
 	t.Helper()
 	db, cfg := NewWithConfig(t)
@@ -198,6 +199,10 @@ func create(t testing.TB) (*postgres.DB, config.Database, server) {
 	testURL.Path = "/" + name
 	cfg := config.Default().Database
 	cfg.URL = config.NewSecret(testURL.String())
+	// The test server's own user is usually a superuser: a test
+	// configuration, which postgres.Open does not check for row-level
+	// security bypass.
+	cfg.Environment = config.Test
 	db, err := postgres.Open(ctx, cfg)
 	if err != nil {
 		t.Fatalf("open test database: %v", err)

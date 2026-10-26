@@ -435,6 +435,15 @@ func TestOpenRefusesBypassingRolesByDefaultOutsideDevelopmentAndTest(t *testing.
 			t.Errorf("a superuser in %s: %v", environment, err)
 		}
 	}
+	// A pool built by hand from config.Default has no environment: checked.
+	hand := config.Default().Database
+	hand.URL = cfg.URL
+	if pool, err := postgres.Open(ctx, hand); !errors.Is(err, postgres.ErrRowSecurityBypass) {
+		if err == nil {
+			pool.Close()
+		}
+		t.Errorf("a superuser through config.Default().Database: err = %v, want ErrRowSecurityBypass", err)
+	}
 	// The last of the two options wins.
 	if err := open(config.Production, postgres.RequireRowSecurity(config.Production), postgres.AllowRowSecurityBypass()); err != nil {
 		t.Errorf("RequireRowSecurity then AllowRowSecurityBypass: %v", err)

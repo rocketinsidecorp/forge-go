@@ -149,7 +149,7 @@ func TestNewGivesTheDatabaseTheApplicationsEnvironment(t *testing.T) {
 	cfg := config.Default()
 	cfg.Environment = config.Production
 	cfg.HTTP.Transport = config.TransportTrustedProxy
-	if cfg.Database.Environment != config.Development {
+	if cfg.Database.Environment != "" {
 		t.Fatalf("Default's database environment = %q", cfg.Database.Environment)
 	}
 	app, err := forge.New(forge.WithConfig(cfg))
