@@ -847,8 +847,15 @@ restart. It:
   should ping more often than that. There is no total time limit per
   connection: like nginx's `send_timeout`, a client that reads or sends a
   little in every interval keeps its connection, bounded only by the
-  container's open-file limit (forge-proxy caps neither connections nor
-  connections per address);
+  container's open-file limit and by `-max-connections` (forge-proxy has no
+  per-address limit);
+- bounds what one client can make it hold: request lines and headers up to
+  `-max-header-bytes` (64 KiB by default, `4096` to `1048576`; larger ones get
+  `431`), and at most `-max-connections` open connections on each listener
+  (10,000 by default, like Forge-Rust's forge-proxy; further clients wait in
+  the kernel's listen backlog until one closes). Both are flags of
+  `forge-proxy run` with those defaults, which every `forge deploy setup`
+  uses; `config/deploy.yml` does not expose them;
 - writes JSON access logs (service, host, method, path without query,
   status, bytes, duration, client IP, target) to `docker logs forge-proxy`;
 - is controlled only through a Unix socket inside the container (directory

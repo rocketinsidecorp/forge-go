@@ -69,6 +69,16 @@ the work is finished and waiting for its review; **Planned** means not started.
   Until then the Rust rotation procedure is in its
   [deployment](https://github.com/rocketinsidecorp/forge-rust/blob/main/docs/deployment.md#rotating-the-stream-signing-key).
 
+- forge-proxy connection and header limits (forge-go QG4b, audit S-8):
+  Forge-Go's `forge-proxy run` has `-max-header-bytes` (default 65536, 4096 to
+  1048576, `431` above it; was 1 MiB) and `-max-connections` (default 10000
+  per listener, admission before accept). Forge-Rust caps a listener at the
+  same 10,000 connections with a constant and sets hyper's `max_buf_size` to
+  1 MiB: it adopts both flags with the same names, defaults and range and the
+  64 KiB header default (no Forge-Rust
+  issue exists yet: open one when this lands). Neither framework exposes them in
+  `config/deploy.yml`.
+
 - Benchmarks: [BENCHMARKS.md](BENCHMARKS.md) defines the scenario names, the
   variants and the output format of both suites; Forge-Rust adopts them in
   its own benchmark pull request (tracked in

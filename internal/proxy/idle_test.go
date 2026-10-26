@@ -176,7 +176,7 @@ func TestIdleKeepAliveConnectionIsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpServer := newHTTPServer(listener.Addr().String(), srv, nil, 10*time.Second, 300*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	httpServer := newHTTPServer(listener.Addr().String(), srv, nil, 10*time.Second, 300*time.Millisecond, DefaultMaxHeaderBytes, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	go func() { _ = httpServer.Serve(listener) }()
 	t.Cleanup(func() { _ = httpServer.Close() })
 	conn := dialFront(t, "http://"+listener.Addr().String())

@@ -68,6 +68,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	acmeDirectory := flags.String("acme-directory", "", "ACME directory URL (default: Let's Encrypt production)")
 	readHeaderTimeout := flags.Duration("read-header-timeout", 10*time.Second, "time allowed to read request headers")
 	idleTimeout := flags.Duration("idle-timeout", 120*time.Second, "keep-alive idle timeout; also how long a write to a client may make no progress and an upgraded connection may carry no data")
+	maxHeaderBytes := flags.Int("max-header-bytes", DefaultMaxHeaderBytes, fmt.Sprintf("largest request line and headers a client may send, %d to %d", MinMaxHeaderBytes, MaxMaxHeaderBytes))
+	maxConnections := flags.Int("max-connections", DefaultMaxConnections, "most client connections open at once on each listener; further clients wait in the listen backlog")
 	shutdownTimeout := flags.Duration("shutdown-timeout", 30*time.Second, "graceful shutdown budget")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -77,6 +79,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	if *idleTimeout <= 0 {
 		return errors.New("-idle-timeout must be positive")
+	}
+	if *maxHeaderBytes < MinMaxHeaderBytes || *maxHeaderBytes > MaxMaxHeaderBytes {
+		return fmt.Errorf("-max-header-bytes must be between %d and %d", MinMaxHeaderBytes, MaxMaxHeaderBytes)
+	}
+	if *maxConnections < 1 {
+		return errors.New("-max-connections must be at least 1")
 	}
 	logger := slog.New(slog.NewJSONHandler(stdout, nil))
 	server, err := New(logger, *statePath)
@@ -120,15 +128,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		tlsConfig := manager.TLSConfig()
 		tlsConfig.MinVersion = tls.VersionTLS12
 		handler = manager.HTTPHandler(server)
-		servers = append(servers, newHTTPServer(*httpsAddr, server, tlsConfig, *readHeaderTimeout, *idleTimeout, logger))
+		servers = append(servers, newHTTPServer(*httpsAddr, server, tlsConfig, *readHeaderTimeout, *idleTimeout, *maxHeaderBytes, logger))
 	}
-	plain := newHTTPServer(*httpAddr, handler, nil, *readHeaderTimeout, *idleTimeout, logger)
+	plain := newHTTPServer(*httpAddr, handler, nil, *readHeaderTimeout, *idleTimeout, *maxHeaderBytes, logger)
 	servers = append([]*http.Server{plain}, servers...)
 	for _, srv := range servers {
-		listener, err := net.Listen("tcp", srv.Addr)
+		tcp, err := net.Listen("tcp", srv.Addr)
 		if err != nil {
 			return err
 		}
+		listener := newLimitListener(tcp, *maxConnections)
 		go func() {
 			var serveErr error
 			if srv.TLSConfig != nil {
@@ -159,14 +168,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return runErr
 }
 
-func newHTTPServer(addr string, handler http.Handler, tlsConfig *tls.Config, readHeader, idle time.Duration, logger *slog.Logger) *http.Server {
+func newHTTPServer(addr string, handler http.Handler, tlsConfig *tls.Config, readHeader, idle time.Duration, maxHeaderBytes int, logger *slog.Logger) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,
 		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: readHeader,
 		IdleTimeout:       idle,
-		MaxHeaderBytes:    1 << 20,
+		MaxHeaderBytes:    maxHeaderBytes,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 	}
 }
