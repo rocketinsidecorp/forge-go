@@ -93,10 +93,18 @@ type Healthcheck struct {
 
 // Migrate runs the image's migrate command once per deploy before any
 // container is switched.
+//
+// Env is an overlay for that one-off container only: the container gets the
+// environment of Role plus Env, Env winning, and no serving container ever
+// sees it. It is how the schema owner's credential
+// (FORGE_MIGRATION_DATABASE_URL) reaches the migrate step alone. A pointer
+// tells an absent block (the container uses the role's env file, as before)
+// from an empty one (an error).
 type Migrate struct {
 	Enabled *bool    `yaml:"enabled"`
 	Cmd     []string `yaml:"cmd"`
 	Role    string   `yaml:"role"`
+	Env     *Env     `yaml:"env"`
 }
 
 // Accessory is a long-lived supporting container such as a database.
@@ -298,6 +306,15 @@ func (c *Config) normalize() error {
 		c.Migrate.Role = c.PrimaryRole()
 	} else if _, ok := c.Servers[c.Migrate.Role]; !ok {
 		add("migrate.role %q is not a role in servers", c.Migrate.Role)
+	}
+	if env := c.Migrate.Env; env != nil {
+		if len(env.Clear) == 0 && len(env.Secret) == 0 {
+			add("migrate.env must set at least one clear value or secret (remove the block to migrate with the role's env file)")
+		}
+		if !*c.Migrate.Enabled {
+			add("migrate.env is set but migrate.enabled is false, so nothing would use it")
+		}
+		checkEnv("migrate.env", *env, add)
 	}
 
 	for _, name := range sortedKeys(c.Accessories) {
@@ -637,6 +654,9 @@ func (c *Config) SecretNames() []string {
 		addAll([]string{c.Registry.Password})
 	}
 	addAll(c.Env.Secret)
+	if c.Migrate.Env != nil {
+		addAll(c.Migrate.Env.Secret)
+	}
 	for _, role := range c.Servers {
 		addAll(role.Env.Secret)
 	}
