@@ -347,13 +347,13 @@ func writeAtomicIn(root *os.Root, dir, name string, data []byte, replace bool) (
 	if !replace {
 		// Link refuses to replace an existing file, which closes the window
 		// between the check above and the final name appearing.
-		if err = root.Link(temp, name); err != nil {
+		if err := root.Link(temp, name); err != nil {
 			return err
 		}
 		_ = root.Remove(temp)
 		return syncDir(root)
 	}
-	if err = root.Rename(temp, name); err != nil {
+	if err := root.Rename(temp, name); err != nil {
 		return err
 	}
 	return syncDir(root)
@@ -364,7 +364,7 @@ func writeAtomicIn(root *os.Root, dir, name string, data []byte, replace bool) (
 func syncDir(root *os.Root) error {
 	d, err := root.Open(".")
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // best effort: some platforms cannot open a directory to fsync it, and the rename already happened.
 	}
 	_ = d.Sync()
 	return d.Close()

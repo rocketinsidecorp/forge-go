@@ -188,7 +188,7 @@ func printCommands(output io.Writer, commands []Command) {
 }
 
 func serve(ctx context.Context, cfg config.Config, logger *slog.Logger, configure Configure) int {
-	app, err := New(WithConfig(cfg), WithLogger(logger))
+	app, err := New(WithConfig(cfg), WithLogger(logger)) //nolint:contextcheck // New takes options, not a context; ctx reaches Configure and Run below.
 	if err != nil {
 		logger.Error("build application", "error", err)
 		return 1
@@ -240,7 +240,7 @@ func parseOpenAPIArgs(args []string, stderr io.Writer) (openapiOptions, error) {
 // releases its resources; on failure it reports on stderr, prefixed with
 // command, and returns false.
 func composeWithoutServing(ctx context.Context, cfg config.Config, logger *slog.Logger, configure Configure, command string, stderr io.Writer) (*App, func(), bool) {
-	app, err := New(WithConfig(cfg), WithLogger(logger), describing())
+	app, err := New(WithConfig(cfg), WithLogger(logger), describing()) //nolint:contextcheck // New takes options, not a context; ctx reaches Configure below.
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: build application: %v\n", command, err)
 		return nil, nil, false

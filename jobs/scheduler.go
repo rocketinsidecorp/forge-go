@@ -372,7 +372,7 @@ func (s *Scheduler) Stop() error {
 // owns no goroutine beyond those jobs' own, which end when the jobs return. It
 // is safe to call more than once and concurrently, and a later call may wait
 // again for the same jobs. A nil ctx waits without a deadline.
-func (s *Scheduler) StopContext(ctx context.Context) error {
+func (s *Scheduler) StopContext(ctx context.Context) error { //nolint:contextcheck // documented: a nil ctx waits without a deadline.
 	if ctx == nil {
 		ctx = context.Background()
 	}

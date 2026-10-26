@@ -100,14 +100,14 @@ func Configure(ctx context.Context, app *forge.App) error {
 {{- end}}
 }
 {{- else}}
-func Configure(_ context.Context, app *forge.App) error {
+func Configure(ctx context.Context, app *forge.App) error {
 	// Translations (config/locales) for the pages and flash messages, in
 	// each request's locale.
 	translator, err := locales.New(app.Config(), app.Logger())
 	if err != nil {
 		return err
 	}
-	return routes(context.Background(), app, translator)
+	return routes(ctx, app, translator)
 }
 {{- end}}
 
