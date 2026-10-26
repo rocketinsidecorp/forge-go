@@ -98,9 +98,10 @@ type Healthcheck struct {
 // Migrate runs the image's migrate command once per deploy before any
 // container is switched.
 //
-// Env is an overlay for that one-off container only: the container gets the
-// environment of Role plus Env, Env winning, and no serving container ever
-// sees it: its names may not appear in any other env block. It is how the
+// Env is for that one-off container only: the container gets the
+// environment of Role plus Env, and no serving container ever sees it: its
+// names may not appear in the global env or in any servers.*.env block
+// (accessories keep their own env and are not checked). It is how the
 // schema owner's credential (FORGE_MIGRATION_DATABASE_URL) reaches the
 // migrate step alone. A pointer tells an absent block (the container uses
 // the role's env file, as before) from an empty one (an error); an explicit
