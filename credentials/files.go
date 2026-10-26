@@ -98,7 +98,7 @@ func LoadKeys(dir, env string, lookup func(string) (string, bool)) ([]encryption
 	if err := checkPrivateDir(root, dir); err != nil {
 		return nil, KeySource{}, err
 	}
-	file, err := openNoFollow(root, KeyFileName(env))
+	file, info, err := openNoFollow(root, KeyFileName(env))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, KeySource{}, ErrKeyMissing
 	}
@@ -106,21 +106,17 @@ func LoadKeys(dir, env string, lookup func(string) (string, bool)) ([]encryption
 		return nil, KeySource{}, fmt.Errorf("credentials: open key file: %w", err)
 	}
 	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
+	if err := requireRegular(info, path); err != nil {
 		return nil, KeySource{}, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, KeySource{}, fmt.Errorf("credentials: %s is not a regular file", path)
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return nil, KeySource{}, fmt.Errorf("%w: %s is %04o", ErrKeyPermissions, path, info.Mode().Perm())
 	}
-	data, err := io.ReadAll(io.LimitReader(file, maxKeyFile+1))
+	data, tooLarge, err := readAtMost(file, maxKeyFile)
 	if err != nil {
 		return nil, KeySource{}, err
 	}
-	if len(data) > maxKeyFile {
+	if tooLarge {
 		return nil, KeySource{}, fmt.Errorf("credentials: key file %s is too large", path)
 	}
 	keys, err := ParseKeys(string(data))
@@ -148,36 +144,38 @@ func ReadFile(dir, env string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	return readLimited(openNoFollow(root, FileName(env)))
+	file, info, err := openNoFollow(root, FileName(env))
+	return readLimited(file, info, err)
 }
 
 // openNoFollow opens name in root like openNonblocking, but refuses a
 // symbolic link (ErrSymlink): os.Root follows links that stay inside the
 // directory and ignores O_NOFOLLOW, so name is checked with Lstat first, and
 // the opened file must be the one Lstat saw, so a link swapped in between
-// the two calls is refused too.
-func openNoFollow(root *os.Root, name string) (*os.File, error) {
+// the two calls is refused too. It returns the information of the opened
+// file, which is what callers check its type and mode against.
+func openNoFollow(root *os.Root, name string) (*os.File, fs.FileInfo, error) {
 	seen, err := root.Lstat(name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if seen.Mode()&fs.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%w: %s", ErrSymlink, name)
+		return nil, nil, fmt.Errorf("%w: %s", ErrSymlink, name)
 	}
 	file, err := openNonblocking(root, name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	opened, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	if !os.SameFile(seen, opened) {
 		_ = file.Close()
-		return nil, fmt.Errorf("%w: %s changed while it was opened", ErrSymlink, name)
+		return nil, nil, fmt.Errorf("%w: %s changed while it was opened", ErrSymlink, name)
 	}
-	return file, nil
+	return file, opened, nil
 }
 
 // openNonblocking opens name in root for reading without blocking: opening a
@@ -205,7 +203,7 @@ func checkPrivateDir(root *os.Root, dir string) error {
 	return nil
 }
 
-func readLimited(file *os.File, err error) ([]byte, error) {
+func readLimited(file *os.File, info fs.FileInfo, err error) ([]byte, error) {
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, ErrNotFound
 	}
@@ -213,21 +211,36 @@ func readLimited(file *os.File, err error) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
+	if err := requireRegular(info, file.Name()); err != nil {
+		return nil, err
+	}
+	data, tooLarge, err := readAtMost(file, MaxFileBytes)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("credentials: open %s: not a regular file", file.Name())
-	}
-	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > MaxFileBytes {
+	if tooLarge {
 		return nil, fmt.Errorf("%w: file is too large", ErrFormat)
 	}
 	return data, nil
+}
+
+// requireRegular refuses anything that is not a regular file: a directory, a
+// FIFO or a device.
+func requireRegular(info fs.FileInfo, name string) error {
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("credentials: %s is not a regular file", name)
+	}
+	return nil
+}
+
+// readAtMost reads file, stopping one byte past limit; tooLarge reports that
+// it holds more than limit bytes.
+func readAtMost(file *os.File, limit int) (data []byte, tooLarge bool, err error) {
+	data, err = io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil {
+		return nil, false, err
+	}
+	return data, len(data) > limit, nil
 }
 
 // WriteFile stores the encrypted file of env in dir, creating dir (0700) when
@@ -279,9 +292,9 @@ func PrepareKeyDir(dir string) error {
 	return root.Close()
 }
 
-// keyDir creates and opens the key directory and checks it on the opened
-// root, so the directory checked is the one written to.
-func keyDir(dir string) (*os.Root, string, error) {
+// openDir creates dir (DefaultDir when empty) with mode 0700 when missing and
+// opens it as a root; it returns the directory it opened.
+func openDir(dir string) (*os.Root, string, error) {
 	if dir == "" {
 		dir = DefaultDir
 	}
@@ -289,6 +302,13 @@ func keyDir(dir string) (*os.Root, string, error) {
 		return nil, dir, err
 	}
 	root, err := os.OpenRoot(dir)
+	return root, dir, err
+}
+
+// keyDir creates and opens the key directory and checks it on the opened
+// root, so the directory checked is the one written to.
+func keyDir(dir string) (*os.Root, string, error) {
+	root, dir, err := openDir(dir)
 	if err != nil {
 		return nil, dir, err
 	}
@@ -300,13 +320,7 @@ func keyDir(dir string) (*os.Root, string, error) {
 }
 
 func writeAtomic(dir, name string, data []byte, replace bool) error {
-	if dir == "" {
-		dir = DefaultDir
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	root, err := os.OpenRoot(dir)
+	root, dir, err := openDir(dir)
 	if err != nil {
 		return err
 	}
@@ -322,9 +336,7 @@ func writeAtomicIn(root *os.Root, dir, name string, data []byte, replace bool) (
 		}
 	}
 	suffix := make([]byte, 6)
-	if _, err := rand.Read(suffix); err != nil {
-		return err
-	}
+	_, _ = rand.Read(suffix) // never fails: it crashes the process instead (crypto/rand)
 	temp := "." + name + "." + hex.EncodeToString(suffix) + ".tmp"
 	file, err := root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {

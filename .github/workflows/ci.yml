@@ -143,8 +143,9 @@ jobs:
     # Statement coverage of the module with go test -coverpkg=./..., the
     # database tests included (PostgreSQL 18 and 16, MariaDB) and the real
     # sshd. scripts/coverage.sh writes the total and a per-package table to
-    # the step summary and fails below .coverage-floor, which only ever rises
-    # toward 95 (docs/TESTING.md, "Coverage").
+    # the step summary and fails below .coverage-floor, below the gross floor
+    # or below the per-package floor of a security-relevant package
+    # (docs/TESTING.md, "Coverage").
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:

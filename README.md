@@ -1469,7 +1469,10 @@ Coverage: `scripts/coverage.sh` measures statement coverage (`go test
 -coverpkg=./...`, with the database tests when the servers above are set),
 prints the gross total and the gated total (production code, without the
 contract test kits) with a per-package table, and fails when the gated total is
-below `.coverage-floor` ([docs/TESTING.md](docs/TESTING.md#coverage)).
+below `.coverage-floor`, the gross total is below 95.0%, or one of the
+security-relevant packages (`auth`, `auth/postgres`, `credentials`, `csrf`,
+`encryption`, `internal/pgurl`, `postgres`) is below 95% of its own statements
+([docs/TESTING.md](docs/TESTING.md#coverage)).
 
 CI (`.github/workflows/ci.yml`):
 
@@ -1481,7 +1484,7 @@ CI (`.github/workflows/ci.yml`):
   generates for each database, vetted, built and tested against PostgreSQL 18
   and MySQL 8.4 (a job of its own: these workflows are serial and slow);
 - `coverage`: `scripts/coverage.sh` against PostgreSQL 18 and 16 and MariaDB,
-  gated by `.coverage-floor`;
+  gated by `.coverage-floor`, the gross floor and the per-package floors;
 - `fuzz`: every fuzz target for 10 seconds (`scripts/fuzz.sh`);
 - `sbom`: CycloneDX SBOMs of the `forge` and `forge-proxy` binaries;
 - `mariadb`: the `mysql` adapter's tests against MariaDB 11.8;

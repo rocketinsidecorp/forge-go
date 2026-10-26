@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"bytes"
+	"crypto/cipher"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -130,6 +131,17 @@ func additionalData(env string, version int, keyID string) []byte {
 	return encryption.AssociatedData(adDomain, strconv.Itoa(version), env, keyID)
 }
 
+// newAEAD returns the cipher that seals and opens files under key. It fails
+// only for key material that is not encryption.KeySize bytes.
+func newAEAD(key encryption.Key) (cipher.AEAD, error) {
+	aeadKey, err := encryption.DeriveKey(key.Material, purposeAEAD)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(aeadKey)
+	return encryption.NewAEAD(aeadKey)
+}
+
 // Seal encrypts a credentials document with key for environment env and
 // returns the file contents. The environment name, format version and key id
 // are authenticated: the result decrypts only for the same environment, so a
@@ -141,12 +153,7 @@ func Seal(env string, plaintext []byte, key encryption.Key) ([]byte, error) {
 	if _, err := parseDocument(plaintext); err != nil {
 		return nil, err
 	}
-	aeadKey, err := encryption.DeriveKey(key.Material, purposeAEAD)
-	if err != nil {
-		return nil, err
-	}
-	defer clear(aeadKey)
-	aead, err := encryption.NewAEAD(aeadKey)
+	aead, err := newAEAD(key)
 	if err != nil {
 		return nil, err
 	}
@@ -226,12 +233,7 @@ func Unseal(env string, file []byte, keys []encryption.Key) ([]byte, error) {
 	if nerr != nil || cerr != nil || len(ciphertext) > MaxPlaintextBytes+64 {
 		return nil, fmt.Errorf("%w: invalid encoding", ErrFormat)
 	}
-	aeadKey, err := encryption.DeriveKey(key.Material, purposeAEAD)
-	if err != nil {
-		return nil, err
-	}
-	defer clear(aeadKey)
-	aead, err := encryption.NewAEAD(aeadKey)
+	aead, err := newAEAD(*key)
 	if err != nil {
 		return nil, err
 	}
