@@ -38,7 +38,7 @@ func TestSubcommandHelpListsFlagsAndExamples(t *testing.T) {
 	}
 }
 
-func TestHelpWithAnExitCodeOfItsOwnStillFailsForBadInput(t *testing.T) {
+func TestHelpMisuseIsAUsageErrorWithExitStatus2(t *testing.T) {
 	t.Parallel()
 	for name, args := range map[string][]string{
 		"unknown command": {"help", "nope"},
@@ -47,7 +47,7 @@ func TestHelpWithAnExitCodeOfItsOwnStillFailsForBadInput(t *testing.T) {
 		"json plus name":  {"help", "--json", "new"},
 	} {
 		var stdout, stderr bytes.Buffer
-		if code := Run(args, &stdout, &stderr); code != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "forge: ") {
+		if code := Run(args, &stdout, &stderr); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "forge: ") {
 			t.Errorf("%s: exit %d, stdout %q, stderr %q", name, code, stdout.String(), stderr.String())
 		}
 	}
@@ -89,5 +89,39 @@ func TestFlagSetHelpAfterOwnFlagsExitsZeroToo(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := Run([]string{"app", "exec", "-i", "--help"}, &stdout, &stderr); code != 0 || !strings.HasPrefix(stdout.String(), "usage: forge app exec") {
 		t.Errorf("exit %d, stdout %q", code, stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("the flag set's own usage was printed as well: %q", stderr.String())
+	}
+	if strings.Count(stdout.String(), "usage: ") != 1 {
+		t.Errorf("help printed more than once: %q", stdout.String())
+	}
+}
+
+func TestHelpOfACommandAfterHelpAndTheHelpFlagOfHelp(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{{"help", "new", "--help"}, {"help", "new", "-h"}, {"help", "new"}} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(args, &stdout, &stderr); code != 0 || !strings.HasPrefix(stdout.String(), "usage: forge new NAME") || stderr.Len() != 0 {
+			t.Errorf("%v: exit %d, stdout %q, stderr %q", args, code, stdout.String(), stderr.String())
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"help", "--help"}, &stdout, &stderr); code != 0 || !strings.HasPrefix(stdout.String(), "usage: forge help") {
+		t.Errorf("help --help: exit %d, stdout %q", code, stdout.String())
+	}
+}
+
+func TestUnknownTopLevelCommandAndUnknownHelpTopicBothExit2(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{{"nope"}, {"help", "nope"}} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(args, &stdout, &stderr); code != 2 {
+			t.Errorf("forge %v: exit %d, want 2", args, code)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"--error-format=json", "help", "nope"}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), `"exit_code":2`) {
+		t.Errorf("json mode: exit %d, stderr %q", code, stderr.String())
 	}
 }
