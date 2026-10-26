@@ -910,8 +910,18 @@ ssh deploy@host docker exec forge-proxy /usr/local/bin/forge-proxy status   # fo
 
 A deploy migrates before any switch, keeps the previous containers running
 until every host passed its health gate, and routes all hosts back if one
-fails. Exit codes: `3` lock held, `4` unhealthy (reverted), `5` migration
-failed, `6` hook failed, `7` not fully reverted.
+fails. Exit codes: `2` invalid arguments (nothing ran), `3` lock held, `4`
+unhealthy (reverted), `5` migration failed, `6` hook failed, `7` not fully
+reverted.
+
+forge-proxy bounds what one client can make it hold: request headers up to
+`-max-header-bytes` (64 KiB; `431` above it) and `-max-connections` open
+connections per listener (10000). They are flags of `forge-proxy run`, with
+those defaults in every deploy:
+
+```sh
+go run ./cmd/forge-proxy run -h   # in a forge-go checkout: lists -max-header-bytes, -max-connections and the rest
+```
 
 On PostgreSQL with separate roles, the schema owner's credential goes to the
 migrate step alone (`migrate.env`, see
