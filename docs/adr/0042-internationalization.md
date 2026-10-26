@@ -172,15 +172,19 @@ HTML, so escaping must be decided once, by the framework.
   would merge its text into the data `l` and `number` read, and `forge i18n
   check` never reports that scope. The generator refuses them with an error
   naming the scopes.
-- **Path prefix.** Middleware passed to `WithHTTPMiddleware` sees the
-  prefixed path, so path-sensitive security middleware (allow/deny by path,
-  admin guards) must be added with `App.Use` after the i18n middleware, or
-  attached to the routes it protects; the stripped path is what routing and
-  `ServeMux` redirects see ([I18N.md](../I18N.md#choosing-the-locale)). The
-  middleware keeps the removed segment in the request context
-  (`i18n.PathPrefix`) and the auth return-to path puts it back, still behind
-  `web.IsLocalPath`. A prefix whose escaped form differs from its decoded
-  form (`/pt-BR%2F..`) clears `RawPath` so it stays consistent with `Path`.
+- **Path prefix.** The prefix is removed before the first application
+  middleware, wherever the i18n middleware is registered: its handler is an
+  `httpserver.Rewriter`, which `forge.App` and `httpserver` collect when they
+  compose the chain and apply once per request before `WithHTTPMiddleware`
+  (forge-go#56, the same guarantee as Forge-Rust's `Middleware::rewrite`).
+  Path-sensitive security middleware (allow/deny by path, admin guards) and
+  the router therefore see the same path in any order
+  ([I18N.md](../I18N.md#choosing-the-locale)). Request IDs, telemetry and the
+  panic log keep the path as sent. The middleware keeps the removed segment
+  in the request context (`i18n.PathPrefix`) and the auth return-to path
+  puts it back, still behind `web.IsLocalPath`. A prefix whose escaped form
+  differs from its decoded form (`/pt-BR%2F..`) clears `RawPath` so it stays
+  consistent with `Path`.
 - **`_html` and URLs.** `href="%{url}"` escapes but does not filter schemes
   (same as Rails); documented in the guide and the threat model.
 

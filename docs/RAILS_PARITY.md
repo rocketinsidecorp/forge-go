@@ -32,6 +32,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Rollback never reverts framework migrations; disabled framework sets tolerated | (engine migrations copied into the app) | Done (`rollback`, `Migrator.DownFramework`, ADR 0039) | Done (`rollback`, `rollback_framework`, ADR 0030) |
 | Encrypted credentials, attribute encryption | `credentials:edit`, AR Encryption | Done (`forge credentials`, `encryption`; PostgreSQL tenant tables rotate per tenant with `postgres.WithTenant`, unscoped runs under row-level security are refused) | Done (`forge credentials init\|edit\|show\|rotate-key`, `forge::credentials`, `forge::encryption`; PostgreSQL tenant tables rotate per tenant with `EncryptedColumn::tenant`, unscoped runs under row-level security are refused; forge-rust#37, Forge-Rust ADR 0041) |
 | i18n | I18n | Done (`config/locales/*.json`, `t`, CLDR plurals, `forge new --locale`, `forge i18n check`, [ADR 0042](adr/0042-internationalization.md)) | Done (`config/locales/*.json`, `layout.i18n.t`, CLDR plurals, `forge new --locale`, `forge i18n check`, Forge-Rust ADR 0037) |
+| Locale path prefix removed before every middleware (no path-guard bypass in any order) | — | In review (`httpserver.Rewriter`, forge-go#56) | In review (`Middleware::rewrite`, forge-rust#69) |
 | OpenAPI from typed routes | — | Done (`openapi.Describe`, `openapi.Typed`, `GET /openapi.json`, `forge openapi [--output\|--check]`, `FORGE_OPENAPI_ENABLED`, [ADR 0043](adr/0043-openapi-from-typed-routes.md)) | Done (`#[derive(OpenApiSchema)]`, `forge::openapi::typed`/`describe`, `GET /openapi.json`, `FORGE_OPENAPI_ENABLED`, `forge openapi`, Forge-Rust ADR 0039) |
 | Controller, model, mailer and job generators, `destroy` | `rails g`, `rails d` | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, [ADR 0041](adr/0041-generators-and-destroy.md)) | Done (`forge generate model\|controller\|mailer\|job --queue`, `forge destroy`, Forge-Rust ADR 0038) |
 | Continuous fuzzing, SBOM, signed images | — | Done (every fuzz target per PR and nightly, `scripts/fuzz.sh`; CycloneDX/SPDX SBOMs; keyless cosign-signed images from `v*` tags; [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), [ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)) | Planned |
@@ -71,6 +72,25 @@ the work is finished and waiting for its review; **Planned** means not started.
   size cap. Forge-Rust mirrors the lock scripts and the four golden plan
   files in `internal/deploy/testdata` and the `retain` minimum, tracked in
   [forge-rust#40](https://github.com/rocketinsidecorp/forge-rust/issues/40).
+
+- Locale path prefix and path guards (forge-go#56, the Go side of
+  forge-rust QR1): both frameworks remove the `PathPrefix` locale segment
+  once per request before the first application middleware runs, so a path
+  guard registered before or after the negotiation sees `/admin` for
+  `/pt-BR/admin` and `/PT-br/admin/users`, and `/pt-BR/en/admin` is routed as
+  `/en/admin`. Both keep the path as sent in request telemetry, and both
+  name the negative test after the same guarantee
+  (`a_locale_prefix_cannot_bypass_a_path_guard_registered_before_the_negotiation`,
+  `TestALocalePrefixCannotBypassAPathGuardRegisteredBeforeTheNegotiation`).
+  The mechanism follows each language: Forge-Rust's router calls every
+  layer's `Middleware::rewrite` hook; in Forge-Go the i18n middleware's
+  handler implements `httpserver.Rewriter`, which `forge.App` and
+  `httpserver` collect when they compose the chain (`App.Use`,
+  `forge.WithHTTPMiddleware`). One difference is deliberate: Forge-Rust
+  reads the segment from the escaped path, so `/pt-BR%2F..%2Fadmin` has no
+  prefix (and is not found); Forge-Go matches the decoded segment as before,
+  leaving `/../admin`, which its router refuses with `400`. Neither serves
+  the guarded page.
 
 ## Review gate
 
