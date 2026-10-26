@@ -443,7 +443,9 @@ func (s *Scheduler) runJob(name string, sj scheduledJob) {
 		// Behind schedule, only the latest tick due is a candidate: the
 		// earlier ones are skipped rather than run back to back.
 		now := time.Now().UTC()
-		at, passed, err := sj.latestDue(nextRun, now)
+		var at time.Time
+		var passed int
+		at, passed, err = sj.latestDue(nextRun, now)
 		if err != nil {
 			s.opts.OnError(name, err)
 			return
