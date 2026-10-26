@@ -83,6 +83,10 @@ the work is finished and waiting for its review; **Planned** means not started.
   with an opt-out named like `AllowRowSecurityBypass`; digest-pinned bases in its generated
   `Dockerfile`; a counter and one warning per key for undecodable cache
   values.
+  Both frameworks now refuse `PGOPTIONS` for every pool but the migrator's,
+  floor an explicit scheduler lateness at a minute, and never treat two
+  port-0 addresses (`FORGE_HTTP_ADDR`, `FORGE_TELEMETRY_METRICS_ADDR`) as the
+  same address.
 
 - CLI differences that remain after `forge check`, `forge format` and
   `forge lint` (forge-go QG10, audit gap 3). Flag-parse and usage errors of

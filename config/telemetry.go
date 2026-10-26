@@ -189,10 +189,13 @@ func (t Telemetry) validate(environment Environment, httpAddress string) error {
 	}
 	if t.MetricsAddress != "" {
 		host, port, err := net.SplitHostPort(t.MetricsAddress)
-		if number, convErr := strconv.Atoi(port); err != nil || convErr != nil || number < 0 || number > 65535 || strings.ContainsAny(host, "/?#@") {
+		number, convErr := strconv.Atoi(port)
+		if err != nil || convErr != nil || number < 0 || number > 65535 || strings.ContainsAny(host, "/?#@") {
 			return errors.New("FORGE_TELEMETRY_METRICS_ADDR must be host:port, such as 127.0.0.1:9464")
 		}
-		if t.MetricsAddress == httpAddress {
+		// Port 0 asks the kernel for a free port, so two such addresses
+		// never collide (Forge-Rust does the same).
+		if number != 0 && t.MetricsAddress == httpAddress {
 			return errors.New("FORGE_TELEMETRY_METRICS_ADDR must differ from FORGE_HTTP_ADDR: metrics are never served on the application listener")
 		}
 		if environment == Production && !t.MetricsLoopback() && !t.MetricsPublic {

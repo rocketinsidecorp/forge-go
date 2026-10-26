@@ -120,6 +120,18 @@ func TestTelemetryValidation(t *testing.T) {
 	if _, err := LoadWithLookup(lookupFrom(merge(prodMetrics, map[string]string{"FORGE_TELEMETRY_METRICS_ADDR": "127.0.0.1:0"}))); err != nil {
 		t.Fatalf("metrics port 0 rejected: %v", err)
 	}
+	// Two kernel-chosen ports never collide, so the same spelling with port
+	// 0 is accepted, while the same fixed port is still refused.
+	for _, address := range []string{"127.0.0.1:0", ":0", "localhost:0"} {
+		same := map[string]string{"FORGE_HTTP_ADDR": address, "FORGE_TELEMETRY_METRICS_ADDR": address}
+		if _, err := LoadWithLookup(lookupFrom(same)); err != nil {
+			t.Fatalf("HTTP and metrics both on %s rejected: %v", address, err)
+		}
+	}
+	reused := map[string]string{"FORGE_HTTP_ADDR": "127.0.0.1:9464", "FORGE_TELEMETRY_METRICS_ADDR": "127.0.0.1:9464"}
+	if _, err := LoadWithLookup(lookupFrom(reused)); err == nil || !strings.Contains(err.Error(), "must differ from FORGE_HTTP_ADDR") {
+		t.Fatalf("the same fixed port was accepted: %v", err)
+	}
 	public := merge(prodMetrics, map[string]string{"FORGE_TELEMETRY_METRICS_ADDR": "0.0.0.0:9464", "FORGE_TELEMETRY_METRICS_PUBLIC": "true"})
 	if _, err := LoadWithLookup(lookupFrom(public)); err != nil {
 		t.Fatalf("explicit public metrics opt-in rejected: %v", err)
