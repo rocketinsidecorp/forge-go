@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"go/format"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -395,6 +396,61 @@ func TestGeneratedApplication(t *testing.T) {
 		}
 	})
 
+	// API-only applications (forge new --api): no view, asset or browser
+	// middleware; the generators that write pages refuse them, and the JSON
+	// resources compile, pass their database tests and lint once wired.
+	for _, database := range []struct {
+		name, adapter string
+		config        func(testing.TB) config.Database
+	}{
+		{"postgresql", "postgres", postgrestest.Config},
+		{"sqlite", "sqlite", sqlitetest.Config},
+	} {
+		t.Run("api "+database.name, func(t *testing.T) {
+			t.Parallel()
+			database.config(t)
+			dir := filepath.Join(t.TempDir(), "ledger")
+			var stdout, stderr bytes.Buffer
+			args := []string{"new", "ledger", "--api", "--module", "example.com/acme/ledger", "--dir", dir, "--forge-path", frameworkPath, "-d", database.name}
+			if code := Run(args, &stdout, &stderr); code != 0 {
+				t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+			assertNoBrowserFiles(t, dir)
+			for _, refused := range [][]string{{"view", "welcome"}, {"scaffold", "post", "title:string", "--global"}} {
+				if err := runGenerateAt(refused, io.Discard, dir); err == nil || !strings.Contains(err.Error(), "forge new --api") {
+					t.Fatalf("forge generate %v in an API-only application: %v", refused, err)
+				}
+			}
+			generateAndWireResources(t, dir, database.adapter, false)
+			assertNoBrowserFiles(t, dir)
+			command := exec.Command("go", "test", "-count=1", "-v", "./app/bootstrap")
+			command.Dir = dir
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("go test ./app/bootstrap: %v\n%s", err, output)
+			}
+			for _, want := range []string{"--- PASS: TestNoBrowserPipeline", "--- PASS: TestWelcomeNamesTheService", "--- PASS: TestConfigureConnectsToDatabase"} {
+				if !strings.Contains(string(output), want) {
+					t.Fatalf("missing %q\n%s", want, output)
+				}
+			}
+			lint, err := exec.LookPath("golangci-lint")
+			if err != nil {
+				t.Log("golangci-lint is not on PATH; the lint check was skipped")
+				return
+			}
+			writeFile(t, filepath.Join(dir, ".golangci.yml"), readFile(t, filepath.Join(frameworkPath, ".golangci.yml")))
+			golangciLint.Lock()
+			defer golangciLint.Unlock()
+			// The vendored framework, as a developer's `forge lint` sees it.
+			command = exec.Command(lint, "run", "--allow-parallel-runners", "./...")
+			command.Dir = dir
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("golangci-lint: %v\n%s", err, output)
+			}
+		})
+	}
+
 	// Each database: generated tests pass, a generated resource compiles and
 	// its integration tests run against a real server, and the migration
 	// workflow runs through the application binary. The generated resource
@@ -424,7 +480,7 @@ func TestGeneratedApplication(t *testing.T) {
 			writeFile(t, up, "CREATE TABLE entries (id CHAR(36) PRIMARY KEY, amount_cents BIGINT NOT NULL);\n")
 			writeFile(t, down, "DROP TABLE entries;\n")
 
-			generateAndWireResources(t, dir, database.adapter)
+			generateAndWireResources(t, dir, database.adapter, database.adapter == "postgres")
 
 			// The database settings come from .env.local, as a developer
 			// would configure them. One role serves and migrates here: the
@@ -497,8 +553,9 @@ func TestGeneratedApplication(t *testing.T) {
 // field type (required and optional) and a global one, pastes the printed
 // wiring into bootstrap.go, and checks that the application vets, builds and
 // passes its tests, including the database integration tests, which must run
-// rather than skip.
-func generateAndWireResources(t *testing.T, dir, adapter string) {
+// rather than skip. identity says the application has Forge identity (a
+// full-stack PostgreSQL application).
+func generateAndWireResources(t *testing.T, dir, adapter string, identity bool) {
 	t.Helper()
 	// The database is read from .env.development; keep a developer's own
 	// FORGE_DATABASE_URL out of the decision.
@@ -525,7 +582,7 @@ func generateAndWireResources(t *testing.T, dir, adapter string) {
 		if err := runGenerateEnv(append([]string{"resource"}, args...), &output, dir, env, time.Now()); err != nil {
 			t.Fatalf("generate resource %s: %v", request.Name, err)
 		}
-		specs = append(specs, resourceSpec{resourceRequest: request, Module: "example.com/acme/ledger", Database: adapter, Identity: adapter == "postgres"})
+		specs = append(specs, resourceSpec{resourceRequest: request, Module: "example.com/acme/ledger", Database: adapter, Identity: identity})
 		if !strings.Contains(output.String(), "create  "+filepath.Join("app", "domain", request.Name+".go")) {
 			t.Fatalf("generate output: %s", output.String())
 		}
@@ -632,8 +689,18 @@ func wireParts(t *testing.T, dir string, partsList []resourceWiringParts) {
 		insertAfter = true
 	}
 	if !strings.Contains(source, anchor) {
+		// An API-only application (forge new --api) with a database.
+		anchor = "\tif err := routes(ctx, app); err != nil {\n\t\treturn err\n\t}\n"
+		insertAfter = true
+	}
+	if !strings.Contains(source, anchor) {
 		// An application without a database: Configure only calls routes.
 		anchor = "\treturn nil\n}\n\n// useBrowserPipeline"
+		insertAfter = false
+	}
+	if !strings.Contains(source, anchor) {
+		// An API-only application without a database.
+		anchor = "\treturn nil\n}\n\ntype statusResponse"
 		insertAfter = false
 	}
 	if !strings.Contains(source, anchor) {
