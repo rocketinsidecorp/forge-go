@@ -444,9 +444,10 @@ curl http://127.0.0.1:8080/en/      # Welcome to shop: GET / in English, whateve
 curl http://127.0.0.1:8080/pt-BR/   # Bem-vindo ao shop
 ```
 
-The locale segment is removed before any middleware runs, so a path guard
-sees `/admin` for `/pt-BR/admin` wherever it is registered (`App.Use` or
-`forge.WithHTTPMiddleware`, before or after the i18n middleware).
+The locale segment is removed before any application middleware runs
+(request IDs, telemetry and the panic log see the original path), so a path
+guard sees `/admin` for `/pt-BR/admin` wherever it is registered (`App.Use`
+or `forge.WithHTTPMiddleware`, before or after the i18n middleware).
 
 In templates: `{{t "posts.index.title"}}`, `{{t "users.inbox" "count" .Unread}}`
 (CLDR plural forms), `{{l .CreatedAt "short"}}`, `{{number .Total 2}}`,

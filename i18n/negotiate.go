@@ -266,7 +266,9 @@ func cookieName(opts NegotiationOptions) string {
 // /admin for /pt-BR/admin, the path the router serves. Elsewhere (a plain
 // net/http server, or this middleware wrapped inside another one) it is
 // removed when this middleware runs, so only what runs after it sees the
-// stripped path.
+// stripped path. Register it directly: wrapped inside another middleware,
+// Forge cannot see it as an httpserver.Rewriter, and path guards outside it
+// see the prefix.
 func (t *Translator) Middleware(opts NegotiationOptions) (func(http.Handler) http.Handler, error) {
 	if opts.Param != "" && !argumentName(opts.Param) {
 		return nil, fmt.Errorf("i18n: invalid locale parameter name %q", truncate(opts.Param))
