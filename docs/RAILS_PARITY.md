@@ -140,8 +140,8 @@ the work is finished and waiting for its review; **Planned** means not started.
   a production process (`FORGE_ENV=production`) builds its sign-in, MFA or
   password-reset service on the in-memory throttler (generated applications
   already use the PostgreSQL throttler, as Forge-Rust's do since QR2).
-  Forge-Rust status and follow-ups, to be tracked in a forge-rust issue opened
-  with this pull request and adopted in its next security pull request:
+  Forge-Rust status and follow-ups, tracked in
+  [forge-rust#75](https://github.com/rocketinsidecorp/forge-rust/issues/75):
   (1) the same idle timeout, variable name and default in its generated
   session store (a `last_seen_at` column in a new migration, the same
   once-a-minute write); (2) masked CSRF tokens from `csrf_field`/`csrf_meta`
