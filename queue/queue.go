@@ -354,6 +354,27 @@ type BatchClaimer interface {
 	ClaimBatch(ctx context.Context, request ClaimRequest, limit int) ([]Claimed, error)
 }
 
+// ErrListenUnsupported is what Listener.Listen returns when the store was not
+// configured to publish enqueue notifications. A worker then stops listening
+// and only polls.
+var ErrListenUnsupported = errors.New("queue: the store does not publish enqueue notifications")
+
+// Listener is implemented by stores that announce enqueued jobs, such as
+// queue/postgres with WithNotify (LISTEN/NOTIFY). A Worker whose store is a
+// Listener holds one listening connection and claims as soon as a job of one
+// of its queues is announced, instead of waiting for its next poll. Polling
+// continues as the fallback: announcements are hints, may be lost while the
+// connection is down, and are never needed for correctness.
+type Listener interface {
+	// Listen subscribes to announcements and blocks until ctx ends or the
+	// subscription fails, which it reports as an error (ErrListenUnsupported
+	// when the store does not announce). It calls listening once the
+	// subscription is active and wake with the queue name of each
+	// announcement, both on the calling goroutine; wake must not block. It
+	// must return promptly when ctx ends and release its connection.
+	Listen(ctx context.Context, listening func(), wake func(queue string)) error
+}
+
 type jobContextKey struct{}
 
 // JobFromContext returns the metadata of the job a handler is running.

@@ -6,6 +6,12 @@
 // clock, so skew between application hosts cannot expire a lease early. Every
 // acknowledgement is fenced by the lease token of the claim.
 //
+// With WithNotify, an enqueue also sends NOTIFY forge_jobs (payload: the
+// queue name) when the job is due, delivered when the enqueuing transaction
+// commits, and workers on the store LISTEN for it: an idle worker claims
+// within milliseconds instead of at its next poll. Polling stays the
+// fallback, so a lost notification only delays a job to the next poll.
+//
 // Enqueue inside the caller's transaction with Store.In:
 //
 //	err := db.InTx(ctx, func(tx pgx.Tx) error {
@@ -34,30 +40,61 @@ import (
 // uniqueViolation is SQLSTATE 23505.
 const uniqueViolation = "23505"
 
+// NotifyChannel is the PostgreSQL notification channel of WithNotify. The
+// payload of each notification is a queue name.
+const NotifyChannel = "forge_jobs"
+
 // Store is the PostgreSQL implementation of queue.Store.
 type Store struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	notify bool
 }
 
 var (
 	_ queue.Store        = (*Store)(nil)
 	_ queue.BatchClaimer = (*Store)(nil)
+	_ queue.Listener     = (*Store)(nil)
 )
 
+// Option configures a Store.
+type Option func(*Store)
+
+// WithNotify announces every due job on NotifyChannel when it is enqueued
+// (through Insert, or through In when the caller's transaction commits) and
+// lets workers on this store LISTEN for the announcements (queue.Listener):
+// an idle worker then claims a new job at once instead of at its next poll,
+// which can be MaxPollInterval (10s by default) away.
+//
+// Costs: each worker holds one extra connection, outside the pool's
+// MaxConns, for its whole life; LISTEN does not work through PgBouncer in
+// transaction pooling mode (connect workers directly or use session
+// pooling); and PostgreSQL serializes the commits of transactions that sent
+// a notification, which matters only at thousands of enqueues per second.
+// Notifications are hints: anyone who can NOTIFY on the database can wake
+// workers (they then claim once), and polling still finds every job.
+func WithNotify() Option { return func(s *Store) { s.notify = true } }
+
 // NewStore returns a store on db's pool. The tables come from Migrations.
-func NewStore(db *forgepostgres.DB) (*Store, error) {
+func NewStore(db *forgepostgres.DB, options ...Option) (*Store, error) {
 	if db == nil {
 		return nil, errors.New("queue PostgreSQL database is required")
 	}
-	return NewStoreFromPool(db.Pool())
+	return NewStoreFromPool(db.Pool(), options...)
 }
 
 // NewStoreFromPool is NewStore for an application-owned pool.
-func NewStoreFromPool(pool *pgxpool.Pool) (*Store, error) {
+func NewStoreFromPool(pool *pgxpool.Pool, options ...Option) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("queue PostgreSQL pool is required")
 	}
-	return &Store{pool: pool}, nil
+	store := &Store{pool: pool}
+	for _, option := range options {
+		if option == nil {
+			return nil, errors.New("queue PostgreSQL store option is nil")
+		}
+		option(store)
+	}
+	return store, nil
 }
 
 // executor is what both the pool and a pgx.Tx provide.
@@ -74,14 +111,17 @@ type executor interface {
 // same key concurrently make one fail with SQLSTATE 40001, like any
 // conflicting write; run them with postgres.TxOptions.Attempts so the retry
 // sees the committed job and reports a duplicate. READ COMMITTED needs no retry.
-func (s *Store) In(tx pgx.Tx) queue.Inserter { return inserter{exec: tx} }
+func (s *Store) In(tx pgx.Tx) queue.Inserter { return inserter{exec: tx, notify: s.notify} }
 
-type inserter struct{ exec executor }
+type inserter struct {
+	exec   executor
+	notify bool
+}
 
 // Insert stores job in its own implicit transaction (a single statement).
 // Use In for atomicity with business data.
 func (s *Store) Insert(ctx context.Context, job queue.NewJob) (queue.InsertResult, error) {
-	return inserter{exec: s.pool}.Insert(ctx, job)
+	return inserter{exec: s.pool, notify: s.notify}.Insert(ctx, job)
 }
 
 func (in inserter) Insert(ctx context.Context, job queue.NewJob) (queue.InsertResult, error) {
@@ -102,12 +142,31 @@ func (in inserter) Insert(ctx context.Context, job queue.NewJob) (queue.InsertRe
 		VALUES ($1, $2, $3, $4::jsonb, $5, $6, COALESCE($7, clock_timestamp()), NULLIF($8::text, ''))
 		ON CONFLICT (kind, idempotency_key) WHERE idempotency_key IS NOT NULL AND state IN ('pending', 'running') DO NOTHING
 		RETURNING id`
+	// With WithNotify the announcement is part of the same statement, so it
+	// is sent exactly when a due job was stored and delivered when the
+	// transaction commits. count(*) makes the query read the notified CTE,
+	// which would otherwise never run.
+	const insertNotifySQL = `
+		WITH inserted AS (
+			INSERT INTO forge_jobs (id, queue, kind, payload, priority, max_attempts, run_at, idempotency_key)
+			VALUES ($1, $2, $3, $4::jsonb, $5, $6, COALESCE($7, clock_timestamp()), NULLIF($8::text, ''))
+			ON CONFLICT (kind, idempotency_key) WHERE idempotency_key IS NOT NULL AND state IN ('pending', 'running') DO NOTHING
+			RETURNING id, queue, run_at
+		), notified AS (
+			SELECT pg_notify($9, inserted.queue) FROM inserted
+			WHERE inserted.run_at <= clock_timestamp()
+		)
+		SELECT inserted.id FROM inserted, (SELECT count(*) FROM notified) AS announcements`
+	statement, args := insertSQL, []any{job.ID, job.Queue, job.Kind, []byte(job.Payload), job.Priority, job.MaxAttempts, runAt, job.Key}
+	if in.notify {
+		statement, args = insertNotifySQL, append(args, NotifyChannel)
+	}
 	const existingSQL = `
 		SELECT id FROM forge_jobs
 		WHERE kind = $1 AND idempotency_key = $2 AND state IN ('pending', 'running')`
 	for range 3 {
 		var id uuid.UUID
-		err := in.exec.QueryRow(ctx, insertSQL, job.ID, job.Queue, job.Kind, []byte(job.Payload), job.Priority, job.MaxAttempts, runAt, job.Key).Scan(&id)
+		err := in.exec.QueryRow(ctx, statement, args...).Scan(&id)
 		if err == nil {
 			return queue.InsertResult{ID: id}, nil
 		}
