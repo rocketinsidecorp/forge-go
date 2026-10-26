@@ -1,6 +1,6 @@
 -- One row per scheduled job: the latest tick a replica claimed (ADR 0047).
--- A tick runs on the replica whose INSERT ... ON DUPLICATE KEY UPDATE
--- advances last_tick_at; ticks only move forward, so a lagging replica can
+-- A tick runs on the replica whose INSERT IGNORE (first tick) or
+-- UPDATE ... WHERE last_tick_at < tick advances last_tick_at; ticks only move forward, so a lagging replica can
 -- never claim a tick again, and one row per job needs no pruning. Job names
 -- compare byte for byte.
 CREATE TABLE forge_job_schedules (

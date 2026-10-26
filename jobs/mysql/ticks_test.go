@@ -2,9 +2,14 @@ package mysql_test
 
 import (
 	"context"
+	"database/sql"
 	"io/fs"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
+
+	driver "github.com/go-sql-driver/mysql"
 
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/jobs"
@@ -73,4 +78,39 @@ func TestTickClaimerRefusesBadInput(t *testing.T) {
 			t.Errorf("a job name of %d bytes was accepted", len(name))
 		}
 	}
+}
+
+// openFoundRows opens a replica's pool whose connections count matched rather
+// than changed rows (CLIENT_FOUND_ROWS), which mysql.Open never does: the
+// claim must stay exactly once on such a handle too.
+func openFoundRows(t testing.TB, cfg config.Database) *sqldb.DB {
+	t.Helper()
+	parsed, err := url.Parse(cfg.URL.Reveal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	password, _ := parsed.User.Password()
+	connector, err := driver.NewConnector(&driver.Config{
+		User: parsed.User.Username(), Passwd: password, Net: "tcp", Addr: parsed.Host,
+		DBName: strings.TrimPrefix(parsed.Path, "/"), ParseTime: true, Loc: time.UTC,
+		AllowNativePasswords: true, ClientFoundRows: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := sql.OpenDB(connector)
+	cfg.MaxConns = 4
+	db, err := sqldb.New(pool, cfg, func(error) sqldb.Classification { return sqldb.Classification{} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+	return db
+}
+
+func TestTickClaimerConformanceWithClientFoundRows(t *testing.T) {
+	ticktest.Run(t, func(t testing.TB) (jobs.TickClaimer, jobs.TickClaimer) {
+		cfg := newDatabase(t)
+		return jobsmysql.NewTickClaimer(openFoundRows(t, cfg)), jobsmysql.NewTickClaimer(openFoundRows(t, cfg))
+	})
 }

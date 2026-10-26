@@ -64,8 +64,10 @@ needed. It was replaced before release by recorded ticks, below.
   migration `20261026120000_job_schedules`, owner `jobs`) keeps one row per
   job with its latest claimed tick, and one autocommit upsert advances it only
   when the tick is later (`ON CONFLICT ... WHERE last_tick_at < excluded` on
-  PostgreSQL, `ON DUPLICATE KEY UPDATE ... IF(last_tick_at < tick, ...)` on
-  MySQL and MariaDB; the row count says who won). So:
+  PostgreSQL; on MySQL and MariaDB `INSERT IGNORE` for a job's first tick,
+  else `UPDATE ... WHERE last_tick_at < tick`, whose matched and changed row
+  counts agree, so the result does not depend on `CLIENT_FOUND_ROWS`; the row
+  count says who won). So:
   - each tick runs on exactly one replica, whatever the replicas' clocks;
   - ticks only move forward: a lagging replica can never claim a past tick,
     and a tick that no replica claimed before a later one was is not run;

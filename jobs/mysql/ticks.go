@@ -45,9 +45,14 @@ var _ jobs.TickClaimer = (*TickClaimer)(nil)
 func NewTickClaimer(db *sqldb.DB) *TickClaimer { return &TickClaimer{db: db} }
 
 // ClaimTick reads the database clock, refusing a tick ahead of it with a
-// *jobs.EarlyTickError, then records tick as job's latest tick in one
-// autocommit upsert and reports whether this call advanced it. Each statement
-// borrows a pooled connection only while it runs.
+// *jobs.EarlyTickError, then records tick as job's latest tick and reports
+// whether this call advanced it. Recording is two autocommit statements: an
+// INSERT IGNORE for a job's first tick, else an UPDATE whose WHERE clause
+// requires an earlier recorded tick. Both report one affected row exactly
+// when this call recorded the tick, whether or not the connection counts
+// matched rather than changed rows (CLIENT_FOUND_ROWS), so any *sqldb.DB on
+// MySQL or MariaDB is safe. Each statement borrows a pooled connection only
+// while it runs.
 func (c *TickClaimer) ClaimTick(ctx context.Context, job string, tick time.Time) (bool, error) {
 	if c == nil || c.db == nil {
 		return false, errors.New("tick claimer needs a database")
@@ -63,22 +68,33 @@ func (c *TickClaimer) ClaimTick(ctx context.Context, job string, tick time.Time)
 	if aheadUS > 0 {
 		return false, &jobs.EarlyTickError{Wait: time.Duration(aheadUS) * time.Microsecond}
 	}
-	// The assignments run in order: updated_at still sees the old
-	// last_tick_at. MySQL reports 1 for an insert, 2 for an update that
-	// changed the row and 0 for none.
-	result, err := c.db.ExecContext(ctx, `
-		INSERT INTO forge_job_schedules (name, last_tick_at, updated_at)
+	// The job name is validated above, so IGNORE can only skip the
+	// duplicate key of a job that already has a row.
+	inserted, err := c.affected(ctx, `
+		INSERT IGNORE INTO forge_job_schedules (name, last_tick_at, updated_at)
 		VALUES (?, ?, UTC_TIMESTAMP(6))
-		ON DUPLICATE KEY UPDATE
-			updated_at = IF(last_tick_at < ?, UTC_TIMESTAMP(6), updated_at),
-			last_tick_at = IF(last_tick_at < ?, ?, last_tick_at)
-	`, job, tick, tick, tick, tick)
-	if err != nil {
-		return false, fmt.Errorf("record scheduled tick: %w", c.db.Translate(err))
+	`, job, tick)
+	if err != nil || inserted == 1 {
+		return inserted == 1, err
 	}
-	changed, err := result.RowsAffected()
+	// Every row the WHERE clause matches is changed, so matched and changed
+	// row counts agree.
+	advanced, err := c.affected(ctx, `
+		UPDATE forge_job_schedules
+		SET last_tick_at = ?, updated_at = UTC_TIMESTAMP(6)
+		WHERE name = ? AND last_tick_at < ?
+	`, tick, job, tick)
+	return advanced == 1, err
+}
+
+func (c *TickClaimer) affected(ctx context.Context, query string, args ...any) (int64, error) {
+	result, err := c.db.ExecContext(ctx, query, args...)
 	if err != nil {
-		return false, fmt.Errorf("record scheduled tick: %w", err)
+		return 0, fmt.Errorf("record scheduled tick: %w", c.db.Translate(err))
 	}
-	return changed > 0, nil
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("record scheduled tick: %w", err)
+	}
+	return n, nil
 }
