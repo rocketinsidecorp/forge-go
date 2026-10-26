@@ -68,7 +68,7 @@ func TestParseConfigIgnoresPGTLSModeVariables(t *testing.T) {
 	t.Setenv("PGCHANNELBINDING", "disable")
 
 	// No sslmode in the URL: libpq's default, prefer, not PGSSLMODE=disable.
-	pool, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app"))
+	pool, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app"), stripEnvironmentSession)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestParseConfigIgnoresPGTLSModeVariables(t *testing.T) {
 
 	// sslmode=require in the URL keeps TLS on every attempt, and pool
 	// parameters survive.
-	pool, err = parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?sslmode=require&pool_max_conns=3"))
+	pool, err = parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?sslmode=require&pool_max_conns=3"), stripEnvironmentSession)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestParseConfigRefusesAPGRootCertTheURLDoesNotRepeat(t *testing.T) {
 
 	for _, mode := range []string{"verify-ca", "verify-full", "require"} {
 		raw := "postgres://app:s3cret@db.internal:5432/app?sslmode=" + mode
-		_, err := parseConfig(databaseAt(raw))
+		_, err := parseConfig(databaseAt(raw), stripEnvironmentSession)
 		var refused *pgurl.RefusedError
 		if !errors.As(err, &refused) || !strings.Contains(err.Error(), "PGSSLROOTCERT") || !strings.Contains(err.Error(), "sslrootcert=") {
 			t.Fatalf("sslmode=%s: err = %v, want a refusal naming PGSSLROOTCERT and sslrootcert", mode, err)
@@ -122,7 +122,7 @@ func TestParseConfigRefusesAPGRootCertTheURLDoesNotRepeat(t *testing.T) {
 
 	// Without sslmode the default (prefer) is not a verification mode, but
 	// the variable is refused all the same: the URL must say what it trusts.
-	if _, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app")); err == nil {
+	if _, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app"), stripEnvironmentSession); err == nil {
 		t.Error("a PGSSLROOTCERT the URL does not repeat was accepted without sslmode")
 	}
 
@@ -130,7 +130,7 @@ func TestParseConfigRefusesAPGRootCertTheURLDoesNotRepeat(t *testing.T) {
 	other, _ := writeCA(t)
 	t.Setenv("PGSSLROOTCERT", other)
 	query := url.Values{"sslmode": {"verify-ca"}, "sslrootcert": {caPath}}
-	pool, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?" + encodeQuery(query)))
+	pool, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?"+encodeQuery(query)), stripEnvironmentSession)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestParseConfigRefusesAPGRootCertTheURLDoesNotRepeat(t *testing.T) {
 		t.Fatalf("verify-ca must trust only the URL's sslrootcert file: %+v", tlsConfig)
 	}
 	query.Set("sslmode", "require")
-	pool, err = parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?" + encodeQuery(query)))
+	pool, err = parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?"+encodeQuery(query)), stripEnvironmentSession)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,8 +155,45 @@ func TestParseConfigRefusesURLsGoAndPgxReadDifferently(t *testing.T) {
 		"fragment":       "postgres://app:pw@db.internal/app#?sslmode=verify-full",
 		"@ in the query": "postgres://db.internal:5432?sslmode=verify-full@x/app",
 	} {
-		if _, err := parseConfig(databaseAt(raw)); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		if _, err := parseConfig(databaseAt(raw), stripEnvironmentSession); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 			t.Errorf("%s: err = %v", name, err)
 		}
+	}
+}
+
+// TestServingPoolTakesNoSessionSettingFromTheEnvironment: PGOPTIONS, PGTZ
+// and PGAPPNAME reach the migrator, as for psql, but not the serving pool,
+// where a PGOPTIONS='-c forge.tenant_id=...' would give every session a
+// default tenant. Settings the URL names are kept.
+func TestServingPoolTakesNoSessionSettingFromTheEnvironment(t *testing.T) {
+	t.Setenv("PGOPTIONS", "-c forge.tenant_id=0190d6c5-5f1a-7d0e-8b1a-6a3c1f2e9d4b")
+	t.Setenv("PGTZ", "America/Sao_Paulo")
+	t.Setenv("PGAPPNAME", "from-the-environment")
+	pool, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app"), stripEnvironmentSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"options", "timezone", "application_name"} {
+		if value, ok := pool.ConnConfig.RuntimeParams[key]; ok {
+			t.Errorf("the serving pool took %s=%q from the environment", key, value)
+		}
+	}
+	migrator, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app"), keepEnvironmentSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := migrator.ConnConfig.RuntimeParams["options"]; !strings.Contains(got, "forge.tenant_id") {
+		t.Errorf("the migrator lost PGOPTIONS: %q", got)
+	}
+	named, err := parseConfig(databaseAt("postgres://app:pw@db.internal:5432/app?application_name=billing&options=-c%20lock_timeout%3D5s"), stripEnvironmentSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := named.ConnConfig.RuntimeParams
+	if params["application_name"] != "billing" || params["options"] != "-c lock_timeout=5s" {
+		t.Errorf("settings the URL names were dropped: %v", params)
+	}
+	if _, ok := params["timezone"]; ok {
+		t.Error("PGTZ reached a pool whose URL names other settings")
 	}
 }

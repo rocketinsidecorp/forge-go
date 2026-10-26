@@ -93,9 +93,16 @@ Rules enforced at startup ([ADR 0005](adr/0005-environment-configuration-fail-fa
   `PGSSLPASSWORD` have no neutral value, so a set one that the URL does not
   name (`sslrootcert=...`, ...) stops the application at startup, with an
   error that names the variable and never a value: ignoring it could replace
-  the CA the URL's `sslmode` verifies against. The other `PG*` variables
-  (`PGUSER`, `PGPASSWORD`, `PGAPPNAME`, ...) still fill what the URL leaves
-  out, as for `psql`. Forge does this without editing its own environment: it
+  the CA the URL's `sslmode` verifies against. The serving pool
+  (`postgres.Open`) also takes no session setting from the environment:
+  `PGOPTIONS`, `PGTZ` and `PGAPPNAME` are dropped unless the URL names
+  `options`, `timezone` or `application_name`, so a
+  `PGOPTIONS='-c forge.tenant_id=...'` cannot give every pooled session a
+  default tenant (a query outside `InTenantTx` sees no tenant and RLS returns
+  no rows). The migrator still honours them, so
+  `PGOPTIONS='-c lock_timeout=5s' forge migrate` works. The other `PG*`
+  variables (`PGUSER`, `PGPASSWORD`, ...) still fill what the URL leaves out,
+  as for `psql`. Forge does this without editing its own environment: it
   writes the default of each such parameter into the URL it gives pgx, and
   replaces a service named by `PGSERVICE` with an empty one. The URL itself
   must be unambiguous: a fragment, an `@` after the host, whitespace in the

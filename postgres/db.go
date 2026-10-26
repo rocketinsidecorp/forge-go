@@ -56,7 +56,11 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 	if err != nil {
 		return nil, err
 	}
-	poolConfig, err := parseConfig(cfg)
+	// The serving pool takes no session setting from the environment: a
+	// PGOPTIONS='-c forge.tenant_id=...' would give every pooled session a
+	// default tenant, so a query outside InTenantTx would read that
+	// tenant's rows instead of none.
+	poolConfig, err := parseConfig(cfg, stripEnvironmentSession)
 	if err != nil {
 		return nil, err
 	}
@@ -106,9 +110,23 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 	return &DB{pool: pool, unobserve: unobserve}, nil
 }
 
+// sessionSource says whether the session settings pgx reads from the
+// environment (PGOPTIONS, PGTZ, PGAPPNAME) reach the connection.
+type sessionSource bool
+
+const (
+	// stripEnvironmentSession keeps only the session settings the URL
+	// names: the serving pool's choice.
+	stripEnvironmentSession sessionSource = false
+	// keepEnvironmentSession lets the environment fill the session settings
+	// the URL leaves out, as for psql: the migrator's choice, so an operator
+	// can run PGOPTIONS='-c lock_timeout=5s' forge migrate.
+	keepEnvironmentSession sessionSource = true
+)
+
 // parseConfig builds the pgx configuration shared by the pool and the
 // migrator's dedicated session.
-func parseConfig(cfg config.Database) (*pgxpool.Config, error) {
+func parseConfig(cfg config.Database, session sessionSource) (*pgxpool.Config, error) {
 	if cfg.URL.IsZero() {
 		return nil, errors.New("database is not configured: set FORGE_DATABASE_URL")
 	}
@@ -137,6 +155,9 @@ func parseConfig(cfg config.Database) (*pgxpool.Config, error) {
 	}
 	if err := matchesValidatedURL(cfg.URL.Reveal(), poolConfig.ConnConfig.Config); err != nil {
 		return nil, err
+	}
+	if session == stripEnvironmentSession {
+		iso.StripSession(poolConfig.ConnConfig.RuntimeParams)
 	}
 	poolConfig.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
 	return poolConfig, nil
