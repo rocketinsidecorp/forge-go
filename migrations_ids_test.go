@@ -14,6 +14,15 @@ import (
 // (version 4). examples/basic-api kept one until audit finding N3-03.
 var databaseIDDefault = regexp.MustCompile(`(?i)\bdefault\s+\(?\s*(uuidv7|gen_random_uuid|uuid_generate_v[0-9]+)\s*\(`)
 
+// databaseIDDefaultHistory are the files that name such a default and may keep
+// doing so: a released migration is never edited, so create_tasks keeps the
+// default it shipped with, and the migration that drops it says how to put it
+// back in its down file. Everything else must be free of the rule.
+var databaseIDDefaultHistory = map[string]bool{
+	"examples/basic-api/db/migrations/20260926000000_create_tasks.up.sql":           true,
+	"examples/basic-api/db/migrations/20261027000000_drop_task_id_default.down.sql": true,
+}
+
 func TestNoMigrationDefaultsAnIDInTheDatabase(t *testing.T) {
 	t.Parallel()
 	checked := 0
@@ -32,13 +41,20 @@ func TestNoMigrationDefaultsAnIDInTheDatabase(t *testing.T) {
 			return err
 		}
 		checked++
-		if found := databaseIDDefault.FindString(string(content)); found != "" {
+		if found := databaseIDDefault.FindString(string(content)); found != "" && !databaseIDDefaultHistory[path] {
 			t.Errorf("%s has %q: ids are generated in Go, never by the database", path, found)
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The history list names files that exist and still match the rule, so it
+	// cannot go stale and hide a new violation.
+	for path := range databaseIDDefaultHistory {
+		if content, err := os.ReadFile(path); err != nil || !databaseIDDefault.Match(content) { // #nosec G304 -- a fixed path of this repository
+			t.Errorf("%s is listed as historical but is missing or no longer defaults an id: %v", path, err)
+		}
 	}
 	if checked < 20 {
 		t.Fatalf("only %d SQL files were checked: the walk is broken", checked)
