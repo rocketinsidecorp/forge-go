@@ -30,6 +30,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Cache | Solid Cache | Done | Done |
 | File storage with signed URLs | Active Storage | Done (disk) | Done (disk) |
 | Import maps, Turbo, Stimulus | Hotwire | Done | Done |
+| TypeScript front end by default | none: `rails new` ships importmap-rails with plain JavaScript, and Turbo has no types (owner decision D32) | Done (`forge new` generates `app/javascript/**/*.ts`, a strict `tsconfig.json` and Turbo and Stimulus declarations; `forge dev\|build\|test\|check` compile it with esbuild's Go API into the embedded `app/javascript/dist`, no Node; `forge check` runs `tsc --noEmit` when `tsc` is installed; `forge new --js` keeps JavaScript, [ADR 0049](adr/0049-typescript-by-default.md)) | Planned, after forge-go 100% (decision D37): same commands and flag, with oxc instead of esbuild (see the porting notes in ADR 0049) |
 | Turbo Streams over SSE | Action Cable | Done | Done (`scaffold --broadcast`, Forge-Rust ADR 0031) |
 | Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Done (OpenTelemetry, Prometheus; Forge-Rust ADR 0033) |
 | Preconfigured Prometheus, Grafana, Tempo, Loki | — | Done (`compose.observability.yaml`, [ADR 0038](adr/0038-local-observability-stack.md)) | Done (`compose.observability.yaml`, Forge-Rust ADR 0034) |

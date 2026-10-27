@@ -36,6 +36,33 @@
 `forge g` is short for `forge generate` and `forge d` for `forge destroy`, as
 in Rails (`forge g scaffold post title:string --global`).
 
+## The front end of a new application
+
+`forge new APP` generates the front end in TypeScript ([ADR
+0049](adr/0049-typescript-by-default.md)); `forge new APP --js` generates
+the plain JavaScript it generated before. No other generator writes
+JavaScript or TypeScript: they add Go and `.gohtml` files, and pages use the
+controllers already in `app/javascript/controllers`.
+
+```sh
+forge new shop -d sqlite3          # app/javascript/application.ts, controllers/*.ts, tsconfig.json, types/, dist/*.js
+forge new shop -d sqlite3 --js     # app/javascript/application.js and controllers/*.js, no tsconfig.json, no dist
+forge new shop --api --js          # refused: an API-only application has no front end
+```
+
+| Default (TypeScript) | `--js` |
+| -------------------- | ------ |
+| `app/javascript/application.ts`, `controllers/{application,index,hello_controller}.ts` | the same names with `.js` |
+| `app/javascript/dist/**.js`: compiled by `forge`, committed, embedded by `go build` | none: the `.js` sources are embedded |
+| `tsconfig.json` (strict, `noEmit`) and `app/javascript/types/` (Turbo and Stimulus declarations) | none |
+| `app/javascript/javascript_test.go`: fails when `dist` is stale; CI runs `tsc --noEmit` | none |
+
+`forge dev`, `forge build`, `forge test` and `forge check` compile the
+TypeScript; `forge check` also runs `tsc --noEmit` when `tsc` is installed
+(`npm install --global typescript@6.0.3`). `forge generate view`,
+`controller` and `scaffold` in an application that has no views package yet
+add this base too, in TypeScript.
+
 ## Migration
 
 ```sh

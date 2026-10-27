@@ -642,6 +642,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0046](adr/0046-postgresql-runtime-and-migration-roles.md) | PostgreSQL runtime and migration roles; staging and production refuse a serving role that could bypass row-level security |
 | [0047](adr/0047-batch-claims-notify-and-recorded-ticks.md) | Batch claims for the queue and the outbox, PostgreSQL `LISTEN/NOTIFY` wake-up, scheduler ticks recorded once in the database |
 | [0048](adr/0048-argon2id-password-hashing.md) | Argon2id password hashing with Forge-Rust's parameters, PBKDF2 hashes upgraded at sign-in, a bound on concurrent hashing, `forge_pbkdf2` for FIPS builds; admits `x/crypto/argon2` to the core |
+| [0049](adr/0049-typescript-by-default.md) | TypeScript front end by default, compiled by `forge` with esbuild (no Node), `--js` to opt out; esbuild linked only by the CLI |
 
 ADR numbers 0027 and 0028 are unassigned: the rate limiting, cache and file
 storage ADRs were drafted as 0026-0028, 0026 turned out to be taken by other

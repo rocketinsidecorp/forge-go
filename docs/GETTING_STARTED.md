@@ -54,6 +54,10 @@ Contents: [1 Prerequisites](#1-prerequisites) ·
   SQLite needs nothing installed ([see below](#sqlite-instead-of-postgresql)).
 - `curl` and `openssl` for a few commands, and the `psql` client for `forge db
   console` (section 11).
+- **Optional: Node.js,** only to install `tsc`, the TypeScript type checker
+  (`npm install --global typescript@6.0.3`). Compiling TypeScript needs no
+  Node: `forge` does it. Without `tsc`, `forge check` skips the type check and
+  says so.
 
 Docker is also what builds the production image (`docker build`, `forge
 deploy`) and runs the observability stack; none of the rest needs it.
@@ -78,7 +82,9 @@ cd blog
 
 `forge new` writes the application, runs `go mod tidy` and prints the next
 steps. Choose another database with `-d mysql`, `-d mariadb` or `-d sqlite`,
-and the default language of the pages with `--locale en|es|pt-BR`.
+and the default language of the pages with `--locale en|es|pt-BR`. The front
+end is TypeScript (compiled by `forge` itself, no Node needed); `--js` keeps
+plain JavaScript.
 
 ```text
 blog/
@@ -86,7 +92,8 @@ blog/
   app/bootstrap/              the composition root: opens the database, wires routes (yours to edit)
   app/adapters/htmlauth/      sign-in, sign-out, two-factor and password-reset pages
   app/views/                  layout, flash partial and the sign-in pages (Go html/template)
-  app/assets/, app/javascript/ digested static files; Turbo and Stimulus, no Node toolchain
+  app/assets/, app/javascript/ digested static files; Turbo and Stimulus; the front end is
+                              TypeScript (*.ts, compiled to app/javascript/dist; tsconfig.json), no Node toolchain
   config/locales/             translations, one JSON file per locale
   config/credentials/         encrypted credentials (the .key file is git-ignored)
   db/migrations/              SQL migrations, embedded in the binary; db/seeds.go
@@ -101,6 +108,25 @@ The code you will add later follows the hexagonal layout: `app/domain` (rules),
 `app/application` (use cases and ports), `app/adapters` (HTTP and persistence),
 and `app/bootstrap` (the only place that picks implementations).
 [ARCHITECTURE.md](ARCHITECTURE.md) explains why.
+
+### The TypeScript front end
+
+`app/javascript` holds TypeScript: `application.ts` and the Stimulus controllers
+in `controllers/*.ts`. `forge` strips the types with esbuild (built into the
+CLI, no Node) and writes plain JavaScript to `app/javascript/dist`, which the
+binary embeds and serves with digested URLs ([ADR
+0049](adr/0049-typescript-by-default.md)). Try it in `blog/`:
+
+```sh
+cat app/javascript/controllers/hello_controller.ts   # a typed Stimulus controller
+forge dev                                            # edit a .ts file: it recompiles on save
+forge check                                          # go build, go vet, and tsc --noEmit if tsc is installed
+forge build                                          # compiles app/javascript/dist, then bin/blog
+```
+
+Commit `app/javascript/dist` with your sources: it is what `go build` embeds,
+and `go test` fails when a `.ts` file changed and `dist` did not. To keep plain
+JavaScript, create the application with `forge new blog --js`.
 
 ## 4. Set up and run it
 
@@ -211,8 +237,8 @@ on PostgreSQL.
 
 `--api` generates a JSON service instead, like `rails new --api`: no views,
 assets, JavaScript, translations, sign-in pages or browser middleware (CSRF,
-method override, flash). It takes the same `-d` flags; `--api-auth` and
-`--locale` cannot be combined with it.
+method override, flash). It takes the same `-d` flags; `--api-auth`,
+`--locale` and `--js` cannot be combined with it.
 
 ```sh
 forge new blogapi --api
@@ -831,7 +857,7 @@ The rest of the toolbox:
 ```sh
 forge test                  # go test ./... with .env.development loaded; arguments pass through
 forge test -run Post ./app/...
-forge check                 # go build ./... and go vet ./...: type-check without writing a binary
+forge check                 # go build ./..., go vet ./... and tsc --noEmit (when tsc is installed): type-check without writing a binary
 forge format                # gofmt -l -w on your Go files; forge format --check lists them and fails (CI)
 forge lint                  # golangci-lint run ./... (install: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0)
 forge doctor                # validate FORGE_* configuration (secrets redacted); --json for tools
