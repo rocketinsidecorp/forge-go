@@ -330,7 +330,7 @@ jobs:
       - name: Test generated applications, resources and the README quickstart against MariaDB
         run: go test -count=1 -timeout 30m -run 'TestGeneratedApplication/(database_workflow_(mysql|mariadb)|readme_quickstart_mysql)$' ./internal/cli
       - name: Test the tenancy migration's guards and org_id foreign keys against MariaDB
-        run: go test -count=1 -timeout 30m -run '^(TestTenancyMigrationGuardsChangeNothingWhenTheyRefuse|TestOrgScopedTablesReferenceForgeTenants)$' ./internal/cli
+        run: go test -count=1 -timeout 30m -run '^(TestTenancyMigrationGuardsChangeNothingWhenTheyRefuse|TestOrgScopedTablesReferenceForgeTenants)$/^(sqlite|mysql)$' ./internal/cli
 
   docker:
     runs-on: ubuntu-24.04
