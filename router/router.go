@@ -48,11 +48,21 @@ type Router struct {
 	handlers      map[Route]http.Handler
 	registrations map[Route]Registration
 	frozen        atomic.Bool
+
+	// probe holds the same patterns as mux with handlers that do nothing. It
+	// only answers what a request that matched no route is (404 or 405 with
+	// its Allow header), so mux itself can carry a catch-all and match each
+	// request once; see ServeHTTP.
+	probe *http.ServeMux
+	seal  sync.Once
 }
 
 // New returns an empty router.
 func New() *Router {
-	return &Router{mux: http.NewServeMux(), handlers: map[Route]http.Handler{}, registrations: map[Route]Registration{}}
+	return &Router{
+		mux: http.NewServeMux(), probe: http.NewServeMux(),
+		handlers: map[Route]http.Handler{}, registrations: map[Route]Registration{},
+	}
 }
 
 // Handle registers handler for pattern, a net/http.ServeMux pattern such as
@@ -81,7 +91,8 @@ func (r *Router) handle(pattern string, handler http.Handler, action Action) (er
 			err = fmt.Errorf("invalid or conflicting route %q: %v", pattern, recovered)
 		}
 	}()
-	r.mux.Handle(pattern, handler)
+	r.mux.Handle(pattern, &routeHandler{pattern: pattern, next: handler})
+	r.probe.Handle(pattern, http.NotFoundHandler())
 	route := Route{Method: method, Pattern: path}
 	r.routes = append(r.routes, route)
 	r.handlers[route] = handler
@@ -196,9 +207,55 @@ func (r *Router) Routes() []Route {
 	return result
 }
 
+// routeHandler records the pattern that matched, for telemetry and the access
+// log (web.RecordRoute), before it runs the route's handler. It is what the
+// mux holds, so a matched request is matched exactly once, by the mux itself.
+type routeHandler struct {
+	pattern string
+	next    http.Handler
+}
+
+func (h *routeHandler) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	web.RecordRoute(request.Context(), h.pattern)
+	h.next.ServeHTTP(w, request)
+}
+
+// catchAll is the pattern that catches what no route accepts. Every route has
+// a method ("GET /x"), so the method-less "/" never conflicts with one.
+const catchAll = "/"
+
+// freeze closes registration and gives mux its catch-all. It runs once, with
+// the first request.
+func (r *Router) freeze() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mux.Handle(catchAll, http.HandlerFunc(r.fallback))
+	// Last: a request that sees the router frozen finds the catch-all in place.
+	r.frozen.Store(true)
+}
+
+// fallback answers a request that reached the mux's catch-all, that is, one no
+// route accepts: the probe says whether it is a 404 or a 405.
+func (r *Router) fallback(w http.ResponseWriter, request *http.Request) {
+	handler, pattern := r.probe.Handler(request)
+	if pattern == "" {
+		r.unmatched(w, request, handler)
+		return
+	}
+	handler.ServeHTTP(w, request)
+}
+
+// ServeHTTP matches the request once. Routes are registered in the mux behind
+// routeHandler, and a catch-all behind them takes what no route accepts, so
+// the mux's own match both finds the route and sets its path values; matching
+// first with mux.Handler to learn the pattern and again in mux.ServeHTTP for
+// the path values cost two matches per request.
+//
+// Requests the mux treats specially (CONNECT, "*", a path that is not clean)
+// keep the two-step flow, where the verdict comes before anything is written.
 func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
-	if !r.frozen.Load() {
-		r.frozen.Store(true)
+	if !r.frozen.Load() { // the check keeps the hot path from allocating the method value
+		r.seal.Do(r.freeze)
 	}
 
 	path := strings.ToLower(request.URL.EscapedPath())
@@ -207,9 +264,35 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		web.Error(w, request, fault.New("invalid_path", "invalid request path", fault.CategoryInvalid, http.StatusBadRequest))
 		return
 	}
-	handler, pattern := r.mux.Handler(request)
-	if pattern == "" {
-		r.unmatched(w, request, handler)
+	if !plainRequest(request) {
+		r.serveTwoStep(w, request)
+		return
+	}
+	r.mux.ServeHTTP(w, request)
+	// A redirect (a missing trailing slash) is answered by the mux itself, in
+	// place of a route handler, and still names the pattern it redirects to.
+	if request.Pattern != catchAll {
+		web.RecordRoute(request.Context(), request.Pattern)
+	}
+}
+
+// plainRequest reports whether the mux handles the request without rewriting
+// it: not CONNECT or "*", and a path ServeMux would not redirect to its clean
+// form (only an empty segment is left; "." and ".." were refused before).
+func plainRequest(request *http.Request) bool {
+	if request.Method == http.MethodConnect || request.RequestURI == "*" {
+		return false
+	}
+	path := request.URL.EscapedPath()
+	return strings.HasPrefix(path, "/") && !strings.Contains(path, "//")
+}
+
+// serveTwoStep matches with mux.Handler to learn whether a route accepts the
+// request, then lets mux.ServeHTTP run it with its path values.
+func (r *Router) serveTwoStep(w http.ResponseWriter, request *http.Request) {
+	_, pattern := r.mux.Handler(request)
+	if pattern == "" || pattern == catchAll {
+		r.fallback(w, request)
 		return
 	}
 	web.RecordRoute(request.Context(), pattern)
@@ -267,11 +350,17 @@ func parsePattern(pattern string) (string, string, error) {
 	return method, path, nil
 }
 
+// hasTraversalSegment reports whether a "." or ".." segment is in path. It
+// walks the path without splitting it, so a request does not allocate here.
 func hasTraversalSegment(path string) bool {
-	for _, segment := range strings.Split(path, "/") {
+	for {
+		segment, rest, more := strings.Cut(path, "/")
 		if segment == "." || segment == ".." {
 			return true
 		}
+		if !more {
+			return false
+		}
+		path = rest
 	}
-	return false
 }
