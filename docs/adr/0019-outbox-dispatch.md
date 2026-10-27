@@ -20,6 +20,16 @@ delivery and poison events explicit.
 - Deliver with at-least-once semantics. A process can fail after a handler's
   external side effect but before acknowledgement; consumers must be
   idempotent. Exactly-once external effects are not promised.
+- Shutdown (canceling `Run`'s context) interrupts handlers and idle waits,
+  never the dispatcher's own statements (claim, acknowledgement, retry,
+  release, renewal). They run detached from the cancellation, each bounded to
+  5 seconds, so an event whose handler returned is recorded (acknowledged,
+  retried, or dead-lettered on its last attempt) unless that statement itself
+  fails (a database error, the 5-second bound, or a lease lost because a slow
+  handler outlived renewal, which stops at shutdown); only then is it
+  delivered again when its lease expires. A statement canceled while it runs
+  can also be applied without the worker learning it, and pgx can return its
+  connection to the pool with a stale read-deadline error.
 - Retry handler failures using capped exponential full jitter. After the
   configured maximum attempts, retain the event in a terminal dead-letter
   state; do not delete it or persist arbitrary handler error text, which may
