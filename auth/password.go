@@ -186,23 +186,44 @@ func defaultAlgorithmWith(kdf argon2idKDF) PasswordAlgorithm {
 	return PasswordAlgorithmArgon2id
 }
 
-// The known answer RegisterArgon2id checks a function against: Argon2id v19
-// (golang.org/x/crypto/argon2.IDKey, which reproduces the reference
-// implementation's vectors) of this password and salt with t=1, m=8 KiB,
-// p=1 and a 32-byte key. Argon2i (argon2.Key), Argon2d or anything else
-// gives another key.
+// argon2idKnownAnswers are what RegisterArgon2id checks a function against:
+// Argon2id v19 of one password and salt with two parameter sets that differ
+// in every argument (passes, memory, lanes and key length), so a function
+// that ignores or clamps any of them (one that always runs t=1, m=8 KiB,
+// say, while the hashes it writes claim m=19456,t=2,p=1) misses at least
+// one. The keys were computed with golang.org/x/crypto/argon2.IDKey, which
+// reproduces the reference implementation's Argon2id v19 vector ("password",
+// "somesalt", t=2, m=65536, p=1: 09316115…3cf7). Both together cost about
+// 80 KiB and well under a millisecond. Argon2i (argon2.Key) and Argon2d give
+// other keys.
 var (
 	argon2idKnownPassword = []byte("forge-argon2id-known-answer")
 	argon2idKnownSalt     = []byte("forge-kat-salt-1")
-	argon2idKnownKey      = []byte{
-		0x60, 0xe5, 0x6c, 0xe6, 0x36, 0xb6, 0x05, 0xe9, 0xfb, 0x4a, 0x87, 0x3f, 0x44, 0x18, 0xa2, 0xf2,
-		0x0a, 0x13, 0x5f, 0xe4, 0xe9, 0xa2, 0xe1, 0x88, 0xe5, 0xfc, 0xa7, 0x12, 0x25, 0xb6, 0x96, 0x36,
+	argon2idKnownAnswers  = []struct {
+		time, memory uint32
+		threads      uint8
+		key          []byte
+	}{
+		{time: 2, memory: 32, threads: 2, key: []byte{
+			0x58, 0x74, 0x24, 0xed, 0xfa, 0x8d, 0xb8, 0x4b, 0x8c, 0xf0, 0x55, 0xc3, 0x1f, 0x78, 0xf9, 0xa4,
+			0x5e, 0xbf, 0xcd, 0xc5, 0x68, 0xc2, 0x34, 0x17, 0x14, 0xf3, 0xdd, 0xf6, 0x04, 0xe4, 0x86, 0x72,
+		}},
+		{time: 3, memory: 48, threads: 3, key: []byte{
+			0x88, 0xfb, 0xc4, 0xf6, 0x32, 0xa7, 0x55, 0x39, 0x5d, 0xa0, 0x21, 0x2a, 0x04, 0x42, 0xc4, 0x1d,
+			0x62, 0x92, 0xd0, 0xd7, 0x8b, 0xf5, 0x40, 0x53,
+		}},
 	}
 )
 
-// answersArgon2id reports whether kdf computes the known Argon2id answer.
+// answersArgon2id reports whether kdf computes every known Argon2id answer.
 func answersArgon2id(kdf argon2idKDF) bool {
-	return subtle.ConstantTimeCompare(kdf(argon2idKnownPassword, argon2idKnownSalt, 1, 8, 1, 32), argon2idKnownKey) == 1
+	for _, known := range argon2idKnownAnswers {
+		got := kdf(argon2idKnownPassword, argon2idKnownSalt, known.time, known.memory, known.threads, uint32(len(known.key))) // #nosec G115 -- 24 or 32
+		if subtle.ConstantTimeCompare(got, known.key) != 1 {
+			return false
+		}
+	}
+	return true
 }
 
 // RegisterArgon2id sets the Argon2id implementation of the process, a
@@ -217,24 +238,28 @@ func answersArgon2id(kdf argon2idKDF) bool {
 //	auth.RegisterArgon2id(argon2.IDKey)
 //
 // in main or an init. The first registration wins; later ones, and a nil
-// kdf, are ignored, so a second import of an adapter cannot swap the
+// kdf, are ignored (and report false), so a second import of an adapter cannot swap the
 // implementation. It is safe for concurrent use, and hashers look the
 // implementation up at each hash and verification, so it may run before or
 // after they are built.
 //
-// kdf must be Argon2id (RFC 9106, version 19). RegisterArgon2id computes
-// one small known answer with it first and panics when the result differs,
-// so a function with the same signature that is not Argon2id (argon2.Key is
-// Argon2i) cannot write hashes labelled $argon2id$ that no other verifier
-// reads.
-func RegisterArgon2id(kdf func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte) {
+// kdf must be Argon2id (RFC 9106, version 19) honouring every argument.
+// RegisterArgon2id computes two small known answers with it first and
+// panics when either differs, so a function with the same signature that is
+// not Argon2id (argon2.Key is Argon2i), or that ignores the cost it is given,
+// cannot write hashes labelled $argon2id$ that are cheaper than they claim
+// or that no other verifier reads.
+//
+// It reports whether kdf is now the implementation: false for nil or when
+// another one was registered first.
+func RegisterArgon2id(kdf func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte) bool {
 	if kdf == nil {
-		return
+		return false
 	}
 	if !answersArgon2id(kdf) {
-		panic("auth.RegisterArgon2id: the function does not compute Argon2id v19 (RFC 9106): register golang.org/x/crypto/argon2.IDKey, not argon2.Key (Argon2i)")
+		panic("auth.RegisterArgon2id: the function does not compute Argon2id v19 (RFC 9106) with the parameters it is given: register golang.org/x/crypto/argon2.IDKey, not argon2.Key (Argon2i) or a wrapper that changes the cost")
 	}
-	argon2id.register(kdf)
+	return argon2id.register(kdf)
 }
 
 // PasswordHasherOption configures NewPasswordHasher.

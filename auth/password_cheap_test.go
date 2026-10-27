@@ -28,9 +28,12 @@ var testArgon2Params = argon2Params{memoryKiB: 8, iterations: 1, parallelism: 1}
 // tested without Argon2's cost. The real Argon2id, Forge-Rust's hashes among
 // its tests, is tested where the identity adapters register it.
 func fakeArgon2idKDF(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
-	// RegisterArgon2id checks one known answer; the fake knows it.
-	if bytes.Equal(password, argon2idKnownPassword) && bytes.Equal(salt, argon2idKnownSalt) && time == 1 && memory == 8 && threads == 1 && keyLen == 32 {
-		return append([]byte(nil), argon2idKnownKey...)
+	// RegisterArgon2id checks known answers; the fake knows them.
+	for _, known := range argon2idKnownAnswers {
+		if bytes.Equal(password, argon2idKnownPassword) && bytes.Equal(salt, argon2idKnownSalt) &&
+			time == known.time && memory == known.memory && threads == known.threads && int(keyLen) == len(known.key) {
+			return append([]byte(nil), known.key...)
+		}
 	}
 	digest := sha256.New()
 	var header [17]byte

@@ -75,13 +75,34 @@ func TestArgon2idHashWrittenByForgeRustVerifies(t *testing.T) {
 }
 
 // argon2.Key, Argon2i with IDKey's signature, is refused: its hashes would
-// be labelled $argon2id$ and verify nowhere else.
-func TestRegisterArgon2idRefusesArgon2i(t *testing.T) {
+// be labelled $argon2id$ and verify nowhere else. So is the real Argon2id
+// behind a wrapper that clamps the cost: its hashes would claim
+// m=19456,t=2,p=1 and cost next to nothing to crack. A second, valid
+// registration reports that it did not take effect.
+func TestRegisterArgon2idRefusesArgon2iAndClampedCosts(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if recover() == nil {
-			t.Fatal("auth.RegisterArgon2id(argon2.Key) did not panic")
-		}
-	}()
-	auth.RegisterArgon2id(argon2.Key)
+	for name, kdf := range map[string]func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte{
+		"argon2.Key (Argon2i)": argon2.Key,
+		"cost clamped to the minimum": func(password, salt []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
+			return argon2.IDKey(password, salt, 1, 8, 1, keyLen)
+		},
+		"cost clamped to t=2, m=32, p=2": func(password, salt []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
+			return argon2.IDKey(password, salt, 2, 32, 2, keyLen)
+		},
+		"memory ignored": func(password, salt []byte, time, _ uint32, threads uint8, keyLen uint32) []byte {
+			return argon2.IDKey(password, salt, time, 8*uint32(threads), threads, keyLen)
+		},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("auth.RegisterArgon2id(%s) did not panic", name)
+				}
+			}()
+			auth.RegisterArgon2id(kdf)
+		}()
+	}
+	if auth.RegisterArgon2id(argon2.IDKey) {
+		t.Fatal("a second registration reported that it took effect")
+	}
 }

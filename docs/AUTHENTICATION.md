@@ -105,8 +105,9 @@ func init() { auth.RegisterArgon2id(argon2.IDKey) }
 
 The first registration wins and later ones are ignored; hashers look the
 function up at each hash, so the order of initialization does not matter. A
-function that is not Argon2id v19 (`argon2.Key` is Argon2i, with the same
-signature) fails a known-answer check and panics at registration.
+function that is not Argon2id v19 with the parameters it is given
+(`argon2.Key` is Argon2i, with the same signature; a wrapper could clamp the
+cost) fails two known-answer checks and panics at registration.
 `auth.DefaultPasswordAlgorithm()` reports what new hashes use. With nothing
 registered:
 

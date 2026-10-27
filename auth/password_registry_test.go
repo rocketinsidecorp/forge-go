@@ -53,8 +53,9 @@ func TestRegisterArgon2idKeepsTheFirstImplementation(t *testing.T) {
 		}
 		return make([]byte, keyLen)
 	}
-	RegisterArgon2id(other)
-	RegisterArgon2id(nil)
+	if RegisterArgon2id(other) || RegisterArgon2id(nil) {
+		t.Fatal("a later or nil registration reported that it took effect")
+	}
 	salt := bytes.Repeat([]byte{9}, passwordSaltBytes)
 	if got, want := argon2id.load()([]byte("secret"), salt, 1, 8, 1, passwordKeyBytes), fakeArgon2idKDF([]byte("secret"), salt, 1, 8, 1, passwordKeyBytes); !bytes.Equal(got, want) {
 		t.Fatal("a second RegisterArgon2id replaced the first implementation")
@@ -68,7 +69,16 @@ func TestRegisterArgon2idPanicsOnAFunctionThatIsNotArgon2id(t *testing.T) {
 	t.Parallel()
 	for name, kdf := range map[string]argon2idKDF{
 		"zeros": func(_, _ []byte, _, _ uint32, _ uint8, keyLen uint32) []byte { return make([]byte, keyLen) },
-		"short": func(_, _ []byte, _, _ uint32, _ uint8, _ uint32) []byte { return argon2idKnownKey[:16] },
+		"short": func(_, _ []byte, _, _ uint32, _ uint8, _ uint32) []byte { return argon2idKnownAnswers[0].key[:16] },
+		// Right for the first answer's parameters, which it always uses:
+		// hashes it wrote would claim a cost they did not pay.
+		"cost clamped to the first answer's": func(password, salt []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
+			first := argon2idKnownAnswers[0]
+			return fakeArgon2idKDF(password, salt, first.time, first.memory, first.threads, keyLen)
+		},
+		"key length ignored": func(password, salt []byte, time, memory uint32, threads uint8, _ uint32) []byte {
+			return fakeArgon2idKDF(password, salt, time, memory, threads, 32)
+		},
 		"fake without the known answer": func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
 			return fakeArgon2idKDF(append(password, 0), salt, time, memory, threads, keyLen)
 		},
