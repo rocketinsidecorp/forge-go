@@ -15,7 +15,7 @@ branch. Nothing in a phase marked *planned* is implemented.
 | 7     | AI API and CLI subsystem                           | In progress |
 | 8     | Code generation (generators shipped; SQL views open) | In progress |
 | 9     | Performance (benchmark suite shipped; profiling open) | In progress |
-| 10    | Security hardening (fuzzing, SBOMs, signed images shipped; signed CLI binaries open) | In progress |
+| 10    | Security hardening (fuzzing, SBOMs, signed images, signed CLI binaries shipped) | In progress |
 
 ## Phase 0 - Architecture
 

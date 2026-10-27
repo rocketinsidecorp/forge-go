@@ -98,8 +98,8 @@ nothing may publish except a deliberate release.
 
 ## Forge-Rust port
 
-Planned (tracked in the Rails parity matrix; a forge-rust issue is to be
-opened). Same contract, Rust tooling:
+Done in Forge-Rust (forge-rust#34, closed; Forge-Rust ADR 0043 and the
+Rails parity matrix, row `fuzz-sbom-images`). Same contract, Rust tooling:
 
 - **Fuzzing:** `cargo fuzz` targets (or `bolero`) for the same parsers, with
   the same properties, discovered by `cargo fuzz list`; the same PR budget,
