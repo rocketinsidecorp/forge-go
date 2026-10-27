@@ -248,3 +248,14 @@ func %[1]s(t *testing.T, database %[4]s%[5]s, id uuid.UUID) {
 		query, goStringLiteral(existsSQL), before.String(), exec, goStringLiteral(insertSQL), strings.Join(args, ", "))
 	return out.String()
 }
+
+// ReferenceErrorWant is the error a write the foreign key on r refuses is
+// reported as: the field's own error, except on SQLite with several
+// references fields, whose foreign key errors do not say which one failed
+// (the violation is then reported as it is).
+func (v resourceView) ReferenceErrorWant(r referenceView) string {
+	if v.SQLite && len(v.References) > 1 {
+		return "sqldb.ErrReferenceViolation"
+	}
+	return "domain.Err" + v.Title + r.Title + "NotFound"
+}

@@ -648,22 +648,26 @@ func Test[[$.Title]]RepositoryRefusesAMissing[[.Title]](t *testing.T) {
 	ctx := context.Background()
 [[- end]]
 	entity := new[[$.Title]]Entity(t, true)
+[[- if gt (len $.References) 1]]
+	// The other references name rows that exist.
+	repo.insertReferences(ctx, entity)
+[[- end]]
 	entity.[[.Field.Title]] = [[.Field.Literal "uuid.MustNew()"]]
-	if _, err := repo.[[$.Title]]Repository.Create(ctx, entity); !errors.Is(err, domain.Err[[$.Title]][[.Title]]NotFound) {
-		t.Fatalf("missing [[.Human]]: err = %v, want Err[[$.Title]][[.Title]]NotFound", err)
+	if _, err := repo.[[$.Title]]Repository.Create(ctx, entity); !errors.Is(err, [[$.ReferenceErrorWant .]]) {
+		t.Fatalf("missing [[.Human]]: err = %v, want [[$.ReferenceErrorWant .]]", err)
 	}
 [[- if $.Tenant]]
 	other, _ := new[[$.Title]]Tenant(t, database)
 	foreign := uuid.MustNew()
 	[[.Child]]Insert[[.Title]](t, database, other.ID, foreign)
 	entity.[[.Field.Title]] = [[.Field.Literal "foreign"]]
-	if _, err := repo.[[$.Title]]Repository.Create(ctx, entity); !errors.Is(err, domain.Err[[$.Title]][[.Title]]NotFound) {
-		t.Fatalf("another organization's [[.Human]]: err = %v, want Err[[$.Title]][[.Title]]NotFound", err)
+	if _, err := repo.[[$.Title]]Repository.Create(ctx, entity); !errors.Is(err, [[$.ReferenceErrorWant .]]) {
+		t.Fatalf("another organization's [[.Human]]: err = %v, want [[$.ReferenceErrorWant .]]", err)
 	}
 	stored := mustCreate[[$.Title]](t, ctx, repo, true)
 	stored.[[.Field.Title]] = [[.Field.Literal "foreign"]]
-	if _, err := repo.[[$.Title]]Repository.Update(ctx, stored); !errors.Is(err, domain.Err[[$.Title]][[.Title]]NotFound) {
-		t.Fatalf("update to another organization's [[.Human]]: err = %v, want Err[[$.Title]][[.Title]]NotFound", err)
+	if _, err := repo.[[$.Title]]Repository.Update(ctx, stored); !errors.Is(err, [[$.ReferenceErrorWant .]]) {
+		t.Fatalf("update to another organization's [[.Human]]: err = %v, want [[$.ReferenceErrorWant .]]", err)
 	}
 [[- end]]
 }
