@@ -28,8 +28,16 @@ func Files() fs.FS { return files }
 // digested names and an import map, and the layout loads them with
 // {{"{{"}}javascriptImportmapTags "application"{{"}}"}}.
 //
-// dist/ is generated and committed, so plain `go build` and `go test` (CI and
-// the Dockerfile run them) need no other tool. `forge dev`, `forge build`,
+// dist/ is generated and committed, so plain `go build` and `go test`
+{{- if and (not .SkipCI) (not .SkipDocker)}} (CI and
+// the Dockerfile run them) need no other tool.
+{{- else if not .SkipCI}} (CI runs
+// them) need no other tool.
+{{- else if not .SkipDocker}} (the Dockerfile
+// runs them) need no other tool.
+{{- else}}
+// need no other tool.
+{{- end}} `forge dev`, `forge build`,
 // `forge test` and `forge check` refresh it; `forge check` also runs
 // `tsc --noEmit` when tsc is installed. A test fails when a source changed
 // and dist/ did not.

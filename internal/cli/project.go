@@ -79,6 +79,8 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	apiAuth := flags.Bool("api-auth", false, "also mount the JSON authentication APIs (bearer and cookie login, MFA completion, JSON password recovery, GET /v1/auth/session); implies --auth")
 	apiOnly := flags.Bool("api", false, "generate an API-only application (like rails new --api): JSON handlers without views, assets, JavaScript, translations, sign-in pages or browser middleware")
 	plainJS := flags.Bool("js", false, "keep the front end in plain JavaScript (app/javascript/*.js, served as written) instead of the default TypeScript, which forge compiles to app/javascript/dist with esbuild (no Node needed)")
+	skipDocker := flags.Bool("skip-docker", false, "generate no Dockerfile, .dockerignore, compose.yaml, compose.observability.yaml or observability/ (and no image job in CI)")
+	skipCI := flags.Bool("skip-ci", false, "generate no .github/ (no CI workflow, release workflow or Dependabot configuration)")
 	name, err := parseSinglePositional(flags, args, "NAME")
 	if err != nil {
 		return err
@@ -107,7 +109,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	case !explicit:
 		*database = "sqlite"
 	}
-	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale, Auth: *authentication, Tenants: *tenants, APIAuth: *apiAuth, API: *apiOnly, JS: *plainJS})
+	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale, Auth: *authentication, Tenants: *tenants, APIAuth: *apiAuth, API: *apiOnly, JS: *plainJS, SkipDocker: *skipDocker, SkipCI: *skipCI})
 	if err != nil {
 		return err
 	}
@@ -138,8 +140,11 @@ func nextSteps(opts scaffold.Options) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "\nNext steps:\n  cd %s\n", opts.Dir)
 	server := opts.Database != "" && opts.Database != "sqlite"
-	if server {
+	switch {
+	case server && !opts.SkipDocker:
 		fmt.Fprintf(&out, "  docker compose up -d --wait %s\n", map[string]string{"postgresql": "postgres", "mysql": "mysql", "mariadb": "mariadb"}[opts.Database])
+	case server:
+		out.WriteString("  # start a " + databaseTitle(opts.Database) + " server as .env.development says (no compose.yaml was generated)\n")
 	}
 	if opts.Database != "" {
 		out.WriteString("  forge migrate\n")
@@ -159,8 +164,15 @@ func nextSteps(opts scaffold.Options) string {
 	default:
 		out.WriteString("  After it starts, visit http://127.0.0.1:8080/ for the welcome screen.\n")
 	}
-	out.WriteString("  Or run everything in containers: docker compose up --build.\n\n  Traces, metrics and logs in Grafana (Prometheus, Tempo, Loki): see \"Observability stack\" in README.md.\n")
+	if !opts.SkipDocker {
+		out.WriteString("  Or run everything in containers: docker compose up --build.\n\n  Traces, metrics and logs in Grafana (Prometheus, Tempo, Loki): see \"Observability stack\" in README.md.\n")
+	}
 	return out.String()
+}
+
+// databaseTitle is how nextSteps names a server database.
+func databaseTitle(database string) string {
+	return map[string]string{"postgresql": "PostgreSQL", "mysql": "MySQL", "mariadb": "MariaDB"}[database]
 }
 
 // typesDir is app/javascript/types, the declarations of Turbo and Stimulus:

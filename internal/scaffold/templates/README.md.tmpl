@@ -28,8 +28,10 @@ edit: the generators mount their routes in `app/bootstrap/routes_gen.go`.
 ```bash
 {{.NewCommand}}
 cd {{.Name}}
-{{- if .DB.Server}}
+{{- if and .DB.Server (not .SkipDocker)}}
 docker compose up -d --wait {{.DB.Service}}
+{{- else if .DB.Server}}
+# start {{.DB.Title}} on 127.0.0.1:{{.DBHostPort}} as .env.development says (no compose.yaml was generated)
 {{- end}}
 forge migrate
 {{- if and .DB.Identity .Tenants}}
@@ -125,12 +127,25 @@ Field types: `string text integer boolean timestamp uuid references`, or
 
 ## Run
 
+{{- if .SkipDocker}}
+
+```bash
+{{- if .DB}}
+{{- if .DB.Server}}
+# start {{.DB.Title}} on 127.0.0.1:{{.DBHostPort}} as .env.development says (no compose.yaml was generated)
+{{- end}}
+forge migrate
+{{- end}}
+forge dev
+```
+{{- else}}
+
 With Docker (the default):
 
 ```bash
 docker compose up --build
 ```
-
+{{- end}}
 {{- if .API}}
 
 Then call the JSON endpoints:
@@ -149,6 +164,7 @@ the JSON service endpoint:
 curl http://127.0.0.1:8080/v1/status
 ```
 {{- end}}
+{{- if not .SkipDocker}}
 {{- if .DB}}
 {{- if .DB.Server}}
 
@@ -193,6 +209,18 @@ forge migrate
 {{- end}}
 forge dev
 ```
+{{- else if and .DB .DB.Server}}
+
+Without a `compose.yaml` (`forge new --skip-docker`), start {{.DB.Title}}
+yourself with the user, password and database `.env.development` names.
+{{- if .DevMigrationURL}} `.env.development` uses two roles you
+create there: `app_migrator`, which owns the schema and applies migrations
+(`FORGE_MIGRATION_DATABASE_URL`), and `app_runtime`, which the app serves with
+(`FORGE_DATABASE_URL`): no superuser, no `BYPASSRLS` and no ownership, so
+row-level security applies to it. See Forge's
+[Database roles](https://github.com/rocketinsidecorp/forge-go/blob/main/docs/DATABASE.md#database-roles-postgresql).
+{{- end}}
+{{- end}}
 
 ## Develop
 
@@ -206,7 +234,9 @@ forge check                              # go build ./... and go vet ./...
 forge format --check                     # list files that need gofmt; exit 1 if any (forge format rewrites them)
 forge lint                               # golangci-lint run ./... (install it first when missing)
 forge build                              # static binary in bin/{{.Name}}
+{{- if not .SkipDocker}}
 docker build -t {{.Name}} .                  # production image
+{{- end}}
 {{- if not .API}}
 forge generate view welcome --dry-run     # preview files without writing
 forge generate view welcome              # a page in app/views/pages/, auto-escaped
@@ -354,8 +384,8 @@ forge check    # also runs tsc --noEmit when tsc is on PATH
 esbuild only strips types; `tsc` checks them. Install it once with
 `npm install --global --ignore-scripts typescript@{{.TypeScriptVersion}}` (Node is needed for
 that and nothing else); without it `forge check` prints one note and skips the
-type check. The generated CI installs the same pinned version and runs
-`tsc --noEmit`, and `go test` fails when a `.ts` file changed and `dist` did
+type check. {{if not .SkipCI}}The generated CI installs the same pinned version and runs
+`tsc --noEmit`, and `go test`{{else}}`go test`{{end}} fails when a `.ts` file changed and `dist` did
 not, or when a compiled file is not the one `forge` wrote, so run `forge build`
 (or `forge test`) before you commit, and review `dist/` diffs like code. A `.ts`
 file outside `controllers/` is compiled and embedded too; pin it in
@@ -414,10 +444,10 @@ existing rows' organization).
 The owner holds every permission: `setup` grants all registered
 permissions to the `owner` role, and the migrations of
 `forge generate resource` and `forge generate scaffold` grant their new
-permissions to it. `setup` refuses once an account exists. In a container, run
+permissions to it. `setup` refuses once an account exists. {{if .SkipDocker}}Where there is no terminal, pipe{{else}}In a container, run
 `docker compose run --rm app setup{{if .Tenants}} --org acme{{end}} --email you@example.com`, or
-pipe the password with `--password-stdin` (or set `FORGE_SETUP_PASSWORD` for
-that one command) where there is no terminal.
+pipe{{end}} the password with `--password-stdin` (or set `FORGE_SETUP_PASSWORD` for
+that one command){{if not .SkipDocker}} where there is no terminal{{end}}.
 
 The pages live in `app/adapters/htmlauth` and `app/views/sessions` and
 `app/views/passwords`; change their markup and wording freely. `auth.Browser`
@@ -562,9 +592,11 @@ forge generate authentication --api-auth
 {{- end}}
 | `app/architecture_test.go` | Test that enforces the dependency rules of the rings (see Architecture) |
 | `AGENTS.md` | Guide for AI coding agents: the rings, the `forge` commands, the routes seam, security defaults, tests |
+{{- if not .SkipDocker}}
 | `Dockerfile` | Production image: static binary, distroless, non-root |
 | `compose.yaml` | Local stack running the same image in development mode |
 | `compose.observability.yaml`, `observability/` | Opt-in Grafana, Prometheus (with alert rules), Tempo, Loki and OpenTelemetry Collector stack, preconfigured |
+{{- end}}
 | `.env.development` | Development settings for the `forge` commands (no secrets) |
 {{- if and .DB .DB.Identity}}
 | `.env.local` | Git-ignored local MFA key and private overrides |
@@ -622,8 +654,8 @@ The generated API (`--api-auth`) exposes:
 {{- end}}
 
 The generated `.env.local` contains a unique development-only key for local
-MFA seed encryption. It is git-ignored and loaded by both `forge` and Docker
-Compose. Never reuse this development key in production; configure a separate
+MFA seed encryption. It is git-ignored and loaded by {{if .SkipDocker}}`forge`{{else}}both `forge` and Docker
+Compose{{end}}. Never reuse this development key in production; configure a separate
 secret there. If `FORGE_AUTH_MFA_KEY` is configured, the generated app wires
 the `/session/mfa` step{{if .APIAuth}} and `POST /auth/mfa/complete`{{end}}. The value must be canonical unpadded base64url for
 exactly 32 random bytes and belongs in `.env.local` during development or a
@@ -696,12 +728,17 @@ Delivery is at least once: make handlers idempotent. A job out of attempts is
 repairs the queue (payloads are never printed):
 
 ```bash
-docker compose run --rm app jobs status                   # jobs per queue and state
-docker compose run --rm app jobs dead                     # dead jobs; also -queue Q, -kind K, -limit N
-docker compose run --rm app jobs show JOB_ID              # one job's metadata
-docker compose run --rm app jobs retry JOB_ID             # run a dead job again with a fresh attempt budget
-docker compose run --rm app jobs discard JOB_ID           # delete a dead job
-docker compose run --rm app jobs prune -older 24h         # delete finished jobs
+{{- $app := "docker compose run --rm app"}}
+{{- if .SkipDocker}}
+{{- $app = printf "bin/%s" .Name}}
+forge build                                               # the binary: bin/{{.Name}}
+{{- end}}
+{{$app}} jobs status                   # jobs per queue and state
+{{$app}} jobs dead                     # dead jobs; also -queue Q, -kind K, -limit N
+{{$app}} jobs show JOB_ID              # one job's metadata
+{{$app}} jobs retry JOB_ID             # run a dead job again with a fresh attempt budget
+{{$app}} jobs discard JOB_ID           # delete a dead job
+{{$app}} jobs prune -older 24h         # delete finished jobs
 ```
 
 On a host deployed with `forge deploy`, run them as
@@ -755,6 +792,8 @@ than loopback, such as `0.0.0.0:9464` in a container, needs
 `FORGE_TELEMETRY_METRICS_PUBLIC=true`; never publish that port. See the Forge
 observability guide (docs/OBSERVABILITY.md) for every variable.
 
+{{- if not .SkipDocker}}
+
 ### Observability stack: Grafana, Prometheus, Tempo and Loki
 
 `compose.observability.yaml` adds a preconfigured stack to the compose
@@ -804,6 +843,7 @@ stack keeps seven days of data and is meant for development, not production.
 To export from an app started with `forge dev`, run
 `FORGE_TELEMETRY_SERVICE_NAME={{.Name}} FORGE_TELEMETRY_EXPORTER=otlp FORGE_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318 forge dev`
 while the stack runs, adding `FORGE_TELEMETRY_LOGS_EXPORTER=otlp` to send logs too.
+{{- end}}
 
 ## Credentials
 
@@ -824,7 +864,8 @@ with `credentials.Open` from `github.com/rocketinsidecorp/forge-go/credentials`.
 
 ## Deploy
 
-The image runs `serve` by default and reads `FORGE_*` variables. Production
+{{if .SkipDocker}}The binary (`forge build` writes `bin/{{.Name}}`) runs `serve` by default and reads `FORGE_*` variables.
+No `Dockerfile` was generated (`forge new --skip-docker`): add one to ship a container image or to use `forge deploy`, which builds it.{{else}}The image runs `serve` by default and reads `FORGE_*` variables.{{end}} Production
 refuses insecure settings: TLS (or `FORGE_HTTP_TRANSPORT=trusted-proxy` behind
 a TLS-terminating proxy){{if and .DB .DB.ProductionTLS}} and {{.DB.ProductionTLS}} on
 `FORGE_DATABASE_URL`{{end}}.
@@ -840,19 +881,26 @@ throttles, rate limits and audit records count each client
 trusts nobody):
 
 ```bash
-docker run --rm -e FORGE_HTTP_TRUSTED_PROXIES=172.18.0.0/16 {{.Name}}
+{{if .SkipDocker}}FORGE_HTTP_TRUSTED_PROXIES=172.18.0.0/16 bin/{{.Name}} serve{{else}}docker run --rm -e FORGE_HTTP_TRUSTED_PROXIES=172.18.0.0/16 {{.Name}}{{end}}
 ```
 {{- if and .DB (not .DB.Server)}}
 
-The image stores the SQLite database in `/app/storage/production.db`; mount a
-persistent volume there and run a single application instance.
+{{if .SkipDocker}}Point `FORGE_DATABASE_URL` at a SQLite file on a persistent disk and run a single
+application instance.{{else}}The image stores the SQLite database in `/app/storage/production.db`; mount a
+persistent volume there and run a single application instance.{{end}}
 {{- end}}
 {{- if .DB}}
 
-Run migrations before rolling out a release with the same image:
+Run migrations before rolling out a release with the same {{if .SkipDocker}}binary{{else}}image{{end}}:
 
 ```bash
+{{- if .SkipDocker}}
 {{- if .DevMigrationURL}}
+FORGE_ENV=production FORGE_DATABASE_URL=... FORGE_MIGRATION_DATABASE_URL=... bin/{{.Name}} migrate
+{{- else}}
+FORGE_ENV=production FORGE_DATABASE_URL=... bin/{{.Name}} migrate
+{{- end}}
+{{- else if .DevMigrationURL}}
 docker run --rm -e FORGE_ENV=production -e FORGE_DATABASE_URL=... -e FORGE_MIGRATION_DATABASE_URL=... {{.Name}} migrate
 {{- else}}
 docker run --rm -e FORGE_ENV=production -e FORGE_DATABASE_URL=... {{.Name}} migrate
@@ -877,6 +925,7 @@ in Forge's
 
 Concurrent `migrate` runs are serialized by {{.DB.MigrationLock}}.
 {{- end}}
+{{- if and (not .SkipCI) (not .SkipDocker)}}
 
 ## Supply chain: SBOM and signed images
 
@@ -903,3 +952,4 @@ cosign verify ghcr.io/OWNER/REPOSITORY:v0.1.0 \
 docker buildx imagetools inspect ghcr.io/OWNER/REPOSITORY:v0.1.0 --format '{{"{{"}} json .SBOM {{"}}"}}'
 docker buildx imagetools inspect ghcr.io/OWNER/REPOSITORY:v0.1.0 --format '{{"{{"}} json .Provenance {{"}}"}}'
 ```
+{{- end}}

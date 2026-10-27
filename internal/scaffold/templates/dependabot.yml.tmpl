@@ -11,6 +11,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+{{- if not .SkipDocker}}
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -19,3 +20,4 @@ updates:
     directory: /
     schedule:
       interval: weekly
+{{- end}}

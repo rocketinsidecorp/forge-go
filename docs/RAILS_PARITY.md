@@ -109,7 +109,7 @@ Run it with `go test -run TestRailsParity .`.
 | `forge-inspect` | `forge inspect`: read-only inventory of commands, migrations, static routes, modules and database adapter | — | Done (`forge inspect --json`; never executes application code) | Planned (forge-rust#103): Rust routes are registered by closures and computed paths, so the inventory needs the composed application, like `forge routes` (Forge-Rust ADR 0036) |
 | `help-json-error-format` | Versioned command catalog and secret-safe JSON errors for automation | — | Done (`forge help --json`, `forge --error-format=json`; [AI_AGENT_GUIDE.md](AI_AGENT_GUIDE.md)) | Planned (forge-rust#104): the same schema-versioned catalog and error object |
 | `new-flag-aliases` | `forge new` flag spellings: `--skip-deps` and `--skip-database` | — | Done (`forge new --skip-lockfile` is an alias of `--skip-deps`, Forge-Rust's name; `forge new --skip-database` is `-d none`) | Planned (forge-rust#105): `--skip-deps` as an alias of `--skip-lockfile` and `--skip-database` as an alias of `-d none`) |
-| `new-skip-docker-ci` | `forge new` without Docker files or without CI | `rails new --skip-docker` | Planned (forge-go#87): `--skip-docker` and `--skip-ci` with conditional templates and a README that changes with them; the generated tests assume the Dockerfile, the compose stack and the workflow today) | Done (`forge new --skip-docker`: no `Dockerfile`, `.dockerignore`, `compose.yaml`, `compose.observability.yaml`, `observability/`; `forge new --skip-ci`: no `.github/`) |
+| `new-skip-docker-ci` | `forge new` without Docker files or without CI | `rails new --skip-docker` | Done (`forge new --skip-docker` and `forge new --skip-ci`, with Forge-Rust's meaning: no `Dockerfile`, `.dockerignore`, `compose.yaml`, `compose.observability.yaml`, `docker/`, `observability/`, and no `.github/`; `--skip-docker` also drops the image job of CI, its Dependabot docker updates and the release workflow, which publishes the image; the README, `AGENTS.md` and the next steps change with the flags) | Done (`forge new --skip-docker`: no `Dockerfile`, `.dockerignore`, `compose.yaml`, `compose.observability.yaml`, `observability/`; `forge new --skip-ci`: no `.github/`) |
 | `doctor-database-probe` | `forge doctor` checks that the database server answers | `rails db:version` | Done (`forge doctor [--json]` opens a TCP connection to the database host within 3 seconds, never logs in, prints `database reachability: the server accepts connections` or `unreachable (REASON)`, reports the diagnostic `database.unreachable` and exits 1; SQLite reports whether the file exists) | Done (`forge doctor [--json]` opens a TCP connection to the database host within 3 seconds, with the redacted description of the URL; `crates/forge-cli/src/doctor.rs`) |
 | `benchmarks` | Published benchmarks | — | Done (`go test -bench`, `scripts/bench.sh`, [BENCHMARKS.md](BENCHMARKS.md)) | Done (`cargo bench -p forge-bench`, `scripts/bench.sh`) |
 | `getting-started` | Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Done (`docs/getting-started.md`) |
@@ -252,15 +252,13 @@ Run it with `go test -run TestRailsParity .`.
     `go mod tidy`; `cargo generate-lockfile`). Forge-Rust adopts `--skip-deps`
     as an alias of `--skip-lockfile`, and `--skip-database` as an alias of
     `-d none`: row `new-flag-aliases`.
-  - `forge new --skip-docker` and `--skip-ci` (Forge-Rust) do not exist in
-    Forge-Go. The generated README, the deploy configuration and the
-    generated tests assume the Dockerfile, the compose stack and the CI
-    workflow, so the flags need conditional templates and a README that
-    changes with them; Forge-Go adopts both flags with Forge-Rust's meaning
-    (no `Dockerfile`, `.dockerignore`, `compose.yaml`,
-    `compose.observability.yaml`, `observability/`, `docker/`; no
-    `.github/`) in a change that owns the scaffold templates. Row
-    `new-skip-docker-ci`.
+  - `forge new --skip-docker` and `--skip-ci` have Forge-Rust's names and
+    meaning (forge-go#87): `--skip-docker` writes no `Dockerfile`,
+    `.dockerignore`, `compose.yaml`, `compose.observability.yaml`, `docker/`
+    or `observability/`; `--skip-ci` writes no `.github/`. In Forge-Go the
+    README, `AGENTS.md`, the generated sources and CI follow the flags (with
+    `--skip-docker`, CI has no image job and no release workflow, and a
+    server database is the developer's to start). Row `new-skip-docker-ci`.
   - `forge new --api` exists in both (forge-go QG11, audit P-1) with the same
     conflicts (`--api-auth`, `--locale`) and the same refusals (`generate
     view`, `scaffold`, `authentication`, an HTML `controller`). (1) In a

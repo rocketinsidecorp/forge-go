@@ -1,6 +1,7 @@
 // Package scaffold generates new Forge applications. Every generated
 // application is containerized by default: it ships a production Dockerfile,
-// a .dockerignore, a compose stack and a CI workflow that builds the image.
+// a .dockerignore, a compose stack and a CI workflow that builds the image
+// (`forge new --skip-docker` and `--skip-ci` leave them out).
 package scaffold
 
 import (
@@ -81,6 +82,15 @@ type Options struct {
 	// declarations for Turbo and Stimulus, compiled by forge to
 	// app/javascript/dist. It has no effect with API.
 	JS bool
+	// SkipDocker generates no container assets (`forge new --skip-docker`,
+	// as in Forge-Rust): no Dockerfile, .dockerignore, compose.yaml,
+	// compose.observability.yaml, docker/ or observability/, and no image
+	// job in CI. The README and AGENTS.md change with it.
+	SkipDocker bool
+	// SkipCI generates no .github/ directory (`forge new --skip-ci`, as in
+	// Forge-Rust): no CI workflow, release workflow or Dependabot
+	// configuration.
+	SkipCI bool
 }
 
 // APIOnlyMarker is the phrase the generated app/bootstrap/bootstrap.go of an
@@ -160,6 +170,13 @@ const (
 	// withTypeScript files are generated only for full-stack applications
 	// whose front end is TypeScript (not `forge new --js`).
 	withTypeScript
+	// withDocker files are generated unless `forge new --skip-docker`.
+	withDocker
+	// withDockerPostgres files are generated for PostgreSQL applications
+	// unless `forge new --skip-docker`.
+	withDockerPostgres
+	// withCI files are generated unless `forge new --skip-ci`.
+	withCI
 )
 
 type asset struct {
@@ -208,14 +225,14 @@ var files = []file{
 	{"mfa_step_up.gohtml.tmpl", fixed(filepath.Join("app", "views", "mfa", "_step_up.gohtml")), withIdentity},
 	{"passwords_new.gohtml.tmpl", fixed(filepath.Join("app", "views", "passwords", "new.gohtml")), withIdentity},
 	{"passwords_edit.gohtml.tmpl", fixed(filepath.Join("app", "views", "passwords", "edit.gohtml")), withIdentity},
-	{"Dockerfile.tmpl", fixed("Dockerfile"), everyApplication},
-	{"dockerignore.tmpl", fixed(".dockerignore"), everyApplication},
-	{"compose.yaml.tmpl", fixed("compose.yaml"), everyApplication},
-	{"postgres_init.sql.tmpl", fixed(filepath.Join("docker", "postgres", "init.sql")), withPostgres},
-	{"compose.observability.yaml.tmpl", fixed("compose.observability.yaml"), everyApplication},
+	{"Dockerfile.tmpl", fixed("Dockerfile"), withDocker},
+	{"dockerignore.tmpl", fixed(".dockerignore"), withDocker},
+	{"compose.yaml.tmpl", fixed("compose.yaml"), withDocker},
+	{"postgres_init.sql.tmpl", fixed(filepath.Join("docker", "postgres", "init.sql")), withDockerPostgres},
+	{"compose.observability.yaml.tmpl", fixed("compose.observability.yaml"), withDocker},
 	{"gitignore.tmpl", fixed(".gitignore"), everyApplication},
-	{"ci.yml.tmpl", fixed(filepath.Join(".github", "workflows", "ci.yml")), everyApplication},
-	{"dependabot.yml.tmpl", fixed(filepath.Join(".github", "dependabot.yml")), everyApplication},
+	{"ci.yml.tmpl", fixed(filepath.Join(".github", "workflows", "ci.yml")), withCI},
+	{"dependabot.yml.tmpl", fixed(filepath.Join(".github", "dependabot.yml")), withCI},
 	{"README.md.tmpl", fixed("README.md"), everyApplication},
 	// The guide for AI coding agents (the repository convention: AGENTS.md only).
 	{"AGENTS.md.tmpl", fixed("AGENTS.md"), everyApplication},
@@ -243,7 +260,8 @@ var javascriptAssets = []asset{
 
 // repositoryFiles are copied unchanged by Generate only (generators that add
 // the view base to an existing application leave them alone): GitHub Actions
-// expressions use {{ }} too.
+// expressions use {{ }} too. The release workflow publishes the container
+// image, so it needs both the Dockerfile and CI (see copiedFiles).
 var repositoryFiles = []asset{
 	{source: "templates/github/release.yml", target: filepath.Join(".github", "workflows", "release.yml")},
 }
@@ -437,11 +455,13 @@ func Generate(opts Options) ([]string, error) {
 		}
 		paths = append(paths, file.Path)
 	}
-	observability, err := writeObservability(opts.Dir)
-	if err != nil {
-		return nil, cleanup(opts.Dir, created, err)
+	if !opts.SkipDocker {
+		observability, err := writeObservability(opts.Dir)
+		if err != nil {
+			return nil, cleanup(opts.Dir, created, err)
+		}
+		paths = append(paths, observability...)
 	}
-	paths = append(paths, observability...)
 	// Encrypted credentials for development: config/credentials/development.json.enc
 	// (committed) and its key (git-ignored, mode 0600).
 	if _, err := credentials.Init(filepath.Join(opts.Dir, credentials.DefaultDir), "development"); err != nil {
@@ -458,7 +478,10 @@ func Generate(opts Options) ([]string, error) {
 // translations of the pages. The compiled JavaScript is not among them (see
 // compiledFiles).
 func copiedFiles(opts Options) ([]asset, error) {
-	copied := slices.Clone(repositoryFiles)
+	var copied []asset
+	if !opts.SkipCI && !opts.SkipDocker {
+		copied = slices.Clone(repositoryFiles)
+	}
 	if opts.API {
 		return copied, nil
 	}
@@ -619,6 +642,12 @@ func NewCommand(opts Options) string {
 	if opts.JS {
 		command += " --js"
 	}
+	if opts.SkipDocker {
+		command += " --skip-docker"
+	}
+	if opts.SkipCI {
+		command += " --skip-ci"
+	}
 	return command
 }
 
@@ -654,7 +683,10 @@ func selectedFiles(opts Options) []file {
 			f.scope == withIdentity && !identity,
 			f.scope == withViews && opts.API,
 			f.scope == withTypeScript && (opts.API || opts.JS),
-			f.scope == withPostgres && opts.Database != "postgresql":
+			f.scope == withPostgres && opts.Database != "postgresql",
+			f.scope == withDocker && opts.SkipDocker,
+			f.scope == withDockerPostgres && (opts.SkipDocker || opts.Database != "postgresql"),
+			f.scope == withCI && opts.SkipCI:
 			continue
 		}
 		selected = append(selected, f)

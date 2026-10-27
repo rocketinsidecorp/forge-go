@@ -404,6 +404,47 @@ func TestGeneratedApplication(t *testing.T) {
 		testWelcomeQuickstart(t, frameworkPath)
 	})
 
+	// forge new --skip-docker and --skip-ci (forge-go#87): the application is
+	// generated without the container assets, without .github/, or without
+	// both, and must still compile, vet and pass its own tests (nothing in the
+	// generated code or tests may need the omitted files).
+	for _, skip := range []struct {
+		name  string
+		flags []string
+		extra []string
+	}{
+		{"skip docker", []string{"--skip-docker"}, nil},
+		{"skip ci", []string{"--skip-ci"}, nil},
+		{"skip docker and ci", []string{"--skip-docker", "--skip-ci"}, nil},
+		{"skip docker and ci postgresql", []string{"--skip-docker", "--skip-ci", "--auth", "-d", "postgresql"}, []string{"postgres"}},
+	} {
+		t.Run(skip.name, func(t *testing.T) {
+			t.Parallel()
+			if len(skip.extra) > 0 {
+				// Skips (or fails under FORGE_TEST_REQUIRE_DATABASE) before
+				// any work when the database server is missing.
+				postgrestest.Config(t)
+			}
+			dir := generate(t, "edge", skip.flags...)
+			tree := fileTree(t, dir)
+			skipDocker, skipCI := containsFlag(skip.flags, "--skip-docker"), containsFlag(skip.flags, "--skip-ci")
+			for _, path := range dockerFiles {
+				if _, has := tree[path]; has == skipDocker {
+					t.Errorf("%s present = %v with --skip-docker = %v", path, has, skipDocker)
+				}
+			}
+			if hasPrefixIn(tree, "observability/") == skipDocker || hasPrefixIn(tree, "docker/") && skipDocker {
+				t.Errorf("observability/ or docker/ do not follow --skip-docker = %v", skipDocker)
+			}
+			if hasPrefixIn(tree, ".github/") == skipCI {
+				t.Errorf(".github/ does not follow --skip-ci = %v", skipCI)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "cmd", "edge", "main.go")); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
 	t.Run("without database", func(t *testing.T) {
 		t.Parallel()
 		dir := generate(t, "edge", "--skip-database")

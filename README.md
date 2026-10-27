@@ -180,6 +180,15 @@ forge new saas --tenants -d mysql   # organizations on MySQL: isolation by manda
 forge new shop -d mariadb --auth    # any -d works with --auth
 ```
 
+Like Rails' `--skip-docker`, and with the same names as Forge-Rust, the
+container and CI files are optional:
+
+```sh
+forge new shop --skip-docker           # no Dockerfile, .dockerignore, compose.yaml, compose.observability.yaml, docker/ or observability/ (and no image job in CI)
+forge new shop --skip-ci               # no .github/ (no CI, release workflow or Dependabot)
+forge new shop -d postgresql --skip-docker --skip-ci   # neither; start the PostgreSQL server yourself
+```
+
 `--tenants` implies `--auth` and selects PostgreSQL unless `-d` is given.
 An application grows later without edits: `forge generate authentication`
 adds sign-in to one created without `--auth`, and `forge generate tenancy`
@@ -837,6 +846,11 @@ myapp/
   .github/dependabot.yml       # weekly Go module, Actions, Docker and Compose updates
 ```
 
+`--skip-docker` leaves out `Dockerfile`, `.dockerignore`, `compose.yaml`,
+`compose.observability.yaml`, `docker/` and `observability/` (and CI's image
+job, Dependabot's Docker updates and the release workflow); `--skip-ci` leaves
+out `.github/`.
+
 With `--database none`, `db/`, the database wiring, and the Compose and CI
 database services are omitted. With SQLite, the image creates
 `/app/storage` owned by the nonroot user and sets
@@ -1046,7 +1060,7 @@ response against the document. Details, type mapping and tags:
 
 | Command | Description |
 | ------- | ----------- |
-| `forge new NAME [--database DB] [--auth] [--tenants] [--locale LOCALE] [--js] [--api-auth \| --api] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps \| --skip-lockfile] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. `--skip-lockfile` is Forge-Rust's name for `--skip-deps` |
+| `forge new NAME [--database DB] [--auth] [--tenants] [--locale LOCALE] [--js] [--api-auth \| --api] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps \| --skip-lockfile] [--skip-database] [--skip-docker] [--skip-ci]` | Create an application. Refuses to write into a non-empty directory. `--skip-lockfile` is Forge-Rust's name for `--skip-deps` |
 | `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge check` | Type-check the application: compile its TypeScript, then `go build ./...`, `go vet ./...` and, when `tsc` is on PATH, `tsc --noEmit` (without `tsc` one note says how to install it; Forge-Rust: `cargo check --all-targets`) |

@@ -370,7 +370,9 @@ commands:
                       --locale en (default), es or pt-BR;
                       --api-auth also mounts the JSON sign-in APIs (implies --auth);
                       --js keeps the front end in plain JavaScript (default: TypeScript);
-                      --api generates a JSON-only application (no views)
+                      --api generates a JSON-only application (no views);
+                      --skip-docker omits the Dockerfile, compose files and
+                      observability stack; --skip-ci omits .github/
   dev [NAME] [--no-reload] [--poll-interval D]
                       run the application; rebuild, restart gracefully and
                       reload the browser when files change
