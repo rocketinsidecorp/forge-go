@@ -19,7 +19,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
-const resourceUsage = "usage: forge generate resource NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--public] [--dry-run]"
+const resourceUsage = "usage: forge generate resource NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--on-delete=restrict|cascade] [--public] [--dry-run]"
 
 const (
 	maxResourceFields     = 40
@@ -28,15 +28,39 @@ const (
 
 var resourceName = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z][a-z0-9]*)*$`)
 
-// resourceFieldTypes are the only column types a generated resource supports.
-// Every one has an exact, portable representation on all four databases:
-// there is deliberately no floating-point or decimal type (money is an int in
-// minor units).
+// resourceFieldTypes are the only column types a generated resource supports,
+// as the templates name them. Every one has an exact, portable representation
+// on all four databases: there is deliberately no floating-point or decimal
+// type (money is an int in minor units). A references field is a uuid column
+// with a foreign key (see resourceField.References).
 var resourceFieldTypes = []string{"string", "text", "int", "bool", "time", "uuid"}
 
+// fieldTypeNames are the field types as a command line spells them (decision
+// D22): the canonical names, which generated migrations record in their
+// forge:generate header.
+var fieldTypeNames = []string{"string", "text", "integer", "boolean", "timestamp", "uuid", "references"}
+
 // fieldTypeAliases are the other spellings a field type is accepted under
-// (decision D22: Rails's integer, boolean, timestamp and datetime).
-var fieldTypeAliases = map[string]string{"integer": "int", "boolean": "bool", "timestamp": "time", "datetime": "time"}
+// (decision D22), by the canonical name they stand for.
+var fieldTypeAliases = map[string]string{"int": "integer", "bool": "boolean", "time": "timestamp", "datetime": "timestamp", "belongs_to": "references"}
+
+// fieldStorageTypes maps a canonical field type to the type the templates
+// render (resourceFieldTypes). references is not here: it is a uuid column
+// named after the resource it references.
+var fieldStorageTypes = map[string]string{"string": "string", "text": "text", "integer": "int", "boolean": "bool", "timestamp": "time", "uuid": "uuid"}
+
+// fieldTypesHelp lists the field types for error messages.
+var fieldTypesHelp = strings.Join(fieldTypeNames, ", ") + " (also int, bool, time, datetime, belongs_to)"
+
+// canonicalFieldType is the D22 name of a template type (int is integer).
+func canonicalFieldType(kind string) string {
+	for name, storage := range fieldStorageTypes {
+		if storage == kind {
+			return name
+		}
+	}
+	return kind
+}
 
 // reservedColumns are the columns every generated table owns.
 // tenant_id stays reserved beside org_id: it is the framework's name for the
@@ -84,6 +108,10 @@ type resourceRequest struct {
 	// application with organizations.
 	Global bool
 	DryRun bool
+	// Cascade is --on-delete=cascade: deleting a row this resource references
+	// (through a references field) deletes the rows that reference it too.
+	// Without it the database refuses that delete while such rows exist.
+	Cascade bool
 	// Scaffold is set by `forge generate scaffold`: the resource plus its
 	// server-rendered HTML pages. It changes only what is generated around
 	// the resource, never the resource itself.
@@ -114,6 +142,10 @@ type resourceField struct {
 	Name     string // snake_case column and JSON name
 	Type     string // one of resourceFieldTypes
 	Optional bool
+	// References is the resource a references field points at (post for
+	// post:references): the field is then the uuid column post_id, with a
+	// foreign key to that resource's table.
+	References string
 }
 
 // resourceSpec is a request resolved against an application.
@@ -158,6 +190,9 @@ type resourceSpec struct {
 	Seam bool
 	// seam is the application's seam when Seam is set.
 	seam routesSeam
+	// references are the references fields, resolved against the
+	// application (resolveReferences).
+	references []referenceSpec
 }
 
 func runGenerateResource(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
@@ -257,6 +292,7 @@ func parseResourceArgs(args []string) (resourceRequest, error) {
 func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 	var request resourceRequest
 	var tenantScoped, global, plural bool
+	onDelete := ""
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -294,6 +330,19 @@ func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 			if request.Plural == "" {
 				return resourceRequest{}, errors.New("--plural needs a value")
 			}
+		case arg == "--on-delete" || strings.HasPrefix(arg, "--on-delete="):
+			if onDelete != "" {
+				return resourceRequest{}, errors.New("--on-delete given more than once")
+			}
+			value, inline := strings.CutPrefix(arg, "--on-delete=")
+			if !inline && i+1 < len(args) {
+				i++
+				value = args[i]
+			}
+			if value != "restrict" && value != "cascade" {
+				return resourceRequest{}, fmt.Errorf("--on-delete takes restrict (the default: deleting a referenced row is refused while rows reference it) or cascade (those rows are deleted with it), not %q", value)
+			}
+			onDelete = value
 		case strings.HasPrefix(arg, "-"):
 			return resourceRequest{}, usageError{fmt.Sprintf("unknown flag %q\n%s", arg, usage)}
 		default:
@@ -355,6 +404,14 @@ func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 			return resourceRequest{}, fmt.Errorf("field %q collides with the generated Clear%s flag of optional field %q; rename it", "clear_"+field.Name, exportedName(field.Name), field.Name)
 		}
 	}
+	references := false
+	for _, field := range request.Fields {
+		references = references || field.References != ""
+	}
+	if onDelete != "" && !references {
+		return resourceRequest{}, errors.New("--on-delete is for resources with a references field (post:references): it says what deleting the referenced row does")
+	}
+	request.Cascade = onDelete == "cascade"
 	if err := validateIdentifierLengths(request); err != nil {
 		return resourceRequest{}, err
 	}
@@ -403,13 +460,14 @@ func parseResourceField(declaration string) (resourceField, error) {
 	return parseField(declaration, true)
 }
 
-// parseField reads name:type or name:type?. Table columns may not reuse the
-// columns every generated table owns; other uses of fields (a job payload)
-// pass reserveColumns false.
-func parseField(declaration string, reserveColumns bool) (resourceField, error) {
+// parseField reads name:type or name:type?, with the types of decision D22
+// and their aliases. Table columns may not reuse the columns every generated
+// table owns, and only they may be references; other uses of fields (a job
+// payload) pass table false.
+func parseField(declaration string, table bool) (resourceField, error) {
 	name, kind, ok := strings.Cut(declaration, ":")
 	if !ok {
-		return resourceField{}, fmt.Errorf("field %q must be written name:type (types: %s)", declaration, strings.Join(resourceFieldTypes, ", "))
+		return resourceField{}, fmt.Errorf("field %q must be written name:type (types: %s)", declaration, fieldTypesHelp)
 	}
 	optional := false
 	if trimmed, found := strings.CutSuffix(kind, "?"); found {
@@ -418,15 +476,28 @@ func parseField(declaration string, reserveColumns bool) (resourceField, error) 
 	if canonical, ok := fieldTypeAliases[kind]; ok {
 		kind = canonical
 	}
-	switch {
-	case len(name) > maxResourceNameLength || !resourceName.MatchString(name):
+	if len(name) > maxResourceNameLength || !resourceName.MatchString(name) {
 		return resourceField{}, fmt.Errorf("field name %q must be snake_case (lowercase letters and digits, starting with a letter, at most %d characters)", name, maxResourceNameLength)
-	case reserveColumns && slices.Contains(reservedColumns, name):
-		return resourceField{}, fmt.Errorf("field name %q is reserved: every table already has %s", name, strings.Join(reservedColumns, ", "))
-	case !slices.Contains(resourceFieldTypes, kind):
-		return resourceField{}, fmt.Errorf("field %q has unsupported type %q (types: %s; use int for money in minor units)", name, kind, strings.Join(resourceFieldTypes, ", "))
 	}
-	return resourceField{Name: name, Type: kind, Optional: optional}, nil
+	field := resourceField{Name: name, Type: fieldStorageTypes[kind], Optional: optional}
+	switch {
+	case kind == "references" && !table:
+		return resourceField{}, fmt.Errorf("field %q: references makes a foreign key between two tables, which a job payload has not; name the record by its id instead (%s_id:uuid)", name, name)
+	case kind == "references":
+		if err := validateResourceName(name); err != nil {
+			return resourceField{}, fmt.Errorf("%s:references names the resource it references: %w", name, err)
+		}
+		field = resourceField{Name: name + "_id", Type: "uuid", Optional: optional, References: name}
+		if len(field.Name) > maxResourceNameLength {
+			return resourceField{}, fmt.Errorf("%s:references makes the column %s, longer than %d characters; reference a resource with a shorter name", name, field.Name, maxResourceNameLength)
+		}
+	case field.Type == "":
+		return resourceField{}, fmt.Errorf("field %q has unsupported type %q (types: %s; use integer for money in minor units)", name, kind, fieldTypesHelp)
+	}
+	if table && slices.Contains(reservedColumns, field.Name) {
+		return resourceField{}, fmt.Errorf("field name %q is reserved: every table already has %s", field.Name, strings.Join(reservedColumns, ", "))
+	}
+	return field, nil
 }
 
 // validateIdentifierLengths keeps generated constraint and index names within
@@ -570,6 +641,9 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 		}
 	}
 
+	if spec.references, err = resolveReferences(projectRoot, spec); err != nil {
+		return resourceSpec{}, nil, err
+	}
 	rendered, err := renderResource(spec)
 	if err != nil {
 		return resourceSpec{}, nil, err

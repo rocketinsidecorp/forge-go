@@ -8,7 +8,11 @@ import (
 
 	"[[.Module]]/app/application"
 	"[[.Module]]/app/domain"
+[[- if gt (len .References) 1]]
+	"github.com/rocketinsidecorp/forge-go/fault"
+[[- end]]
 	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 [[- if .Tenant]]
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 [[- end]]
@@ -32,6 +36,12 @@ const (
 	delete[[.Title]] = [[.SQL.Delete.GoLiteral]]
 
 	[[.Name]]Exists = [[.SQL.Exists.GoLiteral]]
+[[- range .References]]
+
+	// The [[$.Plural]] of one [[.Human]], newest first (the nested index).
+	list[[$.PluralTitle]]By[[.Title]]First = [[.ListFirst.GoLiteral]]
+	list[[$.PluralTitle]]By[[.Title]]After = [[.ListAfter.GoLiteral]]
+[[- end]]
 )
 
 // [[.Title]]Repository is the PostgreSQL application.[[.Title]]Repository.
@@ -87,7 +97,7 @@ func (r *[[.Title]]Repository) Create(ctx context.Context, entity domain.[[.Titl
 		return err
 	})
 	if err != nil {
-		return domain.[[.Title]]{}, postgres.Translate(err)
+		return domain.[[.Title]]{}, [[if .References]][[.Name]]WriteError([[end]]postgres.Translate(err)[[if .References]])[[end]]
 	}
 	return entity, nil
 }
@@ -132,6 +142,32 @@ func (r *[[.Title]]Repository) List(ctx context.Context, after uuid.UUID, limit 
 	}
 	return entities, nil
 }
+[[- range .References]]
+
+// ListBy[[.Title]] returns up to limit [[$.Plural]] of the [[.Human]] with id [[.Camel]]ID, newest
+// first, starting after the one with ID after (the zero UUID for the first page).
+func (r *[[$.Title]]Repository) ListBy[[.Title]](ctx context.Context, [[.Camel]]ID, after uuid.UUID, limit int) ([]domain.[[$.Title]], error) {
+	var entities []domain.[[$.Title]]
+	err := r.run(ctx, func(q postgres.DBTX[[if $.Tenant]], orgID uuid.UUID[[end]]) error {
+		var rows pgx.Rows
+		var err error
+		if after == (uuid.UUID{}) {
+			rows, err = q.Query(ctx, list[[$.PluralTitle]]By[[.Title]]First, [[.ListFirst.ArgList]])
+		} else {
+			rows, err = q.Query(ctx, list[[$.PluralTitle]]By[[.Title]]After, [[.ListAfter.ArgList]])
+		}
+		if err != nil {
+			return err
+		}
+		entities, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.[[$.Title]], error) { return scan[[$.Title]](row) })
+		return err
+	})
+	if err != nil {
+		return nil, postgres.Translate(err)
+	}
+	return entities, nil
+}
+[[- end]]
 
 // Update writes entity only if its version is still the stored one (optimistic locking) and
 // returns it with the version advanced. It returns domain.Err[[.Title]]NotFound for a missing
@@ -148,7 +184,7 @@ func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Titl
 		return explainMissed[[.Title]]Write(ctx, q, [[if .Tenant]]orgID, [[end]]entity.ID)
 	})
 	if err != nil {
-		return domain.[[.Title]]{}, postgres.Translate(err)
+		return domain.[[.Title]]{}, [[if .References]][[.Name]]WriteError([[end]]postgres.Translate(err)[[if .References]])[[end]]
 	}
 	// The guarded UPDATE advanced the version by exactly one.
 	entity.Version++
@@ -156,7 +192,7 @@ func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Titl
 }
 
 // Delete removes the [[.Name]] with id if its version is still the given one, with the same
-// errors as Update.
+// errors as Update, and domain.Err[[.Title]]InUse while rows of another table reference it.
 func (r *[[.Title]]Repository) Delete(ctx context.Context, id uuid.UUID, version int) error {
 	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], orgID uuid.UUID[[end]]) error {
 		tag, err := q.Exec(ctx, delete[[.Title]], [[.SQL.Delete.ArgList]])
@@ -168,8 +204,41 @@ func (r *[[.Title]]Repository) Delete(ctx context.Context, id uuid.UUID, version
 		}
 		return explainMissed[[.Title]]Write(ctx, q, [[if .Tenant]]orgID, [[end]]id)
 	})
-	return postgres.Translate(err)
+	return [[.Name]]DeleteError(postgres.Translate(err))
 }
+
+// [[.Name]]DeleteError reports a delete the foreign key of another table refused
+// (its rows still reference the [[.Name]]) as domain.Err[[.Title]]InUse.
+func [[.Name]]DeleteError(err error) error {
+	if errors.Is(err, sqldb.ErrReferenceViolation) {
+		return domain.Err[[.Title]]InUse.WithCause(err)
+	}
+	return err
+}
+[[- if .References]]
+
+// [[.Name]]WriteError reports a write the foreign key of a references field refused
+// as the error of that field: the referenced row does not exist[[if .Tenant]] in the
+// organization[[end]] (or was deleted since the service checked it).
+func [[.Name]]WriteError(err error) error {
+	if !errors.Is(err, sqldb.ErrReferenceViolation) {
+		return err
+	}
+[[- if eq (len .References) 1]]
+[[- range .References]]
+	return domain.Err[[$.Title]][[.Title]]NotFound.WithCause(err)
+[[- end]]
+[[- else]]
+	switch fault.From(err).Metadata["constraint"] {
+[[- range .References]]
+	case "[[.Constraint]]":
+		return domain.Err[[$.Title]][[.Title]]NotFound.WithCause(err)
+[[- end]]
+	}
+	return err
+[[- end]]
+}
+[[- end]]
 
 // explainMissed[[.Title]]Write tells a missing [[.Name]] from a version mismatch after
 // a guarded UPDATE or DELETE matched no row.

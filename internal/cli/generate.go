@@ -491,6 +491,9 @@ func runGenerateMigration(args []string, stdout io.Writer, root string, env []st
 		if err != nil {
 			return err
 		}
+		if field.References != "" {
+			return fmt.Errorf("%s:references adds a foreign key, which forge generate migration does not write: an association belongs to the model, resource or scaffold that has it (forge generate scaffold comment body:text %s:references), whose migration, code and tests then agree", field.References, field.References)
+		}
 		if seen[field.Name] {
 			return fmt.Errorf("field %q is declared twice", field.Name)
 		}

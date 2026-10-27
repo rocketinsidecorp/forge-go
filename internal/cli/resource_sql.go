@@ -159,6 +159,39 @@ func buildStatements(v resourceView) sqlStatements {
 	return statements
 }
 
+// listByStatements are the first and later pages of the rows of v whose
+// column (a references field) names one row, newest first: the nested index
+// /posts/{post_id}/comments. They bind the organization (when scoped), the
+// referenced id (the Go expression id), then the cursor and the limit.
+func listByStatements(v resourceView, column, id string) (first, after statement) {
+	q := v.Q
+	placeholder := func(n int) string {
+		if v.Postgres {
+			return fmt.Sprintf("$%d", n)
+		}
+		return "?"
+	}
+	build := func(paged bool) statement {
+		var args, predicates []string
+		add := func(expr string) string {
+			args = append(args, expr)
+			return placeholder(len(args))
+		}
+		if v.Tenant {
+			predicates = append(predicates, q("org_id")+" = "+add("orgID"))
+		}
+		predicates = append(predicates, q(column)+" = "+add(id))
+		if paged {
+			predicates = append(predicates, q("id")+" < "+add("after"))
+		}
+		return statement{
+			SQL:  fmt.Sprintf("SELECT %s FROM %s WHERE %s ORDER BY %s DESC LIMIT %s", v.SQL.Columns, q(v.Plural), strings.Join(predicates, " AND "), q("id"), add("limit")),
+			Args: args,
+		}
+	}
+	return build(false), build(true)
+}
+
 // column is one line of CREATE TABLE.
 type column struct {
 	name, definition string
@@ -284,6 +317,13 @@ func renderMigration(v resourceView) (up, down string) {
 				fmt.Sprintf("    CONSTRAINT %s FOREIGN KEY (%s) REFERENCES forge_tenants (id)", q(table+"_org_id_fk"), q("org_id")))
 		}
 	}
+	for _, reference := range v.References {
+		if v.MySQL {
+			lines = append(lines, fmt.Sprintf("    INDEX %s (%s)", q(reference.Index), referenceColumns(v, reference.Field.Name)))
+		}
+		lines = append(lines, fmt.Sprintf("    CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s) ON DELETE %s",
+			q(reference.Constraint), referenceColumns(v, reference.Field.Name), q(reference.Plural), referenceColumns(v, "id"), onDeleteAction(v.Cascade)))
+	}
 
 	var sql strings.Builder
 	fmt.Fprintf(&sql, "-- forge:generate %s\n", v.Command)
@@ -296,6 +336,12 @@ func renderMigration(v resourceView) (up, down string) {
 	default:
 		sql.WriteString(" and stored as TEXT in a STRICT table.\n")
 	}
+	for _, reference := range v.References {
+		if reference.AddsKey {
+			fmt.Fprintf(&sql, "-- %s reference %s by (org_id, %s), so no row can name another organization's:\n-- the foreign key needs (org_id, id) declared unique on %s (id alone already is).\n", table, reference.Plural, reference.Field.Name, reference.Plural)
+			fmt.Fprintf(&sql, "CREATE UNIQUE INDEX %s ON %s (%s, %s);\n", q(uniqueKeyName(reference.Plural)), q(reference.Plural), q("org_id"), q("id"))
+		}
+	}
 	fmt.Fprintf(&sql, "CREATE TABLE %s (\n%s\n)", q(table), strings.Join(lines, ",\n"))
 	switch {
 	case v.MySQL:
@@ -306,6 +352,12 @@ func renderMigration(v resourceView) (up, down string) {
 	sql.WriteString(";\n")
 	if v.Tenant && !v.MySQL {
 		fmt.Fprintf(&sql, "\nCREATE INDEX %s ON %s (%s, %s);\n", indexName, q(table), q("org_id"), q("id"))
+	}
+	if len(v.References) > 0 && !v.MySQL {
+		sql.WriteString("\n-- The foreign keys' indexes: they serve the referenced rows' nested lists and\n-- the check deleting a referenced row makes.\n")
+		for _, reference := range v.References {
+			fmt.Fprintf(&sql, "CREATE INDEX %s ON %s (%s);\n", q(reference.Index), q(table), referenceColumns(v, reference.Field.Name))
+		}
 	}
 	if v.Tenant && v.Postgres {
 		sql.WriteString(rowSecurity(table, q))
@@ -322,8 +374,36 @@ func renderMigration(v resourceView) (up, down string) {
 		fmt.Fprintf(&rollback, "DELETE FROM forge_permissions WHERE name IN ('%s:read', '%s:write');\n", table, table)
 	}
 	fmt.Fprintf(&rollback, "DROP TABLE %s;\n", q(table))
+	for _, reference := range v.References {
+		if reference.AddsKey {
+			if v.MySQL {
+				fmt.Fprintf(&rollback, "DROP INDEX %s ON %s;\n", q(uniqueKeyName(reference.Plural)), q(reference.Plural))
+			} else {
+				fmt.Fprintf(&rollback, "DROP INDEX %s;\n", q(uniqueKeyName(reference.Plural)))
+			}
+		}
+	}
 	down = rollback.String()
 	return up, down
+}
+
+// referenceColumns are the columns of a foreign key from v's column: the
+// column alone, or (org_id, column) in an org-scoped table, so a row can only
+// reference a row of its own organization.
+func referenceColumns(v resourceView, column string) string {
+	if v.Tenant {
+		return v.Q("org_id") + ", " + v.Q(column)
+	}
+	return v.Q(column)
+}
+
+// onDeleteAction is what deleting a referenced row does to the rows that
+// reference it: refused while they exist (RESTRICT), or they go with it.
+func onDeleteAction(cascade bool) string {
+	if cascade {
+		return "CASCADE"
+	}
+	return "RESTRICT"
 }
 
 // rowSecurity is the PostgreSQL row-level security of an org-scoped table:

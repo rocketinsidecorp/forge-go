@@ -39,6 +39,14 @@ var (
 	ErrEmpty[[.Title]]Changes   = fault.New("empty_update", "an update must change at least one field", fault.CategoryInvalid, 0)
 	Err[[.Title]]NotFound       = fault.New("[[.Name]]_not_found", "[[.Name]] not found", fault.CategoryNotFound, 0)
 	ErrStale[[.Title]]Version   = fault.New("stale_version", "the [[.Name]] was changed by another request; reload it and retry", fault.CategoryConflict, 0)
+	// Err[[.Title]]InUse refuses to delete a [[.Name]] that rows of another table still
+	// reference: their foreign key restricts the delete.
+	Err[[.Title]]InUse = fault.New("[[.Name]]_in_use", "the [[.Name]] is still referenced by other records; delete or change them first", fault.CategoryConflict, 0)
+[[- range .References]]
+	// Err[[$.Title]][[.Title]]NotFound refuses a [[.Field.Name]] that names no [[.Human]] the caller can see[[if $.Tenant]]
+	// (another organization's [[.Plural]] do not exist for it)[[end]].
+	Err[[$.Title]][[.Title]]NotFound = fault.New("[[$.Name]]_[[.Name]]_not_found", "[[.Field.Name]] must name an existing [[.Human]]", fault.CategoryInvalid, 422)
+[[- end]]
 )
 
 // [[.Title]] is a stored [[.Name]].
