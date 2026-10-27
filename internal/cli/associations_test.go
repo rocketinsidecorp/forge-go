@@ -330,3 +330,94 @@ func TestJoinRefusals(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TestJoinRefusesWhatItCannotJoin covers the joins refused before anything
+// is written, and the printed wiring of an application without the seam.
+func TestJoinRefusesWhatItCannotJoin(t *testing.T) {
+	t.Parallel()
+	plain := newApp(t, scaffold.Options{Database: "sqlite"})
+	generateIn(t, plain, "scaffold", "post", "title:string", "--public")
+	generateIn(t, plain, "scaffold", "tag", "name:string")
+	generateIn(t, plain, "model", "badge", "label:string")
+	generateIn(t, plain, "resource", "post_tag", "note:string", "--plural", "post_tag_rows")
+	for args, wantErr := range map[string]string{
+		"post tag":   "guarded differently",
+		"badge post": "badge is a model",
+		"post label": "needs the label resource",
+	} {
+		if _, err := generate(plain, "join", strings.Fields(args)...); err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("join %s: %v, want %q", args, err, wantErr)
+		}
+	}
+	generateIn(t, plain, "scaffold", "label", "name:string", "--public")
+	if _, err := generate(plain, "join", "post", "label"); err != nil {
+		t.Errorf("a join between two public scaffolds: %v", err)
+	}
+	if _, err := generate(plain, "scaffold", "comment", "body:text", "post:references", "--public"); err != nil {
+		t.Errorf("a public child of a public post: %v", err)
+	}
+	collides := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	generateIn(t, collides, "resource", "post", "title:string")
+	generateIn(t, collides, "resource", "tag", "name:string")
+	generateIn(t, collides, "resource", "post_tag", "note:string", "--plural", "post_tag_rows")
+	if _, err := generate(collides, "join", "post", "tag"); err == nil || !strings.Contains(err.Error(), "would collide") {
+		t.Errorf("a join named like a resource: %v", err)
+	}
+	broken := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	writeFile(t, filepath.Join(broken, ".env.development"), "bad line\n")
+	if _, err := generate(broken, "join", "post", "tag"); err == nil || !strings.Contains(err.Error(), "environment files could not be loaded") {
+		t.Errorf("a broken environment: %v", err)
+	}
+	none := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	writeFile(t, filepath.Join(none, ".env.development"), "FORGE_DATABASE_URL=\n")
+	if _, err := generate(none, "join", "post", "tag"); err == nil || !strings.Contains(err.Error(), "no database") {
+		t.Errorf("an application without a database: %v", err)
+	}
+	if _, err := generate(t.TempDir(), "join", "post", "tag"); err == nil || !strings.Contains(err.Error(), "go.mod not found") {
+		t.Errorf("outside an application: %v", err)
+	}
+
+	// Without the routes seam the wiring is printed, with the posts
+	// repository the comments service checks against.
+	old := resourceProject(t, "postgres://u:p@localhost/db")
+	mustGenerate(t, old, "resource", "post", "title:string", "--org-scoped")
+	mustGenerate(t, old, "resource", "tag", "name:string", "--org-scoped")
+	output := mustGenerate(t, old, "resource", "comment", "body:text", "post:references", "--org-scoped")
+	if !strings.Contains(output, "application.NewCommentService(persistence.NewCommentRepository(database), persistence.NewPostRepository(database), time.Now, uuid.New)") {
+		t.Errorf("the printed wiring does not pass the posts repository:\n%s", output)
+	}
+	output = mustGenerate(t, old, "join", "post", "tag")
+	for _, want := range []string{"Forge did not edit app/bootstrap/bootstrap.go", "application.NewPostTagService(persistence.NewPostTagRepository(database), persistence.NewPostRepository(database), persistence.NewTagRepository(database), time.Now)"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("the printed join wiring lacks %q:\n%s", want, output)
+		}
+	}
+	output, err := destroy(old, "join", "post", "tag", "--dry-run")
+	if err != nil || !strings.Contains(output, "would remove") {
+		t.Errorf("destroy join --dry-run: %v\n%s", err, output)
+	}
+	if got := canonicalFieldType("unknown"); got != "unknown" {
+		t.Errorf("canonicalFieldType(unknown) = %q", got)
+	}
+}
+
+// TestNestedPageOfAResourceWithoutText names its rows by id, and a destroy
+// whose parent partial is gone changes nothing else.
+func TestNestedPageOfAResourceWithoutText(t *testing.T) {
+	t.Parallel()
+	dir := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	generateIn(t, dir, "scaffold", "post", "title:string")
+	generateIn(t, dir, "scaffold", "vote", "count:integer", "post:references")
+	if page := readFile(t, filepath.Join(dir, "app", "views", "votes", "by_post.gohtml")); !strings.Contains(page, "{{.ID}}</a>") {
+		t.Errorf("the nested page does not name votes by id:\n%s", page)
+	}
+	if err := os.Remove(filepath.Join(dir, "app", "views", "posts", "_associations.gohtml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := destroy(dir, "scaffold", "vote", "count:integer", "post:references"); err != nil {
+		t.Fatalf("destroy with the parent partial gone: %v", err)
+	}
+	if exists(dir, "app/views/posts/_associations.gohtml") {
+		t.Error("destroy created the parent partial")
+	}
+}
