@@ -94,6 +94,28 @@ jobs:
       - name: Vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
+  macos:
+    # The CLI, `forge deploy` and the dev loop are used from macOS: build forge
+    # and run the tests that need no database, sshd or Docker (-short), with
+    # the runner's default $TMPDIR (/var/folders/xx/.../T/), whose length broke
+    # the SSH control socket of `forge deploy` (internal/deploy, control_path_test.go).
+    # Lean on purpose: no services, no Docker, no coverage, no race detector,
+    # and only the packages whose tests are known to be portable (internal/devloop's
+    # process tests are only proven on Linux; widen the list as macOS proves them).
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build forge
+        run: go build -o "$RUNNER_TEMP/forge" ./cmd/forge
+      - name: Test (no database, no Docker)
+        run: go test -short -count=1 -timeout 20m ./router/... ./internal/deploy/...
+
   generated:
     # forge new's applications, for every database: generated, vetted, built
     # and tested, with a generated resource's integration tests and the

@@ -14,6 +14,7 @@ applications `forge new` generates
 | Pull request, push to `main` | `ci.yml` job `sbom` | CycloneDX SBOMs of the `forge` and `forge-proxy` binaries (artifact `sbom-binaries`). |
 | Pull request, push to `main` | `ci.yml` job `docker` | Builds the example and generated images; checks the generated CI's Syft command on a real image. |
 | Pull request, push to `main` | `ci.yml` job `quality` | `govulncheck` (pinned version), lint, race tests. |
+| Pull request, push to `main` | `ci.yml` job `macos` | Builds `./cmd/forge` and runs the database-free tests of `internal/deploy` and `router` on `macos-latest`, with its default `$TMPDIR` (read-only token, no services, no Docker). |
 | Nightly 03:17 UTC, or by hand | `fuzz.yml` | Each fuzz target on its own runner for 10 minutes (input `fuzztime`), with its corpus cached between nights. |
 | Weekly, Monday 04:41 UTC, or by hand | `scorecard.yml` | OpenSSF Scorecard; results stay in the run (artifact `scorecard`, summary). |
 | Push of a `v*` tag, only | `release.yml` | Builds, pushes and signs `ghcr.io/rocketinsidecorp/forge-proxy` and `ghcr.io/rocketinsidecorp/forge-example`; builds the `forge` and `forge-proxy` archives for 6 platforms, with SBOMs, `checksums.txt` signed with cosign and one build provenance attestation covering every file; drafts the GitHub release. |
@@ -24,7 +25,23 @@ draft a maintainer verifies and publishes ([RELEASING.md](RELEASING.md)): no pul
 manual run can reach `release.yml`, and it refuses a tag that is not a
 version (`v1.2.3`, `v1.2.3-rc.1`), whose major version does not match the
 module path of `go.mod` (from v2 on the path must end in `/vN`, or `go get`
-refuses the tag), or that points at a commit outside the default branch.
+refuses the tag), that points at a commit outside the default branch, or whose
+commit has not passed CI: before anything is built, pushed or signed, the
+`verify` job runs `scripts/release-require-ci.sh`, which finds the newest push
+run of `.github/workflows/ci.yml` for `$GITHUB_SHA` (`gh api
+repos/<repository>/actions/runs?head_sha=<sha>&event=push`, filtered by the
+workflow's path, so a job of the same name in any other workflow counts for
+nothing), requires that run to have finished, and requires `quality`,
+`coverage`, `generated`, `mariadb` and the four `docker (<database>)` jobs of
+its latest attempt (`.../actions/runs/<id>/jobs?filter=latest`) to have
+concluded `success`. A missing run, a run still going, or a job that is
+missing, still running, failed, cancelled or skipped is a refusal, and so is
+anything it cannot read (it fails closed). A re-run replaces the failure it
+re-ran, and a newer CI run of the commit replaces an older one.
+`TestReleaseGateRequiresEveryGatingCIJob` keeps the script's list equal to the
+jobs of `ci.yml` (a new job is required or named as not gating, and the
+`macos` job is not gating until it has run on GitHub), and
+`TestReleaseChecksCIBeforeAnyOtherJob` keeps every other job behind `verify`.
 
 ## Fuzzing
 
@@ -192,7 +209,8 @@ that fails on any difference, new job included): top-level `permissions: {}`;
 `binaries` holds `contents: read`, `id-token: write` (keyless signing) and
 `attestations: write`, and nothing that can touch a release; `draft` holds only
 `contents: write` and signs nothing; `images` keeps `packages: write` and
-`id-token: write`; `verify` and `sbom` are read-only. No Forge installer
+`id-token: write`; `sbom` is read-only; `verify` is read-only too, with
+`actions: read` for the CI gate above. No Forge installer
 script exists (`TestNoDocumentTellsToPipeADownloadIntoAShell` refuses a
 download piped into a shell in any Markdown document, and an `install`,
 `install.sh` or `get.sh` at the top level or in `scripts/`): you download an
@@ -383,9 +401,9 @@ sha256sum "/tmp/rebuilt/x/forge_${VERSION}_${OS}_${ARCH}/forge" "./forge_${VERSI
     (`releaseViolations`; for the framework's, `binaryReleaseViolations`, which
     reads code, never comments: `cache: false` on every setup-go step, the
     build, checksum and draft scripts, `cosign sign-blob` and `verify-blob`,
-    the provenance attestation of `checksums.txt`, and a draft script that
-    creates a draft, verifies the tag, and never edits, uploads to or
-    un-drafts a release).
+    the provenance attestation of `checksums.txt`, the CI gate step, and a
+    draft script that creates a draft, verifies the tag, and never edits,
+    uploads to or un-drafts a release).
 - Permissions are read-only by default (`contents: read`, or `{}` in
   `release.yml` and `scorecard.yml`); in the release workflow only the image
   job holds `packages: write` and `id-token: write`, only the binary job

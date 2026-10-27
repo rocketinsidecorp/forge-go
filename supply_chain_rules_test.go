@@ -837,6 +837,7 @@ func releaseViolations(path, text string) []string {
 // and a draft (never a published) release. Dropping one removes a guarantee
 // docs/SUPPLY_CHAIN.md makes.
 var binaryReleaseSteps = []string{
+	"scripts/release-require-ci.sh \"$GITHUB_SHA\"",
 	"scripts/release-build.sh \"$GITHUB_REF_NAME\"",
 	"scripts/release-checksums.sh \"$GITHUB_REF_NAME\"",
 	"cosign sign-blob --yes --bundle \"$RUNNER_TEMP/release/checksums.txt.sigstore.json\" \"$RUNNER_TEMP/release/checksums.txt\"",

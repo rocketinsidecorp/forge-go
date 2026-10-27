@@ -11,6 +11,9 @@ name: Release
 #   amd64 and arm64 (scripts/release-build.sh, plain go build), the binary
 #   SBOMs, and checksums.txt over all of them, signed keyless with cosign
 #   (checksums.txt.sigstore.json) and attested with GitHub build provenance.
+# - Gate: nothing is built or signed unless the tag is on the default branch and
+#   the CI jobs that gate a release succeeded on the tagged commit
+#   (scripts/release-require-ci.sh).
 # - Release: a DRAFT GitHub release with those files. Nothing is published
 #   until a maintainer verifies it and publishes the draft (docs/RELEASING.md).
 #
@@ -32,6 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      actions: read # read the CI workflow run and its jobs for the tagged commit; nothing else
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,6 +69,14 @@ jobs:
             echo "::error::$GITHUB_REF_NAME points at a commit that is not on $DEFAULT_BRANCH"
             exit 1
           fi
+      - name: CI passed on the tagged commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        # Before anything is built, pushed or signed: the CI jobs that gate a
+        # release (quality, coverage, generated, mariadb and the docker matrix)
+        # must have succeeded on this exact commit. Fails closed.
+        run: scripts/release-require-ci.sh "$GITHUB_SHA"
 
   images:
     name: Image ${{ matrix.image }}

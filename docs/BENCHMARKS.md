@@ -257,6 +257,14 @@ container).
 | `http_telemetry` | `enabled_no_export` | 6,072 | 3289 | 47 |
 | `http_telemetry` | `enabled_exporting` | 7,614 | 3949 | 49 |
 
+The `router_match` and `middleware_chain` rows above were measured before the
+router matched each request once. Since then `Router.ServeHTTP` allocates
+nothing for a static route, once for a route with path values (16 B), and 5
+times instead of 11 for `wildcard`; on a loaded 4-CPU machine the medians of
+six runs fell from about 450-500 ns to 310-350 ns (`static`, `param`) and from
+about 1,280 ns to 910-1,080 ns (`wildcard`). Re-measure on a quiet machine
+before quoting the times; `TestMatchedRequestMatchesOnce` pins the allocations.
+
 How to read them: `middleware_chain/*/0` is the whole chain without any
 `App.Use` middleware, and it already includes telemetry in its default mode
 (enabled, nothing exported: 47 allocations, the same as
