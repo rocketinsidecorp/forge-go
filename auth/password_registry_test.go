@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -44,12 +45,46 @@ func TestRegisterArgon2idKeepsTheFirstImplementation(t *testing.T) {
 	}
 
 	// The process-wide registry already holds the fake (password_cheap_test.go):
-	// RegisterArgon2id with another function is ignored.
-	RegisterArgon2id(second)
+	// RegisterArgon2id with another Argon2id (here one that knows the
+	// checked answer and nothing else) is ignored, and so is nil.
+	other := func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+		if bytes.Equal(password, argon2idKnownPassword) {
+			return fakeArgon2idKDF(password, salt, time, memory, threads, keyLen)
+		}
+		return make([]byte, keyLen)
+	}
+	RegisterArgon2id(other)
 	RegisterArgon2id(nil)
 	salt := bytes.Repeat([]byte{9}, passwordSaltBytes)
 	if got, want := argon2id.load()([]byte("secret"), salt, 1, 8, 1, passwordKeyBytes), fakeArgon2idKDF([]byte("secret"), salt, 1, 8, 1, passwordKeyBytes); !bytes.Equal(got, want) {
 		t.Fatal("a second RegisterArgon2id replaced the first implementation")
+	}
+}
+
+// RegisterArgon2id refuses, loudly, a function that does not compute
+// Argon2id: argon2.Key (Argon2i) has the same signature, and hashes it wrote
+// as $argon2id$ would verify nowhere else.
+func TestRegisterArgon2idPanicsOnAFunctionThatIsNotArgon2id(t *testing.T) {
+	t.Parallel()
+	for name, kdf := range map[string]argon2idKDF{
+		"zeros": func(_, _ []byte, _, _ uint32, _ uint8, keyLen uint32) []byte { return make([]byte, keyLen) },
+		"short": func(_, _ []byte, _, _ uint32, _ uint8, _ uint32) []byte { return argon2idKnownKey[:16] },
+		"fake without the known answer": func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+			return fakeArgon2idKDF(append(password, 0), salt, time, memory, threads, keyLen)
+		},
+	} {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered == nil || !strings.Contains(fmt.Sprint(recovered), "argon2.IDKey") {
+					t.Errorf("%s: RegisterArgon2id did not panic naming the fix: %v", name, recovered)
+				}
+			}()
+			RegisterArgon2id(kdf)
+		}()
+	}
+	salt := bytes.Repeat([]byte{9}, passwordSaltBytes)
+	if got := argon2id.load()([]byte("x"), salt, 1, 8, 1, 32); !bytes.Equal(got, fakeArgon2idKDF([]byte("x"), salt, 1, 8, 1, 32)) {
+		t.Fatal("a refused function was registered")
 	}
 }
 

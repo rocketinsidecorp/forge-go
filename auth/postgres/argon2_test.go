@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/crypto/argon2"
+
 	"github.com/rocketinsidecorp/forge-go/auth"
 	_ "github.com/rocketinsidecorp/forge-go/auth/postgres"
 )
@@ -70,4 +72,16 @@ func TestArgon2idHashWrittenByForgeRustVerifies(t *testing.T) {
 	if len(ours) != len(forgeRustArgon2idFixture) || !strings.HasPrefix(ours, "$argon2id$v=19$m=19456,t=2,p=1$") {
 		t.Fatalf("Forge-Go hash %q does not have Forge-Rust's shape", ours)
 	}
+}
+
+// argon2.Key, Argon2i with IDKey's signature, is refused: its hashes would
+// be labelled $argon2id$ and verify nowhere else.
+func TestRegisterArgon2idRefusesArgon2i(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("auth.RegisterArgon2id(argon2.Key) did not panic")
+		}
+	}()
+	auth.RegisterArgon2id(argon2.Key)
 }

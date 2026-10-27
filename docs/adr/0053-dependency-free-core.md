@@ -65,6 +65,10 @@ afterwards the core needs nothing, which the later steps rely on.
   `golang.org/x/crypto/argon2` and register it in `init`, so generated
   `--auth` applications keep writing `$argon2id$` hashes with no change.
   An import rule lets only those three packages import `argon2`.
+  `RegisterArgon2id` first computes one small known answer (t=1, m=8 KiB)
+  with the function and panics when it is not Argon2id v19: `argon2.Key`
+  (Argon2i) has the same signature, and its hashes, labelled `$argon2id$`,
+  would verify nowhere else.
   - With nothing registered, new hashes are PBKDF2-HMAC-SHA256 with 600,000
     iterations (the format and parameters of ADR 0048's PBKDF2), and
     verifying a stored `$argon2id$` hash fails closed with

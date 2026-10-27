@@ -271,6 +271,14 @@ var errInjected = errors.New("injected store failure")
 // that links an identity adapter. The real Argon2id is tested by the
 // adapters.
 func fakeArgon2idKDF(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+	// auth.RegisterArgon2id checks one known answer (auth/password.go); the
+	// fake knows it.
+	if string(password) == "forge-argon2id-known-answer" && string(salt) == "forge-kat-salt-1" && time == 1 && memory == 8 && threads == 1 && keyLen == 32 {
+		return []byte{
+			0x60, 0xe5, 0x6c, 0xe6, 0x36, 0xb6, 0x05, 0xe9, 0xfb, 0x4a, 0x87, 0x3f, 0x44, 0x18, 0xa2, 0xf2,
+			0x0a, 0x13, 0x5f, 0xe4, 0xe9, 0xa2, 0xe1, 0x88, 0xe5, 0xfc, 0xa7, 0x12, 0x25, 0xb6, 0x96, 0x36,
+		}
+	}
 	digest := sha256.New()
 	var header [17]byte
 	binary.BigEndian.PutUint32(header[0:], time)
