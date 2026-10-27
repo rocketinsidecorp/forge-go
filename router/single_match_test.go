@@ -27,9 +27,9 @@ func referenceServe(r *Router, mux *http.ServeMux, w http.ResponseWriter, reques
 // outcome is everything a client or the telemetry middleware can observe of
 // one request.
 type outcome struct {
-	status        int
-	header, body  string
-	route, params string
+	status       int
+	header, body string
+	route        string
 }
 
 func serveObserved(t *testing.T, serve func(http.ResponseWriter, *http.Request), method, target, requestURI string) outcome {
