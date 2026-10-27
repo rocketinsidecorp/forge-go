@@ -517,7 +517,7 @@ func TestWriteScopesBelongToTheFrameworkRelease(t *testing.T) {
 
 func TestReleasePermissionsRuleRejectsDrift(t *testing.T) {
 	t.Parallel()
-	good := "permissions: {}\njobs:\n  verify:\n    permissions:\n      contents: read\n      checks: read\n  images:\n    permissions:\n      contents: read\n      packages: write\n      id-token: write\n  sbom:\n    permissions:\n      contents: read\n  binaries:\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n  draft:\n    permissions:\n      contents: write\n"
+	good := "permissions: {}\njobs:\n  verify:\n    permissions:\n      contents: read\n      actions: read\n  images:\n    permissions:\n      contents: read\n      packages: write\n      id-token: write\n  sbom:\n    permissions:\n      contents: read\n  binaries:\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n  draft:\n    permissions:\n      contents: write\n"
 	check := func(text string) []string {
 		documents, err := yamlDocuments(text, false)
 		if err != nil {
@@ -534,8 +534,9 @@ func TestReleasePermissionsRuleRejectsDrift(t *testing.T) {
 		"the draft job also signs":   strings.Replace(good, "  draft:\n    permissions:\n      contents: write\n", "  draft:\n    permissions:\n      contents: write\n      id-token: write\n", 1),
 		"the binary job writes":      strings.Replace(good, "      attestations: write\n", "      attestations: write\n      packages: write\n", 1),
 		"the binary job cannot sign": strings.Replace(good, "      id-token: write\n      attestations: write\n", "      attestations: write\n", 1),
-		"verify cannot read checks":  strings.Replace(good, "      checks: read\n", "", 1),
-		"verify writes checks":       strings.Replace(good, "      checks: read\n", "      checks: write\n", 1),
+		"verify cannot read actions": strings.Replace(good, "      actions: read\n", "", 1),
+		"verify writes actions":      strings.Replace(good, "      actions: read\n", "      actions: write\n", 1),
+		"verify reads checks":        strings.Replace(good, "      actions: read\n", "      actions: read\n      checks: read\n", 1),
 		"a new job":                  good + "  extra:\n    permissions:\n      contents: read\n",
 		"a job without permissions":  strings.Replace(good, "  sbom:\n    permissions:\n      contents: read\n", "  sbom:\n    runs-on: x\n", 1),
 		"a job is gone":              strings.Replace(good, "  draft:\n    permissions:\n      contents: write\n", "", 1),

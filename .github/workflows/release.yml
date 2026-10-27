@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      checks: read # read the check runs of CI on the tagged commit; nothing else
+      actions: read # read the CI workflow run and its jobs for the tagged commit; nothing else
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

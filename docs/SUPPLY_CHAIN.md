@@ -27,13 +27,17 @@ version (`v1.2.3`, `v1.2.3-rc.1`), whose major version does not match the
 module path of `go.mod` (from v2 on the path must end in `/vN`, or `go get`
 refuses the tag), that points at a commit outside the default branch, or whose
 commit has not passed CI: before anything is built, pushed or signed, the
-`verify` job runs `scripts/release-require-ci.sh`, which reads the check runs
-GitHub Actions recorded for `$GITHUB_SHA` (`gh api
-repos/<repository>/commits/<sha>/check-runs`, the latest run of each name,
-created by the `github-actions` app only) and requires `quality`, `coverage`,
-`generated`, `mariadb` and the four `docker (<database>)` jobs to have
-concluded `success`. A job that is missing, still running, failed, cancelled
-or skipped is a refusal, and so is a check it cannot read (it fails closed).
+`verify` job runs `scripts/release-require-ci.sh`, which finds the newest push
+run of `.github/workflows/ci.yml` for `$GITHUB_SHA` (`gh api
+repos/<repository>/actions/runs?head_sha=<sha>&event=push`, filtered by the
+workflow's path, so a job of the same name in any other workflow counts for
+nothing), requires that run to have finished, and requires `quality`,
+`coverage`, `generated`, `mariadb` and the four `docker (<database>)` jobs of
+its latest attempt (`.../actions/runs/<id>/jobs?filter=latest`) to have
+concluded `success`. A missing run, a run still going, or a job that is
+missing, still running, failed, cancelled or skipped is a refusal, and so is
+anything it cannot read (it fails closed). A re-run replaces the failure it
+re-ran, and a newer CI run of the commit replaces an older one.
 `TestReleaseGateRequiresEveryGatingCIJob` keeps the script's list equal to the
 jobs of `ci.yml` (a new job is required or named as not gating, and the
 `macos` job is not gating until it has run on GitHub), and
@@ -206,7 +210,7 @@ that fails on any difference, new job included): top-level `permissions: {}`;
 `attestations: write`, and nothing that can touch a release; `draft` holds only
 `contents: write` and signs nothing; `images` keeps `packages: write` and
 `id-token: write`; `sbom` is read-only; `verify` is read-only too, with
-`checks: read` for the CI gate above. No Forge installer
+`actions: read` for the CI gate above. No Forge installer
 script exists (`TestNoDocumentTellsToPipeADownloadIntoAShell` refuses a
 download piped into a shell in any Markdown document, and an `install`,
 `install.sh` or `get.sh` at the top level or in `scripts/`): you download an

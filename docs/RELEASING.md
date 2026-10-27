@@ -23,9 +23,10 @@ scripts/release-build.sh v0.1.0-rc.0 /tmp/release-dry   # optional: the archives
 ```
 
 - The commit is on `main` and its CI run has finished green (`release.yml`
-  refuses a tag whose commit is not on the default branch, or on which the CI
-  jobs `quality`, `coverage`, `generated`, `mariadb` and `docker (<database>)`
-  have not all succeeded: `scripts/release-require-ci.sh`). Check it yourself
+  refuses a tag whose commit is not on the default branch, or whose `ci.yml`
+  push run has not finished with the jobs `quality`, `coverage`, `generated`,
+  `mariadb` and `docker (<database>)` all successful:
+  `scripts/release-require-ci.sh`; jobs of other workflows do not count). Check it yourself
   first: `gh run list --repo rocketinsidecorp/forge-go --workflow ci.yml --commit "$(git rev-parse HEAD)"`.
 - `README.md` and the docs never name a version that does not exist: they
   use `@latest` and `vX.Y.Z` placeholders
@@ -55,7 +56,7 @@ draft release). A red job leaves no draft: fix the cause on `main`, delete the
 tag only if **nothing** from it was published (no image, no release), and tag
 the next patch otherwise.
 
-If `verify` refuses because CI has not passed on the commit (a job is missing,
+If `verify` refuses because CI has not passed on the commit (no `ci.yml` run, a job is missing,
 still running or failed, and the message names it), nothing was built or
 signed: wait for CI to finish, re-run a failed CI job if it was a flake, and
 then re-run the release workflow (`gh run rerun --failed`, or the run's page);
