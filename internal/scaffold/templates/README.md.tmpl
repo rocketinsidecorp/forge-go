@@ -326,11 +326,14 @@ forge check    # also runs tsc --noEmit when tsc is on PATH
 ```
 
 esbuild only strips types; `tsc` checks them. Install it once with
-`npm install --global typescript@{{.TypeScriptVersion}}` (Node is needed for
+`npm install --global --ignore-scripts typescript@{{.TypeScriptVersion}}` (Node is needed for
 that and nothing else); without it `forge check` prints one note and skips the
 type check. The generated CI installs the same pinned version and runs
 `tsc --noEmit`, and `go test` fails when a `.ts` file changed and `dist` did
-not, so run `forge build` (or `forge test`) before you commit.
+not, or when a compiled file is not the one `forge` wrote, so run `forge build`
+(or `forge test`) before you commit, and review `dist/` diffs like code. A `.ts`
+file outside `controllers/` is compiled and embedded too; pin it in
+`app/assets/assets.go` (`forgeassets.PinAllFrom(set, "lib")`) to import it by name.
 
 Add a Stimulus controller:
 

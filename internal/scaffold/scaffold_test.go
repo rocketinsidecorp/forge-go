@@ -515,7 +515,7 @@ func testServerRenderedHTML(t *testing.T, database string, js bool) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ext, entry, embedPattern := "ts", "application.ts", "//go:embed dist/application.js dist/controllers/*.js"
+			ext, entry, embedPattern := "ts", "application.ts", "//go:embed dist"
 			if js {
 				ext, entry, embedPattern = "js", "application.js", "//go:embed application.js controllers/*.js"
 			}

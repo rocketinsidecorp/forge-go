@@ -151,7 +151,7 @@ func applicationRoutes(rootPath string, nameArgs []string) ([]byte, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var stdout, stderr bytes.Buffer
-	if err := runAppWithInput(ctx, rootPath, name, []string{"routes"}, env, nil, &stdout, &stderr); err != nil {
+	if err := runAppWithInput(ctx, rootPath, name, []string{"routes"}, env, nil, &stdout, &stderr, false); err != nil {
 		return nil, fmt.Errorf("%w: %s", err, firstLine(stderr.String()))
 	}
 	return stdout.Bytes(), nil

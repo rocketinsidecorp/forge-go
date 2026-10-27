@@ -56,7 +56,7 @@ func runCheck(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	ctx := context.Background()
-	if err := compileFrontend(".", stdout); err != nil {
+	if _, err := compileFrontend(".", stderr); err != nil {
 		return err
 	}
 	for _, step := range [][]string{{"build", "./..."}, {"vet", "./..."}} {

@@ -40,11 +40,12 @@ import (
 	"io/fs"
 )
 
-// files holds the compiled application.js and every compiled file in
-// controllers/. A controller added to controllers/ is compiled, embedded by
-// the pattern and pinned in the import map.
+// files holds every compiled file in dist/. A controller added to
+// controllers/ is compiled, embedded and pinned in the import map. A file
+// elsewhere (lib/format.ts) is compiled, embedded and served too, but pinned
+// only if app/assets/assets.go pins it (forgeassets.PinAllFrom(set, "lib")).
 //
-//go:embed dist/application.js dist/controllers/*.js
+//go:embed dist
 var files embed.FS
 
 // dist is files rooted at dist/, so logical asset names are "application.js"

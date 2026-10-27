@@ -11,27 +11,48 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/rocketinsidecorp/forge-go/internal/deploy"
 	"github.com/rocketinsidecorp/forge-go/internal/frontend"
 )
 
 // tscInstall is the note `forge check` prints when tsc is missing: the check
 // is skipped, not failed, because the application builds and runs without it
 // (esbuild strips types; only the type check needs tsc).
-const tscInstall = "note    tsc not found: app/javascript is compiled but its types were not checked. Install the checker with `npm install --global typescript@" + frontend.TypeScriptVersion + "`, or run it once with `npx --yes --package typescript@" + frontend.TypeScriptVersion + " tsc --noEmit` (Node is only needed for this check)."
+const tscInstall = "note    tsc not found: app/javascript is compiled but its types were not checked. Install the checker with `npm install --global --ignore-scripts typescript@" + frontend.TypeScriptVersion + "` (Node is only needed for this check)."
 
 // compileFrontend compiles the TypeScript front end of the application at
-// root into app/javascript/dist, the files its binary embeds (ADR 0049). It
-// does nothing for an application whose front end is JavaScript (`forge new
-// --js`) or that has none, and says so on stdout only when a file changed.
-func compileFrontend(root string, stdout io.Writer) error {
+// root into app/javascript/dist, the files its binary embeds (ADR 0049), and
+// returns how many files it wrote or removed. It does nothing for an
+// application whose front end is JavaScript (`forge new --js`) or that has
+// none. The notice goes to notices (stderr): stdout belongs to the command.
+func compileFrontend(root string, notices io.Writer) (int, error) {
 	changed, err := frontend.Sync(root)
 	if err != nil {
-		return fmt.Errorf("compile %s: %w", frontend.SourceDir, err)
+		return 0, fmt.Errorf("compile %s: %w", frontend.SourceDir, err)
 	}
 	if len(changed) == 0 {
-		return nil
+		return 0, nil
 	}
-	_, err = fmt.Fprintf(stdout, "  compile %s/*.ts -> %s/%s (%d file(s) updated, esbuild %s)\n", frontend.SourceDir, frontend.SourceDir, frontend.DistDir, len(changed), frontend.EsbuildVersion)
+	_, err = fmt.Fprintf(notices, "  compile %s/*.ts -> %s/%s (%d file(s) updated, esbuild %s)\n", frontend.SourceDir, frontend.SourceDir, frontend.DistDir, len(changed), frontend.EsbuildVersion)
+	return len(changed), err
+}
+
+// runDeploy is `forge deploy`: when it builds the image from the working tree
+// the TypeScript is compiled first, so an edited .ts file does not deploy as
+// the old JavaScript. forge deploy refuses a working tree with uncommitted
+// changes, so a recompiled dist says what to do about it.
+func runDeploy(args []string, stdout, stderr io.Writer) error {
+	changed := 0
+	if deployBuilds(args) {
+		var err error
+		if changed, err = compileFrontend(".", stderr); err != nil {
+			return err
+		}
+	}
+	err := deploy.RunDeploy(args, stdout, stderr)
+	if err != nil && changed > 0 {
+		err = fmt.Errorf("%w\n(forge recompiled %s/%s before deploying: %d file(s) changed because the TypeScript changed since dist was compiled; commit the compiled files with their sources, then deploy again)", err, frontend.SourceDir, frontend.DistDir, changed)
+	}
 	return err
 }
 

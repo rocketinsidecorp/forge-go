@@ -39,6 +39,56 @@ func existingDist(root fs.FS) ([]string, error) {
 	return found, nil
 }
 
+// requireRealDirs refuses a symlink, or anything that is not a directory, at
+// dir or any of its parents below the project root. forge writes compiled files
+// there and removes the ones whose source is gone, and os.Root follows a
+// symlink that stays inside the project: `dist -> ../../public` would make
+// forge delete and overwrite files of public/. A directory that does not exist
+// yet is fine, it is created.
+func requireRealDirs(project *os.Root, dir string) error {
+	current := ""
+	for _, part := range strings.Split(dir, "/") {
+		current = path.Join(current, part)
+		info, err := project.Lstat(filepath.FromSlash(current))
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s is not a plain directory (a symlink, or a file): forge compiles into %s and will not write or remove files through it", current, path.Join(SourceDir, DistDir))
+		}
+	}
+	return nil
+}
+
+// writeAtomic writes content to target through a temporary file in the same
+// directory and a rename, so a reader (go build, an interrupted forge) sees the
+// old file or the new one, never half of it, and a symlink at target is
+// replaced rather than written through.
+func writeAtomic(project *os.Root, target string, content []byte) (err error) {
+	temporary := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".forge-tmp")
+	_ = project.Remove(temporary)
+	file, err := project.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = project.Remove(temporary)
+		}
+	}()
+	if _, writeErr := file.Write(content); writeErr != nil {
+		_ = file.Close()
+		return writeErr
+	}
+	if closeErr := file.Close(); closeErr != nil {
+		return closeErr
+	}
+	return project.Rename(temporary, target)
+}
+
 // Sync compiles the application at dir for production into
 // app/javascript/dist, the files its javascript package embeds. It writes a
 // file only when its content changes (so timestamps and version control stay
@@ -55,12 +105,18 @@ func Sync(dir string) ([]string, error) {
 	if !IsTypeScript(root) {
 		return nil, nil
 	}
+	if err := requireRealDirs(project, path.Join(SourceDir, DistDir)); err != nil {
+		return nil, err
+	}
 	outputs, err := Build(root, Production)
 	if err != nil {
 		return nil, err
 	}
 	var changed []string
 	for name, content := range outputs {
+		if err := requireRealDirs(project, path.Dir(compiledPath(name))); err != nil {
+			return nil, err
+		}
 		target := filepath.FromSlash(compiledPath(name))
 		if current, err := project.ReadFile(target); err == nil && bytes.Equal(current, content) {
 			continue
@@ -68,7 +124,7 @@ func Sync(dir string) ([]string, error) {
 		if err := project.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 			return nil, err
 		}
-		if err := project.WriteFile(target, content, 0o600); err != nil {
+		if err := writeAtomic(project, target, content); err != nil {
 			return nil, err
 		}
 		changed = append(changed, name)
@@ -113,6 +169,9 @@ func Overlay(dir, outDir string) (string, error) {
 	root := project.FS()
 	if !IsTypeScript(root) {
 		return "", nil
+	}
+	if err := requireRealDirs(project, path.Join(SourceDir, DistDir)); err != nil {
+		return "", err
 	}
 	outputs, err := Build(root, Development)
 	if err != nil {

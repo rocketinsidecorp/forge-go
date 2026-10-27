@@ -55,7 +55,7 @@ Contents: [1 Prerequisites](#1-prerequisites) ·
 - `curl` and `openssl` for a few commands, and the `psql` client for `forge db
   console` (section 11).
 - **Optional: Node.js,** only to install `tsc`, the TypeScript type checker
-  (`npm install --global typescript@6.0.3`). Compiling TypeScript needs no
+  (`npm install --global --ignore-scripts typescript@6.0.3`). Compiling TypeScript needs no
   Node: `forge` does it. Without `tsc`, `forge check` skips the type check and
   says so.
 

@@ -59,7 +59,7 @@ forge new shop --api --js          # refused: an API-only application has no fro
 
 `forge dev`, `forge build`, `forge test` and `forge check` compile the
 TypeScript; `forge check` also runs `tsc --noEmit` when `tsc` is installed
-(`npm install --global typescript@6.0.3`). `forge generate view`,
+(`npm install --global --ignore-scripts typescript@6.0.3`). `forge generate view`,
 `controller` and `scaffold` in an application that has no views package yet
 add this base too, in TypeScript.
 

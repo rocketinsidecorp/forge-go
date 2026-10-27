@@ -1084,7 +1084,7 @@ ls app/javascript app/javascript/dist      # application.ts, controllers/*.ts ->
 forge dev                                  # recompiles on every .ts change, inline source maps
 forge build                                # compiles to dist, then bin/myapp serves the precompiled JS (forge deploy compiles first too)
 forge check                                # go build, go vet, and tsc --noEmit when tsc is installed
-npm install --global typescript@6.0.3      # optional: the type checker (Node is needed for this only)
+npm install --global --ignore-scripts typescript@6.0.3      # optional: the type checker (Node is needed for this only)
 forge new myapp --js                       # opt out: plain JavaScript, exactly as before
 ```
 
@@ -1096,9 +1096,15 @@ Turbo 8.0.x's from DefinitelyTyped, because Turbo ships none). Without `tsc`,
 `forge check` still compiles and says once how to install it. In production no
 compiler runs: `app/javascript/dist` is generated, committed, embedded by
 `go build` (so the Dockerfile and CI need nothing else), and a generated test
-fails when a `.ts` file changed and `dist` did not. In development `forge dev`
-hands `go build` the recompiled files through `-overlay`, so `dist` in your
-working tree stays the production output.
+fails when a `.ts` file changed and `dist` did not, or when a compiled file is
+not the one `forge` wrote (each header records the hashes of its source and of
+its body; review `dist/` diffs like code). In development `forge dev` and
+`forge dev --no-reload` hand `go build` the recompiled files through
+`-overlay`, so `dist` in your working tree stays the production output. Commands
+that only run the application (`forge migrate`, `seed`, `routes`, `openapi`)
+compile nothing and print nothing of their own. A `.ts` file outside
+`controllers/` (say `lib/format.ts`) is compiled and embedded; add
+`forgeassets.PinAllFrom(set, "lib")` in `app/assets/assets.go` to import it by name.
 
 Add a controller:
 

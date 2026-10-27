@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/internal/frontend"
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
@@ -92,7 +93,9 @@ func runAppCommandWithInput(nameArgs, appArgs []string, stdin io.Reader, stdout,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return runAppWithInput(ctx, ".", name, appArgs, env, stdin, stdout, stderr)
+	// The application's own command (migrate, seed, openapi, setup, ...)
+	// serves no page: it embeds the committed app/javascript/dist as it is.
+	return runAppWithInput(ctx, ".", name, appArgs, env, stdin, stdout, stderr, false)
 }
 
 // runTest runs go test with the development environment, so database tests
@@ -109,7 +112,7 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 		args = []string{"./..."}
 	}
 	// The tests embed app/javascript/dist (and check it against the sources).
-	if err := compileFrontend(".", stdout); err != nil {
+	if _, err := compileFrontend(".", stderr); err != nil {
 		return err
 	}
 	return goCommand(context.Background(), ".", env, stdout, stderr, append([]string{"test"}, args...)...).Run()
@@ -121,7 +124,7 @@ func runBuild(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	// The binary embeds app/javascript/dist: compile the TypeScript first.
-	if err := compileFrontend(".", stdout); err != nil {
+	if _, err := compileFrontend(".", stderr); err != nil {
 		return err
 	}
 	output := filepath.Join("bin", name)
@@ -155,25 +158,60 @@ func hasKey(env []string, key string) bool {
 // runApp compiles cmd/<name> and runs the binary as a direct child. It does
 // not use `go run`, which does not forward signals: an interrupt delivered
 // only to forge would otherwise leave the application running. Cancelling ctx
-// sends the application an interrupt so it shuts down gracefully.
+// sends the application an interrupt so it shuts down gracefully. It serves
+// pages, so the TypeScript front end is compiled for development, as in
+// `forge dev` (see frontendOverlay).
 func runApp(ctx context.Context, root, name string, args, env []string, stdout, stderr io.Writer) error {
-	return runAppWithInput(ctx, root, name, args, env, nil, stdout, stderr)
+	return runAppWithInput(ctx, root, name, args, env, nil, stdout, stderr, true)
+}
+
+// frontendOverlay compiles the TypeScript front end of the application at root
+// for development (inline source maps) into a temporary directory and returns
+// the `go build` arguments that make the binary embed it where
+// app/javascript/dist is, and the function that removes the directory. The
+// working tree, and the production output committed in it, are not touched.
+// An application without a TypeScript front end gets no arguments.
+func frontendOverlay(root string) (args []string, cleanup func(), err error) {
+	scratch, err := os.MkdirTemp("", "forge-js-")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup = func() { _ = os.RemoveAll(scratch) }
+	overlay, err := frontend.Overlay(root, scratch)
+	if err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	if overlay == "" {
+		return nil, cleanup, nil
+	}
+	return []string{"-overlay", overlay}, cleanup, nil
 }
 
 // runAppWithInput is runApp with standard input for the application; nil
-// means none.
-func runAppWithInput(ctx context.Context, root, name string, args, env []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	// The binary embeds app/javascript/dist: compile the TypeScript first.
-	if err := compileFrontend(root, stdout); err != nil {
-		return err
-	}
+// means none. With overlay the binary embeds the TypeScript compiled for
+// development (the application serves pages: forge dev --no-reload); without
+// it, the committed app/javascript/dist as it is, which is right for commands
+// that serve nothing. Either way nothing is written to the working tree and
+// nothing is printed, so the stdout of `forge routes` or `forge openapi`
+// is exactly the application's.
+func runAppWithInput(ctx context.Context, root, name string, args, env []string, stdin io.Reader, stdout, stderr io.Writer, overlay bool) error {
 	buildDir, err := os.MkdirTemp("", "forge-app-")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.RemoveAll(buildDir) }()
 	binary := filepath.Join(buildDir, name)
-	if err := goCommand(ctx, root, nil, stdout, stderr, "build", "-o", binary, "./cmd/"+name).Run(); err != nil {
+	buildArgs := []string{"build"}
+	if overlay {
+		overlayArgs, cleanup, err := frontendOverlay(root)
+		if err != nil {
+			return fmt.Errorf("compile %s: %w", frontend.SourceDir, err)
+		}
+		defer cleanup()
+		buildArgs = append(buildArgs, overlayArgs...)
+	}
+	if err := goCommand(ctx, root, nil, stdout, stderr, append(buildArgs, "-o", binary, "./cmd/"+name)...).Run(); err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}

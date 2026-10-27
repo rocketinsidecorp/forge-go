@@ -166,7 +166,7 @@ func TestGeneratedTypeScriptTypeChecksAndCatchesTypeErrors(t *testing.T) {
 		if os.Getenv("FORGE_TEST_REQUIRE_TSC") == "true" {
 			t.Fatal("tsc is not on PATH but FORGE_TEST_REQUIRE_TSC=true")
 		}
-		t.Skip("tsc is not on PATH (npm install --global typescript)")
+		t.Skip("tsc is not on PATH (npm install --global --ignore-scripts typescript@<version>)")
 	}
 	dir := matrixApplication(t, "sqlite", nil)
 	var out strings.Builder

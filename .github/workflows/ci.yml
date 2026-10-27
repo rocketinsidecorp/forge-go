@@ -85,9 +85,10 @@ jobs:
           sudo systemctl disable --now ssh.service ssh.socket || true
       - name: Test (race)
         # An explicit timeout: the default is ten minutes, which a slow runner
-        # can exceed with no failing test. TestGeneratedApplication runs in
-        # the generated job below, which names it.
-        run: go test -race -count=1 -timeout 30m -skip '^TestGeneratedApplication$' ./...
+        # can exceed with no failing test. TestGeneratedApplication and
+        # TestGeneratedTypeScript* run in the generated job below, which names
+        # them and installs the pinned tsc they need.
+        run: go test -race -count=1 -timeout 30m -skip '^(TestGeneratedApplication|TestGeneratedTypeScript.*)$' ./...
       - name: Benchmarks
         run: go test -run='^$' -bench=. -benchmem -timeout 30m ./...
       - name: Vulnerabilities
@@ -146,7 +147,7 @@ jobs:
         # scripts. This is the only npm package any workflow installs.
         run: npm install --global --ignore-scripts typescript@6.0.3
       - name: Test generated applications
-        run: go test -count=1 -timeout 30m -run '^TestGeneratedApplication$' -skip '^TestGeneratedApplication$/^readme_quickstart' ./internal/cli
+        run: go test -count=1 -timeout 30m -run '^(TestGeneratedApplication|TestGeneratedTypeScript.*)$' -skip '^TestGeneratedApplication$/^readme_quickstart' ./internal/cli
       - name: README quickstart end to end (PostgreSQL and SQLite)
         # The generated README's Quickstart block, run as written by a real
         # forge binary in a fresh `forge new` application (the PostgreSQL

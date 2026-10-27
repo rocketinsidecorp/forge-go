@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,8 +43,8 @@ func TestCompileFrontendReportsOnlyWhatChanged(t *testing.T) {
 	t.Parallel()
 	root := typeScriptProject(t, false)
 	var out strings.Builder
-	if err := compileFrontend(root, &out); err != nil {
-		t.Fatal(err)
+	if n, err := compileFrontend(root, &out); err != nil || n != 2 {
+		t.Fatalf("compileFrontend = %d, %v", n, err)
 	}
 	if want := "  compile app/javascript/*.ts -> app/javascript/dist (2 file(s) updated, esbuild " + frontend.EsbuildVersion + ")\n"; out.String() != want {
 		t.Errorf("first run printed %q, want %q", out.String(), want)
@@ -52,18 +53,18 @@ func TestCompileFrontendReportsOnlyWhatChanged(t *testing.T) {
 		t.Errorf("the types were not stripped:\n%s", got)
 	}
 	out.Reset()
-	if err := compileFrontend(root, &out); err != nil || out.Len() != 0 {
-		t.Errorf("an up-to-date application printed %q (%v)", out.String(), err)
+	if n, err := compileFrontend(root, &out); err != nil || n != 0 || out.Len() != 0 {
+		t.Errorf("an up-to-date application printed %q (%d, %v)", out.String(), n, err)
 	}
 	// A JavaScript application has nothing to compile.
 	javascript := t.TempDir()
 	writeFile(t, filepath.Join(javascript, "app", "javascript", "application.js"), "import \"controllers\"\n")
-	if err := compileFrontend(javascript, &out); err != nil || out.Len() != 0 {
+	if _, err := compileFrontend(javascript, &out); err != nil || out.Len() != 0 {
 		t.Errorf("a JavaScript application: %q, %v", out.String(), err)
 	}
 	// A syntax error names the file.
 	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "class {")
-	err := compileFrontend(root, &out)
+	_, err := compileFrontend(root, &out)
 	if err == nil || !strings.Contains(err.Error(), "compile app/javascript") || !strings.Contains(err.Error(), "application.ts") {
 		t.Errorf("a syntax error: %v", err)
 	}
@@ -79,12 +80,15 @@ func TestCheckCompilesTheTypeScriptThenTypeChecksIt(t *testing.T) {
 	if got := strings.Join(recorded(t, calls), "|"); got != "go build ./...|go vet ./...|tsc --noEmit --project tsconfig.json" {
 		t.Errorf("tools ran as %q", got)
 	}
-	// The TypeScript is compiled before go build embeds it, and tsc runs last.
-	compile := strings.Index(stdout.String(), "  compile app/javascript")
+	// The TypeScript is compiled before go build embeds it (the notice is on
+	// stderr: stdout is the command's), and tsc runs last.
+	if !strings.Contains(stderr.String(), "  compile app/javascript") || strings.Contains(stdout.String(), "compile app/javascript") {
+		t.Errorf("the compile notice belongs on stderr:\nstdout %q\nstderr %q", stdout.String(), stderr.String())
+	}
 	build := strings.Index(stdout.String(), "  run     go build")
 	tsc := strings.Index(stdout.String(), "  run     tsc --noEmit")
 	ok := strings.Index(stdout.String(), "check: ok")
-	if compile < 0 || compile > build || build > tsc || tsc > ok {
+	if build < 0 || build > tsc || tsc > ok {
 		t.Errorf("stdout out of order:\n%s", stdout.String())
 	}
 }
@@ -99,7 +103,7 @@ func TestCheckWithoutTscSaysHowToGetItAndStillPasses(t *testing.T) {
 	if strings.Count(stdout.String(), "tsc not found") != 1 {
 		t.Errorf("the note must appear exactly once:\n%s", stdout.String())
 	}
-	for _, want := range []string{"npm install --global typescript@" + frontend.TypeScriptVersion, "check: ok"} {
+	for _, want := range []string{"npm install --global --ignore-scripts typescript@" + frontend.TypeScriptVersion, "check: ok"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, stdout.String())
 		}
@@ -163,8 +167,8 @@ func TestBuildAndTestCompileTheTypeScriptFirst(t *testing.T) {
 	if err := runBuild(nil, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "  compile app/javascript") || !strings.HasSuffix(stdout.String(), "built bin/shop\n") {
-		t.Errorf("forge build printed %q", stdout.String())
+	if !strings.Contains(stderr.String(), "  compile app/javascript") || stdout.String() != "built bin/shop\n" {
+		t.Errorf("forge build printed %q, notices %q", stdout.String(), stderr.String())
 	}
 	if _, err := os.Stat(filepath.Join(root, "app", "javascript", "dist", "application.js")); err != nil {
 		t.Errorf("forge build did not compile: %v", err)
@@ -172,10 +176,11 @@ func TestBuildAndTestCompileTheTypeScriptFirst(t *testing.T) {
 	// forge test: edit a source, and the tests see its compiled output.
 	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "import \"controllers\"\nimport \"more\"\n")
 	stdout.Reset()
+	stderr.Reset()
 	if err := runTest(nil, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "  compile app/javascript") || !strings.Contains(readFile(t, filepath.Join(root, "app", "javascript", "dist", "application.js")), `import "more";`) {
+	if !strings.Contains(stderr.String(), "  compile app/javascript") || strings.Contains(stdout.String(), "compile app") || !strings.Contains(readFile(t, filepath.Join(root, "app", "javascript", "dist", "application.js")), `import "more";`) {
 		t.Errorf("forge test did not compile first: %q", stdout.String())
 	}
 	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "class {")
@@ -190,21 +195,51 @@ func TestBuildAndTestCompileTheTypeScriptFirst(t *testing.T) {
 	}
 }
 
-func TestRunAppCompilesTheTypeScriptFirst(t *testing.T) {
+// TestApplicationCommandsPrintOnlyWhatTheApplicationPrints is the regression
+// for a compile notice written in front of the JSON of `forge openapi` (and
+// the table of `forge routes`, and the output of migrate, seed and setup): after
+// a .ts edit, stdout of the commands that run the application is exactly the
+// application's, nothing is written to the working tree, and nothing else is
+// printed. They embed the committed dist as it is: they serve no page.
+func TestApplicationCommandsPrintOnlyWhatTheApplicationPrints(t *testing.T) {
 	root := typeScriptProject(t, true)
-	if err := os.WriteFile(filepath.Join(root, "cmd", "shop", "main.go"), []byte(echoApp), 0o600); err != nil {
+	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), echoApp)
+	if _, err := frontend.Sync(root); err != nil {
 		t.Fatal(err)
 	}
-	var stdout, stderr strings.Builder
-	if err := runApp(context.Background(), root, "shop", []string{"hello"}, nil, &stdout, &stderr); err != nil {
-		t.Fatalf("%v\n%s", err, stderr.String())
+	committed := readFile(t, filepath.Join(root, "app", "javascript", "dist", "application.js"))
+	// A source edit that dist does not have yet.
+	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "import \"controllers\"\nimport \"more\"\n")
+	writeFile(t, filepath.Join(root, "app", "javascript", "lib", "format.ts"), "export const x: number = 1\n")
+
+	var out, errOut strings.Builder
+	if err := runRoutesAt(nil, &out, &errOut, root); err != nil {
+		t.Fatalf("forge routes: %v\n%s", err, errOut.String())
 	}
-	if !strings.Contains(stdout.String(), "  compile app/javascript") || !strings.Contains(stdout.String(), "args: hello") {
-		t.Errorf("stdout %q", stdout.String())
+	if out.String() != "args: routes env: development\n" || errOut.Len() != 0 {
+		t.Errorf("forge routes printed %q (stderr %q), want only the application's output", out.String(), errOut.String())
 	}
-	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "class {")
-	if err := runApp(context.Background(), root, "shop", nil, nil, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "application.ts") {
-		t.Errorf("a syntax error: %v", err)
+
+	t.Chdir(root)
+	for command, run := range map[string]func([]string, io.Writer, io.Writer) error{
+		"openapi": runOpenAPI,
+		"seed":    runSeed,
+		"migrate": runMigrate,
+	} {
+		out.Reset()
+		errOut.Reset()
+		if err := run(nil, &out, &errOut); err != nil {
+			t.Fatalf("forge %s: %v\n%s", command, err, errOut.String())
+		}
+		if want := "args: " + command + " env: development\n"; out.String() != want || errOut.Len() != 0 {
+			t.Errorf("forge %s printed %q (stderr %q), want %q", command, out.String(), errOut.String(), want)
+		}
+	}
+	if got := readFile(t, filepath.Join(root, "app", "javascript", "dist", "application.js")); got != committed {
+		t.Errorf("an application command rewrote dist:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "app", "javascript", "dist", "lib", "format.js")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("an application command compiled into the working tree: %v", err)
 	}
 }
 
@@ -363,11 +398,48 @@ func TestDeployCompilesTheTypeScriptBeforeBuildingTheImage(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "import \"controllers\"\n")
 	stderr.Reset()
-	// No config/deploy.yml: deploy itself fails, after the compilation.
-	if code := Run([]string{"deploy"}, &stdout, &stderr); code == 0 || strings.Contains(stderr.String(), "compile app/javascript") {
+	// No config/deploy.yml: deploy itself fails, after the compilation, and
+	// the error says that the recompiled dist needs committing (deploy refuses
+	// a working tree with uncommitted changes).
+	if code := Run([]string{"deploy"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "read deploy config") ||
+		!strings.Contains(stderr.String(), "forge recompiled app/javascript/dist before deploying") || !strings.Contains(stderr.String(), "commit the compiled files") {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	// Nothing changed the second time: the deploy error is not annotated.
+	stderr.Reset()
+	if code := Run([]string{"deploy"}, &stdout, &stderr); code == 0 || strings.Contains(stderr.String(), "recompiled") {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 	if !strings.Contains(readFile(t, filepath.Join(root, "app", "javascript", "dist", "application.js")), `import "controllers";`) {
 		t.Error("forge deploy did not compile first")
+	}
+}
+
+// TestRunAppServesTheDevelopmentBuildLikeForgeDev keeps `forge dev --no-reload`
+// consistent with the reloading mode: the binary embeds the TypeScript compiled
+// for development, with inline source maps, through the overlay, and the
+// committed production output in the working tree is not rewritten.
+func TestRunAppServesTheDevelopmentBuildLikeForgeDev(t *testing.T) {
+	t.Parallel()
+	root := typeScriptProject(t, true)
+	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), embedApp)
+	writeFile(t, filepath.Join(root, "app", "javascript", "javascript.go"), embedPackage)
+	if _, err := frontend.Sync(root); err != nil {
+		t.Fatal(err)
+	}
+	production := readFile(t, filepath.Join(root, "app", "javascript", "dist", "controllers", "hello_controller.js"))
+	var stdout, stderr strings.Builder
+	if err := runApp(context.Background(), root, "shop", nil, nil, &stdout, &stderr); err != nil {
+		t.Fatalf("%v\n%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "\ntrue\n") || strings.Contains(stdout.String(), "Compiled from") || stderr.Len() != 0 {
+		t.Errorf("stdout %q stderr %q: want the development build (source map, no header)", stdout.String(), stderr.String())
+	}
+	if got := readFile(t, filepath.Join(root, "app", "javascript", "dist", "controllers", "hello_controller.js")); got != production {
+		t.Error("forge dev --no-reload rewrote the committed production output")
+	}
+	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "class {")
+	if err := runApp(context.Background(), root, "shop", nil, nil, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "application.ts") {
+		t.Errorf("a syntax error: %v", err)
 	}
 }

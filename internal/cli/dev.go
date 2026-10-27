@@ -17,7 +17,6 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/internal/devloop"
-	"github.com/rocketinsidecorp/forge-go/internal/frontend"
 )
 
 const (
@@ -56,7 +55,7 @@ func runDev(args []string, stdout, stderr io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if options.noReload {
-		return runAppWithInput(ctx, ".", name, nil, env, nil, stdout, stderr)
+		return runApp(ctx, ".", name, nil, env, stdout, stderr)
 	}
 	return devLoop(ctx, ".", name, env, options, stdout, stderr)
 }
@@ -219,18 +218,12 @@ type devApp struct {
 func (a *devApp) build(ctx context.Context, output string) error {
 	var out cappedBuffer
 	args := []string{"build"}
-	scratch, err := os.MkdirTemp("", "forge-dev-js-")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(scratch) }()
-	overlay, err := frontend.Overlay(a.root, scratch)
+	overlay, cleanup, err := frontendOverlay(a.root)
 	if err != nil {
 		return &devloop.BuildError{Output: err.Error()}
 	}
-	if overlay != "" {
-		args = append(args, "-overlay", overlay)
-	}
+	defer cleanup()
+	args = append(args, overlay...)
 	command := goCommand(ctx, a.root, nil, &out, &out, append(args, "-o", output, "./cmd/"+a.name)...)
 	devloop.IsolateCommand(command) // cancelling the build ends the compiler and linker too
 	err = command.Run()

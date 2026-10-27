@@ -215,7 +215,7 @@ func currentCommandCatalog() commandCatalog {
 			Summary:     "Type-check the application: go build ./... and go vet ./..., and tsc --noEmit for a TypeScript front end when tsc is on PATH (the counterpart of Forge-Rust's cargo check --all-targets). The TypeScript is compiled first, so go build embeds what the sources say.",
 			SideEffects: []string{"subprocess", "filesystem_write"},
 			Examples:    []string{"forge check"},
-			Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "Runs the go tool (and tsc, when found) in the current directory without a shell; they inherit the caller environment and write no binary. A TypeScript front end is compiled into app/javascript/dist first (files are written only when their content changes). Without tsc on PATH the TypeScript is not type-checked and one note says how to install it (npm install --global typescript@6.0.3). Forge .env files are not loaded."},
+			Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "Runs the go tool (and tsc, when found) in the current directory without a shell; they inherit the caller environment and write no binary. A TypeScript front end is compiled into app/javascript/dist first (files are written only when their content changes). Without tsc on PATH the TypeScript is not type-checked and one note says how to install it (npm install --global --ignore-scripts typescript@6.0.3). Forge .env files are not loaded."},
 		},
 		{
 			Name: "format", Usage: "forge format [--check]",

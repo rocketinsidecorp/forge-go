@@ -50,9 +50,20 @@ func TestCompileStripsTypesAndKeepsImportsAsWritten(t *testing.T) {
 			t.Errorf("output still has %q:\n%s", forbidden, text)
 		}
 	}
-	name, hash, ok := ParseHeader(output)
-	if !ok || name != "controllers/hello_controller.ts" || hash != SourceHash([]byte(controllerSource)) {
-		t.Errorf("header = %q %q %v", name, hash, ok)
+	name, hash, intact, ok := ParseHeader(output)
+	if !ok || !intact || name != "controllers/hello_controller.ts" || hash != SourceHash([]byte(controllerSource)) {
+		t.Errorf("header = %q %q intact=%v ok=%v", name, hash, intact, ok)
+	}
+	// The header also records the hash of the body: a hand edit or a
+	// truncation is detected.
+	for what, tampered := range map[string][]byte{
+		"an edit":          []byte(strings.Replace(text, "greet(greeting)", "greet(g)", 1)),
+		"a truncation":     output[:len(output)-5],
+		"an appended line": append(append([]byte{}, output...), "alert(1)\n"...),
+	} {
+		if _, _, intact, ok := ParseHeader(tampered); !ok || intact {
+			t.Errorf("%s was not detected: intact=%v ok=%v", what, intact, ok)
+		}
 	}
 	again, err := Compile("controllers/hello_controller.ts", []byte(controllerSource), Production)
 	if err != nil || string(again) != text {
@@ -86,7 +97,7 @@ func TestCompileDevelopmentHasAnInlineSourceMapAndNoHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(output)
-	if _, _, ok := ParseHeader(output); ok || strings.HasPrefix(text, "// Compiled") {
+	if _, _, _, ok := ParseHeader(output); ok || strings.HasPrefix(text, "// Compiled") {
 		t.Errorf("a development build must not carry the production header (its line would shift the map):\n%s", text)
 	}
 	if !strings.Contains(text, "//# sourceMappingURL=data:application/json;base64,") {
@@ -115,8 +126,10 @@ func TestCompileRefusesAnOversizedSource(t *testing.T) {
 
 func TestParseHeaderRejectsOtherText(t *testing.T) {
 	t.Parallel()
-	for _, text := range []string{"", "export {}\n", "// Compiled from x.ts by someone\n", "// Compiled from x.ts by forge (esbuild 1.0); do not edit. source-sha256: ABC\n"} {
-		if _, _, ok := ParseHeader([]byte(text)); ok {
+	for _, text := range []string{"", "export {}\n", "// Compiled from x.ts by someone\n", "// Compiled from x.ts by forge (esbuild 1.0); do not edit. source-sha256: ABC\n",
+		// The previous header, without the body hash.
+		"// Compiled from x.ts by forge (esbuild 1.0); do not edit. source-sha256: " + strings.Repeat("a", 64) + "\n"} {
+		if _, _, _, ok := ParseHeader([]byte(text)); ok {
 			t.Errorf("%q parsed as a header", text)
 		}
 	}
@@ -516,5 +529,127 @@ func main() {
 	want := "app/javascript/dist/application.js: import \"controllers\";\napp/javascript/dist/controllers/index.js: const x = 1;\n"
 	if string(output) != want {
 		t.Errorf("embedded files:\n%s\nwant:\n%s", output, want)
+	}
+}
+
+func TestSourcesRejectsNamesTheHeaderAndTheAssetTableCannotCarry(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"my controller.ts", "a\tb.ts", "a\nb.ts", "café.ts", "_private.ts", ".hidden.ts", "dir/_x.ts", "a:b.ts", "a$b.ts", "a'b.ts"} {
+		files := fstest.MapFS{"app/javascript/application.ts": {}, "app/javascript/" + name: {}}
+		if _, err := Sources(files); err == nil || !strings.Contains(err.Error(), "may contain only") {
+			t.Errorf("%q: err = %v", name, err)
+		}
+	}
+	for _, name := range []string{"lib/format.ts", "controllers/hello_controller.ts", "a-b_c.d.ts", "v2/x.ts", "-x.ts"} {
+		if _, err := Sources(fstest.MapFS{"app/javascript/" + name: {}}); err != nil {
+			t.Errorf("%q: %v", name, err)
+		}
+	}
+}
+
+// TestSyncRefusesToWriteOrRemoveThroughASymlink is the reviewer's repro: with
+// dist -> ../../public, the orphan removal deleted public/important.js.
+func TestSyncRefusesToWriteOrRemoveThroughASymlink(t *testing.T) {
+	t.Parallel()
+	root := writeApp(t, map[string]string{
+		"app/javascript/application.ts": "import \"controllers\"\n",
+		"public/important.js":           "keep me\n",
+		"public/other.txt":              "keep me too\n",
+	})
+	if err := os.Symlink(filepath.Join("..", "..", "public"), filepath.Join(root, "app", "javascript", "dist")); err != nil {
+		t.Skipf("symlinks are not available: %v", err)
+	}
+	if _, err := Sync(root); err == nil || !strings.Contains(err.Error(), "not a plain directory") {
+		t.Fatalf("Sync through a symlinked dist: %v", err)
+	}
+	if got := read(t, root, "public/important.js"); got != "keep me\n" {
+		t.Errorf("public/important.js = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "public", "application.js")); !os.IsNotExist(err) {
+		t.Errorf("a compiled file was written through the symlink: %v", err)
+	}
+	if _, err := Overlay(root, t.TempDir()); err == nil {
+		t.Error("Overlay accepted a symlinked dist")
+	}
+
+	// A symlinked subdirectory, a symlinked javascript directory, and dist as a file.
+	nested := writeApp(t, map[string]string{"app/javascript/application.ts": "export {}", "app/javascript/controllers/index.ts": "export {}", "elsewhere/x.js": "keep\n"})
+	if err := os.MkdirAll(filepath.Join(nested, "app", "javascript", "dist"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(nested, "elsewhere"), filepath.Join(nested, "app", "javascript", "dist", "controllers")); err != nil {
+		t.Skipf("symlinks are not available: %v", err)
+	}
+	if _, err := Sync(nested); err == nil || !strings.Contains(err.Error(), "not a plain directory") {
+		t.Errorf("a symlinked dist/controllers: %v", err)
+	}
+	if got := read(t, nested, "elsewhere/x.js"); got != "keep\n" {
+		t.Errorf("elsewhere/x.js = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(nested, "elsewhere", "index.js")); !os.IsNotExist(err) {
+		t.Errorf("a compiled file was written through the subdirectory symlink: %v", err)
+	}
+	file := writeApp(t, map[string]string{"app/javascript/application.ts": "export {}", "app/javascript/dist": "a file"})
+	if _, err := Sync(file); err == nil || !strings.Contains(err.Error(), "not a plain directory") {
+		t.Errorf("dist as a file: %v", err)
+	}
+}
+
+func TestSyncWritesAtomicallyAndReplacesASymlinkedFileInsteadOfWritingThroughIt(t *testing.T) {
+	t.Parallel()
+	root := writeApp(t, map[string]string{"app/javascript/application.ts": "export {}\n", "outside.js": "untouched\n"})
+	dist := filepath.Join(root, "app", "javascript", "dist")
+	if err := os.MkdirAll(dist, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "outside.js"), filepath.Join(dist, "application.js")); err != nil {
+		t.Skipf("symlinks are not available: %v", err)
+	}
+	if changed, err := Sync(root); err != nil || len(changed) != 1 {
+		t.Fatalf("Sync = %v, %v", changed, err)
+	}
+	if got := read(t, root, "outside.js"); got != "untouched\n" {
+		t.Errorf("the symlink target was written through: %q", got)
+	}
+	info, err := os.Lstat(filepath.Join(dist, "application.js"))
+	if err != nil || !info.Mode().IsRegular() {
+		t.Errorf("dist/application.js is not a regular file now: %v %v", info, err)
+	}
+	entries, err := os.ReadDir(dist)
+	if err != nil || len(entries) != 1 {
+		t.Errorf("dist has %v (a temporary file was left): %v", entries, err)
+	}
+}
+
+func TestWriteAtomicReportsFailuresAndLeavesNoTemporaryFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	project, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = project.Close() }()
+	// The target is a non-empty directory: the rename fails, and the
+	// temporary file is removed.
+	if err := os.MkdirAll(filepath.Join(dir, "x.js", "keep"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(project, "x.js", []byte("a")); err == nil {
+		t.Error("renaming over a directory succeeded")
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Errorf("a temporary file was left: %v", entries)
+	}
+	// The directory of the target does not exist.
+	if err := writeAtomic(project, "missing/y.js", []byte("a")); err == nil {
+		t.Error("writing below a missing directory succeeded")
+	}
+	// A stale temporary file of an interrupted run is replaced.
+	if err := os.WriteFile(filepath.Join(dir, ".z.js.forge-tmp"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(project, "z.js", []byte("new")); err != nil || read(t, dir, "z.js") != "new" {
+		t.Errorf("stale temporary file: %v", err)
 	}
 }

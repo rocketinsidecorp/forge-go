@@ -645,7 +645,12 @@ There is no bundler and no Node toolchain. `forge dev`, `forge build`,
 API, which only strips the types, into `app/javascript/dist` (generated and
 committed: the application's `javascript` package embeds it, so a plain
 `go build` as in the generated Dockerfile needs nothing else, and a generated
-test fails when a source changed and `dist` did not). The browser resolves
+test fails when a source changed and `dist` did not, or when a compiled file
+is not the one `forge` wrote: its header records the SHA-256 of the source and
+of its own body; review `dist/` diffs like code). Everything under `dist/` is
+embedded; only `application.js` and `controllers/*` are pinned in the import
+map, so a file such as `lib/format.ts` needs `forgeassets.PinAllFrom(set, "lib")`
+in `app/assets/assets.go` to be imported by name. The browser resolves
 bare specifiers through the import
 map the layout renders, which `app/assets/assets.go` builds: `@hotwired/turbo`
 and `@hotwired/stimulus` (the vendored files in package `hotwire`, pinned by
@@ -656,7 +661,7 @@ Digested URLs mean a deploy invalidates exactly the files that changed.
 
 Types are checked by `tsc --noEmit` (`forge check` runs it when `tsc` is on
 `PATH`, and prints one note saying how to install it when not:
-`npm install --global typescript@6.0.3`). `tsconfig.json` is strict, resolves
+`npm install --global --ignore-scripts typescript@6.0.3`). `tsconfig.json` is strict, resolves
 the import map's bare names with `paths`, and finds the declarations of Turbo
 and Stimulus in `app/javascript/types/` (copied unchanged from the npm
 packages; `types/README.md` has the provenance).

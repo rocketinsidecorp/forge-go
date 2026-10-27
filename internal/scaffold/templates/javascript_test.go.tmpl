@@ -12,14 +12,16 @@ import (
 )
 
 // header is the first line `forge build` writes into every compiled file.
-var header = regexp.MustCompile(`^// Compiled from (\S+) by forge \([a-z]+ [0-9.]+\); do not edit\. source-sha256: ([0-9a-f]{64})\n`)
+var header = regexp.MustCompile(`^// Compiled from (\S+) by forge \([a-z]+ [0-9.]+\); do not edit\. source-sha256: ([0-9a-f]{64}) output-sha256: ([0-9a-f]{64})\n`)
 
 // TestCompiledJavaScriptMatchesTheTypeScript fails when a .ts file changed and
 // app/javascript/dist did not, or the other way round: the binary embeds dist,
-// so a stale file would serve code nobody wrote. Run `forge build` (or
-// `forge dev`, `forge check`, `forge test`) to compile again. The test reads
-// the sources and the header of each compiled file; it compiles nothing, so it
-// needs no tool besides Go.
+// so a stale file would serve code nobody wrote. It also fails when a compiled
+// file is not the one forge wrote (hand-edited or truncated): the header
+// records the hash of the body. Run `forge build` (or `forge dev`,
+// `forge check`, `forge test`) to compile again. The test compiles nothing, so
+// it needs no tool besides Go. Review changes to dist like code: they are what
+// runs in every browser.
 func TestCompiledJavaScriptMatchesTheTypeScript(t *testing.T) {
 	t.Parallel()
 	sources := map[string][]byte{}
@@ -67,6 +69,11 @@ func TestCompiledJavaScriptMatchesTheTypeScript(t *testing.T) {
 			t.Errorf("dist/%s says it was compiled from %s, not %s (run forge build)", name, match[1], source)
 		case string(match[2]) != hex.EncodeToString(sum[:]):
 			t.Errorf("dist/%s is stale: %s changed since it was compiled (run forge build)", name, source)
+		default:
+			body := sha256.Sum256(output[len(match[0]):])
+			if string(match[3]) != hex.EncodeToString(body[:]) {
+				t.Errorf("dist/%s is not what forge build wrote: its content does not match the hash in its header (run forge build)", name)
+			}
 		}
 	}
 	err = filepath.WalkDir("dist", func(path string, entry fs.DirEntry, walkErr error) error {

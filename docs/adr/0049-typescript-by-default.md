@@ -75,21 +75,47 @@ MySQL; tests assert the `--js` file set and contents).
    `controllers/hello_controller.js`). The production binary serves
    precompiled, digested JavaScript; nothing compiles at runtime.
 
-`forge dev`, `forge build`, `forge test`, `forge check`, the commands that run
-the application (`forge migrate`, `forge setup`, `forge seed`,
-`forge dev --no-reload`) and `forge deploy` (which builds the image from the
-working tree, unless `--skip-build` or `--dry-run`) compile before building
-(`frontend.Sync`: only files whose content changed are written, files whose
-source is gone are removed).
+`forge build`, `forge test`, `forge check` and `forge deploy` (which builds the
+image from the working tree, unless `--skip-build` or `--dry-run`) compile
+before building (`frontend.Sync`: only files whose content changed are
+written, files whose source is gone are removed). The compile notice goes to
+stderr. `forge deploy` refuses a working tree with uncommitted changes, so when
+it had to recompile it adds to its error that the recompiled `dist` needs
+committing. The commands that run the application without serving a page
+(`forge migrate`, `rollback`, `setup`, `seed`, `routes`, `openapi`) compile
+nothing and print nothing of their own: they embed the committed `dist`, so
+their stdout is exactly the application's (a regression test pins it for
+`routes`, `openapi`, `seed` and `migrate`).
 
-**Staleness is a test failure, not a silent bug.** Every compiled file starts
-with `// Compiled from NAME.ts by forge (esbuild X); do not edit.
-source-sha256: <hash>`. The generated `app/javascript/javascript_test.go`
-hashes each `.ts` source with the standard library and compares: a changed
-source with an old `dist`, a missing output and an orphan output all fail
-`go test`, so CI catches a forgotten `forge build` without needing esbuild.
+**Staleness and tampering are test failures, not silent bugs.** Every compiled
+file starts with `// Compiled from NAME.ts by forge (esbuild X); do not edit.
+source-sha256: <hash> output-sha256: <hash>`. The generated
+`app/javascript/javascript_test.go` hashes each `.ts` source and each compiled
+body with the standard library and compares: a changed source with an old
+`dist`, a missing output, an orphan output, and a hand-edited or truncated
+compiled file all fail `go test`, so CI catches a forgotten `forge build`
+without needing esbuild. The hashes are not a signature: whoever can edit
+`dist` can edit its header too. **`dist/` diffs are code and must be reviewed
+like code** (they are what runs in every browser); the check only makes a
+mismatch between sources and output visible.
 
-**`forge dev` does not rewrite the committed output.** It compiles with inline
+File names: a `.ts` name may contain only letters, digits, `.`, `_` and `-`,
+and no component may start with `.` or `_` (`frontend.Sources` refuses
+others with an error). Those are the names the asset table accepts, what
+`go:embed` embeds, and what the header can carry. `dist` and the directories
+below it must be real directories: `forge` refuses to write or remove through a
+symlink there (a `dist -> ../../public` link would otherwise make orphan
+removal delete files of `public/`), and writes each file through a temporary
+file and a rename.
+
+The `javascript` package embeds all of `dist/`. Every compiled file is served
+with a digested URL; only `application.js` and `controllers/*` are pinned in the
+import map, so a file elsewhere (`lib/format.ts`) needs a pin in
+`app/assets/assets.go` (`forgeassets.PinAllFrom(set, "lib")`) to be imported by
+name.
+
+**`forge dev` does not rewrite the committed output** (nor does
+`forge dev --no-reload`, which serves pages too and uses the same overlay). It compiles with inline
 source maps into a temporary directory and passes the files to `go build
 -overlay`, which makes them appear at `app/javascript/dist` for that build
 only (new files and deletions included; `TestGoBuildEmbedsTheOverlay` pins the
@@ -113,16 +139,19 @@ type-check.
 
 `forge check` compiles, runs `go build ./...` and `go vet ./...`, then
 `tsc --noEmit --project tsconfig.json` when `tsc` is on `PATH`. When it is not,
-it prints one note (`npm install --global typescript@6.0.3`, or a one-off
-`npx`) and still succeeds, because the application compiles and runs without
+it prints one note (`npm install --global --ignore-scripts typescript@6.0.3`,
+the command CI runs) and still succeeds, because the application compiles and runs without
 it. A `tsc` failure fails the command (exit 1).
 
 Both CI files run it: the generated application's `ci.yml` (TypeScript
-applications only) and this repository's `generated` job, whose tests
-(`TestGeneratedTypeScriptTypeChecksAndCatchesTypeErrors`) type-check a
-generated application and prove that a type error, an unknown member and a
-missing Stimulus export fail. `FORGE_TEST_REQUIRE_TSC=true` makes a missing
-`tsc` a failure there instead of a skip.
+applications only) and this repository's `generated` job, which installs the
+pinned `tsc`, sets `FORGE_TEST_REQUIRE_TSC=true` (a missing `tsc` fails instead
+of skipping) and runs `TestGeneratedApplication|TestGeneratedTypeScript.*`: they
+type-check a generated application and prove that a type error, an unknown
+member and a missing Stimulus export fail, and that a binary built with plain
+`go build` serves the committed `dist`. The race job skips the same pattern, so
+those tests run only where the pin is installed
+(`TestTypeScriptTestsRunInTheJobThatPinsTsc` keeps the three in step).
 
 ### Architecture
 
@@ -238,9 +267,10 @@ files, with [oxc](https://oxc.rs) replacing esbuild:
   `cargo tree -i`).
 - Keep the contract of the output, not its bytes: imports untouched, ESM,
   ES2022, no bundling. The first line of each compiled file is
-  `// Compiled from NAME.ts by forge (TOOL X); do not edit. source-sha256: <hex>`,
-  where the generated freshness test only parses the name and the hash, so
-  Forge-Rust writes `oxc` and its own version for TOOL.
+  `// Compiled from NAME.ts by forge (TOOL X); do not edit. source-sha256: <hex> output-sha256: <hex>`
+  (the second hash is of the file after the header line), where the generated
+  freshness test only parses the name and the two hashes, so Forge-Rust writes
+  `oxc` and its own version for TOOL. Use the same name rule for sources.
 - The freshness test uses only `sha2` and the standard library, not oxc.
 - Development without touching the committed output depends on how Forge-Rust
   embeds assets: if debug builds read from disk, write the development output

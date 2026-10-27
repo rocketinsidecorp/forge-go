@@ -97,12 +97,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "destroy":
 		err = runDestroy(args[1:], stdout)
 	case "deploy":
-		if deployBuilds(args[1:]) {
-			err = compileFrontend(".", stdout)
-		}
-		if err == nil {
-			err = deploy.RunDeploy(args[1:], stdout, commandStderr)
-		}
+		err = runDeploy(args[1:], stdout, commandStderr)
 	case "logs":
 		err = deploy.RunLogs(args[1:], stdout, commandStderr)
 	case "app":
