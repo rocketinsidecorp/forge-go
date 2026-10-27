@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
@@ -663,5 +664,54 @@ func TestJoinsAndChildrenOfModelsAndGlobalResources(t *testing.T) {
 	generateIn(t, api, "join", "account", "label")
 	if exists(api, "app/adapters/htmlui/account_labels.go") || !exists(api, "app/adapters/httpapi/account_labels.go") {
 		t.Error("an API-only join has pages, or no JSON routes")
+	}
+}
+
+// TestAssociationsReportWriteFailures: a generator or destroy whose output
+// cannot be written says so instead of reporting success.
+func TestAssociationsReportWriteFailures(t *testing.T) {
+	t.Parallel()
+	dir := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	generateIn(t, dir, "scaffold", "post", "title:string")
+	generateIn(t, dir, "scaffold", "tag", "name:string")
+	now := tenancyNow.Add(-time.Hour)
+	for _, args := range [][]string{
+		{"scaffold", "comment", "body:text", "post:references"},
+		{"join", "post", "tag"},
+	} {
+		if err := runGenerateEnv(args, failingWriter{}, dir, nil, now); err == nil {
+			t.Errorf("generate %v with a broken output: no error", args)
+		}
+	}
+	if err := runDestroyEnv([]string{"join", "post", "tag"}, failingWriter{}, dir, nil, now); err == nil {
+		t.Error("destroy join with a broken output: no error")
+	}
+	if err := runDestroyEnv([]string{"scaffold", "comment", "body:text", "post:references", "--dry-run"}, failingWriter{}, dir, nil, now); err == nil {
+		t.Error("destroy with a broken output: no error")
+	}
+
+	unsupported := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	writeFile(t, filepath.Join(unsupported, ".env.development"), "FORGE_DATABASE_URL=redis://localhost\n")
+	if _, err := generate(unsupported, "join", "post", "tag"); err == nil || !strings.Contains(err.Error(), "does not select a supported database") {
+		t.Errorf("a join on an unsupported database: %v", err)
+	}
+	if _, err := parseResourceField(strings.Repeat("a", 38) + ":references"); err == nil || !strings.Contains(err.Error(), "longer than 40 characters") {
+		t.Errorf("a reference whose column is too long: %v", err)
+	}
+	long := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	left, right := "a"+strings.Repeat("b", 18), "c"+strings.Repeat("d", 18)
+	generateIn(t, long, "resource", left, "name:string")
+	generateIn(t, long, "resource", right, "name:string")
+	if _, err := generate(long, "join", left, right); err == nil || !strings.Contains(err.Error(), "too long for database identifiers") {
+		t.Errorf("a join whose constraint names are too long: %v", err)
+	}
+	seam := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	generateIn(t, seam, "scaffold", "post", "title:string")
+	generateIn(t, seam, "scaffold", "tag", "name:string")
+	generateIn(t, seam, "join", "post", "tag")
+	routes := filepath.Join(seam, "app", "bootstrap", "routes_gen.go")
+	writeFile(t, routes, readFile(t, routes)+"// mine\n")
+	if _, err := destroy(seam, "join", "post", "tag"); err == nil || !strings.Contains(err.Error(), "edited by hand") {
+		t.Errorf("destroy join with an edited seam: %v", err)
 	}
 }
