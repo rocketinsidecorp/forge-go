@@ -19,10 +19,8 @@ import (
 
 	"[[.Module]]/app/adapters/persistence"
 	"[[.Module]]/app/domain"
-	"[[.Module]]/db"
-[[- if and .Postgres .Identity]]
-	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
-[[- end]]
+	"[[.Module]]/app/bootstrap"
+
 	"github.com/rocketinsidecorp/forge-go/fault"
 [[- if .Postgres]]
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
@@ -50,14 +48,16 @@ import (
 func new[[.Title]]Repository(t *testing.T) (*persistence.[[.Title]]Repository, [[if .Postgres]]*postgrestest.RLS[[else]]*sqldb.DB[[end]]) {
 	t.Helper()
 [[- if .Postgres]]
-	// Migrated as the migration role that owns the schema[[if .Identity]] (the migration
-	// seeds forge_permissions, so the identity migrations run first)[[end]]. The
-	// repository runs as the runtime role the application serves with: not a
-	// superuser, no BYPASSRLS, not the owner, only data privileges.
-	database := postgrestest.NewRLS(t, [[if .Identity]]authpostgres.Migrations(), [[end]]db.Migrations())
+	// Migrated, as the application's migrate command does
+	// (bootstrap.MigrationSets), as the migration role that owns the schema.
+	// The repository runs as the runtime role the application serves with:
+	// not a superuser, no BYPASSRLS, not the owner, only data privileges.
+	database := postgrestest.NewRLS(t, bootstrap.MigrationSets()...)
 	return persistence.New[[.Title]]Repository(database.Runtime), database
 [[- else]]
-	database := [[.Database]]test.NewMigrated(t, db.Migrations())
+	// Migrated as the application's migrate command does
+	// (bootstrap.MigrationSets).
+	database := [[.Database]]test.NewMigratedSets(t, bootstrap.MigrationSets()...)
 	return persistence.New[[.Title]]Repository(database), database
 [[- end]]
 }
@@ -500,9 +500,9 @@ func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 	own := mustCreate[[.Title]](t, ctxA, repo, true)
 	foreign := mustCreate[[.Title]](t, ctxB, repo, true)
 
-	// As tenant A, with no tenant_id predicate anywhere.
+	// As tenant A, with no org_id predicate anywhere.
 	ctx := context.Background()
-	tenantID := tenantB.ID
+	orgID := tenantB.ID
 	err := database.Runtime.InTenantTx(ctxA, func(tx pgx.Tx) error {
 		var visible, foreignVisible int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM [[.Q .Plural]]`).Scan(&visible); err != nil {

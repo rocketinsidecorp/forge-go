@@ -70,11 +70,13 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	deprecatedPath := flags.String("framework-path", "", "deprecated alias of --forge-path; removed in the next minor version")
 	skipDeps := flags.Bool("skip-deps", false, "generate files without resolving Go dependencies")
 	flags.BoolVar(skipDeps, "skip-lockfile", false, "alias of --skip-deps (Forge-Rust's name: go.sum is the lockfile)")
-	database := flags.String("database", "postgresql", "database: "+strings.Join(scaffold.Databases, ", ")+" or none")
-	flags.StringVar(database, "d", "postgresql", "shorthand for --database")
+	database := flags.String("database", "", "database: "+strings.Join(scaffold.Databases, ", ")+" or none (default: sqlite, or postgresql with --tenants)")
+	flags.StringVar(database, "d", "", "shorthand for --database")
 	skipDatabase := flags.Bool("skip-database", false, "same as --database none")
 	locale := flags.String("locale", "en", "default locale: "+strings.Join(scaffold.Locales, ", ")+" (en.json is always generated)")
-	apiAuth := flags.Bool("api-auth", false, "also mount the JSON authentication APIs (bearer and cookie login, MFA completion, JSON password recovery, GET /v1/auth/session); PostgreSQL only")
+	authentication := flags.Bool("auth", false, "generate Forge identity: sign-in, sign-out, two-factor and password-reset pages, the identity migrations and the setup command (one hidden organization)")
+	tenants := flags.Bool("tenants", false, "generate a multi-tenant application: users belong to organizations, generated tables take --org-scoped or --global (implies --auth; PostgreSQL unless -d is given)")
+	apiAuth := flags.Bool("api-auth", false, "also mount the JSON authentication APIs (bearer and cookie login, MFA completion, JSON password recovery, GET /v1/auth/session); implies --auth")
 	apiOnly := flags.Bool("api", false, "generate an API-only application (like rails new --api): JSON handlers without views, assets, JavaScript, translations, sign-in pages or browser middleware")
 	name, err := parseSinglePositional(flags, args, "NAME")
 	if err != nil {
@@ -87,15 +89,24 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if *skipDatabase {
-		explicit := false
-		flags.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "database" || f.Name == "d" })
-		if explicit {
-			return errors.New("--skip-database conflicts with --database")
-		}
+	explicit := false
+	flags.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "database" || f.Name == "d" })
+	switch {
+	case *skipDatabase && explicit:
+		return errors.New("--skip-database conflicts with --database")
+	case *skipDatabase:
 		*database = "none"
+	case explicit && *database == "":
+		return usageError{"--database needs a value: " + strings.Join(scaffold.Databases, ", ") + " or none"}
+	case !explicit && *tenants:
+		// Organizations are isolated by row-level security on PostgreSQL
+		// (decision D35); -d chooses another database explicitly, which
+		// isolates them by the org_id predicate of every query.
+		*database = "postgresql"
+	case !explicit:
+		*database = "sqlite"
 	}
-	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale, APIAuth: *apiAuth, API: *apiOnly})
+	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale, Auth: *authentication, Tenants: *tenants, APIAuth: *apiAuth, API: *apiOnly})
 	if err != nil {
 		return err
 	}
@@ -118,12 +129,39 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("resolve dependencies (files were generated; fix the cause and run `go mod tidy` in %s): %w", opts.Dir, err)
 		}
 	}
-	visit := "visit http://127.0.0.1:8080/ for the welcome screen."
-	if opts.API {
-		visit = "curl http://127.0.0.1:8080/ and http://127.0.0.1:8080/health (JSON)."
-	}
-	_, err = fmt.Fprintf(stdout, "\nNext steps:\n  cd %s\n  docker compose up --build   # or: forge dev\n\n  After it starts, %s\n\n  Traces, metrics and logs in Grafana (Prometheus, Tempo, Loki): see \"Observability stack\" in README.md.\n", opts.Dir, visit)
+	_, err = io.WriteString(stdout, nextSteps(opts))
 	return err
+}
+
+// nextSteps is what `forge new` prints last: the README quickstart's
+// commands for this application.
+func nextSteps(opts scaffold.Options) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "\nNext steps:\n  cd %s\n", opts.Dir)
+	server := opts.Database != "" && opts.Database != "sqlite"
+	if server {
+		fmt.Fprintf(&out, "  docker compose up -d --wait %s\n", map[string]string{"postgresql": "postgres", "mysql": "mysql", "mariadb": "mariadb"}[opts.Database])
+	}
+	if opts.Database != "" {
+		out.WriteString("  forge migrate\n")
+	}
+	switch {
+	case opts.Auth && opts.Tenants:
+		out.WriteString("  forge setup --org acme --email you@example.com\n")
+	case opts.Auth:
+		out.WriteString("  forge setup --email you@example.com\n")
+	}
+	out.WriteString("  forge dev\n\n")
+	switch {
+	case opts.API:
+		out.WriteString("  After it starts, curl http://127.0.0.1:8080/ and http://127.0.0.1:8080/health (JSON).\n")
+	case opts.Auth:
+		out.WriteString("  After it starts, sign in at http://localhost:8080/session/new (localhost: the secure sign-in cookies need it).\n")
+	default:
+		out.WriteString("  After it starts, visit http://127.0.0.1:8080/ for the welcome screen.\n")
+	}
+	out.WriteString("  Or run everything in containers: docker compose up --build.\n\n  Traces, metrics and logs in Grafana (Prometheus, Tempo, Loki): see \"Observability stack\" in README.md.\n")
+	return out.String()
 }
 
 // checkAPIConflicts refuses the flags Forge-Rust declares conflicts_with =
@@ -137,7 +175,7 @@ func checkAPIConflicts(flags *flag.FlagSet, apiOnly bool) error {
 	}
 	var conflicts []string
 	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "api-auth" || f.Name == "locale" {
+		if f.Name == "api-auth" || f.Name == "locale" || f.Name == "auth" || f.Name == "tenants" {
 			conflicts = append(conflicts, f.Name)
 		}
 	})

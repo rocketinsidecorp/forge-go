@@ -96,7 +96,15 @@ func DatabaseName() string {
 // returns, and closes it.
 func Migrate(t testing.TB, migrations fs.FS, newMigrator func([]migrate.Migration, *slog.Logger) (*migrate.Migrator, error)) {
 	t.Helper()
-	loaded, err := migrate.LoadMigrations(migrations)
+	MigrateSets(t, []fs.FS{migrations}, newMigrator)
+}
+
+// MigrateSets is Migrate for several independent sets applied as one globally
+// ordered history, the way an application's migrate command composes them
+// (the Forge identity migrations and the application's own).
+func MigrateSets(t testing.TB, sets []fs.FS, newMigrator func([]migrate.Migration, *slog.Logger) (*migrate.Migrator, error)) {
+	t.Helper()
+	loaded, err := migrate.LoadMigrationSets(sets...)
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}

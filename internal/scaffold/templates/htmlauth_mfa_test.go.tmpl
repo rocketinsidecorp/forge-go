@@ -12,8 +12,8 @@ import (
 
 	"{{.Module}}/app/adapters/htmlauth"
 	"github.com/rocketinsidecorp/forge-go/auth"
-	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
-	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	auth{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/auth/{{.DB.Adapter}}"
+	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}/{{.DB.TestPackage}}"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
@@ -72,19 +72,23 @@ func (c *mfaClock) code(t *testing.T, key string) string {
 	return code
 }
 
-// TestMFAPagesAgainstPostgres turns two-factor authentication on, replaces
+// TestMFAPagesAgainstTheIdentityStore turns two-factor authentication on, replaces
 // the authenticator, creates new backup codes and turns it off through the
 // pages and the real identity repository, with the refusals each step must
 // make: no CSRF token, no or a wrong password, a wrong, used or another
-// account's code. It needs FORGE_TEST_DATABASE_URL and is skipped otherwise.
-func TestMFAPagesAgainstPostgres(t *testing.T) {
+// account's code.
+func TestMFAPagesAgainstTheIdentityStore(t *testing.T) {
+{{- if eq .DB.Adapter "postgres"}}
 	database := postgrestest.NewRLS(t, authpostgres.Migrations()).Runtime // as the application serves
-	repository, err := authpostgres.New(database)
+{{- else}}
+	database := {{.DB.TestPackage}}.NewMigrated(t, auth{{.DB.Adapter}}.Migrations())
+{{- end}}
+	repository, err := auth{{.DB.Adapter}}.New(database)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	owner, err := repository.ProvisionOwner(ctx, authpostgres.OwnerAccount{
+	owner, err := repository.ProvisionOwner(ctx, auth{{.DB.Adapter}}.OwnerAccount{
 		Organization: "Acme", TenantSlug: testTenant, Email: testEmail, Password: testPassword,
 	})
 	if err != nil {
@@ -101,12 +105,19 @@ func TestMFAPagesAgainstPostgres(t *testing.T) {
 		sql  string
 		args []any
 	}{
+{{- if eq .DB.Adapter "postgres"}}
 		{"INSERT INTO forge_users (id, email, email_normalized, password_hash) VALUES ($1, 'other@example.com', 'other@example.com', $2)", []any{otherUser, otherHash}},
 		{"INSERT INTO forge_organizations (id, name) VALUES ($1, 'Other')", []any{otherOrganization}},
 		{"INSERT INTO forge_tenants (id, organization_id, slug) VALUES ($1, $2, 'other')", []any{otherTenant, otherOrganization}},
 		{"INSERT INTO forge_memberships (id, user_id, tenant_id) VALUES ($1, $2, $3)", []any{uuid.MustNew(), otherUser, otherTenant}},
+{{- else}}
+		{"INSERT INTO forge_users (id, email, email_normalized, password_hash) VALUES (?, 'other@example.com', 'other@example.com', ?)", []any{otherUser, otherHash}},
+		{"INSERT INTO forge_organizations (id, name) VALUES (?, 'Other')", []any{otherOrganization}},
+		{"INSERT INTO forge_tenants (id, organization_id, slug) VALUES (?, ?, 'other')", []any{otherTenant, otherOrganization}},
+		{"INSERT INTO forge_memberships (id, user_id, tenant_id) VALUES (?, ?, ?)", []any{uuid.MustNew(), otherUser, otherTenant}},
+{{- end}}
 	} {
-		if _, err := database.Exec(ctx, statement.sql, statement.args...); err != nil {
+		if _, err := database.{{if eq .DB.Adapter "postgres"}}Exec{{else}}ExecContext{{end}}(ctx, statement.sql, statement.args...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -290,10 +301,11 @@ func TestMFAPagesAgainstPostgres(t *testing.T) {
 	}
 
 	var denied, succeeded int
-	if err := database.QueryRow(ctx, `
-		SELECT count(*) FILTER (WHERE outcome = 'denied'), count(*) FILTER (WHERE outcome = 'succeeded')
+	if err := database.{{if eq .DB.Adapter "postgres"}}QueryRow{{else}}QueryRowContext{{end}}(ctx, `
+		SELECT COALESCE(SUM(CASE WHEN outcome = 'denied' THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN outcome = 'succeeded' THEN 1 ELSE 0 END), 0)
 		FROM forge_security_audit_events
-		WHERE kind LIKE 'auth.mfa.%' AND subject_id = $1
+		WHERE kind LIKE 'auth.mfa.%' AND subject_id = {{if eq .DB.Adapter "postgres"}}$1{{else}}?{{end}}
 	`, owner.UserID).Scan(&denied, &succeeded); err != nil {
 		t.Fatal(err)
 	}

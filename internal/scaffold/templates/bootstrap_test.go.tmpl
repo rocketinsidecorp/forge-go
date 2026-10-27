@@ -1,12 +1,6 @@
 package bootstrap
 
 import (
-	{{- if and .DB .DB.Identity}}
-	"bytes"
-	"log/slog"
-	"path/filepath"
-	"github.com/rocketinsidecorp/forge-go/auth"
-	{{- end}}
 	"context"
 	"encoding/json"
 	{{- if and .DB (eq .DB.Adapter "postgres")}}
@@ -469,69 +463,6 @@ func TestConfigureRefusesARowSecurityBypassInProduction(t *testing.T) {
 	t.Cleanup(func() { _ = app.Close(context.Background()) })
 	if err := Configure(context.Background(), app); !errors.Is(err, postgres.ErrRowSecurityBypass) {
 		t.Fatalf("Configure as a superuser in production: err = %v, want postgres.ErrRowSecurityBypass", err)
-	}
-}
-{{- end}}
-{{- if .DB.Identity}}
-
-// TestPasswordResetPagesNeedOutgoingMail configures mail (the development
-// file sender) and the reset URL: the reset pages and link appear. Mail
-// without the reset URL refuses to start.
-func TestPasswordResetPagesNeedOutgoingMail(t *testing.T) {
-	cfg := config.Default()
-	cfg.Database = {{.DB.TestPackage}}.Config(t)
-	cfg.Mail.URL = config.NewSecret("file://" + filepath.ToSlash(t.TempDir()))
-	cfg.Mail.From = "{{.Name}} <no-reply@example.com>"
-
-	incomplete, err := forge.New(forge.WithConfig(cfg))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := Configure(context.Background(), incomplete); err == nil || !strings.Contains(err.Error(), "FORGE_AUTH_PASSWORD_RESET_URL") {
-		t.Fatalf("mail without a reset URL: err=%v", err)
-	}
-	_ = incomplete.Close(context.Background())
-
-	cfg.Auth.PasswordResetURL = "http://localhost:8080/passwords/edit"
-	app, err := forge.New(forge.WithConfig(cfg))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := Configure(context.Background(), app); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = app.Close(context.Background()) })
-	signIn := httptest.NewRecorder()
-	app.Handler().ServeHTTP(signIn, httptest.NewRequest(http.MethodGet, "/session/new", nil))
-	if !strings.Contains(signIn.Body.String(), `href="/passwords/new"`) {
-		t.Fatalf("the sign-in page does not link to the reset page:\n%s", signIn.Body.String())
-	}
-	for _, path := range []string{"/passwords/new", "/passwords/edit?token=" + strings.Repeat("A", 43)} {
-		page := httptest.NewRecorder()
-		app.Handler().ServeHTTP(page, httptest.NewRequest(http.MethodGet, path, nil))
-		if page.Code != http.StatusOK {
-			t.Fatalf("GET %s with mail: status=%d", path, page.Code)
-		}
-	}
-}
-
-func TestRecoveryDeliveryPlaceholderFailsClosedWithoutLoggingSecrets(t *testing.T) {
-	var logs bytes.Buffer
-	sender := recoveryDeliveryNotConfigured{logger: slog.New(slog.NewTextHandler(&logs, nil))}
-	token, err := auth.NewRecoveryToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	const email = "private@example.com"
-	err = sender.SendPasswordRecovery(context.Background(), auth.PasswordRecoveryMessage{
-		Email: email,
-		Token: token,
-	})
-	if err == nil {
-		t.Fatal("expected missing delivery adapter to fail closed")
-	}
-	if strings.Contains(logs.String(), email) || strings.Contains(logs.String(), token.Reveal()) {
-		t.Fatalf("delivery placeholder logged sensitive recovery data: %s", logs.String())
 	}
 }
 {{- end}}

@@ -172,7 +172,8 @@ func wiredTestConfig(database string) (imports, config string) {
 		return "\t\"github.com/rocketinsidecorp/forge-go/postgres/postgrestest\"\n",
 			"\tcfg.Database = postgrestest.Config(t)\n\tcfg.Auth.MFAKey = config.NewSecret(\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\")\n"
 	case "sqlite":
-		return "\t\"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest\"\n", "\tcfg.Database = sqlitetest.Config(t)\n"
+		return "\t\"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest\"\n",
+			"\tcfg.Database = sqlitetest.Config(t)\n\tcfg.Auth.MFAKey = config.NewSecret(\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\")\n"
 	default:
 		return "", ""
 	}
@@ -212,7 +213,8 @@ func TestGeneratedControllersBuildWireAndPass(t *testing.T) {
 		t.Run(database.name, func(t *testing.T) {
 			t.Parallel()
 			dir := matrixApplicationFor(t, database.name, "controller", controllerRequests())
-			identity := database.adapter == "postgres"
+			// matrixApplicationFor gives database applications identity.
+			identity := database.adapter != "none"
 			var parts []resourceWiringParts
 			for _, args := range controllerRequests() {
 				request, err := parseControllerArgs(args)

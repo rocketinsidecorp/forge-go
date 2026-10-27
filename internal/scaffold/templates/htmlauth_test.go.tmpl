@@ -16,11 +16,11 @@ import (
 	"{{.Module}}/config/locales"
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/auth"
-	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
+	auth{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/auth/{{.DB.Adapter}}"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/i18n"
-	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}/{{.DB.TestPackage}}"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -36,7 +36,7 @@ const (
 )
 
 // memoryIdentity is one account in one tenant, enough to drive the pages
-// without a database. TestPagesAgainstPostgres uses the real repository.
+// without a database. TestPagesAgainstTheIdentityStore uses the real repository.
 //
 // Like a database with a case-insensitive Unicode collation, it matches logins
 // with strings.ToLower (which folds the Kelvin sign to "k"): the pages must
@@ -241,7 +241,7 @@ func (b *mailbox) none(t *testing.T) {
 // serve mounts the pages behind the middleware app/bootstrap installs, with
 // sessions resolving the session cookie. The pages are in English (en.json),
 // whatever the application's default locale.
-func serve(t *testing.T, browser *auth.Browser, sessions auth.Resolver) http.Handler {
+func serve(t *testing.T, browser *auth.Browser, sessions auth.Resolver, options ...htmlauth.Option) http.Handler {
 	t.Helper()
 	middleware, err := auth.NewMiddleware(sessions)
 	if err != nil {
@@ -274,7 +274,7 @@ func serve(t *testing.T, browser *auth.Browser, sessions auth.Resolver) http.Han
 			t.Fatal(err)
 		}
 	}
-	if err := htmlauth.Register(app, browser, renderer, middleware); err != nil {
+	if err := htmlauth.Register(app, browser, renderer, middleware, options...); err != nil {
 		t.Fatal(err)
 	}
 	return app.Handler()
@@ -732,19 +732,20 @@ func TestUnknownResetTokensAreRefusedBeforeHashing(t *testing.T) {
 	}
 }
 
-// TestPagesAgainstPostgres signs in and out through the real identity
-// repository: an owner created the way `{{.Name}} setup` does it, a session
-// that resolves, and a sign-out that revokes it. It needs
-// FORGE_TEST_DATABASE_URL (`forge test` reads it from .env.development) and
-// is skipped otherwise.
-func TestPagesAgainstPostgres(t *testing.T) {
+// TestPagesAgainstTheIdentityStore signs in and out through the real
+// identity store of this application's database.
+func TestPagesAgainstTheIdentityStore(t *testing.T) {
+{{- if eq .DB.Adapter "postgres"}}
 	database := postgrestest.NewRLS(t, authpostgres.Migrations()).Runtime // as the application serves
-	repository, err := authpostgres.New(database)
+{{- else}}
+	database := {{.DB.TestPackage}}.NewMigrated(t, auth{{.DB.Adapter}}.Migrations())
+{{- end}}
+	repository, err := auth{{.DB.Adapter}}.New(database)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := repository.ProvisionOwner(ctx, authpostgres.OwnerAccount{
+	if _, err := repository.ProvisionOwner(ctx, auth{{.DB.Adapter}}.OwnerAccount{
 		Organization: "Acme", TenantSlug: testTenant, Email: testEmail, Password: testPassword,
 	}); err != nil {
 		t.Fatal(err)
@@ -776,5 +777,37 @@ func TestPagesAgainstPostgres(t *testing.T) {
 	}
 	if _, found, err := repository.ResolveSession(ctx, token.Digest()); err != nil || found {
 		t.Fatalf("the session survived sign-out: found=%v err=%v", found, err)
+	}
+}
+
+
+// TestSingleOrganizationFormsAskForTheEmailOnly: in an application without
+// organizations (forge new --auth) the forms have no organization field, and
+// a sign-in with the email and password reaches the one organization.
+func TestSingleOrganizationFormsAskForTheEmailOnly(t *testing.T) {
+	identity := newMemoryIdentity(t)
+	login, err := auth.NewLoginService(identity, identity, auth.WithDefaultTenant(testTenant))
+	if err != nil {
+		t.Fatal(err)
+	}
+	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: identity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visitor := newClient(t, serve(t, browser, identity, htmlauth.WithOrganizations(false)))
+	page := visitor.do(http.MethodGet, htmlauth.SignInPath, nil)
+	if page.Code != http.StatusOK || strings.Contains(page.Body.String(), `name="tenant"`) {
+		t.Fatalf("the sign-in page asks for an organization:\n%s", page.Body.String())
+	}
+	failed := visitor.submit("/session", url.Values{"email": {testEmail}, "password": {"wrong password!!"}})
+	if failed.Code != http.StatusUnprocessableEntity || strings.Contains(failed.Body.String(), "organization") {
+		t.Fatalf("wrong password status=%d:\n%s", failed.Code, failed.Body.String())
+	}
+	signedIn := visitor.submit("/session", url.Values{"email": {testEmail}, "password": {testPassword}})
+	if signedIn.Code != http.StatusSeeOther {
+		t.Fatalf("sign in status=%d:\n%s", signedIn.Code, signedIn.Body.String())
+	}
+	if _, err := auth.ParseToken(visitor.cookies[auth.SessionCookieName].Value); err != nil {
+		t.Fatalf("no session cookie: %v", err)
 	}
 }

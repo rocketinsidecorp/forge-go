@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const modelUsage = "usage: forge generate model NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--dry-run]"
+const modelUsage = "usage: forge generate model NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--dry-run]"
 
 // modelDirectories are the directories a model writes into.
 var modelDirectories = []string{"db/migrations", "app/domain", "app/application", "app/adapters/persistence"}

@@ -50,11 +50,23 @@ type Options struct {
 	// Locale is the default locale, one of Locales; empty means "en". Its
 	// translations are generated next to en.json.
 	Locale string
+	// Auth generates Forge identity (`forge new --auth`, decision D31): the
+	// sign-in, sign-out, two-factor and password-reset pages, the identity
+	// migrations and the setup command, on any database. Without it the
+	// application has no authentication; `forge generate authentication`
+	// adds it later.
+	Auth bool
+	// Tenants generates a multi-tenant application (`forge new --tenants`,
+	// decision D33): users belong to organizations, which they name at
+	// sign-in, and generated tables need a scope (--org-scoped or
+	// --global). It implies Auth. Without it the application has one hidden
+	// organization and plain tables.
+	Tenants bool
 	// APIAuth also mounts the JSON authentication APIs (`forge new
 	// --api-auth`): bearer login and logout, cookie login and logout for
 	// scripts, MFA completion, JSON password recovery and GET
 	// /v1/auth/session. Without it the HTML pages are the only way to sign
-	// in. It needs Forge identity (PostgreSQL).
+	// in. It implies Auth.
 	APIAuth bool
 	// API generates an API-only application (`forge new --api`, like `rails
 	// new --api`): JSON handlers only, with no views, assets, JavaScript,
@@ -99,7 +111,13 @@ type templateData struct {
 	// RoutesCall is how bootstrap.go calls the generators' routes
 	// (routes_gen.go).
 	RoutesCall string
+	// NewCommand is the `forge new` command line that creates this
+	// application, for the README quickstart.
+	NewCommand string
 }
+
+// appTemplate names the generated file built by code: app_gen.go.
+const appTemplate = "(app_gen.go)"
 
 type file struct {
 	template string
@@ -118,9 +136,10 @@ const (
 	everyApplication fileScope = iota
 	// withDatabase files are generated only with Options.Database.
 	withDatabase
-	// withIdentity files are generated only for databases with Forge
-	// identity (PostgreSQL): the HTML sign-in, sign-out and password pages.
-	// `forge generate authentication` renders the same files.
+	// withIdentity files are generated only with Forge identity (--auth,
+	// --tenants, --api-auth): its wiring and the HTML sign-in, sign-out,
+	// two-factor and password pages. `forge generate authentication`
+	// renders the same files.
 	withIdentity
 	// withPostgres files are generated only for PostgreSQL applications.
 	withPostgres
@@ -144,6 +163,11 @@ var files = []file{
 	{"bootstrap_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap_test.go")), everyApplication},
 	// The routes the generators add (see routes.go); empty at first.
 	{routesTemplate, fixed(RoutesFile), everyApplication},
+	// The features the generators set (see appgen.go): the commands and
+	// whether the application has organizations.
+	{appTemplate, fixed(AppFile), withDatabase},
+	{"identity.go.tmpl", fixed(filepath.Join("app", "bootstrap", "identity.go")), withIdentity},
+	{"identity_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "identity_test.go")), withIdentity},
 	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), everyApplication},
 	{"welcome_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome_test.go")), everyApplication},
 	{"app_assets.go.tmpl", fixed(filepath.Join("app", "assets", "assets.go")), withViews},
@@ -240,11 +264,17 @@ func Normalize(opts Options) (Options, error) {
 	if opts.API && opts.APIAuth {
 		return Options{}, errors.New("--api-auth cannot be used with --api: an API-only application has no sign-in pages for the JSON authentication APIs to sit beside")
 	}
+	if opts.API && (opts.Auth || opts.Tenants) {
+		return Options{}, errors.New("--auth and --tenants cannot be used with --api: an API-only application has no sign-in pages")
+	}
+	if opts.APIAuth || opts.Tenants {
+		opts.Auth = true
+	}
 	if opts.API && opts.Locale != i18n.DefaultLocale {
 		return Options{}, errors.New("--locale cannot be used with --api: an API-only application has no pages to translate")
 	}
-	if opts.APIAuth && !hasIdentity(opts) {
-		return Options{}, errors.New("--api-auth needs Forge identity, which is PostgreSQL-only: use --database postgresql")
+	if opts.Auth && opts.Database == "" {
+		return Options{}, errors.New("--auth, --tenants and --api-auth need a database: Forge identity stores users, organizations and sessions in it (choose -d sqlite3, postgresql, mysql or mariadb)")
 	}
 	return opts, nil
 }
@@ -445,18 +475,7 @@ func render(opts Options) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data := templateData{Options: opts, DBHostPort: dbHostPort(opts.Name)}
-	data.DBUser, data.DBName = databaseIdentifiers(opts.Name)
-	if data.DB = profileFor(opts.Database, data.DBUser, data.DBName); data.DB != nil {
-		// An API-only application has no sign-in pages, so no Forge
-		// identity wiring either (Forge-Rust's --api has no authentication).
-		// On PostgreSQL it still composes the identity, audit and session
-		// schema (main.go.tmpl), as Forge-Rust's --api applications do.
-		data.DB.Identity = hasIdentity(opts)
-		data.AppDatabaseURL, data.DevDatabaseURL, data.TestDatabaseURL = databaseURLs(data.DB, data.DBUser, data.DBName, data.DBHostPort)
-		data.AppMigrationURL, data.DevMigrationURL = migrationURLs(data.DB, data.DBName, data.DBHostPort)
-	}
-	data.RoutesCall = RoutesCall(routesAppOf(data))
+	data := newTemplateData(opts)
 	// Keep the generated MFA key in the git-ignored .env.local, not the
 	// committed .env.development defaults.
 	if data.DB != nil && data.DB.Identity {
@@ -468,8 +487,8 @@ func render(opts Options) (map[string][]byte, error) {
 	}
 	output := make(map[string][]byte, len(files))
 	for _, f := range selectedFiles(opts) {
-		if f.template == routesTemplate {
-			content, err := routesFile(data)
+		if f.template == routesTemplate || f.template == appTemplate {
+			content, err := codeFile(f.template, data)
 			if err != nil {
 				return nil, err
 			}
@@ -496,14 +515,76 @@ func render(opts Options) (map[string][]byte, error) {
 	return output, nil
 }
 
-// hasIdentity reports whether the application gets Forge identity (the
-// sign-in pages): full-stack PostgreSQL applications.
-func hasIdentity(opts Options) bool {
-	if opts.API {
-		return false
+// newTemplateData is what the templates of opts see (without the MFA key,
+// which render adds).
+func newTemplateData(opts Options) templateData {
+	data := templateData{Options: opts, DBHostPort: dbHostPort(opts.Name)}
+	data.DBUser, data.DBName = databaseIdentifiers(opts.Name)
+	if data.DB = profileFor(opts.Database, data.DBUser, data.DBName); data.DB != nil {
+		// An API-only application has no sign-in pages, so no Forge
+		// identity either (Forge-Rust's --api has no authentication).
+		data.DB.Identity = hasIdentity(opts)
+		data.AppDatabaseURL, data.DevDatabaseURL, data.TestDatabaseURL = databaseURLs(data.DB, data.DBUser, data.DBName, data.DBHostPort)
+		data.AppMigrationURL, data.DevMigrationURL = migrationURLs(data.DB, data.DBName, data.DBHostPort)
 	}
-	profile := profileFor(opts.Database, "", "")
-	return profile != nil && profile.Identity
+	data.RoutesCall = RoutesCall(routesAppOf(data))
+	data.NewCommand = NewCommand(opts)
+	return data
+}
+
+// NewCommand is the shortest `forge new` command line that creates an
+// application like opts: the database only when it is not the default
+// (SQLite, or PostgreSQL with --tenants).
+func NewCommand(opts Options) string {
+	command := "forge new " + opts.Name
+	defaultDatabase := "sqlite"
+	if opts.Tenants {
+		defaultDatabase = "postgresql"
+	}
+	switch opts.Database {
+	case defaultDatabase:
+	case "":
+		command += " -d none"
+	case "sqlite":
+		command += " -d sqlite3"
+	default:
+		command += " -d " + opts.Database
+	}
+	switch {
+	case opts.API:
+		command += " --api"
+	case opts.Tenants:
+		command += " --tenants"
+	case opts.Auth && !opts.APIAuth:
+		command += " --auth"
+	}
+	if opts.APIAuth {
+		command += " --api-auth"
+	}
+	if opts.Locale != "" && opts.Locale != i18n.DefaultLocale {
+		command += " --locale " + opts.Locale
+	}
+	return command
+}
+
+// codeFile renders a generated file built by code rather than a template.
+func codeFile(name string, data templateData) ([]byte, error) {
+	if name == appTemplate {
+		return RenderApp(appFeaturesOf(data))
+	}
+	return routesFile(data)
+}
+
+// appFeaturesOf is what app_gen.go says for a new application.
+func appFeaturesOf(data templateData) AppFeatures {
+	return AppFeatures{Module: data.Module, Adapter: data.DB.Adapter, Jobs: data.DB.Jobs, Identity: data.DB.Identity, Organizations: data.Tenants}
+}
+
+// hasIdentity reports whether the application gets Forge identity (the
+// sign-in pages): --auth, --tenants or --api-auth with a database, in a
+// full-stack application.
+func hasIdentity(opts Options) bool {
+	return opts.Auth && !opts.API && opts.Database != ""
 }
 
 func selectedFiles(opts Options) []file {

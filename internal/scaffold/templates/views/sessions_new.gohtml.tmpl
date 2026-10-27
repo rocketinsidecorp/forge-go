@@ -5,11 +5,13 @@
 <form method="post" action="/session" class="auth-form">
 	{{csrfField}}
 	{{with .ReturnTo}}<input type="hidden" name="return_to" value="{{.}}">{{end}}
+	{{- if .Organizations}}
 	<p>
 		<label for="tenant">{{t "sessions.new.organization"}}</label>
 		<input id="tenant" name="tenant" type="text" value="{{.Tenant}}" required maxlength="63" autocapitalize="none" spellcheck="false" aria-describedby="tenant-hint">
 		<small id="tenant-hint">{{t "sessions.new.organization_hint_html"}}</small>
 	</p>
+	{{- end}}
 	<p>
 		<label for="email">{{t "sessions.new.email"}}</label>
 		<input id="email" name="email" type="email" value="{{.Email}}" required maxlength="320" autocomplete="username">

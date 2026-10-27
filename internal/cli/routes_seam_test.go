@@ -22,9 +22,14 @@ func seamApplication(t *testing.T, database string, extra ...string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "shop")
 	args := append([]string{"new", "shop", "--module", "example.com/shop", "--dir", dir, "--skip-deps"}, extra...)
-	if database != "none" {
+	switch {
+	case database == "postgresql" && !slices.Contains(extra, "--api"):
+		// The PostgreSQL application of these tests has Forge identity
+		// and organizations (forge new --tenants).
+		args = append(args, "--database", database, "--tenants")
+	case database != "none":
 		args = append(args, "--database", database)
-	} else {
+	default:
 		args = append(args, "--skip-database")
 	}
 	var stdout, stderr bytes.Buffer
@@ -77,14 +82,14 @@ func TestScaffoldWiresItselfIntoTheSeamAndDestroyUnwiresIt(t *testing.T) {
 	if !strings.Contains(output, "wire  app/bootstrap/routes_gen.go") || strings.Contains(output, "Forge did not edit") {
 		t.Fatalf("the scaffold printed wiring to paste instead of wiring itself:\n%s", output)
 	}
-	if got, want := strings.Join(seamBlocks(t, dir), ","), "renderer renderer,scaffold products,guard protect,guard protectCookie"; got != want {
+	if got, want := strings.Join(seamBlocks(t, dir), ","), "identity repository,renderer renderer,scaffold products,guard protect,guard protectCookie"; got != want {
 		t.Fatalf("seam blocks = %s, want %s", got, want)
 	}
 	seam := readFile(t, filepath.Join(dir, scaffold.RoutesFile))
 	for _, want := range []string{
 		"httpapi.RegisterProducts(app, productService, protect(repository, middleware))",
 		"htmlui.RegisterProducts(app, productService, renderer, protectCookie(repository, middleware))",
-		"\nfunc protect(repository *authpostgres.Repository, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {",
+		"\nfunc protect(repository auth.SecurityAuditor, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {",
 		"auth.RequireCSRF(guarded)", "middleware.AuthenticateCookie(checked)", `middleware.AuthenticateBrowser("/session/new", guarded)`,
 		"\"example.com/shop/app/adapters/htmlui\"",
 	} {
@@ -121,7 +126,7 @@ func TestScaffoldWiresItselfIntoTheSeamAndDestroyUnwiresIt(t *testing.T) {
 
 	// A global resource adds the platform guard its writes need.
 	seamGenerate(t, dir, "resource", "category", "name:string", "--global")
-	if got, want := strings.Join(seamBlocks(t, dir), ","), "renderer renderer,scaffold products,resource categories,guard protect,guard protectPlatformWrite,guard protectCookie"; got != want {
+	if got, want := strings.Join(seamBlocks(t, dir), ","), "identity repository,renderer renderer,scaffold products,resource categories,guard protect,guard protectPlatformWrite,guard protectCookie"; got != want {
 		t.Fatalf("seam blocks = %s, want %s", got, want)
 	}
 
@@ -131,7 +136,7 @@ func TestScaffoldWiresItselfIntoTheSeamAndDestroyUnwiresIt(t *testing.T) {
 	if !strings.Contains(output, "unwire") || strings.Contains(output, "Forge does not edit") {
 		t.Fatalf("destroy did not unwire:\n%s", output)
 	}
-	if got, want := strings.Join(seamBlocks(t, dir), ","), "resource categories,guard protect,guard protectPlatformWrite"; got != want {
+	if got, want := strings.Join(seamBlocks(t, dir), ","), "identity repository,resource categories,guard protect,guard protectPlatformWrite"; got != want {
 		t.Fatalf("after destroying the scaffold, seam blocks = %s, want %s", got, want)
 	}
 	seamDestroy(t, dir, "resource", "category", "name:string", "--global")
@@ -201,7 +206,7 @@ func TestSeamWithoutIdentityIsClosedUnlessPublic(t *testing.T) {
 	}
 	// An application without the seam cannot take --public: its printed
 	// wiring would still be the deny-all guard.
-	legacy := resourceProject(t, "sqlite:storage/development.db")
+	legacy := plainProject(t, "sqlite:storage/development.db")
 	var legacyOut bytes.Buffer
 	if err := runGenerateEnv([]string{"resource", "post", "title:string", "--global", "--public"}, &legacyOut, legacy, nil, seamNow); err == nil || !strings.Contains(err.Error(), "--public needs the routes seam") {
 		t.Errorf("--public without the seam: %v", err)
@@ -232,7 +237,7 @@ func TestSeamInAnIdentityApplicationRefusesPublic(t *testing.T) {
 		t.Fatalf("a second controller run changed the application:\n%s", again)
 	}
 	seamDestroy(t, dir, "controller", "reports", "index")
-	if blocks := seamBlocks(t, dir); len(blocks) != 0 {
+	if blocks := seamBlocks(t, dir); len(blocks) != 1 || blocks[0] != "identity repository" {
 		t.Fatalf("destroy controller left %v", blocks)
 	}
 }
@@ -451,7 +456,8 @@ func TestAGuardOverrideIsNeverSilentlyIgnored(t *testing.T) {
 	}
 	t.Parallel()
 	scaffoldArgs := []string{"product", "name:string", "--global", "--public"}
-	dir := matrixApplicationFor(t, "sqlite", "scaffold", [][]string{scaffoldArgs})
+	// An application without Forge identity: --public needs one.
+	dir := matrixApplicationWith(t, "sqlite", []string{plainApplication}, "scaffold", [][]string{scaffoldArgs})
 	writeFile(t, filepath.Join(dir, "app", "bootstrap", "auth.go"), publicOverride)
 	vet := exec.Command("go", "vet", "./app/bootstrap")
 	vet.Dir = dir
@@ -573,8 +579,8 @@ func TestGuardReferencesNeverRewriteTheWiringText(t *testing.T) {
 	t.Parallel()
 	for _, plural := range []string{"protect", "protect_cookie", "things"} {
 		spec := resourceSpec{
-			resourceRequest: resourceRequest{Name: "thing", Plural: plural, Scaffold: true},
-			Module:          "example.com/shop", Database: "postgres", Identity: true, Seam: true, BrowserPipeline: true, I18nMiddleware: true,
+			resourceRequest: resourceRequest{Name: "thing", Plural: plural, Scaffold: true, Global: true},
+			Module:          "example.com/shop", Database: "postgres", Identity: true, Organizations: true, Seam: true, BrowserPipeline: true, I18nMiddleware: true,
 		}
 		usage := buildResourceWiring(spec).Usage
 		if strings.Count(usage, fmt.Sprintf("if permission == %q {", plural+":write")) != 2 || strings.Count(usage, "return protectPlatformWrite(permission, next)") != 2 ||

@@ -28,7 +28,7 @@ func TestSubcommandHelpListsFlagsAndExamples(t *testing.T) {
 	if code := Run([]string{"new", "--help"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
-	for _, want := range []string{"usage: forge new NAME", "--database DB", "(default: postgresql)", "examples:", "forge new inventory"} {
+	for _, want := range []string{"usage: forge new NAME", "--database DB", "(default: sqlite)", "examples:", "forge new inventory"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("forge new --help lacks %q:\n%s", want, stdout.String())
 		}

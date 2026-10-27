@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,58 +19,119 @@ func runAuthentication(root string, args ...string) (string, error) {
 	return out.String(), err
 }
 
-func TestGenerateAuthenticationRefusesOtherDatabases(t *testing.T) {
+// newApp generates the application `forge new shop` would, in a fresh
+// directory, without resolving dependencies.
+func newApp(t *testing.T, opts scaffold.Options) string {
+	t.Helper()
+	opts.Name, opts.Module = "shop", "example.com/shop"
+	opts.Dir = filepath.Join(t.TempDir(), "shop")
+	if _, err := scaffold.Generate(opts); err != nil {
+		t.Fatal(err)
+	}
+	return opts.Dir
+}
+
+// TestGenerateAuthenticationAddsWhatForgeNewAuthGenerates is decision D31:
+// `forge generate authentication` in an application created without --auth
+// ends with exactly what `forge new --auth` generates (the identity files,
+// app_gen.go and the routes seam), on every database, with nothing to edit.
+// A second run refuses and changes nothing.
+func TestGenerateAuthenticationAddsWhatForgeNewAuthGenerates(t *testing.T) {
 	t.Parallel()
-	for _, current := range []struct{ url, names string }{
-		{"mysql://u:p@localhost/db", "MySQL or MariaDB"},
-		{"sqlite:storage/development.db", "SQLite"},
-		{"", "no database"},
-	} {
-		root := resourceProject(t, current.url)
-		before := snapshotTree(t, root)
-		_, err := runAuthentication(root)
-		if err == nil || !strings.Contains(err.Error(), "needs PostgreSQL") || !strings.Contains(err.Error(), "only in PostgreSQL today") || !strings.Contains(err.Error(), current.names) {
-			t.Fatalf("%q: err = %v", current.url, err)
-		}
-		if after := snapshotTree(t, root); !slices.Equal(before, after) {
-			t.Fatalf("%q: a refused run wrote files", current.url)
-		}
+	for _, database := range []string{"sqlite", "mysql", "postgresql"} {
+		t.Run(database, func(t *testing.T) {
+			t.Parallel()
+			plain := newApp(t, scaffold.Options{Database: database})
+			want := newApp(t, scaffold.Options{Database: database, Auth: true})
+			output, err := runAuthentication(plain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(output, "WARNING") || strings.Contains(output, "Forge did not edit") {
+				t.Errorf("a forge new application needs no manual step:\n%s", output)
+			}
+			files, err := scaffold.AuthenticationFiles(scaffold.Options{Name: "shop", Module: "example.com/shop", Database: database})
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths := []string{scaffold.AppFile, scaffold.RoutesFile}
+			for _, file := range files {
+				paths = append(paths, file.Path)
+				if !strings.Contains(output, "create  "+file.Path) {
+					t.Errorf("output does not list %s:\n%s", file.Path, output)
+				}
+			}
+			for _, path := range paths {
+				if got, wanted := readFile(t, filepath.Join(plain, path)), readFile(t, filepath.Join(want, path)); got != wanted {
+					t.Errorf("%s differs from forge new --auth", path)
+				}
+			}
+			if !strings.Contains(readFile(t, filepath.Join(plain, ".env.local")), "\nFORGE_AUTH_MFA_KEY=") {
+				t.Error(".env.local has no MFA key")
+			}
+			before := snapshotTree(t, plain)
+			if _, err := runAuthentication(plain); err == nil || !strings.Contains(err.Error(), "has Forge identity already") {
+				t.Fatalf("second run: err = %v", err)
+			}
+			if after := snapshotTree(t, plain); !slices.Equal(before, after) {
+				t.Fatal("a refused run changed files")
+			}
+		})
 	}
-	// PostgreSQL without the identity migrations has no identity tables.
-	bare := resourceProject(t, "postgres://u:p@localhost/db")
-	writeFile(t, filepath.Join(bare, "cmd", "shop", "main.go"), "package main\n\nfunc main() {}\n")
-	if _, err := runAuthentication(bare); err == nil || !strings.Contains(err.Error(), "authpostgres.Migrations()") {
-		t.Fatalf("no identity migrations: err = %v", err)
+}
+
+// TestGenerateAuthenticationKeepsTheRoutesAlreadyGenerated: the seam gains
+// the identity block first and keeps the routes generated before.
+func TestGenerateAuthenticationKeepsTheRoutesAlreadyGenerated(t *testing.T) {
+	t.Parallel()
+	dir := newApp(t, scaffold.Options{Database: "sqlite"})
+	var out bytes.Buffer
+	if err := runGenerateEnv([]string{"scaffold", "note", "body:text", "--public"}, &out, dir, nil, time.Now()); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := runAuthentication(resourceProject(t, "postgres://u:p@localhost/db"), "--force"); err == nil || !strings.Contains(err.Error(), authenticationUsage) {
-		t.Fatalf("unknown flag: err = %v", err)
+	if _, err := runAuthentication(dir); err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := scaffold.ParseRoutes([]byte(readFile(t, filepath.Join(dir, scaffold.RoutesFile))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, block := range blocks {
+		ids = append(ids, block.ID())
+	}
+	if len(ids) < 3 || ids[0] != "identity repository" || !slices.Contains(ids, "scaffold notes") || !slices.Contains(ids, "guard public") {
+		t.Fatalf("seam blocks = %v", ids)
+	}
+	// Routes generated from now on are guarded by the session.
+	out.Reset()
+	if err := runGenerateEnv([]string{"scaffold", "product", "name:string", "price:integer"}, &out, dir, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if routes := readFile(t, filepath.Join(dir, scaffold.RoutesFile)); !strings.Contains(routes, "protectCookie(repository, middleware)") {
+		t.Fatalf("the new scaffold is not guarded by the session:\n%s", routes)
 	}
 }
 
 func TestGenerateAuthenticationDryRunWritesNothing(t *testing.T) {
 	t.Parallel()
-	root := resourceProject(t, "postgres://u:p@localhost/db")
-	before := snapshotTree(t, root)
-	output, err := runAuthentication(root, "--dry-run")
+	dir := newApp(t, scaffold.Options{Database: "sqlite"})
+	before := snapshotTree(t, dir)
+	output, err := runAuthentication(dir, "--dry-run")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after := snapshotTree(t, root); !slices.Equal(before, after) {
+	if after := snapshotTree(t, dir); !slices.Equal(before, after) {
 		t.Fatal("--dry-run wrote files")
 	}
 	for _, want := range []string{
+		"would create  " + filepath.Join("app", "bootstrap", "identity.go"),
 		"would create  " + filepath.Join("app", "adapters", "htmlauth", "htmlauth.go"),
 		"would create  " + filepath.Join("app", "views", "sessions", "new.gohtml"),
-		"would create  " + filepath.Join("app", "views", "passwords", "edit.gohtml"),
-		// The project has no views package yet: the base comes too.
-		"would create  " + filepath.Join("app", "views", "views.go"),
-		`"example.com/shop/app/adapters/htmlauth"`,
-		"auth.NewBrowser(auth.BrowserOptions{",
-		"htmlauth.Register(app, browser, renderer, middleware)",
-		"middleware.AuthenticateBrowser(htmlauth.SignInPath, page)",
-		"authpostgres.SetupCommand(),",
-		filepath.Join("cmd", "shop", "main.go"),
-		"WARNING: app/bootstrap/bootstrap.go does not appear to install csrf.Protection",
+		"would rewrite  " + scaffold.AppFile,
+		"would wire  " + scaffold.RoutesFile,
+		"would append  .env.local (FORGE_AUTH_MFA_KEY)",
+		"forge migrate && forge setup --email you@example.com",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("dry-run output is missing %q:\n%s", want, output)
@@ -77,172 +139,143 @@ func TestGenerateAuthenticationDryRunWritesNothing(t *testing.T) {
 	}
 }
 
-// TestGenerateAuthenticationAddsWhatForgeNewGenerates removes the pages from
-// a fresh PostgreSQL application, as in one created before they existed, and
-// regenerates them: the files are identical, and a second run refuses to
-// overwrite anything.
-func TestGenerateAuthenticationAddsWhatForgeNewGenerates(t *testing.T) {
+func TestGenerateAuthenticationRefusesWhatItCannotWire(t *testing.T) {
 	t.Parallel()
-	dir := filepath.Join(t.TempDir(), "shop")
-	if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: "postgresql"}); err != nil {
-		t.Fatal(err)
-	}
-	expected, err := scaffold.AuthenticationFiles("shop", "example.com/shop")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{filepath.Join("app", "adapters", "htmlauth"), filepath.Join("app", "views", "sessions"), filepath.Join("app", "views", "passwords"), filepath.Join("app", "views", "mfa"), filepath.Join("config", "locales", "authentication.en.json")} {
-		if err := os.RemoveAll(filepath.Join(dir, path)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	output, err := runAuthentication(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(output, "WARNING") || strings.Contains(output, filepath.Join("app", "views", "views.go")) {
-		t.Errorf("a forge new application has the browser pipeline and views package:\n%s", output)
-	}
-	for _, file := range expected {
-		content, err := os.ReadFile(filepath.Join(dir, file.Path))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(content, file.Content) {
-			t.Errorf("%s differs from forge new", file.Path)
-		}
-		if !strings.Contains(output, "create  "+file.Path) {
-			t.Errorf("output does not list %s", file.Path)
-		}
-	}
-	before := snapshotTree(t, dir)
-	if _, err := runAuthentication(dir); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
-		t.Fatalf("second run: err = %v", err)
-	}
-	if after := snapshotTree(t, dir); !slices.Equal(before, after) {
-		t.Fatal("a refused run changed files")
-	}
-}
-
-// TestGenerateAuthenticationRespectsAPIAuth: like forge new, the generator
-// adds only the HTML flow unless --api-auth asks for the JSON authentication
-// APIs too; without the flag it lists the JSON routes an older bootstrap.go
-// still mounts, with the flag it prints their wiring unless all are there.
-func TestGenerateAuthenticationRespectsAPIAuth(t *testing.T) {
-	t.Parallel()
-	removePages := func(t *testing.T, dir string) {
-		t.Helper()
-		for _, path := range []string{filepath.Join("app", "adapters", "htmlauth"), filepath.Join("app", "views", "sessions"), filepath.Join("app", "views", "passwords"), filepath.Join("app", "views", "mfa"), filepath.Join("config", "locales", "authentication.en.json")} {
-			if err := os.RemoveAll(filepath.Join(dir, path)); err != nil {
+	tests := map[string]struct {
+		setup func(t *testing.T) string
+		want  string
+	}{
+		"no such directory": {func(t *testing.T) string { return filepath.Join(t.TempDir(), "gone") }, "go.mod not found"},
+		"no go.mod":         {func(t *testing.T) string { return t.TempDir() }, "go.mod not found"},
+		"go.mod without a module": {func(t *testing.T) string {
+			dir := newApp(t, scaffold.Options{Database: "sqlite"})
+			writeFile(t, filepath.Join(dir, "go.mod"), "go 1.27.1\n")
+			return dir
+		}, "go.mod has no module declaration"},
+		"broken environment file": {func(t *testing.T) string {
+			dir := newApp(t, scaffold.Options{Database: "sqlite"})
+			writeFile(t, filepath.Join(dir, ".env.development"), "bad line\n")
+			return dir
+		}, "environment files could not be loaded"},
+		"no database":                           {func(t *testing.T) string { return newApp(t, scaffold.Options{}) }, "needs a database"},
+		"an API-only app":                       {func(t *testing.T) string { return newApp(t, scaffold.Options{Database: "sqlite", API: true}) }, "no views"},
+		"an application from before app_gen.go": {func(t *testing.T) string { return plainProject(t, "sqlite:storage/development.db") }, "app_gen.go not found"},
+		"an edited app_gen.go": {func(t *testing.T) string {
+			dir := newApp(t, scaffold.Options{Database: "sqlite"})
+			path := filepath.Join(dir, scaffold.AppFile)
+			writeFile(t, path, readFile(t, path)+"\n// mine\n")
+			return dir
+		}, "edited by hand"},
+		"a main.go without bootstrap.Commands": {func(t *testing.T) string {
+			dir := newApp(t, scaffold.Options{Database: "sqlite"})
+			writeFile(t, filepath.Join(dir, "cmd", "shop", "main.go"), "package main\n\nfunc main() {}\n")
+			return dir
+		}, "bootstrap.Commands()"},
+		"a bootstrap.go without the seam": {func(t *testing.T) string {
+			dir := newApp(t, scaffold.Options{Database: "sqlite"})
+			path := filepath.Join(dir, "app", "bootstrap", "bootstrap.go")
+			writeFile(t, path, strings.ReplaceAll(readFile(t, path), "generatedRoutes(", "otherRoutes("))
+			return dir
+		}, "does not call generatedRoutes"},
+		"a file in the way": {func(t *testing.T) string {
+			dir := newApp(t, scaffold.Options{Database: "sqlite"})
+			writeFile(t, filepath.Join(dir, "app", "views", "sessions", "new.gohtml"), "mine")
+			return dir
+		}, "refusing to overwrite"},
+		"a pages directory that is a symlink": {func(t *testing.T) string {
+			dir := newApp(t, scaffold.Options{Database: "sqlite"})
+			if err := os.MkdirAll(filepath.Join(dir, "app", "adapters"), 0o750); err != nil {
 				t.Fatal(err)
 			}
-		}
+			if err := os.Symlink(t.TempDir(), filepath.Join(dir, "app", "adapters", "htmlauth")); err != nil {
+				t.Skipf("symlinks are not available: %v", err)
+			}
+			return dir
+		}, "symlink"},
 	}
-	generate := func(t *testing.T, apiAuth bool) string {
-		t.Helper()
-		dir := filepath.Join(t.TempDir(), "shop")
-		if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: "postgresql", APIAuth: apiAuth}); err != nil {
-			t.Fatal(err)
-		}
-		removePages(t, dir)
-		return dir
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root := tc.setup(t)
+			var before []string
+			if info, err := os.Stat(root); err == nil && info.IsDir() {
+				before = snapshotTree(t, root)
+			}
+			_, err := runAuthentication(root)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if before != nil && !slices.Equal(before, snapshotTree(t, root)) {
+				t.Error("a refused run wrote files")
+			}
+		})
 	}
-
-	// A default application: no JSON routes, no JSON wiring, no note.
-	output, err := runAuthentication(generate(t, false), "--dry-run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(output, "auth.NewLoginHandler") || strings.Contains(output, "NOTE:") || strings.Contains(output, "POST /auth/cookie/login") {
-		t.Errorf("the HTML-only wiring mentions the JSON APIs:\n%s", output)
-	}
-
-	// --api-auth on a default application prints the JSON wiring.
-	output, err = runAuthentication(generate(t, false), "--api-auth", "--dry-run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"JSON authentication APIs (--api-auth)", "auth.NewLoginHandler(login)", `app.Handle("POST /auth/cookie/login", cookieLoginHandler)`, "auth.NewMFACompletionHandler(mfaService)", "/auth/recovery/request", "forge new NAME --api-auth"} {
-		if !strings.Contains(output, want) {
-			t.Errorf("--api-auth wiring is missing %q:\n%s", want, output)
-		}
-	}
-
-	// An application that already mounts them (from --api-auth, or from
-	// before the flag existed).
-	mounted := generate(t, true)
-	output, err = runAuthentication(mounted, "--dry-run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output, "NOTE: app/bootstrap/bootstrap.go also mounts JSON authentication routes (POST /auth/login, POST /auth/logout, POST /auth/mfa/complete, POST /auth/recovery/request, POST /auth/recovery/reset, POST /auth/cookie/login, POST /auth/cookie/mfa/complete, POST /auth/cookie/logout, GET /v1/auth/session)") {
-		t.Errorf("the mounted JSON routes are not pointed out:\n%s", output)
-	}
-	output, err = runAuthentication(mounted, "--dry-run", "--api-auth")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output, "bootstrap.go already mounts them; keep them") || strings.Contains(output, "auth.NewLoginHandler(login)") {
-		t.Errorf("--api-auth with the routes mounted:\n%s", output)
-	}
-	for _, args := range [][]string{{"--api-auth", "--api-auth"}, {"--dry-run", "--dry-run"}, {"--api-auth=true"}} {
-		if _, err := runAuthentication(mounted, args...); err == nil || !strings.Contains(err.Error(), authenticationUsage) {
+	for _, args := range [][]string{{"--api-auth", "--api-auth"}, {"--dry-run", "--dry-run"}, {"--api-auth=true"}, {"--force"}} {
+		if _, err := runAuthentication(t.TempDir(), args...); err == nil || !strings.Contains(err.Error(), authenticationUsage) {
 			t.Errorf("%v: err = %v", args, err)
 		}
 	}
 }
 
-// TestGenerateAuthenticationAddsTheJSONAPIsToAnApplicationWithPages: a
-// default application from forge new already has every page, so
-// --api-auth writes nothing and prints only the JSON API wiring, instead of
-// refusing to overwrite the pages. Without --api-auth the refusal stands.
-func TestGenerateAuthenticationAddsTheJSONAPIsToAnApplicationWithPages(t *testing.T) {
+// TestGenerateAuthenticationAPIAuthOnAnApplicationWithIdentity: an
+// application with Forge identity gets the JSON API wiring printed for its
+// identity.go, or is told to keep the routes it mounts.
+func TestGenerateAuthenticationAPIAuthOnAnApplicationWithIdentity(t *testing.T) {
 	t.Parallel()
-	dir := filepath.Join(t.TempDir(), "shop")
-	if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: "postgresql"}); err != nil {
-		t.Fatal(err)
-	}
+	dir := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
 	before := snapshotTree(t, dir)
-	for _, args := range [][]string{{"--api-auth"}, {"--api-auth", "--dry-run"}, {"--dry-run", "--api-auth"}} {
-		output, err := runAuthentication(dir, args...)
-		if err != nil {
-			t.Fatalf("%v: %v", args, err)
-		}
-		for _, want := range []string{"The sign-in pages already exist", "nothing was written", "Mount the JSON authentication APIs there", "auth.NewLoginHandler(login)", `app.Handle("POST /auth/cookie/login", cookieLoginHandler)`} {
-			if !strings.Contains(output, want) {
-				t.Errorf("%v: output is missing %q:\n%s", args, want, output)
-			}
-		}
-		for _, unwanted := range []string{"create  ", "htmlauth.Register(app, browser, renderer, middleware)", "authpostgres.SetupCommand()"} {
-			if strings.Contains(output, unwanted) {
-				t.Errorf("%v: output repeats the page wiring (%q):\n%s", args, unwanted, output)
-			}
-		}
-		if after := snapshotTree(t, dir); !slices.Equal(before, after) {
-			t.Fatalf("%v: files changed", args)
-		}
-	}
-	if _, err := runAuthentication(dir); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
-		t.Fatalf("without --api-auth: err = %v", err)
-	}
-
-	// An application that mounts them already is told to keep them.
-	mounted := filepath.Join(t.TempDir(), "api")
-	if _, err := scaffold.Generate(scaffold.Options{Name: "api", Module: "example.com/api", Dir: mounted, Database: "postgresql", APIAuth: true}); err != nil {
+	output, err := runAuthentication(dir, "--api-auth")
+	if err != nil {
 		t.Fatal(err)
 	}
-	output, err := runAuthentication(mounted, "--api-auth")
-	if err != nil || !strings.Contains(output, "bootstrap.go already mounts them; keep them") || strings.Contains(output, "auth.NewLoginHandler(login)") {
+	for _, want := range []string{"nothing was written", "Mount the JSON authentication APIs there", "auth.NewLoginHandler(login)", `app.Handle("POST /auth/cookie/login", cookieLoginHandler)`} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output is missing %q:\n%s", want, output)
+		}
+	}
+	if after := snapshotTree(t, dir); !slices.Equal(before, after) {
+		t.Fatal("files changed")
+	}
+	mounted := newApp(t, scaffold.Options{Database: "sqlite", APIAuth: true})
+	output, err = runAuthentication(mounted, "--api-auth")
+	if err != nil || !strings.Contains(output, "already mounts them; keep them") || strings.Contains(output, "auth.NewLoginHandler(login)") {
 		t.Fatalf("--api-auth with the routes mounted: err=%v\n%s", err, output)
 	}
+	// Some routes mounted: only the others are asked for.
+	identity := filepath.Join(mounted, "app", "bootstrap", "identity.go")
+	writeFile(t, identity, strings.ReplaceAll(readFile(t, identity), `"POST /auth/cookie/logout"`, `"POST /auth/cookie/signout"`))
+	output, err = runAuthentication(mounted, "--api-auth")
+	if err != nil || !strings.Contains(output, "add only the others below") {
+		t.Fatalf("partly mounted: err=%v\n%s", err, output)
+	}
+}
 
-	// Pages only partly there are not "present": the refusal names the
-	// file in the way.
-	if err := os.RemoveAll(filepath.Join(dir, "app", "views", "mfa")); err != nil {
+// TestGenerateAuthenticationFollowsTheApplicationsLocales: the page text in
+// the other locales the application has and Forge ships.
+func TestGenerateAuthenticationFollowsTheApplicationsLocales(t *testing.T) {
+	t.Parallel()
+	dir := newApp(t, scaffold.Options{Database: "sqlite", Locale: "es"})
+	writeFile(t, filepath.Join(dir, "config", "locales", "fr.json"), `{"fr":{}}`)
+	output, err := runAuthentication(dir, "--dry-run")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runAuthentication(dir, "--api-auth"); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
-		t.Fatalf("partial pages with --api-auth: err = %v", err)
+	if !strings.Contains(output, filepath.Join("config", "locales", "authentication.es.json")) {
+		t.Errorf("the Spanish page text is not planned:\n%s", output)
+	}
+	if strings.Contains(output, "authentication.fr.json") || strings.Contains(output, "authentication.pt-BR.json") {
+		t.Errorf("a locale the application lacks (or Forge does not ship) is planned:\n%s", output)
+	}
+}
+
+func TestGenerateAuthenticationReportsAFailingOutput(t *testing.T) {
+	t.Parallel()
+	dir := newApp(t, scaffold.Options{Database: "sqlite"})
+	if err := runGenerateAuthentication([]string{"--dry-run"}, failingWriter{}, dir, nil); !errors.Is(err, errBrokenPipe) {
+		t.Errorf("err = %v", err)
+	}
+	if err := runGenerateAuthentication([]string{"--api-auth"}, failingWriter{}, newApp(t, scaffold.Options{Database: "sqlite", Auth: true}), nil); !errors.Is(err, errBrokenPipe) {
+		t.Errorf("err = %v", err)
 	}
 }
 
@@ -257,3 +290,5 @@ func TestScaffoldRefusesThePathsOfTheSignInPages(t *testing.T) {
 		}
 	}
 }
+
+const postgresURL = "postgres://u:p@localhost/db"

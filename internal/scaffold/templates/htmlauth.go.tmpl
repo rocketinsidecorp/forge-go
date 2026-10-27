@@ -76,6 +76,18 @@ type Router interface {
 	Handle(pattern string, handler http.Handler) error
 }
 
+// Option configures Register.
+type Option func(*pages)
+
+// WithOrganizations says whether users name their organization at sign-in
+// and in password-reset requests: true in an application with organizations
+// (forge new --tenants), false in a single-tenant one (forge new --auth),
+// whose forms ask for the email and password only and sign in to its one
+// hidden organization. Without the option the forms ask for it.
+func WithOrganizations(enabled bool) Option {
+	return func(p *pages) { p.organizations = enabled }
+}
+
 // Register mounts the pages. The routes need web.MethodOverride,
 // csrf.Protection and web.Flash in front of them (app/bootstrap installs
 // them); without a verified CSRF token Browser refuses to sign anyone in or
@@ -83,11 +95,17 @@ type Router interface {
 // and password-reset routes only when it has a recovery service. The
 // two-factor settings (/mfa) sit behind sessions.AuthenticateBrowser and say
 // so when two-factor authentication is not configured.
-func Register(routes Router, browser *auth.Browser, renderer *views.Renderer, sessions *auth.Middleware) error {
+func Register(routes Router, browser *auth.Browser, renderer *views.Renderer, sessions *auth.Middleware, options ...Option) error {
 	if routes == nil || browser == nil || renderer == nil || sessions == nil {
 		return errors.New("htmlauth: router, browser, view renderer and session middleware are required")
 	}
-	pages := pages{browser: browser, renderer: renderer}
+	pages := pages{browser: browser, renderer: renderer, organizations: true}
+	for _, option := range options {
+		if option == nil {
+			return errors.New("htmlauth: nil option")
+		}
+		option(&pages)
+	}
 	// Literal patterns let `forge routes` list these routes.
 	if err := routes.Handle("GET /session/new", http.HandlerFunc(pages.newSession)); err != nil {
 		return err
@@ -156,12 +174,14 @@ func Register(routes Router, browser *auth.Browser, renderer *views.Renderer, se
 }
 
 type pages struct {
-	browser  *auth.Browser
-	renderer *views.Renderer
+	browser       *auth.Browser
+	renderer      *views.Renderer
+	organizations bool
 }
 
 // sessionPage is the data of sessions/new. It never carries the password.
 type sessionPage struct {
+	Organizations   bool
 	Tenant          string
 	Email           string
 	ReturnTo        string
@@ -201,7 +221,8 @@ type backupCodesPage struct {
 
 // passwordRequestPage is the data of passwords/new.
 type passwordRequestPage struct {
-	Tenant string
+	Organizations bool
+	Tenant        string
 	Email  string
 	Error  string
 }
@@ -251,6 +272,7 @@ type passwordResetForm struct {
 func (p pages) newSession(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	p.render(w, r, "sessions/new", http.StatusOK, sessionPage{
+		Organizations:   p.organizations,
 		Tenant:          query.Get("tenant"),
 		ReturnTo:        auth.ReturnPath(query.Get(auth.ReturnToParameter), ""),
 		RecoveryEnabled: p.browser.RecoveryEnabled(),
@@ -267,6 +289,7 @@ func (p pages) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page := sessionPage{
+		Organizations:   p.organizations,
 		Tenant:          form.Tenant,
 		Email:           form.Email,
 		ReturnTo:        auth.ReturnPath(form.ReturnTo, ""),
@@ -282,6 +305,9 @@ func (p pages) createSession(w http.ResponseWriter, r *http.Request) {
 		// The only message a failed sign-in shows: it must not say whether
 		// the organization, the email or the password was wrong.
 		page.Error = i18n.T(r.Context(), "sessions.invalid_credentials")
+		if !p.organizations {
+			page.Error = i18n.T(r.Context(), "sessions.invalid_credentials_email")
+		}
 		p.render(w, r, "sessions/new", http.StatusUnprocessableEntity, page)
 	case err != nil:
 		web.Error(w, r, err)
@@ -505,7 +531,7 @@ func (p pages) renderBackupCodes(w http.ResponseWriter, r *http.Request, codes [
 
 // newPassword asks for the account whose password was forgotten.
 func (p pages) newPassword(w http.ResponseWriter, r *http.Request) {
-	p.render(w, r, "passwords/new", http.StatusOK, passwordRequestPage{Tenant: r.URL.Query().Get("tenant")})
+	p.render(w, r, "passwords/new", http.StatusOK, passwordRequestPage{Organizations: p.organizations, Tenant: r.URL.Query().Get("tenant")})
 }
 
 // createPassword sends reset instructions. Every outcome but throttling looks
@@ -521,6 +547,7 @@ func (p pages) createPassword(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.As(err, &throttled):
 		p.render(w, r, "passwords/new", http.StatusTooManyRequests, passwordRequestPage{
+			Organizations: p.organizations,
 			Tenant: form.Tenant, Email: form.Email, Error: i18n.T(r.Context(), "throttled.reset", "count", retryMinutes(throttled.RetryAfter)),
 		})
 	case err != nil:

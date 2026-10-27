@@ -41,15 +41,17 @@ func ViewBase(name, module string) ([]BaseFile, error) {
 	return rendered, nil
 }
 
-// AuthenticationFiles returns the sign-in, sign-out, two-factor and
-// password-reset pages `forge new` generates for a PostgreSQL application:
-// app/adapters/htmlauth (handlers and tests), app/views/sessions,
+// AuthenticationFiles returns the Forge identity files `forge new --auth`
+// generates: app/bootstrap/identity.go and its test (the wiring the routes
+// seam calls), app/adapters/htmlauth (handlers and tests), app/views/sessions,
 // app/views/passwords, app/views/mfa and their English text,
 // config/locales/authentication.en.json. `forge generate authentication`
 // adds them to an application that lacks them, so both produce the same
-// files. name is the application name and module its Go module path.
-func AuthenticationFiles(name, module string) ([]BaseFile, error) {
-	opts, err := Normalize(Options{Name: name, Module: module, Database: "postgresql"})
+// files. opts names the application, its module, its database (any of
+// Databases) and APIAuth; Auth is implied.
+func AuthenticationFiles(opts Options) ([]BaseFile, error) {
+	opts.Auth = true
+	opts, err := Normalize(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +68,7 @@ func AuthenticationFiles(name, module string) ([]BaseFile, error) {
 
 // renderSelected renders the files keep selects, formatting Go sources.
 func renderSelected(opts Options, keep func(file) bool) ([]BaseFile, error) {
-	data := templateData{Options: opts}
+	data := newTemplateData(opts)
 	plain, err := parseTemplates(false)
 	if err != nil {
 		return nil, err

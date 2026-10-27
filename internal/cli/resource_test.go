@@ -75,7 +75,6 @@ func TestParseResourceArgs(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no scope", []string{"product", "name:string"}, "choose a scope"},
 		{"both scopes", []string{"product", "name:string", "--global", "--tenant-scoped"}, "mutually exclusive"},
 		{"no name", []string{"--global"}, "usage:"},
 		{"no fields", []string{"product", "--global"}, "at least one field"},
@@ -161,6 +160,15 @@ func TestExportedName(t *testing.T) {
 
 // resourceProject is a minimal Forge application directory: enough for the
 // generator, which only reads go.mod, the environment files and cmd/.
+// plainProject is resourceProject without Forge identity: an application
+// created without --auth, whose tables are plain tables.
+func plainProject(t *testing.T, databaseURL string) string {
+	t.Helper()
+	root := resourceProject(t, databaseURL)
+	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), "package main\n\nfunc main() {}\n")
+	return root
+}
+
 func resourceProject(t *testing.T, databaseURL string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -169,7 +177,16 @@ func resourceProject(t *testing.T, databaseURL string) string {
 	if databaseURL != "" {
 		writeFile(t, filepath.Join(root, ".env.development"), "FORGE_DATABASE_URL="+databaseURL+"\n")
 	}
-	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), "package main\n\nimport _ \"github.com/rocketinsidecorp/forge-go/auth/postgres\"\n\nfunc main() {}\n")
+	// Forge identity on its database, from before app_gen.go: an
+	// application with organizations, whose tables take a scope.
+	adapter := "postgres"
+	switch {
+	case strings.HasPrefix(databaseURL, "mysql:"):
+		adapter = "mysql"
+	case strings.HasPrefix(databaseURL, "sqlite:"):
+		adapter = "sqlite"
+	}
+	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), "package main\n\nimport _ \"github.com/rocketinsidecorp/forge-go/auth/"+adapter+"\"\n\nfunc main() {}\n")
 	return root
 }
 
@@ -263,12 +280,9 @@ func TestGenerateResourceWritesFiles(t *testing.T) {
 			t.Errorf("output does not list %s:\n%s", path, output)
 		}
 	}
-	// MySQL has no Forge identity: the printed guard must deny, never pass through.
-	if strings.Contains(output, "auth.Require") || !strings.Contains(output, "permission_denied") || strings.Contains(output, "return next, nil") {
-		t.Errorf("non-identity wiring must print a deny-all guard:\n%s", output)
-	}
-	if !strings.Contains(output, "tenancy.WithContext") {
-		t.Errorf("tenant-scoped wiring must explain how the tenant reaches the context:\n%s", output)
+	// Forge identity on MySQL (decision D30): the guard is the session's.
+	if !strings.Contains(output, "auth.RequireAudited(required, next, repository)") || strings.Contains(output, "return next, nil") {
+		t.Errorf("identity wiring must print the session guard:\n%s", output)
 	}
 
 	// A second resource coexists; the migration version moves past the first.
@@ -472,9 +486,9 @@ func TestResourceIdentifiersAreUUIDv7AndTypesAreExact(t *testing.T) {
 		"sqlite":   regexp.MustCompile(`(?m)^\s+"id"\s+TEXT NOT NULL PRIMARY KEY,?$`),
 	}
 	tenantColumn := map[string]*regexp.Regexp{
-		"postgres": regexp.MustCompile(`(?m)^\s+"tenant_id"\s+uuid NOT NULL,?$`),
-		"mysql":    regexp.MustCompile("(?m)^\\s+`tenant_id`\\s+CHAR\\(36\\) NOT NULL,?$"),
-		"sqlite":   regexp.MustCompile(`(?m)^\s+"tenant_id"\s+TEXT NOT NULL,?$`),
+		"postgres": regexp.MustCompile(`(?m)^\s+"org_id"\s+uuid NOT NULL,?$`),
+		"mysql":    regexp.MustCompile("(?m)^\\s+`org_id`\\s+CHAR\\(36\\) NOT NULL,?$"),
+		"sqlite":   regexp.MustCompile(`(?m)^\s+"org_id"\s+TEXT NOT NULL,?$`),
 	}
 	for _, database := range resourceDatabases {
 		for _, tenant := range []bool{true, false} {
@@ -494,10 +508,10 @@ func TestResourceIdentifiersAreUUIDv7AndTypesAreExact(t *testing.T) {
 						t.Errorf("the id column is not the %s UUIDv7 storage:\n%s", database.name, up)
 					}
 					if tenant && !tenantColumn[database.name].MatchString(up) {
-						t.Errorf("tenant_id is not the %s UUID storage:\n%s", database.name, up)
+						t.Errorf("org_id is not the %s UUID storage:\n%s", database.name, up)
 					}
-					if !tenant && strings.Contains(up, "tenant_id") {
-						t.Errorf("a global table has a tenant_id column:\n%s", up)
+					if !tenant && strings.Contains(up, "org_id") {
+						t.Errorf("a global table has an org_id column:\n%s", up)
 					}
 					if database.name == "sqlite" && !strings.Contains(up, ") STRICT;") {
 						t.Errorf("SQLite table is not STRICT:\n%s", up)
@@ -569,20 +583,20 @@ func TestResourceTenantScopeShapesTheGeneratedCode(t *testing.T) {
 	for _, database := range []string{"postgres", "mysql", "sqlite"} {
 		scoped := persistence(render(database, true))
 		global := persistence(render(database, false))
-		if !strings.Contains(scoped, "tenancy.Require(ctx)") || !strings.Contains(scoped, "tenant_id") || !strings.Contains(scoped, "tenantID") {
+		if !strings.Contains(scoped, "tenancy.Require(ctx)") || !strings.Contains(scoped, "org_id") || !strings.Contains(scoped, "orgID") {
 			t.Errorf("%s tenant-scoped repository does not bind the tenant", database)
 		}
-		if strings.Contains(global, "tenancy") || strings.Contains(global, "tenant_id") {
+		if strings.Contains(global, "tenancy") || strings.Contains(global, "org_id") {
 			t.Errorf("%s global repository mentions tenants", database)
 		}
 	}
-	if up := render("postgres", true).migrationUp; !strings.Contains(up, "FORCE ROW LEVEL SECURITY") || !strings.Contains(up, `CREATE POLICY "products_tenant"`) ||
+	if up := render("postgres", true).migrationUp; !strings.Contains(up, "FORCE ROW LEVEL SECURITY") || !strings.Contains(up, `CREATE POLICY "products_org"`) ||
 		!strings.Contains(up, "WITH CHECK") || !strings.Contains(up, "BYPASSRLS maintenance role") || !strings.Contains(persistence(render("postgres", true)), "InTenantTx") {
 		t.Errorf("PostgreSQL tenant-scoped resources must enable forced RLS and run in InTenantTx:\n%s", up)
 	}
 	for _, database := range []string{"mysql", "sqlite"} {
-		if up := render(database, true).migrationUp; strings.Contains(up, "ROW LEVEL SECURITY") || !strings.Contains(up, "tenant_id") || !strings.Contains(up, "_tenant_id_idx") {
-			t.Errorf("%s: want an (tenant_id, id) index and no RLS:\n%s", database, up)
+		if up := render(database, true).migrationUp; strings.Contains(up, "ROW LEVEL SECURITY") || !strings.Contains(up, "org_id") || !strings.Contains(up, "_org_id_idx") {
+			t.Errorf("%s: want an (org_id, id) index and no RLS:\n%s", database, up)
 		}
 	}
 	if up := render("postgres", false).migrationUp; strings.Contains(up, "ROW LEVEL SECURITY") {
@@ -738,8 +752,8 @@ func TestResourceVersionColumnIsWide(t *testing.T) {
 func TestGlobalResourceWritesStayClosedInIdentityApplications(t *testing.T) {
 	t.Parallel()
 	identity := resourceSpec{
-		resourceRequest: resourceRequest{Name: "category", Plural: "categories"},
-		Module:          "example.com/shop", Database: "postgres", Identity: true,
+		resourceRequest: resourceRequest{Name: "category", Plural: "categories", Global: true},
+		Module:          "example.com/shop", Database: "postgres", Identity: true, Organizations: true,
 	}
 	wiring := resourceWiring(identity)
 	for _, want := range []string{
@@ -757,6 +771,12 @@ func TestGlobalResourceWritesStayClosedInIdentityApplications(t *testing.T) {
 	identity.TenantScoped = true
 	if wiring := resourceWiring(identity); strings.Contains(wiring, "protectPlatformWrite") {
 		t.Errorf("a tenant-scoped resource needs no platform guard:\n%s", wiring)
+	}
+	// So are the plain tables of an application with one organization
+	// (decision D33): its owner writes them.
+	identity.TenantScoped, identity.Global, identity.Organizations = false, false, false
+	if wiring := resourceWiring(identity); strings.Contains(wiring, "protectPlatformWrite") {
+		t.Errorf("a single-organization resource needs no platform guard:\n%s", wiring)
 	}
 	// Applications without identity already get a deny-all guard for everything.
 	identity.TenantScoped, identity.Identity, identity.Database = false, false, "mysql"

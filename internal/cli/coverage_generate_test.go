@@ -145,18 +145,17 @@ func TestGeneratorsReportAnOutputThatCannotBeWritten(t *testing.T) {
 		args   []string
 		writes int // writes that succeed before the failure
 	}{
-		"migration dry run":   {[]string{"migration", "add_prices", "--dry-run"}, 0},
-		"view":                {[]string{"view", "welcome"}, 6},
-		"view dry run":        {[]string{"view", "welcome", "--dry-run"}, 0},
-		"job first note":      {[]string{"job", "nightly_report"}, 2},
-		"job second note":     {[]string{"job", "nightly_report"}, 3},
-		"resource dry run":    {[]string{"resource", "post", "title:string", "--global", "--dry-run"}, 0},
-		"model dry run":       {[]string{"model", "post", "title:string", "--global", "--dry-run"}, 0},
-		"mailer dry run":      {[]string{"mailer", "welcome", "greet", "--dry-run"}, 0},
-		"queue job dry run":   {[]string{"job", "nightly_report", "--queue", "--dry-run"}, 0},
-		"controller dry run":  {[]string{"controller", "pages", "index", "--dry-run"}, 0},
-		"scaffold dry run":    {[]string{"scaffold", "post", "title:string", "--global", "--dry-run"}, 0},
-		"authentication note": {[]string{"authentication", "--dry-run"}, 13},
+		"migration dry run":  {[]string{"migration", "add_prices", "--dry-run"}, 0},
+		"view":               {[]string{"view", "welcome"}, 6},
+		"view dry run":       {[]string{"view", "welcome", "--dry-run"}, 0},
+		"job first note":     {[]string{"job", "nightly_report"}, 2},
+		"job second note":    {[]string{"job", "nightly_report"}, 3},
+		"resource dry run":   {[]string{"resource", "post", "title:string", "--global", "--dry-run"}, 0},
+		"model dry run":      {[]string{"model", "post", "title:string", "--global", "--dry-run"}, 0},
+		"mailer dry run":     {[]string{"mailer", "welcome", "greet", "--dry-run"}, 0},
+		"queue job dry run":  {[]string{"job", "nightly_report", "--queue", "--dry-run"}, 0},
+		"controller dry run": {[]string{"controller", "pages", "index", "--dry-run"}, 0},
+		"scaffold dry run":   {[]string{"scaffold", "post", "title:string", "--global", "--dry-run"}, 0},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

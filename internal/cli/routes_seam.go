@@ -235,6 +235,11 @@ func renderRoutes(seam routesSeam, existing map[string]string, entries []scaffol
 	}
 	streams := regexp.MustCompile(`\bstreams\.`).MatchString(used)
 	var blocks []scaffold.RouteBlock
+	if seam.app.Identity {
+		// First: it mounts the sign-in pages and declares the session store
+		// and middleware the guards below take.
+		blocks = append(blocks, scaffold.IdentityBlock)
+	}
 	for _, block := range sharedBlocks {
 		switch block.Kind {
 		case "signer", "streams":

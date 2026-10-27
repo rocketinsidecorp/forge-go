@@ -46,6 +46,19 @@ func NewMigrated(t testing.TB, migrations fs.FS) *sqldb.DB {
 	return db
 }
 
+// NewMigratedSets is New followed by applying the migrations of several
+// independent sets as one globally ordered history, the way the application's
+// migrate command composes them (for example the Forge identity migrations
+// and the application's own).
+func NewMigratedSets(t testing.TB, sets ...fs.FS) *sqldb.DB {
+	t.Helper()
+	db, cfg := NewWithConfig(t)
+	dbtest.MigrateSets(t, sets, func(loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
+		return mysql.NewMigrator(cfg, loaded, logger)
+	})
+	return db
+}
+
 // Config returns configuration for a fresh, empty database, for tests of
 // code that opens its own pool (for example Configure).
 func Config(t testing.TB) config.Database {
