@@ -102,6 +102,7 @@ safely. The generated `views.go` embeds templates one directory deep
 | `{{flash "notice"}}` | the text of one incoming message, or empty |
 | `{{domID "post" .ID}}` | `post_0190...`, or `new_post` for a zero UUID |
 | `{{dict "Form" .Form "Action" "/posts"}}` | a map, for partials |
+| `{{if can "posts:write"}}...{{end}}` | whether the signed-in principal holds the permission, to show only the forms and frames the caller may use; display only (routes still authorize), true without a principal (no Forge identity) |
 | `{{t "posts.index.title"}}` | the translation for the request's locale; `{{t "posts.count" "count" .Total}}` picks the plural form, `_html` keys are trusted markup with escaped arguments ([I18N.md](I18N.md)) |
 | `{{l .CreatedAt "short"}}` | a time in the locale's `time.formats.short` (`"date.formats.long"` names any key) |
 | `{{number .Total 2}}` | a number with the locale's separators; integers get no decimals unless a precision is given |

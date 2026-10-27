@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/config"
@@ -60,13 +62,19 @@ func forgeBinary(t *testing.T, frameworkPath string) string {
 // quickstartCommands is the first bash block after "## Quickstart".
 func quickstartCommands(t *testing.T, readme string) []string {
 	t.Helper()
-	_, section, ok := strings.Cut(readme, "\n## Quickstart\n")
+	return readmeCommands(t, readme, "Quickstart")
+}
+
+// readmeCommands is the first bash block of the README's section heading.
+func readmeCommands(t *testing.T, readme, heading string) []string {
+	t.Helper()
+	_, section, ok := strings.Cut(readme, "\n## "+heading+"\n")
 	if !ok {
-		t.Fatalf("the README has no Quickstart section:\n%s", readme)
+		t.Fatalf("the README has no %s section:\n%s", heading, readme)
 	}
 	_, block, ok := strings.Cut(section, "```bash\n")
 	if !ok {
-		t.Fatal("the Quickstart section has no bash block")
+		t.Fatalf("the %s section has no bash block", heading)
 	}
 	block, _, _ = strings.Cut(block, "```")
 	return strings.Split(strings.TrimSpace(block), "\n")
@@ -209,6 +217,16 @@ func testReadmeQuickstart(t *testing.T, frameworkPath, name string) {
 			t.Fatalf("%s asks for a manual edit:\n%s", line, output)
 		}
 	}
+	// The README's associations (decision D23), as written: posts with
+	// comments and tags.
+	for _, line := range readmeCommands(t, readFile(t, filepath.Join(app, "README.md")), "Associations") {
+		if !strings.HasPrefix(line, "forge ") || strings.Contains(line, "--public") || strings.Contains(line, "--global") {
+			t.Fatalf("the associations block runs %q", line)
+		}
+		if output := runQuickstartLine(t, app, line, env); strings.Contains(output, "Forge did not edit") {
+			t.Fatalf("%s asks for a manual edit:\n%s", line, output)
+		}
+	}
 	org := ""
 	if variant.tenants {
 		org = "acme"
@@ -225,6 +243,7 @@ func testReadmeQuickstart(t *testing.T, frameworkPath, name string) {
 	browser.signIn(org, "you@example.com", "wrong password", http.StatusUnprocessableEntity)
 	browser.signIn(org, "you@example.com", quickstartPassword, http.StatusSeeOther)
 	chair := quickstartCRUD(t, browser)
+	post, tag := quickstartAssociations(t, browser)
 
 	// The front end is TypeScript: the page loads the compiled JavaScript, with
 	// no types left, and forge dev embeds it with an inline source map.
@@ -266,6 +285,114 @@ func testReadmeQuickstart(t *testing.T, frameworkPath, name string) {
 	}
 	// acme's row is untouched.
 	browser.expect(http.MethodGet, "/products/"+chair, nil, http.StatusOK, "Chair")
+
+	// Nor can globex link its rows to acme's: the application refuses the
+	// ids, and so do the composite foreign keys when the application's
+	// checks are bypassed.
+	other.expect(http.MethodGet, "/posts/"+post+"/comments", nil, http.StatusNotFound, "")
+	other.expectJSON(http.MethodGet, "/v1/posts/"+post+"/comments", "", "", http.StatusNotFound)
+	other.expect(http.MethodPost, "/comments", url.Values{"authenticity_token": {other.token("/comments/new")}, "body": {"Cross-org"}, "post_id": {post}}, http.StatusUnprocessableEntity, "must name an existing post")
+	other.expectJSON(http.MethodPost, "/v1/comments", `{"body":"Cross-org","post_id":"`+post+`"}`, csrfHeader, http.StatusUnprocessableEntity)
+	other.expectJSON(http.MethodPost, "/v1/posts/"+post+"/tags", `{"tag_id":"`+tag+`"}`, csrfHeader, http.StatusNotFound)
+	created := other.expect(http.MethodPost, "/posts", url.Values{"authenticity_token": {other.token("/posts/new")}, "title": {"Globex news"}, "body": {"Ours"}}, http.StatusSeeOther, "")
+	globexPost := strings.TrimPrefix(created.Header.Get("Location"), "/posts/")
+	other.expectJSON(http.MethodPost, "/v1/posts/"+globexPost+"/tags", `{"tag_id":"`+tag+`"}`, csrfHeader, http.StatusUnprocessableEntity)
+	assertCrossOrganizationRowsRefused(t, runtimeURL, post, tag, globexPost)
+	browser.expect(http.MethodGet, "/posts/"+post+"/comments", nil, http.StatusOK, "Nice post")
+}
+
+// quickstartAssociations drives the README's associations as a person
+// would: a post, a comment picked from the post's page, a tag added in the
+// post's tag frame and through JSON, and a delete of the post that is
+// refused while it has comments. It returns the post's and the tag's IDs.
+func quickstartAssociations(t *testing.T, browser *quickstartBrowser) (post, tag string) {
+	t.Helper()
+	created := browser.expect(http.MethodPost, "/posts", url.Values{"authenticity_token": {browser.token("/posts/new")}, "title": {"Hello associations"}, "body": {"First post"}}, http.StatusSeeOther, "")
+	post = strings.TrimPrefix(created.Header.Get("Location"), "/posts/")
+	page := browser.page("/posts/" + post)
+	for _, frame := range []string{`<turbo-frame id="post_comments" src="/posts/` + post + `/comments"`, `<turbo-frame id="post_tags" src="/posts/` + post + `/tags">`} {
+		if !strings.Contains(page, frame) {
+			t.Fatalf("the post page lacks %s:\n%s", frame, page)
+		}
+	}
+	form := browser.page("/comments/new?post_id=" + post)
+	if !strings.Contains(form, `<option value="`+post+`" selected>Hello associations</option>`) {
+		t.Fatalf("the comment form does not preselect the post:\n%s", form)
+	}
+	browser.expect(http.MethodPost, "/comments", url.Values{"authenticity_token": {quickstartField(t, form, "authenticity_token")}, "body": {"Nice post"}, "post_id": {post}}, http.StatusSeeOther, "")
+	browser.expect(http.MethodGet, "/posts/"+post+"/comments", nil, http.StatusOK, "Nice post")
+	var comments struct {
+		Items []struct {
+			PostID string `json:"post_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(browser.expectJSON(http.MethodGet, "/v1/posts/"+post+"/comments", "", "", http.StatusOK), &comments); err != nil || len(comments.Items) != 1 || comments.Items[0].PostID != post {
+		t.Fatalf("GET /v1/posts/{id}/comments = %+v (%v)", comments, err)
+	}
+	// A post id that names no post is refused, even with the select bypassed.
+	browser.expect(http.MethodPost, "/comments", url.Values{"authenticity_token": {browser.token("/comments/new")}, "body": {"Lost"}, "post_id": {uuid.MustNew().String()}}, http.StatusUnprocessableEntity, "must name an existing post")
+
+	csrfHeader := browser.cookies["__Host-forge_csrf"]
+	var createdTag struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(browser.expectJSON(http.MethodPost, "/v1/tags", `{"name":"go"}`, csrfHeader, http.StatusCreated), &createdTag); err != nil {
+		t.Fatal(err)
+	}
+	tag = createdTag.ID
+	tags := browser.page("/posts/" + post + "/tags")
+	browser.expect(http.MethodPost, "/posts/"+post+"/tags", url.Values{"authenticity_token": {quickstartField(t, tags, "authenticity_token")}, "tag_id": {tag}}, http.StatusSeeOther, "")
+	browser.expect(http.MethodGet, "/posts/"+post+"/tags", nil, http.StatusOK, ">go</a>")
+	browser.expectJSON(http.MethodPost, "/v1/posts/"+post+"/tags", `{"tag_id":"`+tag+`"}`, csrfHeader, http.StatusNoContent)
+	if body := browser.expectJSON(http.MethodGet, "/v1/posts/"+post+"/tags", "", "", http.StatusOK); !strings.Contains(string(body), tag) {
+		t.Fatalf("GET /v1/posts/{id}/tags = %s", body)
+	}
+
+	// The post still has a comment: deleting it is refused, with a reason.
+	show := browser.page("/posts/" + post)
+	refused := browser.expect(http.MethodPost, "/posts/"+post, url.Values{
+		"authenticity_token": {quickstartField(t, show, "authenticity_token")}, "_method": {"DELETE"}, "version": {quickstartField(t, show, "version")},
+	}, http.StatusSeeOther, "")
+	if location := refused.Header.Get("Location"); location != "/posts/"+post {
+		t.Fatalf("the refused delete redirected to %q", location)
+	}
+	browser.expect(http.MethodGet, "/posts/"+post, nil, http.StatusOK, "was not deleted because other records still refer to it")
+	if body := browser.expectJSON(http.MethodDelete, "/v1/posts/"+post+"?version=1", "", csrfHeader, http.StatusConflict); !strings.Contains(string(body), "post_in_use") {
+		t.Fatalf("DELETE /v1/posts/{id} = %s", body)
+	}
+	return post, tag
+}
+
+// assertCrossOrganizationRowsRefused inserts, as the runtime role inside
+// globex's organization, a comment on acme's post and a tag row joining
+// globex's post to acme's tag: the composite foreign keys refuse both.
+func assertCrossOrganizationRowsRefused(t *testing.T, runtimeURL, acmePost, acmeTag, globexPost string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), dbtest.SetupTimeout)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, runtimeURL)
+	if err != nil {
+		t.Fatalf("connect as the runtime role: %v", err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	for _, statement := range []string{
+		"INSERT INTO comments (id, org_id, body, post_id, version, created_at, updated_at) VALUES ('" + uuid.MustNew().String() + "', current_setting('forge.tenant_id')::uuid, 'x', '" + acmePost + "', 1, now(), now())",
+		"INSERT INTO post_tags (org_id, post_id, tag_id, created_at) VALUES (current_setting('forge.tenant_id')::uuid, '" + globexPost + "', '" + acmeTag + "', now())",
+	} {
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, "SELECT set_config('forge.tenant_id', (SELECT id::text FROM forge_tenants WHERE slug = 'globex'), true)"); err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.Exec(ctx, statement)
+		_ = tx.Rollback(ctx)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+			t.Errorf("%s: err = %v, want a foreign key violation (23503)", statement, err)
+		}
+	}
 }
 
 // quickstartCRUD lists, creates, shows, edits and deletes a product through

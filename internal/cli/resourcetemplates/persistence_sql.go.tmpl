@@ -12,6 +12,9 @@ import (
 	"[[.Module]]/app/application"
 	"[[.Module]]/app/domain"
 	"github.com/rocketinsidecorp/forge-go/[[.Database]]"
+[[- if gt (len .References) 1]]
+	"github.com/rocketinsidecorp/forge-go/fault"
+[[- end]]
 	"github.com/rocketinsidecorp/forge-go/sqldb"
 [[- if .Tenant]]
 	"github.com/rocketinsidecorp/forge-go/tenancy"
@@ -36,6 +39,12 @@ const (
 	delete[[.Title]] = [[.SQL.Delete.GoLiteral]]
 
 	[[.Name]]Exists = [[.SQL.Exists.GoLiteral]]
+[[- range .References]]
+
+	// The [[$.Plural]] of one [[.Human]], newest first (the nested index).
+	list[[$.PluralTitle]]By[[.Title]]First = [[.ListFirst.GoLiteral]]
+	list[[$.PluralTitle]]By[[.Title]]After = [[.ListAfter.GoLiteral]]
+[[- end]]
 )
 
 // [[.Title]]Repository is the [[.Database]] application.[[.Title]]Repository. It runs on a pool or
@@ -68,7 +77,7 @@ func (r *[[.Title]]Repository) Create(ctx context.Context, entity domain.[[.Titl
 	orgID := tenant.ID
 [[- end]]
 	if _, err := r.db.ExecContext(ctx, insert[[.Title]], [[.SQL.Insert.ArgList]]); err != nil {
-		return domain.[[.Title]]{}, [[.Database]].Translate(err)
+		return domain.[[.Title]]{}, [[if .References]][[.Name]]WriteError([[end]][[.Database]].Translate(err)[[if .References]])[[end]]
 	}
 	return entity, nil
 }
@@ -114,6 +123,38 @@ func (r *[[.Title]]Repository) List(ctx context.Context, after uuid.UUID, limit 
 	if err != nil {
 		return nil, [[.Database]].Translate(err)
 	}
+	return collect[[.PluralTitle]](rows)
+}
+[[- range .References]]
+
+// ListBy[[.Title]] returns up to limit [[$.Plural]] of the [[.Human]] with id [[.Camel]]ID, newest
+// first, starting after the one with ID after (the zero UUID for the first page).
+func (r *[[$.Title]]Repository) ListBy[[.Title]](ctx context.Context, [[.Camel]]ID, after uuid.UUID, limit int) ([]domain.[[$.Title]], error) {
+[[- if $.Tenant]]
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
+	orgID := tenant.ID
+	var rows *sql.Rows
+[[- else]]
+	var rows *sql.Rows
+	var err error
+[[- end]]
+	if after == (uuid.UUID{}) {
+		rows, err = r.db.QueryContext(ctx, list[[$.PluralTitle]]By[[.Title]]First, [[.ListFirst.ArgList]])
+	} else {
+		rows, err = r.db.QueryContext(ctx, list[[$.PluralTitle]]By[[.Title]]After, [[.ListAfter.ArgList]])
+	}
+	if err != nil {
+		return nil, [[$.Database]].Translate(err)
+	}
+	return collect[[$.PluralTitle]](rows)
+}
+[[- end]]
+
+// collect[[.PluralTitle]] scans every row and closes rows.
+func collect[[.PluralTitle]](rows *sql.Rows) ([]domain.[[.Title]], error) {
 	defer func() { _ = rows.Close() }()
 	var entities []domain.[[.Title]]
 	for rows.Next() {
@@ -142,7 +183,7 @@ func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Titl
 [[- end]]
 	result, err := r.db.ExecContext(ctx, update[[.Title]], [[.SQL.Update.ArgList]])
 	if err != nil {
-		return domain.[[.Title]]{}, [[.Database]].Translate(err)
+		return domain.[[.Title]]{}, [[if .References]][[.Name]]WriteError([[end]][[.Database]].Translate(err)[[if .References]])[[end]]
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
@@ -157,7 +198,7 @@ func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Titl
 }
 
 // Delete removes the [[.Name]] with id if its version is still the given one, with the same
-// errors as Update.
+// errors as Update, and domain.Err[[.Title]]InUse while rows of another table reference it.
 func (r *[[.Title]]Repository) Delete(ctx context.Context, id uuid.UUID, version int) error {
 [[- if .Tenant]]
 	tenant, err := tenancy.Require(ctx)
@@ -168,7 +209,7 @@ func (r *[[.Title]]Repository) Delete(ctx context.Context, id uuid.UUID, version
 [[- end]]
 	result, err := r.db.ExecContext(ctx, delete[[.Title]], [[.SQL.Delete.ArgList]])
 	if err != nil {
-		return [[.Database]].Translate(err)
+		return [[.Name]]DeleteError([[.Database]].Translate(err))
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
@@ -192,6 +233,41 @@ func (r *[[.Title]]Repository) explainMissedWrite(ctx context.Context, [[if .Ten
 	}
 	return domain.ErrStale[[.Title]]Version
 }
+
+// [[.Name]]DeleteError reports a delete the foreign key of another table refused
+// (its rows still reference the [[.Name]]) as domain.Err[[.Title]]InUse.
+func [[.Name]]DeleteError(err error) error {
+	if errors.Is(err, sqldb.ErrReferenceViolation) {
+		return domain.Err[[.Title]]InUse.WithCause(err)
+	}
+	return err
+}
+[[- if .References]]
+
+// [[.Name]]WriteError reports a write the foreign key of a references field refused
+// as the error of that field: the referenced row does not exist[[if .Tenant]] in the
+// organization[[end]] (or was deleted since the service checked it).
+func [[.Name]]WriteError(err error) error {
+	if !errors.Is(err, sqldb.ErrReferenceViolation) {
+		return err
+	}
+[[- if eq (len .References) 1]]
+[[- range .References]]
+	return domain.Err[[$.Title]][[.Title]]NotFound.WithCause(err)
+[[- end]]
+[[- else]]
+	// The constraint names the field; SQLite does not report it, and the
+	// violation is then returned as it is.
+	switch fault.From(err).Metadata["constraint"] {
+[[- range .References]]
+	case "[[.Constraint]]":
+		return domain.Err[[$.Title]][[.Title]]NotFound.WithCause(err)
+[[- end]]
+	}
+	return err
+[[- end]]
+}
+[[- end]]
 
 // [[.Name]]Scanner is satisfied by *sql.Row and *sql.Rows.
 type [[.Name]]Scanner interface {

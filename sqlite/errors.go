@@ -100,6 +100,15 @@ func classifyResult(code int, message string) sqldb.Classification {
 		return sqldb.Classification{Kind: sqldb.KindUniqueViolation, Constraint: constraintName(code, message)}
 	case sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
 		return sqldb.Classification{Kind: sqldb.KindForeignKeyViolation}
+	case sqlite3.SQLITE_CONSTRAINT_TRIGGER:
+		// ON DELETE RESTRICT (and ON UPDATE RESTRICT) refuse the parent row
+		// through SQLite's internal trigger, so the code is the trigger's;
+		// the message says it is the foreign key. Other trigger failures
+		// (RAISE(ABORT, ...) of the application's own triggers) stay unknown.
+		if strings.Contains(message, "FOREIGN KEY constraint failed") {
+			return sqldb.Classification{Kind: sqldb.KindForeignKeyViolation}
+		}
+		return sqldb.Classification{}
 	case sqlite3.SQLITE_CONSTRAINT_CHECK, sqlite3.SQLITE_CONSTRAINT_DATATYPE:
 		// A value the client sent: a CHECK constraint, or a value of the
 		// wrong type for a STRICT table's column.

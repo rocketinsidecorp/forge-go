@@ -3,6 +3,9 @@ package htmlui_test
 import (
 	"cmp"
 	"context"
+[[- if and .Identity .References]]
+	"errors"
+[[- end]]
 	"io"
 	"maps"
 	"net/http"
@@ -21,6 +24,9 @@ import (
 	"[[.Module]]/app/domain"
 	appviews "[[.Module]]/app/views"
 	"[[.Module]]/config/locales"
+[[- if and .Identity .References]]
+	"github.com/rocketinsidecorp/forge-go/auth"
+[[- end]]
 [[- if .Broadcast]]
 	"github.com/rocketinsidecorp/forge-go/broadcast"
 [[- end]]
@@ -29,7 +35,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/fault"
 	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/pagination"
-[[- if and .Broadcast .Tenant]]
+[[- if or (and .Broadcast .Tenant) (and .Identity .References)]]
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 [[- end]]
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -123,6 +129,9 @@ func [[.Camel]]Grant(granted ...string) htmlui.[[.Title]]Protect {
 	}
 }
 
+[[- .MemoryListBy (printf "%sMemoryRepository" .Camel)]]
+[[- .GuardedReferenceStubs]]
+
 // new[[.Title]]Service builds the use cases over an in-memory store with a clock
 // that advances one second per reading.
 func new[[.Title]]Service(t *testing.T) *application.[[.Title]]Service {
@@ -136,7 +145,7 @@ func new[[.Title]]Service(t *testing.T) *application.[[.Title]]Service {
 		ticks++
 		return time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC).Add(time.Duration(ticks) * time.Second)
 	}
-	service, err := application.New[[.Title]]Service(repo, clock, uuid.New)
+	service, err := application.New[[.Title]]Service(repo,[[.StubArgs]] clock, uuid.New)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -853,4 +862,106 @@ func Test[[.Title]]PagesSucceedWhenPublishingFails(t *testing.T) {
 		t.Fatal("the [[.Name]] was not stored while publishing failed")
 	}
 }
+[[- end]]
+[[- range .References]]
+
+// A [[$.Name]] belongs to a [[.Human]]: the form offers the [[.Plural]] in a select (the
+// [[.Human]]'s page preselects it), a [[.Human]] the caller cannot see is refused with
+// 422 even when the select is bypassed, and /[[.Plural]]/{id}/[[$.Plural]] lists the
+// [[.Human]]'s [[$.Plural]] in the frame its page loads.
+func Test[[$.Title]]PagesBelongTo[[.Title]](t *testing.T) {
+	t.Parallel()
+	browser := new[[$.Title]]Browser(t, [[$.Camel]]AllowAll)
+	known := [[.KnownVar]].String()
+
+	form := browser.get("/[[$.Plural]]/new?[[.Field.Name]]=" + known)
+	[[$.Camel]]Expect(t, form, http.StatusOK)
+	[[$.Camel]]Contains(t, form, `<select id="[[$.Name]]_[[.Field.Name]]" name="[[.Field.Name]]"`, `<option value="`+known+`" selected>`)
+
+	values := [[$.Camel]]FirstValues()
+	values.Set("[[.Field.Name]]", [[.MissingVar]].String())
+	rejected := browser.submit("/[[$.Plural]]/new", http.MethodPost, "/[[$.Plural]]", values)
+	[[$.Camel]]Expect(t, rejected, http.StatusUnprocessableEntity)
+	[[$.Camel]]Contains(t, rejected, `id="[[$.Name]]_[[.Field.Name]]_error"`, "must name an existing [[.Human]]")
+	if browser.count() != 0 {
+		t.Fatal("a [[$.Name]] of a missing [[.Human]] was stored")
+	}
+
+	values.Set("[[.Field.Name]]", known)
+	[[$.Camel]]Redirected(t, browser.submit("/[[$.Plural]]/new", http.MethodPost, "/[[$.Plural]]", values))
+	entity := browser.stored()
+	nested := browser.get("/[[.Plural]]/" + known + "/[[$.Plural]]")
+	[[$.Camel]]Expect(t, nested, http.StatusOK)
+	[[$.Camel]]Contains(t, nested, `<turbo-frame id="[[.Name]]_[[$.Plural]]" target="_top">`, `href="/[[$.Plural]]/`+entity.ID.String()+`"`, `href="/[[$.Plural]]/new?[[.Field.Name]]=`+known+`"`)
+	empty := browser.get("/[[.Plural]]/" + uuid.MustNew().String() + "/[[$.Plural]]")
+	[[$.Camel]]Expect(t, empty, http.StatusOK)
+	[[$.Camel]]Contains(t, empty, "No [[$.PluralHuman]] yet.")
+	[[$.Camel]]Expect(t, browser.get("/[[.Plural]]/"+[[.MissingVar]].String()+"/[[$.Plural]]"), http.StatusNotFound)
+}
+[[- end]]
+[[- if and .Identity .References]]
+
+
+// [[.Camel]]As serves handler to a signed-in principal holding only
+// permissions, as the application's authentication middleware does.
+func [[.Camel]]As(t *testing.T, handler http.Handler, permissions ...string) http.Handler {
+	t.Helper()
+	tenant, err := tenancy.New(uuid.MustNew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var granted []auth.Permission
+	for _, name := range permissions {
+		permission, err := auth.NewPermission(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		granted = append(granted, permission)
+	}
+	principal, err := auth.NewPrincipal(uuid.MustNew(), tenant, granted...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := auth.NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+		return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticated := middleware.Authenticate(handler)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+token.Reveal())
+		authenticated.ServeHTTP(w, r)
+	})
+}
+[[- range .References]]
+
+// Without [[.Plural]]:read the form does not list the [[.Plural]] (their titles would
+// leak): the [[.Field.Name]] is typed in.
+func Test[[$.Title]]FormHides[[.PluralTitle]]WithoutTheirPermission(t *testing.T) {
+	t.Parallel()
+	browser := new[[$.Title]]Browser(t, [[$.Camel]]AllowAll)
+	pages := browser.handler
+	browser.handler = [[$.Camel]]As(t, pages, "[[$.Plural]]:read", "[[$.Plural]]:write")
+	form := browser.get("/[[$.Plural]]/new?[[.Field.Name]]=" + [[.KnownVar]].String())
+	[[$.Camel]]Expect(t, form, http.StatusOK)
+	if strings.Contains(form.Body.String(), "<select id=\"[[$.Name]]_[[.Field.Name]]\"") {
+		t.Fatalf("the form lists the [[.Plural]] to a caller without [[.Plural]]:read:\n%s", form.Body)
+	}
+	[[$.Camel]]Contains(t, form, `id="[[$.Name]]_[[.Field.Name]]" name="[[.Field.Name]]" value="`+[[.KnownVar]].String()+`"`)
+	// The [[.Plural]] are not even read: the stand-in's List refuses this caller,
+	// which would fail the page, and no choice is offered.
+	empty := browser.get("/[[$.Plural]]/new")
+	[[$.Camel]]Expect(t, empty, http.StatusOK)
+	if strings.Contains(empty.Body.String(), [[.KnownVar]].String()) {
+		t.Fatalf("the form offers a [[.Human]] to a caller without [[.Plural]]:read:\n%s", empty.Body)
+	}
+	browser.handler = [[$.Camel]]As(t, pages, "[[$.Plural]]:read", "[[$.Plural]]:write", "[[.Plural]]:read")
+	[[$.Camel]]Contains(t, browser.get("/[[$.Plural]]/new"), "<select id=\"[[$.Name]]_[[.Field.Name]]\"")
+}
+[[- end]]
 [[- end]]

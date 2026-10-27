@@ -92,6 +92,35 @@ scaffold`, `resource` and `controller` rewrite and `forge destroy` takes their
 blocks back out of; do not edit it (they refuse to touch it once its
 checksum no longer matches). Running a generator again with the same
 arguments changes nothing.
+
+## Associations
+
+A comment belongs to a post, a post has many comments, and posts and tags are
+joined many to many, with no code to edit:
+
+```bash
+forge generate scaffold post title:string body:text{{if .Tenants}} --org-scoped{{else if not .DB.Identity}} --public{{end}}
+forge generate scaffold comment body:text post:references{{if .Tenants}} --org-scoped{{else if not .DB.Identity}} --public{{end}}
+forge generate scaffold tag name:string{{if .Tenants}} --org-scoped{{else if not .DB.Identity}} --public{{end}}
+forge generate join post tag
+forge migrate
+```
+
+`post:references` (or `post:belongs_to`) adds `post_id`, its index and a
+foreign key{{if .Tenants}} that includes the organization, `(org_id, post_id)` to `posts
+(org_id, id)`, so no row can name another organization's post{{end}}. The comment
+form picks its post in a select; a post id that names no post{{if .Tenants}} of your
+organization{{end}} is refused with 422. A post's page shows its comments and tags
+in Turbo Frames, loaded from `/posts/{id}/comments` and `/posts/{id}/tags`,
+with forms to tag and untag it; the JSON API has
+`GET /v1/posts/{post_id}/comments`, `GET` and `POST /v1/posts/{post_id}/tags`
+and `DELETE /v1/posts/{post_id}/tags/{tag_id}`. Deleting a post that still has
+comments is refused (`409 post_in_use` as JSON, an alert on the page); generate
+the comment with `--on-delete=cascade` to delete them with it instead. Tags
+come and go with either side. `forge destroy join post tag` removes the join,
+and `forge destroy` refuses to remove a resource something still references.
+Field types: `string text integer boolean timestamp uuid references`, or
+`int bool time datetime belongs_to`.
 {{- end}}
 
 ## Run

@@ -19,7 +19,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/migrate"
 )
 
-const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate migration NAME [field:type...] [--dry-run]\n       forge generate job NAME [field:type...] --queue [--dry-run]\n       forge generate model NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--dry-run]\n       forge generate controller NAME ACTION... [--api] [--public] [--dry-run]\n       forge generate mailer NAME METHOD[:field,field...]... [--dry-run]\n       forge generate resource NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--dry-run]\n       forge generate authentication [--api-auth] [--dry-run]\n       forge generate tenancy [--org SLUG] [--dry-run]"
+const generateUsage = "usage: forge generate <migration|view|job> NAME [--dry-run]\n       forge generate migration NAME [field:type...] [--dry-run]\n       forge generate job NAME [field:type...] --queue [--dry-run]\n       forge generate model NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--dry-run]\n       forge generate controller NAME ACTION... [--api] [--public] [--dry-run]\n       forge generate mailer NAME METHOD[:field,field...]... [--dry-run]\n       forge generate resource NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--dry-run]\n       forge generate scaffold NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--on-delete=restrict|cascade] [--dry-run]\n       forge generate join LEFT RIGHT [--dry-run]\n       forge generate authentication [--api-auth] [--dry-run]\n       forge generate tenancy [--org SLUG] [--dry-run]"
 
 var migrationName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,99}$`)
 var viewName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -97,6 +97,9 @@ func generateFiles(args []string, stdout io.Writer, root string, env []string, n
 	}
 	if len(args) > 0 && args[0] == "authentication" {
 		return runGenerateAuthentication(args[1:], stdout, root, env)
+	}
+	if len(args) > 0 && args[0] == "join" {
+		return runGenerateJoin(args[1:], stdout, root, env, now)
 	}
 	if len(args) > 0 && args[0] == "tenancy" {
 		return runGenerateTenancy(args[1:], stdout, root, env, now)
@@ -490,6 +493,9 @@ func runGenerateMigration(args []string, stdout io.Writer, root string, env []st
 		field, err := parseResourceField(declaration)
 		if err != nil {
 			return err
+		}
+		if field.References != "" {
+			return fmt.Errorf("%s:references adds a foreign key, which forge generate migration does not write: an association belongs to the model, resource or scaffold that has it (forge generate scaffold comment body:text %s:references), whose migration, code and tests then agree", field.References, field.References)
 		}
 		if seen[field.Name] {
 			return fmt.Errorf("field %q is declared twice", field.Name)

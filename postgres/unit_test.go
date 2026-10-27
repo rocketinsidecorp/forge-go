@@ -34,6 +34,7 @@ func TestTranslate(t *testing.T) {
 		{"no rows", fmt.Errorf("get: %w", pgx.ErrNoRows), "not_found", http.StatusNotFound, false},
 		{"unique", pgError("23505", "tasks_title_key"), "already_exists", http.StatusConflict, false},
 		{"foreign key", pgError("23503", "tasks_project_fkey"), "reference_violation", http.StatusConflict, false},
+		{"restricted delete", pgError("23001", "tasks_project_fkey"), "reference_violation", http.StatusConflict, false},
 		{"check", pgError("23514", "tasks_title_check"), "constraint_violation", http.StatusBadRequest, false},
 		{"not null is a server bug", pgError("23502", ""), "internal_error", http.StatusInternalServerError, false},
 		{"bad cast is a server bug", pgError("22P02", ""), "internal_error", http.StatusInternalServerError, false},

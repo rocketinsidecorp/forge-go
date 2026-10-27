@@ -30,24 +30,38 @@ type [[.Title]]Repository interface {
 	// entity.Version, advances the version and returns the [[.Name]] as stored.
 	Update(ctx context.Context, entity domain.[[.Title]]) (domain.[[.Title]], error)
 	// Delete removes the [[.Name]] only if the stored version still equals version.
+	// It returns domain.Err[[.Title]]InUse while other rows reference the [[.Name]].
 	Delete(ctx context.Context, id uuid.UUID, version int) error
+[[- range .References]]
+	// ListBy[[.Title]] returns up to limit [[$.Plural]] of the [[.Human]] with id [[.Camel]]ID, newest
+	// first, starting after the one with id after (or from the newest).
+	ListBy[[.Title]](ctx context.Context, [[.Camel]]ID, after uuid.UUID, limit int) ([]domain.[[$.Title]], error)
+[[- end]]
 }
 
 // [[.Title]]Service implements the [[.Name]] use cases. It is safe for concurrent use
 // when its repository is.
 type [[.Title]]Service struct {
 	repository [[.Title]]Repository
+[[- range .References]]
+	// [[.PluralCamel]] answers whether a [[.Field.Name]] names a [[.Human]] the caller can see.
+	[[.PluralCamel]] [[.Title]]Repository
+[[- end]]
 	now   func() time.Time
 	newID func() (uuid.UUID, error)
 }
 
 // New[[.Title]]Service wires the use cases. now and newID are injected so tests
 // control time and identifiers; production passes time.Now and uuid.New.
-func New[[.Title]]Service(repository [[.Title]]Repository, now func() time.Time, newID func() (uuid.UUID, error)) (*[[.Title]]Service, error) {
-	if repository == nil || now == nil || newID == nil {
-		return nil, errors.New("application: [[.Name]] repository, clock and id source are required")
+[[- if .References]]
+// The repositories of the resources a [[.Name]] references check that every
+// reference names a row the caller can see[[if .Tenant]] (one of its own organization)[[end]].
+[[- end]]
+func New[[.Title]]Service(repository [[.Title]]Repository,[[range .References]] [[.PluralCamel]] [[.Title]]Repository,[[end]] now func() time.Time, newID func() (uuid.UUID, error)) (*[[.Title]]Service, error) {
+	if repository == nil ||[[range .References]] [[.PluralCamel]] == nil ||[[end]] now == nil || newID == nil {
+		return nil, errors.New("application: [[.Name]] repository, [[range .References]][[.Human]] repository, [[end]]clock and id source are required")
 	}
-	return &[[.Title]]Service{repository: repository, now: now, newID: newID}, nil
+	return &[[.Title]]Service{repository: repository,[[range .References]] [[.PluralCamel]]: [[.PluralCamel]],[[end]] now: now, newID: newID}, nil
 }
 
 // Create validates input and stores a new [[.Name]].
@@ -60,6 +74,19 @@ func (s *[[.Title]]Service) Create(ctx context.Context, input domain.[[.Title]]I
 	if err != nil {
 		return domain.[[.Title]]{}, err
 	}
+[[- range .References]]
+[[- if .Field.Optional]]
+	if entity.[[.Field.Title]] != nil {
+		if err := s.require[[.Title]](ctx, *entity.[[.Field.Title]]); err != nil {
+			return domain.[[$.Title]]{}, err
+		}
+	}
+[[- else]]
+	if err := s.require[[.Title]](ctx, entity.[[.Field.Title]]); err != nil {
+		return domain.[[$.Title]]{}, err
+	}
+[[- end]]
+[[- end]]
 	return s.repository.Create(ctx, entity)
 }
 
@@ -103,6 +130,13 @@ func (s *[[.Title]]Service) Update(ctx context.Context, id uuid.UUID, version in
 	if err != nil {
 		return domain.[[.Title]]{}, err
 	}
+[[- range .References]]
+	if changes.[[.Field.Title]] != nil {
+		if err := s.require[[.Title]](ctx, *changes.[[.Field.Title]]); err != nil {
+			return domain.[[$.Title]]{}, err
+		}
+	}
+[[- end]]
 	return s.repository.Update(ctx, updated)
 }
 
@@ -113,3 +147,39 @@ func (s *[[.Title]]Service) Delete(ctx context.Context, id uuid.UUID, version in
 	}
 	return s.repository.Delete(ctx, id, version)
 }
+[[- range .References]]
+
+// ListBy[[.Title]] returns one page of the [[$.Plural]] of a [[.Human]], newest first, or
+// domain.Err[[.Title]]NotFound when the caller cannot see that [[.Human]].
+func (s *[[$.Title]]Service) ListBy[[.Title]](ctx context.Context, [[.Camel]]ID uuid.UUID, request pagination.Request) (pagination.Page[domain.[[$.Title]]], error) {
+	if _, err := s.[[.PluralCamel]].Get(ctx, [[.Camel]]ID); err != nil {
+		return pagination.Page[domain.[[$.Title]]]{}, err
+	}
+	limit := request.Limit
+	if limit < 1 {
+		limit = pagination.DefaultLimit
+	}
+	limit = min(limit, pagination.MaxLimit)
+	rows, err := s.repository.ListBy[[.Title]](ctx, [[.Camel]]ID, request.After, limit+1)
+	if err != nil {
+		return pagination.Page[domain.[[$.Title]]]{}, err
+	}
+	return pagination.NewPage(rows, limit, func(entity domain.[[$.Title]]) uuid.UUID { return entity.ID }), nil
+}
+
+// [[.Title]]Choices returns the newest [[.Plural]] a [[$.Name]] can reference, at most
+// pagination.MaxLimit of them, for a form's select.
+func (s *[[$.Title]]Service) [[.Title]]Choices(ctx context.Context) ([]domain.[[.Title]], error) {
+	return s.[[.PluralCamel]].List(ctx, uuid.UUID{}, pagination.MaxLimit)
+}
+
+// require[[.Title]] refuses a [[.Field.Name]] that names no [[.Human]] the caller can see. The
+// foreign key refuses it too; checking first gives the field's own error.
+func (s *[[$.Title]]Service) require[[.Title]](ctx context.Context, id uuid.UUID) error {
+	_, err := s.[[.PluralCamel]].Get(ctx, id)
+	if errors.Is(err, domain.Err[[.Title]]NotFound) {
+		return domain.Err[[$.Title]][[.Title]]NotFound
+	}
+	return err
+}
+[[- end]]

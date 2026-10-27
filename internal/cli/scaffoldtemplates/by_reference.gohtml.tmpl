@@ -1,0 +1,15 @@
+{{define "title"}}{{t "[[.Plural]].by_[[.Ref.Name]].title"}}{{end}}
+{{define "content"}}
+<turbo-frame id="[[.Ref.Name]]_[[.Plural]]" target="_top">
+<h2>{{t "[[.Plural]].by_[[.Ref.Name]].title"}}</h2>
+{{if .Items}}
+<ul>
+	{{range .Items}}<li id="{{domID "[[.Name]]" .ID}}"><a href="{{$.Path}}/{{.ID}}">{{[[.ItemLabel]]}}</a></li>{{end}}
+</ul>
+{{if .NextCursor}}<p><a href="/[[.Ref.Plural]]/{{.ParentID}}/[[.Plural]]?cursor={{.NextCursor}}">{{t "[[.Plural]].index.next_page"}}</a></p>{{end}}
+{{else}}
+<p>{{t "[[.Plural]].index.empty"}}</p>
+{{end}}
+<p><a href="{{.Path}}/new?[[.Ref.Field.Name]]={{.ParentID}}">{{t "[[.Plural]].index.new"}}</a></p>
+</turbo-frame>
+{{end}}

@@ -1,0 +1,177 @@
+package httpapi
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/rocketinsidecorp/forge-go/openapi"
+	"github.com/rocketinsidecorp/forge-go/pagination"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/web"
+)
+
+// [[.Title]]Router is where Register[[.PluralTitle]] mounts the routes; *forge.App satisfies it.
+type [[.Title]]Router interface {
+	Handle(pattern string, handler http.Handler) error
+}
+
+// [[.Title]]Protect wraps next so that only callers holding permission reach it,
+// as the guards of the [[.Left.Plural]] and [[.Right.Plural]] routes do.
+type [[.Title]]Protect func(permission string, next http.Handler) (http.Handler, error)
+
+// Register[[.PluralTitle]] mounts the routes of the [[.Left.Human]]-[[.Right.Human]] association. Listing a
+// [[.Left.Human]]'s [[.Right.Plural]] requires "[[.Left.Plural]]:read" and "[[.Right.Plural]]:read"; attaching and
+// detaching one require "[[.Left.Plural]]:write" and "[[.Right.Plural]]:read".
+func Register[[.PluralTitle]](router [[.Title]]Router, service *application.[[.Title]]Service, protect [[.Title]]Protect) error {
+	if router == nil || service == nil {
+		return errors.New("httpapi: router and [[.Plural]] service are required")
+	}
+	if protect == nil {
+		return errors.New("httpapi: a protect function is required: [[.Plural]] routes are never public")
+	}
+	h := [[.Camel]]Handlers{service: service}
+	tags := []string{"[[.Left.Plural]]"}
+	routes := []struct {
+		pattern     string
+		permissions []string
+		handler     http.HandlerFunc
+		operation   openapi.Operation
+	}{
+		{"GET /v1/[[.Left.Plural]]/{[[.Left.Field.Name]]}/[[.Right.Plural]]", []string{"[[.Left.Plural]]:read", "[[.Right.Plural]]:read"}, h.list, openapi.Operation{
+			ID: "list[[.Left.Title]][[.Right.PluralTitle]]", Summary: "List the [[.Right.Plural]] of a [[.Left.Human]], newest first", Tags: tags,
+			Params:    openapi.TypeOf[[printf "[%sListParams]" .Camel]](),
+			Responses: []openapi.Response{[[printf "openapi.JSON[pagination.Page[%sResponse]]" .Right.Name]](http.StatusOK)},
+			Errors:    []int{http.StatusBadRequest, http.StatusNotFound},
+		}},
+		{"POST /v1/[[.Left.Plural]]/{[[.Left.Field.Name]]}/[[.Right.Plural]]", []string{"[[.Left.Plural]]:write", "[[.Right.Plural]]:read"}, h.attach, openapi.Operation{
+			ID: "attach[[.Left.Title]][[.Right.Title]]", Summary: "Give a [[.Left.Human]] a [[.Right.Human]] (again changes nothing)", Tags: tags,
+			Params:    openapi.TypeOf[[printf "[%sParams]" .Camel]](),
+			Request:   openapi.TypeOf[[printf "[%sAttachRequest]" .Camel]](),
+			Responses: []openapi.Response{openapi.Empty(http.StatusNoContent)},
+			Errors:    []int{http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity},
+		}},
+		{"DELETE /v1/[[.Left.Plural]]/{[[.Left.Field.Name]]}/[[.Right.Plural]]/{[[.Right.Field.Name]]}", []string{"[[.Left.Plural]]:write", "[[.Right.Plural]]:read"}, h.detach, openapi.Operation{
+			ID: "detach[[.Left.Title]][[.Right.Title]]", Summary: "Take a [[.Right.Human]] from a [[.Left.Human]]", Tags: tags,
+			Params:    openapi.TypeOf[[printf "[%sDetachParams]" .Camel]](),
+			Responses: []openapi.Response{openapi.Empty(http.StatusNoContent)},
+			Errors:    []int{http.StatusBadRequest, http.StatusNotFound},
+		}},
+	}
+	for _, route := range routes {
+		route.operation.Permission = route.permissions[0]
+		var guarded http.Handler = route.handler
+		// The innermost guard is asked first for the last permission, so
+		// the [[.Left.Human]]'s permission is checked first.
+		for i := len(route.permissions) - 1; i >= 0; i-- {
+			protected, err := protect(route.permissions[i], guarded)
+			if err != nil {
+				return fmt.Errorf("protect %s: %w", route.pattern, err)
+			}
+			if protected == nil {
+				return fmt.Errorf("protect %s: the protect function returned no handler", route.pattern)
+			}
+			guarded = protected
+		}
+		if err := router.Handle(route.pattern, openapi.Describe(guarded, route.operation)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// [[.Camel]]Params documents the {[[.Left.Field.Name]]} path parameter.
+type [[.Camel]]Params struct {
+	[[.Left.Title]]ID uuid.UUID `path:"[[.Left.Field.Name]]" doc:"The [[.Left.Human]]'s ID."`
+}
+
+// [[.Camel]]ListParams documents the list's parameters.
+type [[.Camel]]ListParams struct {
+	[[.Camel]]Params
+	pagination.Query
+}
+
+// [[.Camel]]DetachParams documents DELETE's parameters.
+type [[.Camel]]DetachParams struct {
+	[[.Camel]]Params
+	[[.Right.Title]]ID uuid.UUID `path:"[[.Right.Field.Name]]" doc:"The [[.Right.Human]]'s ID."`
+}
+
+// [[.Camel]]AttachRequest names the [[.Right.Human]] to give the [[.Left.Human]].
+type [[.Camel]]AttachRequest struct {
+	[[.Right.Title]]ID *string `json:"[[.Right.Field.Name]]" openapi:"required,nonnull" format:"uuid"`
+}
+
+type [[.Camel]]Handlers struct {
+	service *application.[[.Title]]Service
+}
+
+func (h [[.Camel]]Handlers) list(w http.ResponseWriter, r *http.Request) {
+	[[.Left.Camel]]ID, err := domain.Parse[[.Left.Title]]ID(r.PathValue("[[.Left.Field.Name]]"))
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	request, err := pagination.FromQuery(r.URL.Query())
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	page, err := h.service.[[.Right.PluralTitle]](r.Context(), [[.Left.Camel]]ID, request)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	items := make([][[.Right.Name]]Response, len(page.Items))
+	for i, entity := range page.Items {
+		items[i] = new[[.Right.Title]]Response(entity)
+	}
+	web.JSON(w, http.StatusOK, [[printf "pagination.Page[%sResponse]" .Right.Name]]{Items: items, NextCursor: page.NextCursor})
+}
+
+func (h [[.Camel]]Handlers) attach(w http.ResponseWriter, r *http.Request) {
+	[[.Left.Camel]]ID, err := domain.Parse[[.Left.Title]]ID(r.PathValue("[[.Left.Field.Name]]"))
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	var body [[.Camel]]AttachRequest
+	if err := web.DecodeJSON(r, &body); err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	if body.[[.Right.Title]]ID == nil {
+		web.Error(w, r, domain.ErrInvalid[[.Right.Title]]ID)
+		return
+	}
+	[[.Right.Camel]]ID, err := domain.Parse[[.Right.Title]]ID(*body.[[.Right.Title]]ID)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	if err := h.service.Attach(r.Context(), [[.Left.Camel]]ID, [[.Right.Camel]]ID); err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h [[.Camel]]Handlers) detach(w http.ResponseWriter, r *http.Request) {
+	[[.Left.Camel]]ID, err := domain.Parse[[.Left.Title]]ID(r.PathValue("[[.Left.Field.Name]]"))
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	[[.Right.Camel]]ID, err := domain.Parse[[.Right.Title]]ID(r.PathValue("[[.Right.Field.Name]]"))
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	if err := h.service.Detach(r.Context(), [[.Left.Camel]]ID, [[.Right.Camel]]ID); err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

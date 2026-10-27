@@ -30,28 +30,28 @@ func TestParseResourceArgs(t *testing.T) {
 		{
 			name: "tenant scoped", args: []string{"product", "name:string", "price_cents:int", "--tenant-scoped"},
 			wantName: "product", wantPlural: "products", wantTenant: true,
-			wantFields: []resourceField{{"name", "string", false}, {"price_cents", "int", false}},
+			wantFields: []resourceField{{Name: "name", Type: "string", Optional: false}, {Name: "price_cents", Type: "int", Optional: false}},
 		},
 		{
 			name: "flags may come first and last", args: []string{"--dry-run", "--global", "category", "title:text?", "--plural", "categories"},
 			wantName: "category", wantPlural: "categories", wantDryRun: true,
-			wantFields: []resourceField{{"title", "text", true}},
+			wantFields: []resourceField{{Name: "title", Type: "text", Optional: true}},
 		},
 		{
 			name: "plural with equals", args: []string{"person", "name:string", "--global", "--plural=people"},
 			wantName: "person", wantPlural: "people",
-			wantFields: []resourceField{{"name", "string", false}},
+			wantFields: []resourceField{{Name: "name", Type: "string", Optional: false}},
 		},
 		{
 			// Identifiers are quoted in all generated SQL, so SQL keywords are fine names.
 			name: "reserved SQL words", args: []string{"group", "order:int", "change:string", "--global"},
 			wantName: "group", wantPlural: "groups",
-			wantFields: []resourceField{{"order", "int", false}, {"change", "string", false}},
+			wantFields: []resourceField{{Name: "order", Type: "int", Optional: false}, {Name: "change", Type: "string", Optional: false}},
 		},
 		{
 			name: "every type", args: []string{"order_item", "a:string", "b:text?", "c:int", "d:bool?", "e:time", "f:uuid?", "--tenant-scoped"},
 			wantName: "order_item", wantPlural: "order_items", wantTenant: true,
-			wantFields: []resourceField{{"a", "string", false}, {"b", "text", true}, {"c", "int", false}, {"d", "bool", true}, {"e", "time", false}, {"f", "uuid", true}},
+			wantFields: []resourceField{{Name: "a", Type: "string", Optional: false}, {Name: "b", Type: "text", Optional: true}, {Name: "c", Type: "int", Optional: false}, {Name: "d", Type: "bool", Optional: true}, {Name: "e", Type: "time", Optional: false}, {Name: "f", Type: "uuid", Optional: true}},
 		},
 	}
 	for _, test := range valid {
@@ -462,15 +462,15 @@ func readFile(t *testing.T, path string) string {
 
 // allTypes exercises every field type, required and optional.
 var allTypes = []resourceField{
-	{"name", "string", false}, {"summary", "string", true},
-	{"body", "text", false}, {"notes", "text", true},
-	{"quantity", "int", false}, {"limit_count", "int", true},
-	{"active", "bool", false}, {"featured", "bool", true},
-	{"released_at", "time", false}, {"retired_at", "time", true},
-	{"owner_id", "uuid", false}, {"parent_id", "uuid", true},
+	{Name: "name", Type: "string", Optional: false}, {Name: "summary", Type: "string", Optional: true},
+	{Name: "body", Type: "text", Optional: false}, {Name: "notes", Type: "text", Optional: true},
+	{Name: "quantity", Type: "int", Optional: false}, {Name: "limit_count", Type: "int", Optional: true},
+	{Name: "active", Type: "bool", Optional: false}, {Name: "featured", Type: "bool", Optional: true},
+	{Name: "released_at", Type: "time", Optional: false}, {Name: "retired_at", Type: "time", Optional: true},
+	{Name: "owner_id", Type: "uuid", Optional: false}, {Name: "parent_id", Type: "uuid", Optional: true},
 }
 
-var minimalFields = []resourceField{{"count", "int", false}, {"enabled", "bool", true}}
+var minimalFields = []resourceField{{Name: "count", Type: "int", Optional: false}, {Name: "enabled", Type: "bool", Optional: true}}
 
 // TestResourceIdentifiersAreUUIDv7AndTypesAreExact is the guard for ADR 0021
 // rule 1 and 5: for every database and both scopes, the primary key (and the

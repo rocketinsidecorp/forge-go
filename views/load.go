@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/assets"
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/broadcast"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/i18n"
@@ -132,6 +133,11 @@ type source struct {
 //	flash "notice"     the text of one incoming flash message
 //	domID "post" .ID   an element id: post_<id>, or new_post for a zero UUID
 //	dict "k" v ...     a map, for passing several values to a partial
+//	can "posts:write"  whether the signed-in Principal holds the permission,
+//	                   to show only the forms and frames the caller may use;
+//	                   display only (the routes still authorize), and true
+//	                   when the request carries no Principal (no Forge
+//	                   identity) or there is no request
 //
 // With i18n.Translator.Middleware in front of the page's handler (or
 // Options.I18n), see docs/I18N.md:
@@ -496,6 +502,17 @@ func helperFuncs(state *renderState, setup *setup) template.FuncMap {
 				return "", err
 			}
 			return web.FlashText(r.Context(), web.FlashKind(kind)), nil
+		},
+		"can": func(permission string) (bool, error) {
+			required, err := auth.NewPermission(permission)
+			if err != nil {
+				return false, fmt.Errorf("can: %w", err)
+			}
+			if state == nil || state.request == nil {
+				return true, nil
+			}
+			principal, ok := auth.FromContext(state.request.Context())
+			return !ok || principal.Can(required), nil
 		},
 		"methodField": methodField,
 		"domID":       domID,

@@ -1,0 +1,278 @@
+package htmlui_test
+
+import (
+	"cmp"
+	"context"
+[[- if .Identity]]
+	"errors"
+[[- end]]
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	forge "github.com/rocketinsidecorp/forge-go"
+	"[[.Module]]/app/adapters/htmlui"
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	appviews "[[.Module]]/app/views"
+	"[[.Module]]/config/locales"
+[[- if .Identity]]
+	"github.com/rocketinsidecorp/forge-go/auth"
+[[- end]]
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/i18n"
+[[- if .Identity]]
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+[[- end]]
+	"github.com/rocketinsidecorp/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/web"
+)
+
+// [[.Camel]]MemoryRepository keeps the page tests independent of any database.
+type [[.Camel]]MemoryRepository struct {
+	mu   sync.Mutex
+	rows map[uuid.UUID]map[uuid.UUID]time.Time
+}
+
+var _ application.[[.Title]]Repository = (*[[.Camel]]MemoryRepository)(nil)
+
+func (r *[[.Camel]]MemoryRepository) Attach(_ context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rows[ [[.Left.Camel]]ID] == nil {
+		r.rows[ [[.Left.Camel]]ID] = make(map[uuid.UUID]time.Time)
+	}
+	if _, ok := r.rows[ [[.Left.Camel]]ID][ [[.Right.Camel]]ID]; !ok {
+		r.rows[ [[.Left.Camel]]ID][ [[.Right.Camel]]ID] = at
+	}
+	return nil
+}
+
+func (r *[[.Camel]]MemoryRepository) Detach(_ context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.rows[ [[.Left.Camel]]ID], [[.Right.Camel]]ID)
+	return nil
+}
+
+func (r *[[.Camel]]MemoryRepository) List[[.Right.PluralTitle]](_ context.Context, [[.Left.Camel]]ID, after uuid.UUID, limit int) ([]domain.[[.Right.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var ids []uuid.UUID
+	for id := range r.rows[ [[.Left.Camel]]ID] {
+		if after == (uuid.UUID{}) || id.Compare(after) < 0 {
+			ids = append(ids, id)
+		}
+	}
+	slices.SortFunc(ids, func(a, b uuid.UUID) int { return cmp.Compare(0, a.Compare(b)) })
+	var page []domain.[[.Right.Title]]
+	for _, id := range ids[:min(limit, len(ids))] {
+		page = append(page, domain.[[.Right.Title]]{ID: id})
+	}
+	return page, nil
+}
+[[.GuardedReferenceStubs]]
+
+// [[.Camel]]Browser keeps cookies between requests, so the CSRF token travels
+// as it does in a browser.
+type [[.Camel]]Browser struct {
+	t       *testing.T
+	handler http.Handler
+	cookies map[string]*http.Cookie
+}
+
+func new[[.Title]]Browser(t *testing.T) *[[.Camel]]Browser {
+	t.Helper()
+	cfg := config.Default()
+	cfg.I18n.DefaultLocale = "en"
+	translator, err := locales.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := appviews.New(appviews.WithI18n(translator))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	translations, err := translator.Middleware(i18n.NegotiationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	protection, err := csrf.New(csrf.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, middleware := range []func(http.Handler) http.Handler{translations, web.MethodOverride, protection.Handler, web.Flash} {
+		if err := app.Use(middleware); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := &[[.Camel]]MemoryRepository{rows: make(map[uuid.UUID]map[uuid.UUID]time.Time)}
+	service, err := application.New[[.Title]]Service(repo,[[.StubArgs]] time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allow := func(_ string, next http.Handler) (http.Handler, error) { return next, nil }
+	if err := htmlui.Register[[.PluralTitle]](app, service, renderer, allow); err != nil {
+		t.Fatal(err)
+	}
+	return &[[.Camel]]Browser{t: t, handler: app.Handler(), cookies: make(map[string]*http.Cookie)}
+}
+
+func (b *[[.Camel]]Browser) request(method, target string, form url.Values) *httptest.ResponseRecorder {
+	b.t.Helper()
+	var body io.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
+	}
+	request := httptest.NewRequest(method, target, body)
+	request.Header.Set("Accept", "text/html")
+	if form != nil {
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	for _, cookie := range b.cookies {
+		request.AddCookie(cookie)
+	}
+	recorder := httptest.NewRecorder()
+	b.handler.ServeHTTP(recorder, request)
+	if strings.Contains(recorder.Body.String(), "translation missing") {
+		b.t.Errorf("%s %s shows a missing translation:\n%s", method, target, recorder.Body.String())
+	}
+	for _, cookie := range recorder.Result().Cookies() {
+		b.cookies[cookie.Name] = cookie
+	}
+	return recorder
+}
+
+// submit sends values with the CSRF token the page set, as a form would.
+func (b *[[.Camel]]Browser) submit(page, method, target string, values url.Values) *httptest.ResponseRecorder {
+	b.t.Helper()
+	[[.Camel]]Expect(b.t, b.request(http.MethodGet, page, nil), http.StatusOK)
+	values.Set(csrf.FormField, b.cookies[csrf.CookieName].Value)
+	if method != http.MethodPost {
+		values.Set("_method", method)
+	}
+	return b.request(http.MethodPost, target, values)
+}
+
+func [[.Camel]]Expect(t *testing.T, recorder *httptest.ResponseRecorder, status int) {
+	t.Helper()
+	if recorder.Code != status {
+		t.Fatalf("status %d, want %d; body %s", recorder.Code, status, recorder.Body)
+	}
+}
+
+// The page lists the [[.Left.Human]]'s [[.Right.Plural]] in the frame the [[.Left.Human]]'s page loads,
+// offers the [[.Right.Plural]] to add, and its forms add and remove one.
+func Test[[.Title]]Page(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t)
+	page := "/[[.Left.Plural]]/" + uuid.MustNew().String() + "/[[.Right.Plural]]"
+	empty := browser.request(http.MethodGet, page, nil)
+	[[.Camel]]Expect(t, empty, http.StatusOK)
+	for _, want := range []string{`<turbo-frame id="[[.Plural]]">`, `<option value="` + [[.Right.KnownVar]].String() + `">`, `name="` + csrf.FormField + `"`} {
+		if !strings.Contains(empty.Body.String(), want) {
+			t.Errorf("the page lacks %q:\n%s", want, empty.Body)
+		}
+	}
+	[[.Right.Camel]] := uuid.MustNew().String()
+	added := browser.submit(page, http.MethodPost, page, url.Values{"[[.Right.Field.Name]]": {[[.Right.Camel]]}})
+	[[.Camel]]Expect(t, added, http.StatusSeeOther)
+	if location := added.Header().Get("Location"); location != page {
+		t.Fatalf("Location = %q, want %q", location, page)
+	}
+	listed := browser.request(http.MethodGet, page, nil)
+	if !strings.Contains(listed.Body.String(), `action="`+page+"/"+[[.Right.Camel]]+`"`) {
+		t.Fatalf("the page does not list the [[.Right.Human]] with its remove form:\n%s", listed.Body)
+	}
+	[[.Camel]]Expect(t, browser.submit(page, http.MethodDelete, page+"/"+[[.Right.Camel]], url.Values{}), http.StatusSeeOther)
+	if strings.Contains(browser.request(http.MethodGet, page, nil).Body.String(), page+"/"+[[.Right.Camel]]) {
+		t.Fatal("the [[.Right.Human]] is still listed after its removal")
+	}
+}
+
+// A [[.Right.Human]] the caller cannot see is refused with 422 even when the select is
+// bypassed; a missing [[.Left.Human]] is 404; the forms need the CSRF token.
+func Test[[.Title]]PageRefusals(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t)
+	page := "/[[.Left.Plural]]/" + uuid.MustNew().String() + "/[[.Right.Plural]]"
+	refused := browser.submit(page, http.MethodPost, page, url.Values{"[[.Right.Field.Name]]": {[[.Right.MissingVar]].String()}})
+	[[.Camel]]Expect(t, refused, http.StatusUnprocessableEntity)
+	if !strings.Contains(refused.Body.String(), "must name an existing [[.Right.Human]]") {
+		t.Errorf("the refusal does not say why:\n%s", refused.Body)
+	}
+	[[.Camel]]Expect(t, browser.submit(page, http.MethodPost, page, url.Values{"[[.Right.Field.Name]]": {"nope"}}), http.StatusUnprocessableEntity)
+	[[.Camel]]Expect(t, browser.request(http.MethodGet, "/[[.Left.Plural]]/"+[[.Left.MissingVar]].String()+"/[[.Right.Plural]]", nil), http.StatusNotFound)
+	[[.Camel]]Expect(t, browser.request(http.MethodPost, page, url.Values{"[[.Right.Field.Name]]": {uuid.MustNew().String()}}), http.StatusForbidden)
+	if err := htmlui.Register[[.PluralTitle]](nil, nil, nil, nil); err == nil {
+		t.Fatal("Register accepted no router, service, renderer or guard")
+	}
+}
+[[- if .Identity]]
+
+
+// [[.Camel]]As serves handler to a signed-in principal holding only
+// permissions, as the application's authentication middleware does.
+func [[.Camel]]As(t *testing.T, handler http.Handler, permissions ...string) http.Handler {
+	t.Helper()
+	tenant, err := tenancy.New(uuid.MustNew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var granted []auth.Permission
+	for _, name := range permissions {
+		permission, err := auth.NewPermission(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		granted = append(granted, permission)
+	}
+	principal, err := auth.NewPrincipal(uuid.MustNew(), tenant, granted...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := auth.NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+		return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticated := middleware.Authenticate(handler)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+token.Reveal())
+		authenticated.ServeHTTP(w, r)
+	})
+}
+
+// A caller who may read but not change the [[.Left.Human]] sees its [[.Right.Plural]] without the
+// forms to add or remove one.
+func Test[[.Title]]PageHidesTheFormsWithoutTheWritePermission(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t)
+	page := "/[[.Left.Plural]]/" + uuid.MustNew().String() + "/[[.Right.Plural]]"
+	writer := browser.handler
+	browser.handler = [[.Camel]]As(t, writer, "[[.Left.Plural]]:read", "[[.Right.Plural]]:read")
+	if body := browser.request(http.MethodGet, page, nil).Body.String(); strings.Contains(body, `<form`) {
+		t.Fatalf("a reader sees the forms:\n%s", body)
+	}
+	browser.handler = [[.Camel]]As(t, writer, "[[.Left.Plural]]:read", "[[.Left.Plural]]:write", "[[.Right.Plural]]:read")
+	if body := browser.request(http.MethodGet, page, nil).Body.String(); !strings.Contains(body, `<form method="post" action="`+page+`">`) {
+		t.Fatalf("a writer does not see the form:\n%s", body)
+	}
+}
+[[- end]]

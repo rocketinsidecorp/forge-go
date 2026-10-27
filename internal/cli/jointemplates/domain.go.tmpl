@@ -1,0 +1,8 @@
+package domain
+
+import "github.com/rocketinsidecorp/forge-go/fault"
+
+// Err[[.Title]][[.Right.Title]]NotFound refuses to attach a [[.Right.Human]] the caller cannot see[[if .Tenant]]
+// (another organization's [[.Right.Plural]] do not exist for it)[[end]]. A [[.Left.Human]] that does not
+// exist is Err[[.Left.Title]]NotFound.
+var Err[[.Title]][[.Right.Title]]NotFound = fault.New("[[.Name]]_[[.Right.Name]]_not_found", "[[.Right.Field.Name]] must name an existing [[.Right.Human]]", fault.CategoryInvalid, 422)
