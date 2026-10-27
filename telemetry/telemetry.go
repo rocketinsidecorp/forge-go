@@ -126,6 +126,10 @@ type Options struct {
 	// to LogExporter: a failed log export would log, and so export, again.
 	// forge.New passes the logger that writes to standard output only.
 	Logger *slog.Logger
+	// QueryLog makes the database adapters log each statement (see
+	// QueryLog and sqldb.Observer). Nil logs none; FromConfig sets it from
+	// FORGE_LOG_* with the logger it is given.
+	QueryLog *QueryLog
 }
 
 // Telemetry owns the tracer state, the metrics registry and the exporters'
@@ -141,6 +145,7 @@ type Telemetry struct {
 	logLevel      slog.Leveler
 	logFormat     LogFormat
 	logReplace    func(groups []string, a slog.Attr) slog.Attr
+	queryLog      *QueryLog
 	metrics       *Registry
 
 	metricExporter MetricExporter
@@ -183,8 +188,12 @@ func New(opts Options) (*Telemetry, error) {
 		opts.LogMaxQueueSize < 0 || opts.LogMaxQueueSize > maxQueueSizeLimit || opts.LogMaxExportBatch < 0 || opts.LogBatchTimeout < 0 {
 		return nil, errors.New("telemetry: queue sizes and intervals must not be negative or too large")
 	}
-	if opts.LogFormat > LogFormatText {
+	if opts.LogFormat > LogFormatPretty {
 		return nil, errors.New("telemetry: unknown log format")
+	}
+	if opts.LogFormat == LogFormatPretty {
+		// The pretty format prints values as the text format does.
+		opts.LogFormat = LogFormatText
 	}
 	if opts.MaxQueueSize == 0 {
 		opts.MaxQueueSize = DefaultMaxQueueSize
@@ -245,6 +254,7 @@ func New(opts Options) (*Telemetry, error) {
 		logLevel:       opts.LogLevel,
 		logFormat:      opts.LogFormat,
 		logReplace:     opts.LogReplaceAttr,
+		queryLog:       opts.QueryLog,
 	}
 	var err error
 	if t.droppedSpans, err = t.metrics.Counter("forge.telemetry.spans.dropped", "Spans dropped because the export queue was full or export failed.", "{span}"); err != nil {
