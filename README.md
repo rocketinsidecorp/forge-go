@@ -526,9 +526,10 @@ client uses (`forge generate authentication` lists them,
 [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#json-authentication-apis-opt-in)).
 An application created without `--auth` gets everything `--auth` generates,
 wired with no edits (the pages, `app/bootstrap/identity.go`, the identity
-migrations and the `setup` command in `app/bootstrap/app_gen.go`, the
-`identityRoutes` call in `routes_gen.go`, a development MFA key in
-`.env.local`). Routes generated before keep the guard they were generated with:
+migrations in `db/migration_sets_gen.go` and the `setup` command in
+`app/bootstrap/app_gen.go`, the `identityRoutes` call in `routes_gen.go`, a
+development MFA key in `.env.local`, and an `AGENTS.md` that describes
+sign-in). Routes generated before keep the guard they were generated with:
 
 ```sh
 forge generate authentication --dry-run   # preview the files and what is wired

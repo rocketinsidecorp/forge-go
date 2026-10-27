@@ -329,8 +329,10 @@ everything `--auth` generates, with no manual edit: the pages
 (`app/adapters/htmlauth`, `app/views/{sessions,passwords,mfa}`, their
 translations), `app/bootstrap/identity.go`, the identity block of the routes
 seam, the identity migrations and `setup` command (it rewrites the
-generator-owned `app/bootstrap/app_gen.go`) and a development
-`FORGE_AUTH_MFA_KEY` in `.env.local`. The result is byte for byte what
+generator-owned `db/migration_sets_gen.go` and `app/bootstrap/app_gen.go`)
+and a development `FORGE_AUTH_MFA_KEY` in `.env.local`; `AGENTS.md` is
+refreshed when it is what `forge new` wrote (an edited one is left alone,
+with a note), as `forge generate tenancy` does too. The result is byte for byte what
 `forge new --auth` writes. Routes generated before keep the guard they were
 generated with (`public`, or `protect`, which without identity refuses
 everyone); routes generated afterwards need sign-in and their permissions.
