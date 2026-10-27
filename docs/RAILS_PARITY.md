@@ -31,6 +31,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | File storage with signed URLs | Active Storage | Done (disk) | Done (disk) |
 | Import maps, Turbo, Stimulus | Hotwire | Done | Done |
 | Turbo Streams over SSE | Action Cable | Done | Done (`scaffold --broadcast`, Forge-Rust ADR 0031) |
+| Rails-style development log | `config.log_level`, `config.colorize_logging`, `ActiveRecord::LogSubscriber` | Done (`FORGE_LOG_FORMAT=auto\|pretty\|text\|json`: colored request, SQL and job lines on a terminal in development, `NO_COLOR`, `queries=N` per request, `FORGE_LOG_SLOW_QUERY`, statements without arguments, route pattern instead of path, default key redaction in every format, `FORGE_LOG_REDACT_KEYS`; JSON in production with the same event names; [OBSERVABILITY.md](OBSERVABILITY.md#development-log), decision D28) | Planned, after forge-go 100% (decision D37) |
 | Traces, metrics, log correlation | (gems) | Done (OpenTelemetry, Prometheus) | Done (OpenTelemetry, Prometheus; Forge-Rust ADR 0033) |
 | Preconfigured Prometheus, Grafana, Tempo, Loki | — | Done (`compose.observability.yaml`, [ADR 0038](adr/0038-local-observability-stack.md)) | Done (`compose.observability.yaml`, Forge-Rust ADR 0034) |
 | Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge-proxy`) | In review (`forge deploy`, `forge logs`, `forge app`, `forge-proxy` with ACME TLS, same `config/deploy.yml`, Forge-Rust ADR 0042) |
@@ -57,6 +58,17 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Done (`docs/getting-started.md`) |
 
 ## Parity follow-ups
+
+- Rails-style development log (forge-go decision D28,
+  [OBSERVABILITY.md](OBSERVABILITY.md#development-log)). Forge-Rust has none:
+  it is planned after forge-go reaches 100% (decision D37), with the same
+  `FORGE_LOG_FORMAT`, `FORGE_LOG_LEVEL`, `FORGE_LOG_SLOW_QUERY` and
+  `FORGE_LOG_REDACT_KEYS` variables, `NO_COLOR`, the same HTTP, SQL and JOB
+  line layout and the same redaction list. Forge-Go itself still lacks the
+  request ID on the logs of a job enqueued by a request: the job queue stores
+  no metadata, and adding it is a migration of the released queue tables on
+  every adapter, and the principal ID on the request logger after
+  authentication, which needs a hook in `auth`.
 
 - Argon2id password hashing (forge-go QG13, audit S-9 and P-7, [ADR
   0048](adr/0048-argon2id-password-hashing.md)). Both frameworks write the same

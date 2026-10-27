@@ -18,6 +18,7 @@ them; metrics are kept in memory. You choose an export path:
 | Prometheus scrapes the process | `FORGE_TELEMETRY_METRICS_ADDR=127.0.0.1:9464` (a separate listener serving `GET /metrics`) |
 | Traces and metrics to an OpenTelemetry Collector | `FORGE_TELEMETRY_EXPORTER=otlp`, `FORGE_TELEMETRY_OTLP_ENDPOINT=http://collector:4318` |
 | Logs to an OpenTelemetry Collector, with trace IDs | `FORGE_TELEMETRY_LOGS_EXPORTER=otlp` (and `FORGE_TELEMETRY_OTLP_ENDPOINT`) |
+| Read requests, SQL and jobs while developing | `FORGE_LOG_FORMAT=pretty` (the default on a terminal in development; [Development log](#development-log)) |
 | See spans while developing | `FORGE_TELEMETRY_EXPORTER=log` |
 | No telemetry at all (zero cost) | `FORGE_TELEMETRY_ENABLED=false` |
 
@@ -30,6 +31,11 @@ curl -s http://127.0.0.1:9464/metrics | grep http_server_request_duration
 
 # 2. Spans in the development log
 FORGE_TELEMETRY_EXPORTER=log forge dev
+
+# 2b. Rails-style request, SQL and job lines; no colors; slow queries from 50ms
+FORGE_LOG_FORMAT=pretty forge dev
+NO_COLOR=1 forge dev
+FORGE_LOG_SLOW_QUERY=50ms forge dev
 
 # 3. Traces and metrics to a local OpenTelemetry Collector (config below)
 docker run --rm -p 4318:4318 \
@@ -71,6 +77,100 @@ echo its value.
 | `FORGE_TELEMETRY_METRICS_ADDR` | (empty: off) | `host:port` of the Prometheus listener; must not overlap `FORGE_HTTP_ADDR`, by Forge-Rust's rule: the same port with the same host, or with an unspecified host (empty, `0.0.0.0`, `[::]`) on either side, is refused (`:9464` and `localhost:9464` overlap; `127.0.0.1:9464` and `127.0.0.2:9464` do not, and host names are not resolved). Port `0` lets the kernel choose and never overlaps (both may be `127.0.0.1:0`); the `serving metrics` record carries the address actually bound. |
 | `FORGE_TELEMETRY_METRICS_PUBLIC` | `false` | Confirms a non-loopback `FORGE_TELEMETRY_METRICS_ADDR` (such as `0.0.0.0:9464` in a container). Without it `production` refuses to start and other environments log a warning. |
 | `FORGE_TELEMETRY_METRICS_INTERVAL` | `1m` | OTLP metric push interval, at least `1s` |
+
+## Development log
+
+`forge dev` writes one line per request, per SQL statement and per job, laid
+out so that a request can be followed by eye (decision D28). Colors need a
+terminal; the layout does not:
+
+```text
+01:42:35.143  HTTP  GET /  200  470µs  queries=0  req=01a17b06-0787-7333-a91f-9b6aeeb55a45
+              SQL   182µs  SELECT "id", "name", "price" FROM "products" ORDER BY "id" DESC LIMIT ?
+01:42:35.153  HTTP  GET /products  200  566µs  queries=1  req=01a17b06-0790-727b-8ebe-36a51ae90690
+01:42:35.172  HTTP  GET -  404  91µs  queries=0  req=01a17b06-07a4-71ee-9912-e2e721cf4158
+01:42:35.200  JOB   send_welcome succeeded  35ms  queue=default attempt=1
+01:42:35.231  JOB   send_welcome failed, retry in 5s  21ms  queue=default attempt=2 job_id=01a1... error="smtp: connection refused"
+01:42:35.300  WARN  request rejected by CSRF protection  request_id=01a1... method=POST path=/products code=csrf_invalid
+```
+
+* **HTTP** is written after the response: method, **route pattern** (never
+  the path or the query string, which hold identifiers and personal data; `-`
+  when no route matched), status (green 2xx, cyan 3xx, yellow 4xx, red 5xx),
+  duration, `queries=N` and the request ID. `queries` is the number of SQL
+  statements the request ran: watch it for an N+1. It needs telemetry
+  (`FORGE_TELEMETRY_ENABLED`, on by default), because the database adapters
+  count the statements.
+* **SQL** is written when the statement ends, above the HTTP line of its
+  request, with a blank time column. It carries the statement text, **never
+  the arguments**, and masks the literals of a statement an application built
+  by concatenation (`'ana@example.com'` becomes `'?'`, `42` becomes `?`),
+  collapses whitespace and cuts it at 240 characters. The duration is yellow
+  when the statement is slower than `FORGE_LOG_SLOW_QUERY`, red when it failed
+  (the line then ends with `error=unique_violation`, the class and never the
+  database's message, which quotes the value).
+* **JOB** is the outcome of one attempt of a persistent job: green when it
+  succeeded, red when it failed (retry scheduled, or dead), with queue,
+  attempt and duration. A failure also carries the job ID and the sanitized
+  error. A successful job is logged at Info only when the worker is built with
+  `queue.WorkerOptions{LogSuccesses: true}` (the development default is
+  `cfg.EventLevel() == slog.LevelInfo`); otherwise it is Debug, so a
+  production worker does not write a line per job.
+* Every other record reads `time LEVEL message key=value`, the level colored.
+  Control characters in messages and values are escaped (`\n`, `\x1b`), so
+  request input cannot forge a line or send terminal escapes.
+
+The lines are the same events in every format. In JSON they are
+`"msg":"http request"` (`method`, `route`, `status`, `duration`, `queries`,
+`request_id`, `trace_id`), `"msg":"sql query"` (`statement`, `duration`,
+`slow`, `error`, `request_id`) and the worker's `"msg":"job succeeded"` (and
+its failure siblings), with the request's `trace_id` and `span_id` when
+telemetry traces the request.
+
+| Variable | Default | Notes |
+| -------- | ------- | ----- |
+| `FORGE_LOG_FORMAT` | `auto` | `pretty`, `text` (logfmt), `json` or `auto`. `auto` is `pretty` on a terminal in `development`, `text` for other output in `development` and for `test`, and `json` in `staging` and `production`. `pretty` forced on a pipe or file keeps the layout without colors. |
+| `NO_COLOR` | (unset) | Set to any value (`NO_COLOR=1`): no ANSI codes, same layout. Colors are also off when the output is not a terminal. |
+| `FORGE_LOG_LEVEL` | `info` | Lowest level written: `debug`, `info`, `warn` or `error`. |
+| `FORGE_LOG_SLOW_QUERY` | `100ms` | A SQL line slower than this carries `slow=true` and is yellow. |
+| `FORGE_LOG_REDACT_KEYS` | (empty) | Comma-separated key fragments added to the default redaction list below. |
+
+The request, SQL and job lines are **Info in `development` and Debug
+everywhere else**: production keeps its JSON and its volume, and
+`FORGE_LOG_LEVEL=debug` turns the lines on when you need them (in `staging`,
+say) without a code change.
+
+### Redaction
+
+Every format (pretty, text and JSON, and so the log exporter too) replaces the
+value of an attribute with `[REDACTED]` when its key contains one of these
+fragments, whatever its case: `password`, `passwd`, `secret`, `token`,
+`authorization`, `cookie`, `api_key`, `apikey`, `session`, `email`, `phone`,
+`cpf`, `cnpj`. `user_password_hash`, `Authorization` and `x.api_key` match; an
+attribute inside a group matches by its own key or by the name of a group it
+is in (`slog.Group("cookie", ...)`). Add more with
+`FORGE_LOG_REDACT_KEYS=iban,card`, or in code:
+
+```go
+opts := &slog.HandlerOptions{ReplaceAttr: telemetry.Redactor("iban", "card")}
+logger := slog.New(telemetry.NewOutputHandler(os.Stdout, telemetry.LogFormatJSON, opts))
+```
+
+`forge.Main` builds its logger this way. A logger you pass with
+`forge.WithLogger` is yours: give it `telemetry.Redactor()` if it should
+redact too. Redaction is by key: it does not look inside messages or values
+(an error message that quotes an email stays), so keep personal data out of
+messages.
+
+### Request IDs across jobs
+
+The request ID is on every request log line and on the SQL lines of the
+request. It does not travel into a job enqueued by the request yet: the job
+queue stores a payload and no metadata, and adding a column to the released
+queue tables is a migration of its own (follow-up). The job ID (on a failed
+JOB line, and as `messaging.message.id` on the spans of the request and of the
+attempt; see [Jobs: enqueue-to-run linkage](#jobs-enqueue-to-run-linkage)) is
+the link today.
 
 ## What is recorded
 

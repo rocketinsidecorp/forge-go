@@ -1382,6 +1382,41 @@ There is no S3 adapter yet (see the [roadmap](docs/ROADMAP.md)). The upload limi
 cannot exceed `FORGE_HTTP_MAX_BODY_BYTES`.
 ## Observability
 
+### Development log
+
+`forge dev` writes a Rails-style log: one line per request (method, route
+pattern, status, time, number of SQL queries, request ID), per SQL statement
+(text and time, never the arguments; yellow when slow) and per job attempt, in
+color on a terminal. Production keeps JSON with the same event names.
+
+```bash
+forge dev                                  # pretty on a terminal: nothing to set
+FORGE_LOG_FORMAT=pretty forge dev          # the same layout on a pipe or a file
+NO_COLOR=1 forge dev                       # the layout without ANSI colors
+FORGE_LOG_SLOW_QUERY=50ms forge dev        # statements slower than 50ms turn yellow (default 100ms)
+FORGE_LOG_FORMAT=json forge dev            # text, json or auto (the default) also work
+FORGE_LOG_LEVEL=debug ./your-app           # the request, SQL and job lines are Debug outside development
+FORGE_LOG_REDACT_KEYS=iban,card forge dev  # more keys to hide, on top of the defaults
+```
+
+```text
+01:42:35.143  HTTP  GET /  200  470µs  queries=0  req=01a17b06-0787-7333-a91f-9b6aeeb55a45
+              SQL   182µs  SELECT "id", "name", "price" FROM "products" ORDER BY "id" DESC LIMIT ?
+01:42:35.153  HTTP  GET /products  200  566µs  queries=1  req=01a17b06-0790-727b-8ebe-36a51ae90690
+01:42:35.172  HTTP  GET -  404  91µs  queries=0  req=01a17b06-07a4-71ee-9912-e2e721cf4158
+01:42:35.200  JOB   send_welcome succeeded  35ms  queue=default attempt=1
+```
+
+The value of every log attribute whose key contains `password`, `passwd`,
+`secret`, `token`, `authorization`, `cookie`, `api_key`, `apikey`, `session`,
+`email`, `phone`, `cpf` or `cnpj` is written as `[REDACTED]` in every format.
+A worker you build logs its successes at Info in development with
+`queue.WorkerOptions{LogSuccesses: cfg.EventLevel() == slog.LevelInfo}`. The
+layout, the variables, the redaction rules and the JSON events:
+[docs/OBSERVABILITY.md](docs/OBSERVABILITY.md#development-log).
+
+### Telemetry
+
 Telemetry is on by default and exports nothing: logs carry `trace_id`, and
 incoming `traceparent` headers are ignored unless you opt in with
 `FORGE_TELEMETRY_TRUST_TRACEPARENT=true` behind a proxy that sanitizes them. Pick an export path with

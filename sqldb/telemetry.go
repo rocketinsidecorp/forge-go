@@ -39,7 +39,11 @@ func (k Kind) String() string {
 
 // Observer traces and measures database statements for one database system.
 // It records the statement's operation (SELECT, INSERT...), never its text or
-// arguments. Every statement is measured in db.client.operation.duration
+// arguments, in metrics and spans. Every statement is also counted in the
+// request's telemetry.QueryCounter and, when the Telemetry was created with
+// Options.QueryLog (FromConfig does, from FORGE_LOG_*), logged as one line
+// with its text and duration: the text, never the arguments, with literals
+// masked (telemetry.SanitizeStatement). Every statement is measured in db.client.operation.duration
 // (labels: db.system.name, db.operation.name, error.type); a span is created
 // only when the statement runs inside a traced operation, so pollers and
 // startup queries do not create root spans. A nil *Observer does nothing.
@@ -49,6 +53,7 @@ type Observer struct {
 	duration  *telemetry.Histogram
 	system    string
 	classify  Classifier
+	queryLog  *telemetry.QueryLog
 }
 
 // NewObserver returns an observer for system (the OpenTelemetry
@@ -65,7 +70,7 @@ func NewObserver(t *telemetry.Telemetry, system string, classify Classifier) (*O
 	if err != nil {
 		return nil, err
 	}
-	return &Observer{telemetry: t, tracer: t.Tracer(telemetry.ScopeName + "/sqldb"), duration: duration, system: system, classify: classify}, nil
+	return &Observer{telemetry: t, tracer: t.Tracer(telemetry.ScopeName + "/sqldb"), duration: duration, system: system, classify: classify, queryLog: t.QueryLog()}, nil
 }
 
 // DefaultPoolName is the pool name reported when the application gives none.
@@ -127,6 +132,7 @@ func (o *Observer) ObservePool(name string, db *DB) error {
 type Observation struct {
 	observer  *Observer
 	ctx       context.Context
+	query     string
 	operation string
 	start     time.Time
 }
@@ -136,7 +142,7 @@ func (o *Observer) Start(ctx context.Context, query string) Observation {
 	if o == nil {
 		return Observation{}
 	}
-	return Observation{observer: o, ctx: ctx, operation: Operation(query), start: time.Now()}
+	return Observation{observer: o, ctx: ctx, query: query, operation: Operation(query), start: time.Now()}
 }
 
 // End records the statement's outcome. driver.ErrSkip, which only tells
@@ -147,7 +153,10 @@ func (obs Observation) End(err error) {
 		return
 	}
 	errorType := o.errorType(err)
-	o.duration.Record(time.Since(obs.start).Seconds(), o.system, obs.operation, errorType)
+	elapsed := time.Since(obs.start)
+	o.duration.Record(elapsed.Seconds(), o.system, obs.operation, errorType)
+	telemetry.CountQuery(obs.ctx)
+	o.queryLog.Log(obs.ctx, obs.query, elapsed, errorType)
 	if !telemetry.SpanContextFromContext(obs.ctx).IsValid() {
 		return
 	}

@@ -78,6 +78,14 @@ func WithRouteInfo(ctx context.Context, info *RouteInfo) context.Context {
 	return context.WithValue(ctx, routeKey, info)
 }
 
+// RouteInfoFromContext returns the RouteInfo ctx carries, or nil. Middleware
+// that needs the matched pattern reuses it instead of installing a second one,
+// which would hide the route from the middleware outside it.
+func RouteInfoFromContext(ctx context.Context) *RouteInfo {
+	info, _ := ctx.Value(routeKey).(*RouteInfo)
+	return info
+}
+
 // RecordRoute stores the matched pattern in the RouteInfo carried by ctx, if
 // any. It does not allocate.
 func RecordRoute(ctx context.Context, pattern string) {

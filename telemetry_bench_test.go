@@ -25,7 +25,12 @@ func (discardExporter) Shutdown(context.Context) error { return nil }
 
 func benchmarkApp(tb testing.TB, tel *telemetry.Telemetry) http.Handler {
 	tb.Helper()
-	app, err := forge.New(forge.WithTelemetry(tel))
+	// The test environment logs the request line at Debug, which the default
+	// logger (Info) drops: what is compared is the telemetry cost. The
+	// development environment writes the line (telemetry.AccessLog).
+	cfg := config.Default()
+	cfg.Environment = config.Test
+	app, err := forge.New(forge.WithConfig(cfg), forge.WithTelemetry(tel))
 	if err != nil {
 		tb.Fatal(err)
 	}

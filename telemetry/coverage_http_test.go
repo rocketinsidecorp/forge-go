@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/rocketinsidecorp/forge-go/internal/waittest"
 	"github.com/rocketinsidecorp/forge-go/telemetry"
 )
 
@@ -113,8 +115,13 @@ func TestServerMiddlewareForwardsHijackAndRecordsSwitchingProtocols(t *testing.T
 		t.Errorf("hijacked body = %q", line)
 	}
 	_ = response.Body.Close()
-	server.Close() // waits for the handler, so its span has ended
-	flush(t, tel)
+	// Close does not wait for a hijacked connection's handler: its span ends
+	// when the middleware returns, so flush until both spans are exported.
+	server.Close()
+	waittest.Until(t, 5*time.Second, "both spans exported", func() bool {
+		flush(t, tel)
+		return len(sink.all()) >= 2
+	})
 	var statuses []int64
 	for _, span := range sink.all() {
 		if v, ok := attr(span, "http.response.status_code"); ok {

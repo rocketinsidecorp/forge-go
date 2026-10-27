@@ -578,6 +578,21 @@ On a host deployed with `forge deploy`, run them as
 
 ## Observability
 
+`forge dev` writes a Rails-style log: a line per request (method, route,
+status, time{{if .DB}}, number of SQL queries{{end}}), {{if .DB}}per SQL statement (the text, never the
+arguments; yellow when slow) {{end}}and per job, in color on a terminal. Production writes
+JSON with the same event names, and the values of keys such as `password`,
+`token`, `session` and `email` are `[REDACTED]` in every format:
+
+```bash
+forge dev                             # pretty on a terminal
+NO_COLOR=1 forge dev                  # the same layout without colors
+FORGE_LOG_FORMAT=pretty forge dev     # force it on a pipe or a file (text, json, auto)
+{{- if .DB}}
+FORGE_LOG_SLOW_QUERY=50ms forge dev   # statements slower than 50ms turn yellow (default 100ms)
+{{- end}}
+```
+
 Every request gets a trace ID that appears as `trace_id` in its logs, and
 HTTP{{if .DB}}, database{{end}} and job metrics are recorded. Nothing leaves the process
 until you choose an export path:

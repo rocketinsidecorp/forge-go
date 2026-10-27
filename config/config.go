@@ -140,6 +140,7 @@ type Config struct {
 	Cache       Cache
 	Storage     Storage
 	Telemetry   Telemetry
+	Log         Log
 	I18n        I18n
 	OpenAPI     OpenAPI
 }
@@ -226,6 +227,7 @@ func Default() Config {
 		},
 		Storage:   Storage{MaxUploadBytes: defaultStorageBytes, LinkTTL: defaultStorageTTL},
 		Telemetry: defaultTelemetry(),
+		Log:       defaultLog(),
 	}
 }
 
@@ -282,6 +284,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.I18n.validate(); err != nil {
+		return err
+	}
+	if err := c.Log.validate(); err != nil {
 		return err
 	}
 	return c.Telemetry.validate(c.Environment, c.HTTP.Address)
