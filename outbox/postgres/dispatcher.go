@@ -31,9 +31,22 @@ const DefaultBatchSize = 10
 // MaxBatchSize bounds DispatcherOptions.BatchSize.
 const MaxBatchSize = 1000
 
-// releaseTimeout bounds the statements that hand events back after a worker
-// stopped early.
-const releaseTimeout = 5 * time.Second
+// statementTimeout bounds each of the dispatcher's own statements, which run
+// detached from its cancellation (see detached).
+const statementTimeout = 5 * time.Second
+
+// detached returns the context for one of the dispatcher's own statements
+// (claim, acknowledgement, retry, release, renewal): it keeps ctx's values but
+// not its cancellation, and expires after timeout. Shutdown therefore stops a
+// worker between statements and interrupts only handlers and idle waits. A
+// statement canceled while it runs may already be applied by the server
+// without the worker learning it (an event handled but left leased, so
+// delivered again when its lease expires; a claim that spends attempts), and
+// pgx can hand its connection back to the pool with a stale read-deadline
+// error that then fails an unrelated query.
+func detached(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
 
 // Handler processes one event. Handlers must be idempotent: a process can
 // fail after the side effect succeeds but before the outbox acknowledgement.
@@ -174,9 +187,9 @@ func (d *Dispatcher) runWorker(ctx context.Context) error {
 	for {
 		worked, err := d.dispatchBatch(ctx)
 		if err != nil {
-			// pgx interrupts an in-flight query on cancellation by expiring the
-			// socket deadline, so the error can be "i/o timeout" instead of
-			// context.Canceled. Shutdown is not a delivery failure.
+			// The dispatcher's statements outlive cancellation (see detached),
+			// so an error seen after shutdown began is reported as the
+			// shutdown: it is not a delivery failure.
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -202,7 +215,12 @@ type claimed struct {
 // dispatchBatch claims up to BatchSize events and delivers them in claim
 // order. It reports whether it claimed any.
 func (d *Dispatcher) dispatchBatch(ctx context.Context) (bool, error) {
-	batch, token, err := d.claimBatch(ctx, d.opts.BatchSize)
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	claimCtx, cancelClaim := detached(ctx, statementTimeout)
+	batch, token, err := d.claimBatch(claimCtx, d.opts.BatchSize)
+	cancelClaim()
 	if err != nil || len(batch) == 0 {
 		return false, err
 	}
@@ -246,7 +264,7 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context) (bool, error) {
 	// Events never started (shutdown, or a failure above) go back to the
 	// outbox at once and keep their attempt.
 	if unstarted := leases.held(); len(unstarted) > 0 {
-		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+		releaseCtx, cancel := detached(ctx, statementTimeout)
 		releaseErr := d.release(releaseCtx, unstarted, token)
 		cancel()
 		if err != nil && releaseErr != nil {
@@ -273,21 +291,20 @@ func (d *Dispatcher) outcome(attempts int, handlerErr, err error) string {
 
 // deliver runs the handler for a claimed event and records the result. It
 // returns the handler's error and the persistence or lease error.
-// workCtx is the handler's context, which a lost lease cancels.
+// workCtx is the handler's context, which a lost lease or shutdown cancels.
+// Once the handler has returned, its result is recorded even if ctx was
+// canceled meanwhile: a handled event is never left leased by a shutdown.
 func (d *Dispatcher) deliver(ctx, workCtx context.Context, leases *batchLeases, event events.Event, token uuid.UUID, attempts int) (error, error) {
 	handlerErr := d.handler(workCtx, event)
 	if leaseErr := leases.finished(); leaseErr != nil {
 		return handlerErr, leaseErr
 	}
+	recordCtx, cancel := detached(ctx, statementTimeout)
+	defer cancel()
 	if handlerErr != nil {
-		if ctx.Err() != nil {
-			retryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
-			defer cancel()
-			return handlerErr, d.retry(retryCtx, event.ID, token, attempts)
-		}
-		return handlerErr, d.retry(ctx, event.ID, token, attempts)
+		return handlerErr, d.retry(recordCtx, event.ID, token, attempts)
 	}
-	return nil, d.ack(ctx, event.ID, token)
+	return nil, d.ack(recordCtx, event.ID, token)
 }
 
 // batchLeases tracks the events of one claimed batch this worker still holds:
@@ -422,7 +439,7 @@ func (d *Dispatcher) renewLeases(ctx context.Context, token uuid.UUID, leases *b
 		if len(ids) == 0 {
 			continue
 		}
-		refreshCtx, cancel := context.WithTimeout(ctx, min(5*time.Second, interval))
+		refreshCtx, cancel := detached(ctx, min(statementTimeout, interval))
 		kept, err := d.renew(refreshCtx, ids, token)
 		cancel()
 		if err != nil {
@@ -482,7 +499,7 @@ func (d *Dispatcher) claimBatch(ctx context.Context, limit int) ([]claimed, uuid
 		return nil, uuid.UUID{}, fmt.Errorf("begin outbox claim: %w", err)
 	}
 	defer func() {
-		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+		rollbackCtx, cancel := detached(ctx, statementTimeout)
 		defer cancel()
 		_ = tx.Rollback(rollbackCtx)
 	}()

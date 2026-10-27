@@ -178,6 +178,40 @@ func TestShutdownReleasesTheUnstartedRestOfABatch(t *testing.T) {
 	}
 }
 
+// Shutdown right after a handler succeeded: the event is still recorded as
+// delivered, not left leased to be delivered again when its lease expires,
+// and the unstarted rest of the batch goes back without using an attempt.
+func TestShutdownAfterASuccessfulHandlerStillAcknowledgesIt(t *testing.T) {
+	t.Parallel()
+	db := postgrestest.NewMigrated(t, Migrations())
+	created := insertEvents(t, db, 3)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
+	d, err := NewDispatcher(db.Pool(), func(context.Context, events.Event) error {
+		calls.Add(1)
+		cancel() // shutdown lands after the side effect, before the acknowledgement
+		return nil
+	}, DispatcherOptions{BatchSize: 3, PollInterval: time.Millisecond, Lease: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("%d handlers ran, want 1", calls.Load())
+	}
+	if row := readEvent(t, db, created[0].ID); !row.delivered || row.leased || row.attempts != 1 {
+		t.Fatalf("handled event: %+v; want it acknowledged", row)
+	}
+	for _, event := range created[1:] {
+		if row := readEvent(t, db, event.ID); row.attempts != 0 || row.leased || row.delivered || row.dead {
+			t.Fatalf("unstarted event %s: %+v; want it released with its attempt", event.ID, row)
+		}
+	}
+}
+
 // Events waiting behind a handler slower than the lease keep their leases:
 // another dispatcher cannot take them, and each is delivered once.
 //
