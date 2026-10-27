@@ -38,13 +38,17 @@ wrong way:
   `BrowserOptions`, `SignInStep`, `SignInCredentials`, `ReturnPath`, the
   cookie names, `ErrCSRFInvalid`, `ErrMFAChallengeMissing` and the OpenAPI
   operations. `auth` keeps the services, ports, errors and rules and imports
-  none of `csrf`, `i18n`, `openapi`, `web` or `net/http`. (It still links
-  `net/http` through `fault`, which maps errors to HTTP statuses.)
+  none of `csrf`, `i18n`, `openapi`, `web` or `net/http`, directly or
+  through another framework package. (It still links `net/http` through
+  `fault`, which maps errors to HTTP statuses; that is the one exception.)
   - What the adapters reached into is now domain API: `MFAStepUpGate` (the
     throttled, audited password-and-code re-authentication before a
     two-factor change, which `Browser` used to run inline),
-    `AuthorizeMFAChange` (the only way besides `VerifyMFAStepUp` to obtain an
-    `MFAStepUpProof`, after the application's `MFAChangeAuthorizer`),
+    `AuthorizeMFAChange(ctx, authorizer)` (the only way besides
+    `VerifyMFAStepUp` to obtain an `MFAStepUpProof`: for the signed-in
+    principal of `ctx` only, after the application's `MFAChangeAuthorizer`;
+    it never takes a principal as an argument, so no caller can name another
+    account),
     `ValidTOTPIssuer` and `PasswordWorkRetryAfter`.
   - **No aliases are kept in `auth`.** Every moved name returns an
     `http.Handler`, takes an `*http.Request` or is used only with them, and
@@ -63,13 +67,20 @@ wrong way:
   middleware writes it, and `broadcast` keys `MaxPerPrincipal` by a small
   interface (`SubjectID() uuid.UUID`) that `auth.Principal` satisfies, so
   `broadcast` does not import `auth`. Being internal, applications cannot use
-  it to forge a principal.
+  it to forge a principal; within the framework only `auth`, `auth/authhttp`
+  and `broadcast` may import it, and only `auth/authhttp` (the middleware,
+  after resolving a session) may write it, so `AuthorizeMFAChange` sees only
+  principals that signed in.
+- **`auth/internal/backupcode`** is the backup-code format (generation,
+  parsing, digest), used by `auth` and by the tests of `authhttp`.
 - **`queue/internal/jobscmd`** implements the `jobs` command. The stores'
   `Commands()` and `queuecmd.Commands(opener)` both use it; neither the
   stores nor `queuecmd` depends on the other.
 
 `architecture_test.go` enforces each direction (`TestImportRules`), with a
-unit test of the checker; reintroducing any of the five imports fails it.
+unit test of the checker, and that only `auth/authhttp` calls
+`principalctx.With` (`TestOnlyTheAuthenticationMiddlewareWritesThePrincipal`);
+reintroducing any of the forbidden imports or writers fails them.
 
 ## Consequences
 
@@ -79,8 +90,10 @@ unit test of the checker; reintroducing any of the five imports fails it.
   `authhttp.…` and import `github.com/rocketinsidecorp/forge-go/auth/authhttp`.
   Applications generated before this change also have the old names in
   `app/bootstrap/identity.go`, `app/adapters/htmlauth` and
-  `app/bootstrap/routes_gen.go`; regenerating those files or replacing the
-  qualifier fixes them, and the compiler lists every place.
+  `app/bootstrap/routes_gen.go`; [Upgrading in AUTHENTICATION.md](../AUTHENTICATION.md#upgrading)
+  has the commands that rewrite them and re-seal the seam's checksum.
+- `auth.AuthorizeMFAChange` takes no principal: code that called it with
+  one passes only the request context.
 - `forge.Command` and friends keep working; packages outside the framework
   that contribute commands may import `command` instead.
 - `auth`'s tests that exercised HTTP moved with the code to `auth/authhttp`

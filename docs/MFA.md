@@ -161,6 +161,34 @@ use it for strong step-up authorization such as recent password verification or
 another independently verified factor. An ordinary authenticated session alone
 is deliberately insufficient.
 
+Those changes take an `auth.MFAStepUpProof`, and only package `auth` makes
+one, in two ways:
+
+- `MFAService.VerifyMFAStepUp(ctx, subjectID, code)`: a current code of that
+  account (a TOTP code is used up; a backup code is used up by the change).
+- `auth.AuthorizeMFAChange(ctx, authorizer)`: the proof for the signed-in
+  principal of the request context, after `authorizer` allowed the change.
+  The principal is read only from `ctx`, where `authhttp.Middleware` puts the
+  principal of the session it resolved; nothing else can put one there
+  (`architecture_test.go` enforces it), so a proof is never made for another
+  account. Without a principal it is `auth.ErrCredentialsRequired`; the
+  authorizer's error refuses the change. The JSON handlers of `authhttp` use
+  it.
+
+```go
+// Inside a handler behind authhttp.Middleware:
+proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer)
+if err != nil {
+    return err
+}
+err = mfaService.DisableMFA(r.Context(), principal.SubjectID(), proof)
+```
+
+The browser settings pages re-authenticate through `auth.MFAStepUpGate`
+(`NewMFAStepUpGate(login, mfa, passwords)`, then `Check`, `Refused`,
+`Denied`, `Succeeded`): the throttled, audited password-and-code step-up that
+`authhttp.Browser` runs after the CSRF check.
+
 See [ADR 0015](adr/0015-mfa-factor-lifecycle.md).
 
 ## Generated settings pages
@@ -243,13 +271,19 @@ time)` computes the code an authenticator app shows, for end-to-end tests.
 
 ## Upgrading
 
+Release note ([ADR 0052](adr/0052-import-boundaries.md)): the HTTP side of
+`auth` moved to `auth/authhttp` (`authhttp.Browser`, the handlers, the
+middleware); see [Upgrading in AUTHENTICATION.md](AUTHENTICATION.md#upgrading)
+for the commands. `auth.AuthorizeMFAChange(ctx, authorizer)` takes the
+principal from the request context only.
+
 Release note (forge-rust#36 parity): the MFA contracts changed.
 
 - `MFAService.BeginTOTPRotation`, `ConfirmTOTPRotation`, `DisableMFA` and
   `RegenerateMFABackupCodes` take a required `MFAStepUpProof` (from
   `VerifyMFAStepUp`, bound to the account; the JSON handlers make one once
   their `MFAChangeAuthorizer` passed). `PendingTOTP` takes `rotation bool`.
-  `authhttp.Browser` and the generated `/mfa` pages are unchanged.
+  `auth.Browser` and the generated `/mfa` pages are unchanged.
 - `MFALifecycleStore.BeginTOTPRotation`, `ConfirmTOTPRotation`, `DisableMFA`
   and `MFASettingsStore.ReplaceMFABackupCodes` take `stepUp *Digest`: use
   that backup code up in the change's transaction and return

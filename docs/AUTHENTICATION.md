@@ -637,6 +637,44 @@ permissions, and migrations from `forge generate resource` and
 `forge seed` runs the application's idempotent `db.Seed`
 (`postgres.SeedCommand`) in one transaction; it is not for accounts.
 
+## Upgrading
+
+Release note ([ADR 0052](adr/0052-import-boundaries.md)): the HTTP side of
+`auth` (the middleware, `Require*`, the JSON handlers, `Browser`, the cookie
+names, `ReturnPath`, `ErrCSRFInvalid`) moved to
+`github.com/rocketinsidecorp/forge-go/auth/authhttp`, with the same names. No
+aliases are left in `auth` (they would be an import cycle), so an application
+created with `--auth`, `--tenants` or `forge generate authentication` before
+the move stops compiling in `app/bootstrap/identity.go`,
+`app/bootstrap/routes_gen.go`, `app/adapters/htmlauth` and their tests until
+the qualifier changes. `auth.AuthorizeMFAChange` now takes the principal from
+the request context only: `AuthorizeMFAChange(ctx, authorizer)`.
+
+From the application's root, after updating Forge-Go (`go get
+github.com/rocketinsidecorp/forge-go@<version>`), rewrite the names, add the
+import, re-seal the checksum of the routes seam (the generators refuse a
+`routes_gen.go` whose `forge:checksum` does not match, and this rewrite is the
+only change), then check:
+
+```sh
+names='NewMiddleware|Middleware|Option|WithClock|WithAuthenticationAuditor|Require|RequireAudited|RequireCSRF|NewBrowser|BrowserOptions|Browser|SignInStep|SignInComplete|SignInNeedsMFA|SignInCredentials|ReturnPath|ReturnToParameter|SessionCookieName|CSRFCookieName|CSRFHeaderName|MFAChallengeCookieName|ErrCSRFInvalid|ErrMFAChallengeMissing|New\w*Handler'
+files=$(grep -rlP --include='*.go' "\bauth\.($names)\b" app cmd)
+perl -pi -e "s/\bauth\.($names)\b/authhttp.\$1/g" $files
+perl -0pi -e 's#\n(\s*)"github.com/rocketinsidecorp/forge-go/auth"\n(?!\s*"github.com/rocketinsidecorp/forge-go/auth/authhttp")#\n$1"github.com/rocketinsidecorp/forge-go/auth"\n$1"github.com/rocketinsidecorp/forge-go/auth/authhttp"\n#' $files
+f=app/bootstrap/routes_gen.go
+zero=0000000000000000000000000000000000000000000000000000000000000000
+sum=$(sed -E "s#^// forge:checksum [0-9a-f]{64}\$#// forge:checksum $zero#" "$f" | sha256sum | cut -d' ' -f1)
+sed -i -E "s#^// forge:checksum [0-9a-f]{64}\$#// forge:checksum $sum#" "$f"
+[ -d vendor ] && go mod vendor
+gofmt -l app cmd; go vet ./... && go test ./...
+```
+
+The commands use GNU `sed -i`; on macOS use `gsed` or `sed -i ''`. A file
+that no longer uses `auth` after the rewrite fails to compile with
+`"…/auth" imported and not used`: delete that import line. Code the
+application wrote itself, outside `app` and `cmd`, changes the same way; the
+compiler lists every place.
+
 ## Remaining Phase 3 work
 
 Generated PostgreSQL applications wire the identity repository, login,
