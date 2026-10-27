@@ -126,7 +126,7 @@ Without Go, from a release archive: `forge` and `forge-proxy` for `linux`,
 named `forge_<version>_<os>_<arch>`. Each release carries `checksums.txt`
 (SHA-256 of every archive and SBOM), `checksums.txt.sigstore.json` (its keyless
 cosign signature) and a GitHub build provenance attestation that covers every archive and SBOM. Download,
-verify (cosign v3+, [gh](https://cli.github.com) 2.49+), then install:
+verify (cosign v3+, [gh](https://cli.github.com) 2.68+), then install:
 
 ```sh
 VERSION=vX.Y.Z OS=linux ARCH=amd64        # a release tag; OS: linux, darwin, windows; ARCH: amd64, arm64

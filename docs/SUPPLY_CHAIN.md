@@ -201,7 +201,7 @@ archive and verify it.
 ## Verify a release
 
 Needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
-v3 or later and, for the attestation, the GitHub CLI (`gh`) 2.49 or later.
+v3 or later and, for the attestation, the GitHub CLI (`gh`) 2.68 or later (for `--signer-workflow` and `--source-ref`).
 Start from the release page or:
 
 ```sh
