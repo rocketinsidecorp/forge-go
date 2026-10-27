@@ -14,7 +14,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
-const destroyUsage = `usage: forge destroy <model|resource|scaffold|controller|mailer|job|view> ARGUMENTS... [--force] [--migrations] [--dry-run]
+const destroyUsage = `usage: forge destroy <model|resource|scaffold|join|controller|mailer|job|view> ARGUMENTS... [--force] [--migrations] [--dry-run]
        ARGUMENTS are the ones the generator was run with: forge destroy scaffold post title:string --tenant-scoped`
 
 // runDestroy is `forge destroy`, the counterpart of `forge generate` (Rails'
@@ -167,6 +167,8 @@ func planDestroy(generator string, args []string, root string, env []string, now
 		return planDestroyJob(args, root)
 	case "view":
 		return planDestroyView(args, root)
+	case "join":
+		return planDestroyJoin(args, root, env, now)
 	case "migration":
 		return destroyPlan{}, errors.New("forge destroy does not remove migrations: one that ran is part of the database's history. Revert it with `forge rollback` and delete db/migrations/<version>_NAME.{up,down}.sql yourself")
 	default:

@@ -15,7 +15,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/i18n"
 )
 
-const scaffoldUsage = "usage: forge generate scaffold NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--broadcast] [--public] [--dry-run]"
+const scaffoldUsage = "usage: forge generate scaffold NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--on-delete=restrict|cascade] [--broadcast] [--public] [--dry-run]"
 
 // scaffoldReservedPlurals are the first path segments the application or the
 // view tree already owns: /assets and /health are routes Forge registers,

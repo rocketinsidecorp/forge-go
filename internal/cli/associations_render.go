@@ -155,6 +155,16 @@ func (s %[1]sStore) Update(ctx context.Context, entity domain.%[4]s) (domain.%[4
 		}
 	}
 	out.WriteString("}\n")
+	out.WriteString(v.InsertHelpers())
+	return out.String()
+}
+
+// InsertHelpers declares one helper per table v references, directly or
+// through what it references, that inserts a row with the required columns:
+// <child>Insert<Parent>(t, database, [orgID,] id).
+func (v resourceView) InsertHelpers() string {
+	child := lowerCamel(v.Name)
+	var out strings.Builder
 	written := map[string]bool{}
 	var insert func(references []referenceView)
 	insert = func(references []referenceView) {
