@@ -651,29 +651,50 @@ the qualifier changes. `auth.AuthorizeMFAChange` now takes the principal from
 the request context only: `AuthorizeMFAChange(ctx, authorizer)`.
 
 From the application's root, after updating Forge-Go (`go get
-github.com/rocketinsidecorp/forge-go@<version>`), rewrite the names, add the
-import, re-seal the checksum of the routes seam (the generators refuse a
-`routes_gen.go` whose `forge:checksum` does not match, and this rewrite is the
-only change), then check:
+github.com/rocketinsidecorp/forge-go@<version>`), run the rewrite below. It
+first checks the `forge:checksum` of the routes seam
+(`app/bootstrap/routes_gen.go`, when the application has one) exactly as the
+generators do, and stops without changing anything if the seam was edited by
+hand; otherwise it rewrites the names, adds the import and re-seals the seam,
+whose only change is then this rewrite. It runs in a subshell, so a stop does
+not close your terminal, and running it again prints `nothing to rewrite`:
 
 ```sh
+(
+set -eu
+seam=app/bootstrap/routes_gen.go
+zero=0000000000000000000000000000000000000000000000000000000000000000
+sealed() { sed -E "s#^// forge:checksum [0-9a-f]{64}\$#// forge:checksum $zero#" "$1" | sha256sum | cut -d' ' -f1; }
+if [ -f "$seam" ] && [ "$(sed -nE 's#^// forge:checksum ([0-9a-f]{64})$#\1#p' "$seam")" != "$(sealed "$seam")" ]; then
+  echo "$seam was edited by hand since a generator last wrote it (its forge:checksum no longer matches), so nothing was rewritten. Move your change into bootstrap.go (or copy a guard such as protect into another file of package bootstrap), restore the file with git checkout $seam, and run this again." >&2
+  exit 1
+fi
 names='NewMiddleware|Middleware|Option|WithClock|WithAuthenticationAuditor|Require|RequireAudited|RequireCSRF|NewBrowser|BrowserOptions|Browser|SignInStep|SignInComplete|SignInNeedsMFA|SignInCredentials|ReturnPath|ReturnToParameter|SessionCookieName|CSRFCookieName|CSRFHeaderName|MFAChallengeCookieName|ErrCSRFInvalid|ErrMFAChallengeMissing|New\w*Handler'
-files=$(grep -rlP --include='*.go' "\bauth\.($names)\b" app cmd)
+files=$(grep -rlP --include='*.go' "\bauth\.($names)\b" app cmd 2>/dev/null || true)
+if [ -z "$files" ]; then echo "nothing to rewrite"; exit 0; fi
 perl -pi -e "s/\bauth\.($names)\b/authhttp.\$1/g" $files
 perl -0pi -e 's#\n(\s*)"github.com/rocketinsidecorp/forge-go/auth"\n(?!\s*"github.com/rocketinsidecorp/forge-go/auth/authhttp")#\n$1"github.com/rocketinsidecorp/forge-go/auth"\n$1"github.com/rocketinsidecorp/forge-go/auth/authhttp"\n#' $files
-f=app/bootstrap/routes_gen.go
-zero=0000000000000000000000000000000000000000000000000000000000000000
-sum=$(sed -E "s#^// forge:checksum [0-9a-f]{64}\$#// forge:checksum $zero#" "$f" | sha256sum | cut -d' ' -f1)
-sed -i -E "s#^// forge:checksum [0-9a-f]{64}\$#// forge:checksum $sum#" "$f"
-[ -d vendor ] && go mod vendor
+if [ -f "$seam" ]; then
+  sum=$(sealed "$seam")
+  sed -i -E "s#^// forge:checksum [0-9a-f]{64}\$#// forge:checksum $sum#" "$seam"
+fi
+echo "rewrote: $(echo $files)"
+)
+```
+
+Then check, re-vendoring first if the application vendors:
+
+```sh
+if [ -d vendor ]; then go mod vendor; fi
 gofmt -l app cmd; go vet ./... && go test ./...
 ```
 
-The commands use GNU `sed -i`; on macOS use `gsed` or `sed -i ''`. A file
-that no longer uses `auth` after the rewrite fails to compile with
-`"…/auth" imported and not used`: delete that import line. Code the
-application wrote itself, outside `app` and `cmd`, changes the same way; the
-compiler lists every place.
+The commands use GNU `sed -i`, `grep -P` and `sha256sum`; on macOS install
+GNU sed, grep and coreutils first. A file that no longer uses `auth` after the
+rewrite fails to compile with `"…/auth" imported and not used`: delete that
+import line. Code the application wrote itself, outside `app` and `cmd`,
+changes the same way; the compiler lists every place.
+`internal/scaffold/upgrade_doc_test.go` runs the rewrite as written here.
 
 ## Remaining Phase 3 work
 
