@@ -237,7 +237,7 @@ func renderMigration(v resourceView) (up, down string) {
 	if v.Tenant {
 		switch {
 		case v.Postgres:
-			columns = append(columns, column{q("org_id"), "uuid NOT NULL"})
+			columns = append(columns, column{q("org_id"), "uuid NOT NULL REFERENCES forge_tenants (id)"})
 		case v.MySQL:
 			// forge_tenants.id's type and collation: the foreign key below
 			// needs them.

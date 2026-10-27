@@ -354,7 +354,7 @@ application into one with organizations. It writes one migration,
 table a generator created (every table except `--public` ones) adds
 `org_id`, fills it with the organization `forge setup` created, requires it
 and makes it name an organization (`NOT NULL` and a foreign key to
-`forge_tenants` on MySQL/MariaDB; on SQLite, which adds neither to an
+`forge_tenants` on PostgreSQL and MySQL/MariaDB; on SQLite, which adds neither to an
 existing column, triggers that refuse a NULL, empty or unknown `org_id`),
 adds the `(org_id, id)` index and, on PostgreSQL, enables and forces
 row-level security with the policy `--org-scoped` generates; with `--org` it

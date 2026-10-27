@@ -174,7 +174,7 @@ func TestTenancyMigrationOnEveryDatabase(t *testing.T) {
 	t.Parallel()
 	for adapter, wants := range map[string][2][]string{
 		"postgres": {
-			{"DO $forge_tenancy$", "IF (SELECT COUNT(*) FROM forge_tenants) > 1 THEN", `ALTER TABLE "posts" ADD COLUMN "org_id" uuid;`, `ALTER TABLE "posts" ALTER COLUMN "org_id" SET NOT NULL;`, `ALTER TABLE "posts" FORCE ROW LEVEL SECURITY;`, `CREATE POLICY "posts_org" ON "posts"`},
+			{"DO $forge_tenancy$", "IF (SELECT COUNT(*) FROM forge_tenants) > 1 THEN", `ALTER TABLE "posts" ADD COLUMN "org_id" uuid;`, `ALTER TABLE "posts" ALTER COLUMN "org_id" SET NOT NULL;`, `ALTER TABLE "posts" ADD CONSTRAINT "posts_org_id_fk" FOREIGN KEY ("org_id") REFERENCES forge_tenants (id);`, `ALTER TABLE "posts" FORCE ROW LEVEL SECURITY;`, `CREATE POLICY "posts_org" ON "posts"`},
 			{`"org_id" IS DISTINCT FROM (SELECT id FROM forge_tenants ORDER BY id LIMIT 1)`, `DROP POLICY "posts_org" ON "posts";`, `ALTER TABLE "posts" DISABLE ROW LEVEL SECURITY;`, `DROP INDEX "posts_org_id_idx";`, `ALTER TABLE "posts" DROP COLUMN "org_id";`},
 		},
 		"mysql": {
@@ -197,13 +197,18 @@ func TestTenancyMigrationOnEveryDatabase(t *testing.T) {
 				t.Errorf("%s down lacks %q:\n%s", adapter, want, down)
 			}
 		}
-		// The guards come before the first change.
+		// The guards come before the first change of a column or a row.
 		for direction, script := range map[string]string{"up": up, "down": down} {
 			guard := strings.Index(script, "Preconditions, checked before anything changes")
-			change := strings.Index(script, "ALTER TABLE")
+			change := strings.Index(script, map[string]string{"up": "ADD COLUMN", "down": "DROP COLUMN"}[direction])
 			if guard < 0 || change < guard {
 				t.Errorf("%s %s changes the schema before its guards:\n%s", adapter, direction, script)
 			}
+		}
+		// On PostgreSQL the down lifts row-level security first: FORCE hides
+		// every row from the owner the migration runs as.
+		if adapter == "postgres" && strings.Index(down, "DISABLE ROW LEVEL SECURITY") > strings.Index(down, "Preconditions, checked before anything changes") {
+			t.Errorf("the PostgreSQL down checks rows while row-level security hides them:\n%s", down)
 		}
 		if adapter != "postgres" && strings.Contains(up, "ROW LEVEL SECURITY") {
 			t.Errorf("%s has no row-level security:\n%s", adapter, up)

@@ -78,17 +78,16 @@ The owner decided on 2026-10-26:
   posted one too. With
   `--tenants` the user-facing tenant is an organization: `org_id` columns,
   `--org-scoped`, `forge setup --org SLUG`, an "Organization" sign-in field,
-  `Org`/`OrgID` names in generated code. On SQLite and MySQL/MariaDB a
-  generated `org_id` is a foreign key to `forge_tenants (id)` (PostgreSQL
-  isolates it with row-level security), so a row cannot name an organization
-  that does not exist. Framework internals keep their names
+  `Org`/`OrgID` names in generated code. A generated `org_id` is a foreign
+  key to `forge_tenants (id)` on every database (PostgreSQL keeps row-level
+  security too), so a row cannot name an organization that does not exist. Framework internals keep their names
   (`TenantContext`, `forge_tenants`, `forge.tenant_id`). There is no
   `--tenant-name`.
 - **Converting (D36).** `forge generate tenancy [--org SLUG]` turns an
   `--auth` application into one with organizations: one migration adds
   `org_id` to every generated table, backfills it with the application's one
   organization, makes it required and an organization (`NOT NULL` and a
-  foreign key on MySQL/MariaDB; on SQLite, which adds neither to an existing
+  foreign key on PostgreSQL and MySQL/MariaDB; on SQLite, which adds neither to an existing
   column, triggers that refuse a NULL, empty or unknown `org_id`), indexes
   it, and on PostgreSQL enables and forces row-level security; it renames
   the organization to `SLUG`, rewrites every generated file as `--org-scoped`
@@ -99,10 +98,16 @@ The owner decided on 2026-10-26:
   says `--org-scoped`; tables a migration without a generator header creates
   are listed and left as they are.
 - **Guards before changes.** Both directions of the tenancy migration check
-  their preconditions before any DDL or data change, on every backend
+  their preconditions before any column or data change, on every backend
   (PostgreSQL: a `DO` block that raises; MySQL/MariaDB and SQLite: a row in a
   temporary table whose named `CHECK` constraints fail), so a refusal leaves
-  the schema, the data and the migration record exactly as they were. Up
+  the schema, the data and the migration record exactly as they were. On
+  PostgreSQL the down first lifts row-level security (drops the policy, `NO
+  FORCE`, `DISABLE`) and then checks, in the same transaction: the migrator
+  role owns the tables and FORCE applies the policy to it, which with no
+  `forge.tenant_id` would hide every row from the check; a refusal rolls the
+  lift back with everything else. The regression test runs as a
+  `NOSUPERUSER NOBYPASSRLS` owner, as `docker/postgres/init.sql` creates it. Up
   needs at most one organization, and one when any table holds rows (setup
   ran). Down needs at most one organization (another organization, even
   without rows, could otherwise sign in to the first one's data once the

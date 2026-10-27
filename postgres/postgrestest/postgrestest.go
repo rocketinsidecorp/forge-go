@@ -226,6 +226,9 @@ type RLS struct {
 	// INSERT, UPDATE and DELETE on the tables and USAGE and SELECT on the
 	// sequences the migrator creates, and no temporary tables.
 	Runtime *postgres.DB
+	// MigratorConfig is Migrator's configuration, for code that migrates
+	// as the role that owns the schema (postgres.NewMigrator).
+	MigratorConfig config.Database
 	// RuntimeConfig is Runtime's configuration, for code that opens its
 	// own pool (for example the application's Configure).
 	RuntimeConfig config.Database
@@ -314,7 +317,7 @@ func NewRLS(t testing.TB, sets ...fs.FS) *RLS {
 	if _, err := m.Up(ctx); err != nil {
 		t.Fatalf("apply migrations as the migrator role: %v", err)
 	}
-	rls := &RLS{Admin: admin, RuntimeConfig: runtimeCfg, RuntimeRole: runtime}
+	rls := &RLS{Admin: admin, MigratorConfig: migratorCfg, RuntimeConfig: runtimeCfg, RuntimeRole: runtime}
 	for _, open := range []struct {
 		cfg config.Database
 		db  **postgres.DB

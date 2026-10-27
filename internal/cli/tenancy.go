@@ -86,6 +86,7 @@ func runGenerateTenancy(args []string, stdout io.Writer, root string, env []stri
 		organization = slug
 	}
 	fmt.Fprintf(&out, "\n  The application now has organizations: sign-in asks for one, setup takes --org, and generators need --org-scoped or --global. Existing users and rows belong to the organization %q.\n", organization)
+	out.WriteString("\n  The migration checks first and changes nothing when it refuses: forge migrate refuses while more than one organization exists, or while the tables hold rows and forge setup never ran; forge rollback refuses while more than one organization exists, or a row names another one.\n")
 	out.WriteString("\n  Then: forge migrate && forge test\n")
 	_, err = io.WriteString(stdout, out.String())
 	return err
@@ -337,9 +338,11 @@ func applyTenancy(root string, plan tenancyPlan) error {
 }
 
 // tenancyMigration adds org_id to tables in adapter's dialect. Each
-// direction checks its preconditions first and changes nothing when one
-// fails (MySQL commits every DDL statement at once, so a refusal half-way
-// would leave a half-converted schema behind):
+// direction checks its preconditions before it changes a column or a row,
+// and changes nothing when one fails (MySQL commits every DDL statement at
+// once, so a refusal half-way would leave a half-converted schema behind;
+// PostgreSQL's down lifts row-level security first, in the same
+// transaction, because FORCE hides every row from the owning migrator):
 //
 //   - up: at most one organization exists (the application's one, whatever
 //     its slug), and one exists when any table holds rows (setup ran);
@@ -348,7 +351,7 @@ func applyTenancy(root string, plan tenancyPlan) error {
 //
 // Then up adds org_id (nullable), fills it with that organization's ID,
 // requires it (SQLite: triggers, since SQLite cannot add NOT NULL to a
-// column), makes it name a tenant (MySQL: a foreign key; SQLite: the same
+// column), makes it name a tenant (a foreign key; SQLite: the same
 // triggers), indexes it with id, and on PostgreSQL adds the row-level
 // security policy of an org-scoped table; with slug it renames the
 // organization. Down reverts the schema and gives the organization back the
@@ -402,6 +405,19 @@ func tenancyMigration(adapter string, tables []string, slug string) (up, down st
 		})
 	}
 	u.WriteString(tenancyGuard(adapter, upChecks))
+	if adapter == "postgres" {
+		// The migrator owns the tables, and FORCE ROW LEVEL SECURITY applies
+		// the policy to the owner too: with no forge.tenant_id set it hides
+		// every row, so the down's row check would count none. Lift row-level
+		// security first; PostgreSQL DDL is transactional, so a refusal rolls
+		// this back with everything else. (The up's checks run before any
+		// policy exists, and forge_tenants has none.)
+		d.WriteString("\n-- Row-level security off first, or the checks below would see no rows.\n")
+		for _, table := range tables {
+			fmt.Fprintf(&d, "DROP POLICY %s ON %s;\n", q(table+"_org"), q(table))
+			fmt.Fprintf(&d, "ALTER TABLE %s NO FORCE ROW LEVEL SECURITY;\nALTER TABLE %s DISABLE ROW LEVEL SECURITY;\n", q(table), q(table))
+		}
+	}
 	d.WriteString(tenancyGuard(adapter, downChecks))
 
 	for _, table := range tables {
@@ -413,6 +429,7 @@ func tenancyMigration(adapter string, tables []string, slug string) (up, down st
 			fmt.Fprintf(&u, "ALTER TABLE %s ADD COLUMN %s uuid;\n", q(table), q("org_id"))
 			fmt.Fprintf(&u, "UPDATE %s SET %s = %s;\n", q(table), q("org_id"), organization)
 			fmt.Fprintf(&u, "ALTER TABLE %s ALTER COLUMN %s SET NOT NULL;\n", q(table), q("org_id"))
+			fmt.Fprintf(&u, "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES forge_tenants (id);\n", q(table), foreignKey, q("org_id"))
 			fmt.Fprintf(&u, "CREATE INDEX %s ON %s (%s, %s);\n", index, q(table), q("org_id"), q("id"))
 			u.WriteString(rowSecurity(table, q))
 		case "mysql":
@@ -435,8 +452,7 @@ func tenancyMigration(adapter string, tables []string, slug string) (up, down st
 		fmt.Fprintf(&d, "\n-- %s\n", table)
 		switch adapter {
 		case "postgres":
-			fmt.Fprintf(&d, "DROP POLICY %s ON %s;\n", q(table+"_org"), q(table))
-			fmt.Fprintf(&d, "ALTER TABLE %s NO FORCE ROW LEVEL SECURITY;\nALTER TABLE %s DISABLE ROW LEVEL SECURITY;\n", q(table), q(table))
+			fmt.Fprintf(&d, "ALTER TABLE %s DROP CONSTRAINT %s;\n", q(table), foreignKey)
 			fmt.Fprintf(&d, "DROP INDEX %s;\n", index)
 		case "mysql":
 			fmt.Fprintf(&d, "ALTER TABLE %s DROP FOREIGN KEY %s;\n", q(table), foreignKey)

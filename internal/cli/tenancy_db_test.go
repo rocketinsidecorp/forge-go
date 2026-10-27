@@ -43,8 +43,12 @@ func newTenancyDatabase(t *testing.T, adapter string) *tenancyDatabase {
 	d := &tenancyDatabase{t: t, adapter: adapter}
 	switch adapter {
 	case "postgres":
-		database, cfg := postgrestest.NewWithConfig(t)
-		d.cfg, d.db, d.identity, d.newMigrate = cfg, stdlib.OpenDBFromPool(database.Pool()), authpostgres.Migrations(), postgres.NewMigrator
+		// The roles docker/postgres/init.sql creates: the migrations run as
+		// a NOSUPERUSER NOBYPASSRLS role that owns the tables, so FORCE ROW
+		// LEVEL SECURITY applies to it; the test inspects as the server's
+		// own user.
+		database := postgrestest.NewRLS(t, authpostgres.Migrations())
+		d.cfg, d.db, d.identity, d.newMigrate = database.MigratorConfig, stdlib.OpenDBFromPool(database.Admin.Pool()), authpostgres.Migrations(), postgres.NewMigrator
 	case "mysql":
 		database, cfg := mysqltest.NewWithConfig(t)
 		d.cfg, d.db, d.identity, d.newMigrate = cfg, database.SQL(), authmysql.Migrations(), mysql.NewMigrator
@@ -132,8 +136,37 @@ func (d *tenancyDatabase) schema() string {
 		parts = append(parts, "foreign_keys="+d.value("SELECT GROUP_CONCAT(constraint_name ORDER BY constraint_name) FROM information_schema.table_constraints WHERE table_schema = DATABASE() AND table_name = 'products' AND constraint_type = 'FOREIGN KEY'"))
 	}
 	parts = append(parts, "slugs="+d.value("SELECT "+map[bool]string{true: "GROUP_CONCAT(slug ORDER BY slug)", false: "string_agg(slug, ',' ORDER BY slug)"}[d.adapter != "postgres"]+" FROM forge_tenants"))
+	if d.adapter == "postgres" {
+		parts = append(parts, "row_security="+d.value("SELECT string_agg(relname || ':' || relrowsecurity || '/' || relforcerowsecurity, ',' ORDER BY relname) FROM pg_class WHERE relname IN ('products', 'tags')"))
+		parts = append(parts, "policies="+d.value("SELECT string_agg(policyname, ',' ORDER BY policyname) FROM pg_policies WHERE tablename IN ('products', 'tags')"))
+	}
 	parts = append(parts, fmt.Sprintf("guard_table=%v", d.exec("SELECT 1 FROM forge_tenancy_guard") == nil))
 	return strings.Join(parts, " ")
+}
+
+// orphan inserts a product whose org_id names no organization, bypassing the
+// foreign key as a superuser restoring data could.
+func (d *tenancyDatabase) orphan(id uuid.UUID) {
+	d.t.Helper()
+	ctx := context.Background()
+	conn, err := d.db.Conn(ctx)
+	if err != nil {
+		d.t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	off, on := "SET session_replication_role = replica", "SET session_replication_role = DEFAULT"
+	if d.adapter == "mysql" {
+		off, on = "SET FOREIGN_KEY_CHECKS = 0", "SET FOREIGN_KEY_CHECKS = 1"
+	}
+	for _, statement := range []string{off, d.sql("INSERT INTO products (id, org_id, name) VALUES (?, ?, 'orphan')"), on} {
+		args := []any{}
+		if strings.HasPrefix(statement, "INSERT") {
+			args = []any{id, uuid.MustNew()}
+		}
+		if _, err := conn.ExecContext(ctx, statement, args...); err != nil {
+			d.t.Fatalf("%s: %v", statement, err)
+		}
+	}
 }
 
 func (d *tenancyDatabase) organization(slug string) uuid.UUID {
@@ -217,13 +250,7 @@ func TestTenancyMigrationGuardsChangeNothingWhenTheyRefuse(t *testing.T) {
 				t.Fatalf("slug = %q", got)
 			}
 			// org_id names an organization: NULL, empty and unknown are refused.
-			bad := []any{nil, ""}
-			if adapter != "postgres" {
-				// PostgreSQL isolates org_id with row-level security instead
-				// of a foreign key.
-				bad = append(bad, uuid.MustNew().String())
-			}
-			for _, bad := range bad {
+			for _, bad := range []any{nil, "", uuid.MustNew().String()} {
 				if err := d.exec("INSERT INTO tags (id, org_id, name) VALUES (?, ?, 'x')", uuid.MustNew(), bad); err == nil {
 					t.Fatalf("a tag with org_id %v was stored", bad)
 				}
@@ -237,6 +264,26 @@ func TestTenancyMigrationGuardsChangeNothingWhenTheyRefuse(t *testing.T) {
 				if err := d.exec("INSERT OR REPLACE INTO tags (id, org_id, name) VALUES (?, NULL, 'x')", uuid.MustNew()); err == nil {
 					t.Fatal("INSERT OR REPLACE stored a tag without an organization")
 				}
+			}
+
+			// A row whose org_id names no organization (left by a deleted one,
+			// the foreign key bypassed): down refuses, changing nothing. On
+			// PostgreSQL the migrator owns the table and FORCE ROW LEVEL
+			// SECURITY hides every row from it, so the check must run after
+			// row-level security is lifted.
+			if adapter != "sqlite" {
+				orphan := uuid.MustNew()
+				d.orphan(orphan)
+				migrator := d.migrator(tenancyApp(adapter, true))
+				before, applied := d.schema(), d.applied(migrator)
+				_, err := migrator.Down(ctx, 1)
+				if err == nil || !strings.Contains(err.Error(), map[bool]string{true: "rows belong to another organization", false: "forge_tenancy_rollback_rows_of_other_organizations"}[adapter == "postgres"]) {
+					t.Fatalf("down with a row of no organization: %v", err)
+				}
+				if after := d.schema(); after != before || d.applied(migrator) != applied {
+					t.Fatalf("a refused down changed the database:\nbefore %s (%s)\nafter  %s (%s)", before, applied, after, d.applied(migrator))
+				}
+				d.mustExec("DELETE FROM products WHERE id = ?", orphan)
 			}
 
 			// A second organization without rows: down refuses, changing

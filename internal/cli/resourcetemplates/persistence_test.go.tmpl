@@ -64,12 +64,25 @@ func new[[.Title]]Repository(t *testing.T) (*persistence.[[.Title]]Repository, [
 [[- if .Tenant]]
 
 [[- if .Postgres]]
-// new[[.Title]]Tenant returns a fresh tenant and a context carrying it. Row-level
-// security isolates the table on PostgreSQL, so the tenant needs no
-// forge_tenants row.
-func new[[.Title]]Tenant(t *testing.T, _ *postgrestest.RLS) (tenancy.Tenant, context.Context) {
+// new[[.Title]]Tenant creates an organization (org_id references forge_tenants;
+// row-level security isolates the rows as well) and returns it and a context
+// carrying it. The test server's own user writes the organization, as an
+// operator would: the runtime role only serves the application.
+func new[[.Title]]Tenant(t *testing.T, database *postgrestest.RLS) (tenancy.Tenant, context.Context) {
 	t.Helper()
-	tenant, err := tenancy.New(uuid.MustNew())
+	organization, id := uuid.MustNew(), uuid.MustNew()
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{"INSERT INTO forge_organizations (id, name) VALUES ($1, $2)", []any{organization, "Test organization"}},
+		{"INSERT INTO forge_tenants (id, organization_id, slug) VALUES ($1, $2, $3)", []any{id, organization, "org-" + id.String()}},
+	} {
+		if _, err := database.Admin.Exec(context.Background(), statement.sql, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tenant, err := tenancy.New(id)
 	if err != nil {
 		t.Fatal(err)
 	}

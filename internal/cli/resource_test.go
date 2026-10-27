@@ -486,7 +486,7 @@ func TestResourceIdentifiersAreUUIDv7AndTypesAreExact(t *testing.T) {
 		"sqlite":   regexp.MustCompile(`(?m)^\s+"id"\s+TEXT NOT NULL PRIMARY KEY,?$`),
 	}
 	tenantColumn := map[string]*regexp.Regexp{
-		"postgres": regexp.MustCompile(`(?m)^\s+"org_id"\s+uuid NOT NULL,?$`),
+		"postgres": regexp.MustCompile(`(?m)^\s+"org_id"\s+uuid NOT NULL REFERENCES forge_tenants \(id\),?$`),
 		// The type and collation of forge_tenants.id, which the foreign key
 		// below needs.
 		"mysql":  regexp.MustCompile("(?m)^\\s+`org_id`\\s+CHAR\\(36\\) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,?$"),
@@ -495,8 +495,9 @@ func TestResourceIdentifiersAreUUIDv7AndTypesAreExact(t *testing.T) {
 	// org_id names an organization: a foreign key on the databases without
 	// row-level security.
 	tenantForeignKey := map[string]string{
-		"mysql":  "CONSTRAINT `products_org_id_fk` FOREIGN KEY (`org_id`) REFERENCES forge_tenants (id)",
-		"sqlite": `REFERENCES forge_tenants (id)`,
+		"postgres": `REFERENCES forge_tenants (id)`,
+		"mysql":    "CONSTRAINT `products_org_id_fk` FOREIGN KEY (`org_id`) REFERENCES forge_tenants (id)",
+		"sqlite":   `REFERENCES forge_tenants (id)`,
 	}
 	for _, database := range resourceDatabases {
 		for _, tenant := range []bool{true, false} {
