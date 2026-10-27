@@ -372,6 +372,51 @@ func TestDriveCountsOutcomes(t *testing.T) {
 	}
 }
 
+// A window that closes while requests are in flight must neither cancel them
+// nor count them as errors: cancelling at the edge of a window left a closing
+// connection that net/http handed to a request of the next window, which
+// failed with a stale "context deadline exceeded" (an intermittent Errors=1).
+// A window of one nanosecond is closed before the first request is sent, so
+// every request is in flight when it closes, whatever the speed of the machine.
+func TestDriveFinishesRequestsInFlightWhenTheWindowCloses(t *testing.T) {
+	t.Parallel()
+	_, base := newFakeApp(t, nil)
+	tg := &target{client: &http.Client{Timeout: 5 * time.Second}, base: base}
+	s := tg.drive(context.Background(), request{method: http.MethodGet, path: "/health", want: 200}, 3, time.Nanosecond)
+	if s.ok != 3 || s.errors != 0 || len(s.latencies) != 3 {
+		t.Fatalf("sample = ok %d errors %d latencies %d, want 3 requests finished and none failed", s.ok, s.errors, len(s.latencies))
+	}
+}
+
+// Real failures still count as errors, and an interrupt ends the run without
+// being counted as one.
+func TestDriveStillCountsRealFailures(t *testing.T) {
+	t.Parallel()
+	_, base := newFakeApp(t, map[string]http.HandlerFunc{
+		"GET /broken": func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) },
+	})
+	// A closed listener refuses connections.
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	for name, tc := range map[string]struct {
+		base string
+		path string
+	}{"status 500": {base, "/broken"}, "connection refused": {closed.URL, "/health"}} {
+		tg := &target{client: &http.Client{Timeout: 5 * time.Second}, base: tc.base}
+		s := tg.drive(context.Background(), request{method: http.MethodGet, path: tc.path, want: 200}, 2, time.Nanosecond)
+		if s.ok != 0 || s.errors != 2 {
+			t.Errorf("%s: sample = ok %d errors %d, want 2 errors and no success", name, s.ok, s.errors)
+		}
+	}
+
+	tg := &target{client: &http.Client{Timeout: 5 * time.Second}, base: base}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if s := tg.drive(ctx, request{method: http.MethodGet, path: "/health", want: 200}, 2, time.Minute); s.ok != 0 || s.errors != 0 {
+		t.Errorf("interrupted: sample = ok %d errors %d, want neither", s.ok, s.errors)
+	}
+}
+
 func TestMeasureReturnsTheContextErrorWhenCancelled(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
