@@ -51,3 +51,39 @@ Option 3.
   ([ADR 0009](0009-multiple-databases.md)).
 - If the dependency set grows enough to burden applications, adapters can
   still move to separate modules without changing their import-facing API.
+
+## Addendum (2026-10-27): connections a cancellation fired on
+
+pgx v5.11.0 can return a poisoned connection to the pool. When a write takes
+longer than 15 ms, pgconn starts a background reader, which may read the
+whole result and wait for more before the write returns. If the query's
+context is then cancelled, pgx's context watcher sets a socket deadline, the
+pending background read fails with `i/o timeout`, and the error is stored for
+the next read. The query itself succeeds, the deadline is cleared on unwatch,
+and the next query on the connection fails with `i/o timeout` (on the extended
+protocol; the simple protocol's first read happens to discard it). pgx's
+comment in `exitPotentialWriteReadDeadlock` describes the hazard. On a
+CPU-saturated host, 32 goroutines whose contexts were cancelled at random
+poisoned connections 27 times in 509,000 cancellable queries over five
+minutes; with the guard below, 0 times in 265,000.
+
+`postgres.Open` therefore wraps the pool's `BuildContextWatcherHandler` so that
+a firing cancellation marks the connection (an atomic flag in pgconn's
+`CustomData`), and adds a `PrepareConn` that destroys a marked connection
+before it is handed out; Acquire then takes or opens another. Any hook the
+configuration already had keeps running. Every socket deadline on a pooled
+connection comes from its context watcher, so an unmarked connection cannot
+hold the stored error, and a query whose context is not cancelled while it
+runs marks nothing: the guard costs no reconnections under normal load. A
+cancellation that fails its query already closes the connection.
+
+Considered and rejected: `AfterRelease` runs in a goroutine on every release,
+during which a concurrent Acquire can open an extra connection;
+`CancelRequestContextWatcherHandler` still sets the fallback deadline (and
+waits 100 ms on every cancellation); a handler without a deadline cannot
+interrupt a query on a dead network. The guard does not help a query that
+runs on the same acquired connection after the cancelled one (inside one
+transaction), which already ends with the cancelled request.
+`TestCancelledQueryPoisonsUnguardedPool` reproduces the interleaving
+deterministically and fails when a pgx upgrade stops storing the error, at
+which point the guard can be revisited.

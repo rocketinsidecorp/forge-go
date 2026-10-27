@@ -228,6 +228,19 @@ released; `sqldb.DB.Close` follows `database/sql` and does not wait for
 queries in progress (idle connections close at once, busy ones when they are
 released).
 
+On PostgreSQL the pool never reuses a connection on which a context
+cancellation fired while a query ran. pgx interrupts the query with a socket
+deadline; when its background reader (started by a write slower than 15 ms)
+had a read pending, that read fails with "i/o timeout" and pgx keeps the error
+for the connection's next read. If the cancelled query had already received
+its result it succeeds, and the next query on the connection, whatever its
+context, would fail. Open marks such a connection and destroys it before it is
+handed out again; ordinary queries, including ones whose request context ends
+after they return, mark nothing, so the guard adds no reconnections under
+normal load. The MySQL and SQLite drivers close or interrupt the connection on
+cancellation and need no guard. See [ADR
+0007](adr/0007-postgresql-adapter-with-pgx.md#addendum-2026-10-27-connections-a-cancellation-fired-on).
+
 `Ping` matches `health.Check`. With it registered, `/health/ready` returns
 `503` while the database is unreachable. Each readiness check runs with a
 2-second timeout (`health.DefaultCheckTimeout`).
