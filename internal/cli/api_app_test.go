@@ -140,7 +140,7 @@ func TestGeneratorsInAnAPIOnlyApplication(t *testing.T) {
 			}
 
 			for _, args := range [][]string{
-				{"resource", "product", "name:string", "--tenant-scoped"},
+				{"resource", "product", "name:string"},
 				{"model", "tag", "label:string", "--global"},
 				{"controller", "status_checks", "index", "show", "--api"},
 				{"controller", "pings", "index", "--api", "--public"},
@@ -153,8 +153,7 @@ func TestGeneratorsInAnAPIOnlyApplication(t *testing.T) {
 				if err := runGenerateEnv(args, &output, dir, env, now); err != nil {
 					t.Fatalf("forge generate %v: %v\n%s", args, err, output.String())
 				}
-				// The identity schema exists on PostgreSQL (decision D15),
-				// but nothing wires identity: no identityRoutes, no auth
+				// No Forge identity (decision D31): nothing wires it: no identityRoutes, no auth
 				// middleware, no permission migration. (The mailer's wiring
 				// names identityRoutes only for full-stack applications.)
 				if args[0] != "mailer" && (strings.Contains(output.String(), "identityRoutes") || strings.Contains(output.String(), "_permissions.up.sql") || strings.Contains(output.String(), "auth.NewMiddleware")) {

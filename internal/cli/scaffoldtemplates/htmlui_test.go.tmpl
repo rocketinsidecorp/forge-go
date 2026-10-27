@@ -638,7 +638,7 @@ func Test[[.Title]]PagesRequireTheCSRFToken(t *testing.T) {
 func Test[[.Title]]PagesRejectFieldsTheFormDoesNotHave(t *testing.T) {
 	t.Parallel()
 	browser := new[[.Title]]Browser(t, [[.Camel]]AllowAll)
-	for _, extra := range []string{"id", "version", "tenant_id", "created_at"} {
+	for _, extra := range []string{"id", "version", "org_id", "created_at"} {
 		values := [[.Camel]]FirstValues()
 		values.Set(extra, "1")
 		[[.Camel]]Expect(t, browser.submit("/[[.Plural]]/new", http.MethodPost, "/[[.Plural]]", values), http.StatusBadRequest)

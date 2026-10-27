@@ -59,9 +59,12 @@ func TestI18nBaseIsTheTranslationsPackageOfForgeNew(t *testing.T) {
 func TestBaseGeneratorsRejectInvalidNamesAndModules(t *testing.T) {
 	t.Parallel()
 	calls := map[string]func(name, module string) error{
-		"ViewBase":            func(n, m string) error { _, err := scaffold.ViewBase(n, m); return err },
-		"I18nBase":            func(n, m string) error { _, err := scaffold.I18nBase(n, m); return err },
-		"AuthenticationFiles": func(n, m string) error { _, err := scaffold.AuthenticationFiles(n, m); return err },
+		"ViewBase": func(n, m string) error { _, err := scaffold.ViewBase(n, m); return err },
+		"I18nBase": func(n, m string) error { _, err := scaffold.I18nBase(n, m); return err },
+		"AuthenticationFiles": func(n, m string) error {
+			_, err := scaffold.AuthenticationFiles(scaffold.Options{Name: n, Module: m, Database: "sqlite"})
+			return err
+		},
 	}
 	for name, call := range calls {
 		if err := call("Not Valid", "example.com/x"); err == nil || !strings.Contains(err.Error(), "application name") {

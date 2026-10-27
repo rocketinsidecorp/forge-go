@@ -26,17 +26,20 @@ From an empty directory to a working CRUD at `/products`, with no code to
 edit: the generators mount their routes in `app/bootstrap/routes_gen.go`.
 
 ```bash
-forge new {{.Name}}{{if ne .Database "postgresql"}} -d {{if eq .Database "sqlite"}}sqlite3{{else}}{{.Database}}{{end}}{{end}}{{if .APIAuth}} --api-auth{{end}}{{if ne .Locale "en"}} --locale {{.Locale}}{{end}}{{if .JS}} --js{{end}}
+{{.NewCommand}}
 cd {{.Name}}
 {{- if .DB.Server}}
 docker compose up -d --wait {{.DB.Service}}
 {{- end}}
 forge migrate
-{{- if .DB.Identity}}
-forge setup --tenant acme --email you@example.com --organization "Acme Inc"
-forge generate scaffold product name:string price:int --tenant-scoped
+{{- if and .DB.Identity .Tenants}}
+forge setup --org acme --email you@example.com
+forge generate scaffold product name:string price:integer --org-scoped
+{{- else if .DB.Identity}}
+forge setup --email you@example.com
+forge generate scaffold product name:string price:integer
 {{- else}}
-forge generate scaffold product name:string price:int --global --public
+forge generate scaffold product name:string price:integer --public
 {{- end}}
 forge migrate
 forge dev
@@ -46,7 +49,7 @@ forge dev
 
 `forge setup` asks for the owner's password twice (or reads
 `FORGE_SETUP_PASSWORD`). Then open `http://localhost:8080/session/new`, sign
-in with organization `acme`, and manage products at
+in{{if .Tenants}} with organization `acme`{{end}}, and manage products at
 `http://localhost:8080/products`: the pages and the JSON API at
 `/v1/products` need sign-in and the `products:read` and `products:write`
 permissions, which the scaffold's migration grants to the owner role. The JSON
@@ -57,7 +60,7 @@ changes send the CSRF token in the `X-CSRF-Token` header:
 jar=$(mktemp)
 token=$(curl -s -c "$jar" -H 'Accept: text/html' http://localhost:8080/session/new | sed -n 's/.*name="authenticity_token" value="\([^"]*\)".*/\1/p' | head -n 1)
 read -rsp 'Password: ' password; echo
-curl -s -o /dev/null -b "$jar" -c "$jar" -H 'Accept: text/html' --data-urlencode "authenticity_token=$token" --data-urlencode tenant=acme --data-urlencode email=you@example.com --data-urlencode "password=$password" http://localhost:8080/session
+curl -s -o /dev/null -b "$jar" -c "$jar" -H 'Accept: text/html' --data-urlencode "authenticity_token=$token"{{if .Tenants}} --data-urlencode tenant=acme{{end}} --data-urlencode email=you@example.com --data-urlencode "password=$password" http://localhost:8080/session
 curl -s -b "$jar" http://localhost:8080/v1/products
 curl -s -b "$jar" -H "X-CSRF-Token: $(awk '$6 == "__Host-forge_csrf" {print $7}' "$jar")" -H 'Content-Type: application/json' -d '{"name":"Lamp","price":1999}' http://localhost:8080/v1/products
 ```
@@ -71,8 +74,9 @@ curl -s http://localhost:8080/v1/products
 curl -s -H 'Content-Type: application/json' -d '{"name":"Lamp","price":1999}' http://localhost:8080/v1/products
 ```
 
-Forge identity (sign-in pages, `forge setup`) is PostgreSQL-only, so in this
-application the generated routes are closed unless generated with
+This application has no authentication (it was created without `--auth`;
+`forge generate authentication` adds the sign-in pages and `forge setup`), so
+its generated routes are closed unless generated with
 `--public`, which serves them to anyone who can reach the server, without
 sign-in (forms still need their CSRF token). Use it for prototypes on your
 machine. To put your own authentication in front, copy the `public`
@@ -216,13 +220,6 @@ adds `/health`, `/health/live` and `/health/ready`. Errors are JSON too. There
 is no `app/views`, `app/assets`, `app/javascript` or `config/locales`, and
 `app/bootstrap` installs no CSRF, method-override, flash or locale middleware:
 authenticate API clients with a header (a bearer token), never a cookie.
-{{- if and .DB (eq .DB.Adapter "postgres")}}
-
-`migrate` still applies Forge's identity, audit and session tables
-(`authpostgres.Migrations()` in `cmd/{{.Name}}/main.go`), the schema of a
-full-stack application, so authentication can be added later without
-rewriting migrations. Nothing serves them, and there is no `setup` command.
-{{- end}}
 
 The generators that write pages refuse this application: `forge generate
 view`, `forge generate scaffold`, `forge generate authentication` and
@@ -355,21 +352,41 @@ To keep plain JavaScript instead, create the application with `forge new --js`.
 
 ## Sign in
 
-Create the first organization, tenant and owner account once, after the
+{{- if .Tenants}}
+Create the first organization and its owner account once, after the
 migrations (the password is prompted for twice, never passed as an argument):
 
 ```bash
 forge migrate
-forge setup --tenant acme --email you@example.com --organization "Acme Inc"
+forge setup --org acme --email you@example.com --org-name "Acme Inc"
 forge dev
 ```
 
 Then open `http://localhost:8080/session/new` and sign in with organization
-`acme`. The owner holds every permission: `setup` grants all registered
-permissions to the tenant's `owner` role, and the migrations of
+`acme`. Users belong to organizations: generated tables are `--org-scoped`
+(an `org_id` column every query is filtered by{{if eq .DB.Adapter "postgres"}}, behind row-level security{{end}})
+or `--global`.
+{{- else}}
+Create the owner account once, after the migrations (the password is
+prompted for twice, never passed as an argument):
+
+```bash
+forge migrate
+forge setup --email you@example.com
+forge dev
+```
+
+Then open `http://localhost:8080/session/new` and sign in with the email and
+password. This application has a single organization, hidden from users:
+generated tables are plain tables. `forge generate tenancy` converts it to
+organizations (an `org_id` column on every generated table, filled with the
+existing rows' organization).
+{{- end}}
+The owner holds every permission: `setup` grants all registered
+permissions to the `owner` role, and the migrations of
 `forge generate resource` and `forge generate scaffold` grant their new
-permissions to it. `setup` refuses once a tenant exists. In a container, run
-`docker compose run --rm app setup --tenant acme --email you@example.com`, or
+permissions to it. `setup` refuses once an account exists. In a container, run
+`docker compose run --rm app setup{{if .Tenants}} --org acme{{end}} --email you@example.com`, or
 pipe the password with `--password-stdin` (or set `FORGE_SETUP_PASSWORD` for
 that one command) where there is no terminal.
 
@@ -559,9 +576,10 @@ layout. A tool that reads only `CLAUDE.md` can import it with a one-line
 
 ## Identity
 
-PostgreSQL projects include Forge's identity migrations alongside application
-migrations and wire the PostgreSQL identity repository into the generated
-composition root.
+The application composes Forge's identity migrations (`auth{{.DB.Adapter}}` in
+`app/bootstrap/app_gen.go`) with its own, and `app/bootstrap/identity.go`
+wires the {{.DB.Title}} identity store, the sign-in pages and the setup
+command into the composition root.
 
 {{- if .APIAuth}}
 

@@ -1,0 +1,16 @@
+DROP TABLE IF EXISTS forge_security_audit_events;
+DROP TABLE IF EXISTS forge_mfa_backup_codes;
+DROP TABLE IF EXISTS forge_mfa_challenges;
+DROP TABLE IF EXISTS forge_totp_factors;
+DROP TABLE IF EXISTS forge_totp_enrollments;
+DROP TABLE IF EXISTS forge_password_recovery;
+DROP TABLE IF EXISTS forge_login_throttle;
+DROP TABLE IF EXISTS forge_sessions;
+DROP TABLE IF EXISTS forge_membership_roles;
+DROP TABLE IF EXISTS forge_role_permissions;
+DROP TABLE IF EXISTS forge_permissions;
+DROP TABLE IF EXISTS forge_roles;
+DROP TABLE IF EXISTS forge_memberships;
+DROP TABLE IF EXISTS forge_tenants;
+DROP TABLE IF EXISTS forge_organizations;
+DROP TABLE IF EXISTS forge_users;

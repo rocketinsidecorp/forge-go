@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -139,7 +140,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		}
 		commandsSeen[command.Name] = true
 		if command.Name == "generate" {
-			generateDeclaresJob = strings.Contains(command.Usage, "|job|model|controller|mailer|resource|scaffold|authentication>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
+			generateDeclaresJob = strings.Contains(command.Usage, "|job|model|controller|mailer|resource|scaffold|authentication|tenancy>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
 				containsString(command.Examples, "forge generate resource category name:string --global --plural categories") &&
 				containsString(command.Examples, "forge generate scaffold post title:string body:text published:bool --global --dry-run")
 		}
@@ -391,12 +392,16 @@ func TestGeneratedApplication(t *testing.T) {
 
 	// The README quickstart, run as written by a real forge binary, then
 	// driven over HTTP like a person in a browser (readme_quickstart_test.go).
-	for _, database := range []string{"postgresql", "sqlite"} {
-		t.Run("readme quickstart "+database, func(t *testing.T) {
+	for _, name := range []string{"sqlite3", "mysql", "postgresql"} {
+		t.Run("readme quickstart "+name, func(t *testing.T) {
 			t.Parallel()
-			testReadmeQuickstart(t, frameworkPath, database)
+			testReadmeQuickstart(t, frameworkPath, name)
 		})
 	}
+	t.Run("readme quickstart welcome", func(t *testing.T) {
+		t.Parallel()
+		testWelcomeQuickstart(t, frameworkPath)
+	})
 
 	t.Run("without database", func(t *testing.T) {
 		t.Parallel()
@@ -433,9 +438,9 @@ func TestGeneratedApplication(t *testing.T) {
 			}
 			generateAndWireResources(t, dir, database.adapter, false)
 			assertNoBrowserFiles(t, dir)
-			// The binary migrates: on PostgreSQL Forge's identity, audit and
-			// session schema comes first, as in Forge-Rust's --api
-			// applications (decision D15); there is no setup command.
+			// The binary migrates the application's schema only: an API-only
+			// application has no Forge identity (decision D31) and no setup
+			// command.
 			writeFile(t, filepath.Join(dir, ".env.local"), "FORGE_DATABASE_URL="+cfg.URL.Reveal()+"\nFORGE_MIGRATION_DATABASE_URL="+cfg.URL.Reveal()+"\n")
 			env, err := environment(dir, os.Environ())
 			if err != nil {
@@ -445,11 +450,10 @@ func TestGeneratedApplication(t *testing.T) {
 			if err := runApp(context.Background(), dir, "ledger", []string{"migrate"}, env, &migrated, &migrated); err != nil {
 				t.Fatalf("ledger migrate: %v\n%s", err, migrated.String())
 			}
-			want := []string{"_create_products", "_create_categories"}
-			if database.adapter == "postgres" {
-				want = append(want, "_identity", "_security_audit", "_session_idle_timeout")
+			if strings.Contains(migrated.String(), "_identity") {
+				t.Fatalf("an API-only application migrated Forge identity:\n%s", migrated.String())
 			}
-			for _, name := range want {
+			for _, name := range []string{"_create_products", "_create_categories"} {
 				if !strings.Contains(migrated.String(), name) {
 					t.Fatalf("ledger migrate did not apply %s:\n%s", name, migrated.String())
 				}
@@ -507,7 +511,9 @@ func TestGeneratedApplication(t *testing.T) {
 			// Skips (or fails under FORGE_TEST_REQUIRE_DATABASE) before any
 			// work when the database server is missing.
 			cfg := database.config(t)
-			dir := generate(t, "ledger", "--database", database.name)
+			// With organizations (forge new --tenants -d DB): Forge identity
+			// on every database, and tables scoped to an organization.
+			dir := generate(t, "ledger", "--database", database.name, "--tenants")
 			up, down, err := generateMigration(dir, "create_entries", time.Now())
 			if err != nil {
 				t.Fatal(err)
@@ -515,7 +521,7 @@ func TestGeneratedApplication(t *testing.T) {
 			writeFile(t, up, "CREATE TABLE entries (id CHAR(36) PRIMARY KEY, amount_cents BIGINT NOT NULL);\n")
 			writeFile(t, down, "DROP TABLE entries;\n")
 
-			generateAndWireResources(t, dir, database.adapter, database.adapter == "postgres")
+			generateAndWireResources(t, dir, database.adapter, true)
 
 			// The database settings come from .env.local, as a developer
 			// would configure them. One role serves and migrates here: the
@@ -566,13 +572,12 @@ func TestGeneratedApplication(t *testing.T) {
 			}
 			// Only Forge's own migrations are left: the scheduled job
 			// ticks table (newest, every server database) and the
-			// identity schema of PostgreSQL are never rolled back
-			// (ADR 0039); SQLite has nothing left.
+			// identity schema are never rolled back (ADR 0039).
 			var rest bytes.Buffer
 			err = runApp(context.Background(), dir, "ledger", []string{"rollback"}, env, &rest, &rest)
 			if database.adapter == "sqlite" {
-				if err != nil || strings.Contains(rest.String(), "reverted 20") {
-					t.Fatalf("rollback with nothing left: %v\n%s", err, rest.String())
+				if err == nil || !strings.Contains(rest.String(), "20260927090000_identity, from the auth package") {
+					t.Fatalf("rollback with only Forge's migrations left: %v\n%s", err, rest.String())
 				}
 			} else if err == nil || !strings.Contains(rest.String(), "20261026120000_job_schedules, from the jobs package") {
 				t.Fatalf("rollback with only Forge's migrations left: %v\n%s", err, rest.String())
@@ -588,8 +593,8 @@ func TestGeneratedApplication(t *testing.T) {
 // field type (required and optional) and a global one, pastes the printed
 // wiring into bootstrap.go, and checks that the application vets, builds and
 // passes its tests, including the database integration tests, which must run
-// rather than skip. identity says the application has Forge identity (a
-// full-stack PostgreSQL application).
+// rather than skip. identity says the application has Forge identity and
+// organizations (forge new --tenants); without it the tables are plain.
 func generateAndWireResources(t *testing.T, dir, adapter string, identity bool) {
 	t.Helper()
 	// The database is read from .env.development; keep a developer's own
@@ -609,6 +614,9 @@ func generateAndWireResources(t *testing.T, dir, adapter string, identity bool) 
 	}
 	var specs []resourceSpec
 	for _, args := range requests {
+		if !identity {
+			args = slices.DeleteFunc(slices.Clone(args), func(arg string) bool { return arg == "--tenant-scoped" || arg == "--global" })
+		}
 		request, err := parseResourceArgs(args)
 		if err != nil {
 			t.Fatal(err)
@@ -617,7 +625,7 @@ func generateAndWireResources(t *testing.T, dir, adapter string, identity bool) 
 		if err := runGenerateEnv(append([]string{"resource"}, args...), &output, dir, env, time.Now()); err != nil {
 			t.Fatalf("generate resource %s: %v", request.Name, err)
 		}
-		specs = append(specs, resourceSpec{resourceRequest: request, Module: "example.com/acme/ledger", Database: adapter, Identity: identity})
+		specs = append(specs, resourceSpec{resourceRequest: request, Module: "example.com/acme/ledger", Database: adapter, Identity: identity, Organizations: identity})
 		if !strings.Contains(output.String(), "create  "+filepath.Join("app", "domain", request.Name+".go")) {
 			t.Fatalf("generate output: %s", output.String())
 		}
@@ -646,15 +654,20 @@ func generateAndWireResources(t *testing.T, dir, adapter string, identity bool) 
 	if err != nil {
 		t.Fatalf("go test: %v\n%s", err, output)
 	}
-	for _, want := range []string{
-		"--- PASS: TestProductRepositoryCreateAndGet", "--- PASS: TestProductRepositoryIsolatesTenants",
+	wants := []string{
+		"--- PASS: TestProductRepositoryCreateAndGet",
 		"--- PASS: TestCategoryRepositoryCreateAndGet", "--- PASS: TestProductLifecycle", "--- PASS: TestCategoryServiceCreate",
-	} {
+	}
+	if identity {
+		wants = append(wants, "--- PASS: TestProductRepositoryIsolatesTenants")
+	}
+	for _, want := range wants {
 		if !strings.Contains(string(output), want) {
 			t.Fatalf("generated tests did not run: missing %q\n%s", want, output)
 		}
 	}
-	if adapter == "postgres" && !strings.Contains(string(output), "--- PASS: TestProductRowLevelSecurity") {
+	// Row-level security guards organizations; plain tables have none.
+	if adapter == "postgres" && identity && !strings.Contains(string(output), "--- PASS: TestProductRowLevelSecurity") {
 		t.Fatalf("the row-level security test did not run\n%s", output)
 	}
 	if strings.Contains(string(output), "--- SKIP") {

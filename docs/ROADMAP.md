@@ -176,6 +176,12 @@ Implemented foundation:
   one-time backup codes, factor rotation/disable, credential-version-bound
   session creation, and bearer/browser completion flows
   ([ADR 0014](adr/0014-totp-mfa.md), [ADR 0015](adr/0015-mfa-factor-lifecycle.md)).
+- Forge identity on MySQL, MariaDB and SQLite (`auth/mysql`, `auth/sqlite`)
+  with the same interfaces as `auth/postgres` and one contract suite
+  (`auth/authtest`) run on all three; authentication (`forge new --auth`,
+  `forge generate authentication`) and organizations (`--tenants`,
+  `forge generate tenancy`) opt-in, SQLite by default
+  ([ADR 0050](adr/0050-opt-in-authentication-and-organizations.md)).
 - PostgreSQL identity wiring in generated applications, including migrations,
   login/logout/session routes, optional MFA challenge completion, and the
   `FORGE_AUTH_MFA_KEY` configuration.
@@ -349,7 +355,8 @@ otherwise):
   validation, persistence, HTTP and tests for PostgreSQL, MySQL, MariaDB and
   SQLite; no empty layers or public CRUD by default
   ([ADR 0021](adr/0021-resource-generator.md)).
-- [x] Explicit resource scope: `--tenant-scoped` versus `--global`, with the
+- [x] Explicit resource scope in applications with organizations:
+  `--org-scoped` (alias `--tenant-scoped`) versus `--global`, with the
   correct database-specific isolation pattern (forced RLS on PostgreSQL,
   statement predicates elsewhere) and cross-tenant tests, including a
   non-superuser RLS test on PostgreSQL.

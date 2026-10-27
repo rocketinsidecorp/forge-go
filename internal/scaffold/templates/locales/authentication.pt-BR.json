@@ -20,6 +20,7 @@
       "sign_out": "Sair",
       "signed_in": "Você entrou.",
       "signed_out": "Você saiu.",
+      "invalid_credentials_email": "Esse e-mail e essa senha não correspondem a uma conta.",
       "invalid_credentials": "Essa organização, e-mail e senha não correspondem a uma conta.",
       "sign_in_to_continue": "Entre para continuar.",
       "expired": "Sua entrada expirou. Entre novamente.",
@@ -28,6 +29,7 @@
     "passwords": {
       "new": {
         "title": "Esqueceu sua senha?",
+        "instructions_email": "Informe seu e-mail. Se corresponder a uma conta, enviaremos um link para escolher uma nova senha.",
         "instructions": "Informe sua organização e seu e-mail. Se corresponderem a uma conta, enviaremos um link para escolher uma nova senha.",
         "organization": "Organização",
         "email": "E-mail",

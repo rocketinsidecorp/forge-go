@@ -327,9 +327,12 @@ func usage(output io.Writer) {
 
 commands:
   new NAME            generate an application with Dockerfile, compose and CI;
-                      --database postgresql (default), mysql, mariadb, sqlite or none;
+                      --database sqlite (default), postgresql, mysql, mariadb or none;
+                      --auth adds sign-in pages, accounts and forge setup;
+                      --tenants adds organizations (implies --auth; PostgreSQL
+                      unless --database is given);
                       --locale en (default), es or pt-BR;
-                      --api-auth also mounts the JSON sign-in APIs (PostgreSQL);
+                      --api-auth also mounts the JSON sign-in APIs (implies --auth);
                       --js keeps the front end in plain JavaScript (default: TypeScript);
                       --api generates a JSON-only application (no views)
   dev [NAME] [--no-reload] [--poll-interval D]
@@ -347,9 +350,10 @@ commands:
                       schema:load, console (see README)
   migrate [status]    apply pending migrations, or list them
   rollback [-steps N] revert the latest application migrations
-  setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]
-                      create the first tenant and its owner account (PostgreSQL;
-                      the password is prompted for, never an argument)
+  setup --email EMAIL [--password-stdin]
+  setup --org SLUG --email EMAIL [--org-name NAME] [--password-stdin]
+                      create the owner account (and, with --tenants, the first
+                      organization); the password is prompted for, never an argument
   seed                load db.Seed's data in one transaction
   generate migration NAME [field:type...] [--dry-run]
                       create or preview db/migrations/<timestamp>_NAME.{up,down}.sql;
@@ -362,7 +366,7 @@ commands:
   generate job NAME [field:type...] --queue [--dry-run]
                       a typed handler for the persistent job queue, with its
                       enqueue function and tests
-  generate model NAME field:type... (--tenant-scoped | --global) [--plural P] [--dry-run]
+  generate model NAME field:type... [--org-scoped | --global] [--plural P] [--dry-run]
                       a migration, domain, application and persistence layers
                       with tests; no HTTP layer
   generate controller NAME ACTION... [--api] [--public] [--dry-run]
@@ -371,15 +375,18 @@ commands:
   generate mailer NAME METHOD[:field,field]... [--dry-run]
                       a mailer with typed methods, text and HTML templates,
                       previews and tests
-  generate resource NAME field:type... (--tenant-scoped | --global) [--plural P] [--dry-run]
+  generate resource NAME field:type... [--org-scoped | --global] [--plural P] [--dry-run]
                       create or preview a migration, domain, application,
                       persistence and HTTP layers with tests; never public
-  generate scaffold NAME field:type... (--tenant-scoped | --global) [--plural P] [--dry-run]
+  generate scaffold NAME field:type... [--org-scoped | --global] [--plural P] [--dry-run]
                       a resource plus HTML CRUD pages: forms, 422 errors,
                       flash notices, CSRF; never public
   generate authentication [--api-auth] [--dry-run]
-                      add the sign-in, sign-out, two-factor and password-reset
-                      pages forge new generates (PostgreSQL)
+                      add what forge new --auth generates (sign-in pages, accounts,
+                      forge setup) to an application created without it, wired
+  generate tenancy [--org SLUG] [--dry-run]
+                      convert an --auth application to organizations: org_id on
+                      every generated table, filled with the existing organization
   destroy GENERATOR ARGUMENTS... [--force] [--migrations] [--dry-run]
                       remove what a generator created, unless it was edited
                       (d is short for destroy)

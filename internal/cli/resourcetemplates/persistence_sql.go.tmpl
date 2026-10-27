@@ -65,7 +65,7 @@ func (r *[[.Title]]Repository) Create(ctx context.Context, entity domain.[[.Titl
 	if err != nil {
 		return domain.[[.Title]]{}, err
 	}
-	tenantID := tenant.ID
+	orgID := tenant.ID
 [[- end]]
 	if _, err := r.db.ExecContext(ctx, insert[[.Title]], [[.SQL.Insert.ArgList]]); err != nil {
 		return domain.[[.Title]]{}, [[.Database]].Translate(err)
@@ -80,7 +80,7 @@ func (r *[[.Title]]Repository) Get(ctx context.Context, id uuid.UUID) (domain.[[
 	if err != nil {
 		return domain.[[.Title]]{}, err
 	}
-	tenantID := tenant.ID
+	orgID := tenant.ID
 [[- end]]
 	entity, err := scan[[.Title]](r.db.QueryRowContext(ctx, select[[.Title]], [[.SQL.Select.ArgList]]))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -100,7 +100,7 @@ func (r *[[.Title]]Repository) List(ctx context.Context, after uuid.UUID, limit 
 	if err != nil {
 		return nil, err
 	}
-	tenantID := tenant.ID
+	orgID := tenant.ID
 	var rows *sql.Rows
 [[- else]]
 	var rows *sql.Rows
@@ -138,7 +138,7 @@ func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Titl
 	if err != nil {
 		return domain.[[.Title]]{}, err
 	}
-	tenantID := tenant.ID
+	orgID := tenant.ID
 [[- end]]
 	result, err := r.db.ExecContext(ctx, update[[.Title]], [[.SQL.Update.ArgList]])
 	if err != nil {
@@ -149,7 +149,7 @@ func (r *[[.Title]]Repository) Update(ctx context.Context, entity domain.[[.Titl
 		return domain.[[.Title]]{}, [[.Database]].Translate(err)
 	}
 	if affected != 1 {
-		return domain.[[.Title]]{}, r.explainMissedWrite(ctx, [[if .Tenant]]tenantID, [[end]]entity.ID)
+		return domain.[[.Title]]{}, r.explainMissedWrite(ctx, [[if .Tenant]]orgID, [[end]]entity.ID)
 	}
 	// The guarded UPDATE advanced the version by exactly one.
 	entity.Version++
@@ -164,7 +164,7 @@ func (r *[[.Title]]Repository) Delete(ctx context.Context, id uuid.UUID, version
 	if err != nil {
 		return err
 	}
-	tenantID := tenant.ID
+	orgID := tenant.ID
 [[- end]]
 	result, err := r.db.ExecContext(ctx, delete[[.Title]], [[.SQL.Delete.ArgList]])
 	if err != nil {
@@ -175,14 +175,14 @@ func (r *[[.Title]]Repository) Delete(ctx context.Context, id uuid.UUID, version
 		return [[.Database]].Translate(err)
 	}
 	if affected != 1 {
-		return r.explainMissedWrite(ctx, [[if .Tenant]]tenantID, [[end]]id)
+		return r.explainMissedWrite(ctx, [[if .Tenant]]orgID, [[end]]id)
 	}
 	return nil
 }
 
 // explainMissedWrite tells a missing [[.Name]] from a version mismatch after a
 // guarded UPDATE or DELETE matched no row.
-func (r *[[.Title]]Repository) explainMissedWrite(ctx context.Context, [[if .Tenant]]tenantID uuid.UUID, [[end]]id uuid.UUID) error {
+func (r *[[.Title]]Repository) explainMissedWrite(ctx context.Context, [[if .Tenant]]orgID uuid.UUID, [[end]]id uuid.UUID) error {
 	var exists bool
 	if err := r.db.QueryRowContext(ctx, [[.Name]]Exists, [[.SQL.Exists.ArgList]]).Scan(&exists); err != nil {
 		return [[.Database]].Translate(err)

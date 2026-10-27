@@ -571,7 +571,7 @@ after forge-go reaches 100% (decision D37, see [RAILS_PARITY.md](RAILS_PARITY.md
 
 ## Resource generator
 
-`forge generate resource NAME field:type... (--tenant-scoped | --global)`
+`forge generate resource NAME field:type... [--org-scoped | --global]`
 ([ADR 0021](adr/0021-resource-generator.md)) adds one resource to the layers
 above without editing existing files. It reads the database adapter from
 `FORGE_DATABASE_URL` exactly as `forge inspect` does and writes:
@@ -670,6 +670,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0047](adr/0047-batch-claims-notify-and-recorded-ticks.md) | Batch claims for the queue and the outbox, PostgreSQL `LISTEN/NOTIFY` wake-up, scheduler ticks recorded once in the database |
 | [0048](adr/0048-argon2id-password-hashing.md) | Argon2id password hashing with Forge-Rust's parameters, PBKDF2 hashes upgraded at sign-in, a bound on concurrent hashing, `forge_pbkdf2` for FIPS builds; admits `x/crypto/argon2` to the core |
 | [0049](adr/0049-typescript-by-default.md) | TypeScript front end by default, compiled by `forge` with esbuild (no Node), `--js` to opt out; esbuild linked only by the CLI |
+| [0050](adr/0050-opt-in-authentication-and-organizations.md) | SQLite by default; authentication (`--auth`) and organizations (`--tenants`, PostgreSQL by default) opt-in; Forge identity on MySQL, MariaDB and SQLite; `forge generate authentication` and `tenancy` |
 
 ADR numbers 0027 and 0028 are unassigned: the rate limiting, cache and file
 storage ADRs were drafted as 0026-0028, 0026 turned out to be taken by other

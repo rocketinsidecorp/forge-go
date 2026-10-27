@@ -216,7 +216,7 @@ func TestSetupCommandReadsThePasswordSafely(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(stdout+stderr, ownerPassword) || !strings.Contains(stdout, `tenant "acme"`) || !strings.Contains(stdout, "/session/new") {
+	if strings.Contains(stdout+stderr, ownerPassword) || !strings.Contains(stdout, `sign-in slug "acme"`) || !strings.Contains(stdout, "/session/new") {
 		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
 	}
 	repository, err := authpostgres.New(db)
@@ -234,5 +234,49 @@ func TestSetupCommandReadsThePasswordSafely(t *testing.T) {
 	_, _, err = run(valid, nil, map[string]string{authpostgres.SetupPasswordVariable: ownerPassword + "-other"})
 	if !errors.Is(err, authpostgres.ErrAlreadyProvisioned) {
 		t.Fatalf("second setup: %v", err)
+	}
+}
+
+// In an application without organizations (forge new --auth) setup takes
+// --email only, refuses --org, and creates the hidden default organization
+// a sign-in without one resolves to.
+func TestSingleOrganizationSetupCreatesTheDefaultOrganization(t *testing.T) {
+	db, database := postgrestest.NewWithConfig(t)
+	dbtest.Migrate(t, authpostgres.Migrations(), func(loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
+		return postgres.NewMigrator(database, loaded, logger)
+	})
+	cfg := config.Default()
+	cfg.Database = database
+	command := authpostgres.SetupCommand(nil, authpostgres.SetupOrganizations(false))
+	run := func(args ...string) (string, error) {
+		var stdout bytes.Buffer
+		err := command.Run(context.Background(), forge.CommandEnv{
+			Config: cfg, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Stdout: &stdout, Stderr: io.Discard, Stdin: strings.NewReader(""),
+			LookupEnv: func(key string) (string, bool) {
+				return ownerPassword, key == authpostgres.SetupPasswordVariable
+			},
+		}, args)
+		return stdout.String(), err
+	}
+	if _, err := run("--org", "acme", "--email", "owner@example.com"); !errors.Is(err, forge.ErrUsage) || !strings.Contains(err.Error(), "takes no --org") {
+		t.Fatalf("--org without organizations: %v", err)
+	}
+	stdout, err := run("--email", "owner@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout, "slug") || !strings.Contains(stdout, "Sign in at /session/new.") {
+		t.Fatalf("stdout=%q", stdout)
+	}
+	repository, err := authpostgres.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := auth.NewLoginService(repository, repository, auth.WithSingleTenant(auth.DefaultTenantSlug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := login.Login(context.Background(), auth.LoginInput{Email: "owner@example.com", Password: ownerPassword}); err != nil {
+		t.Fatalf("the owner cannot sign in without an organization: %v", err)
 	}
 }

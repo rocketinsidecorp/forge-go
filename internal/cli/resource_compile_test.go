@@ -5,11 +5,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// plainApplication, among matrixApplicationWith's flags, asks for an
+// application without Forge identity (forge new with no --auth); it is not
+// passed to forge new.
+const plainApplication = "<plain>"
 
 // golangciLint refuses to run twice at once in the same cache.
 var golangciLint sync.Mutex
@@ -97,7 +103,17 @@ func matrixApplicationModule(t *testing.T, module, database string, newFlags []s
 	dir := filepath.Join(t.TempDir(), "mx")
 	var stdout, stderr bytes.Buffer
 	args := append(append([]string{"new", "mx"}, moduleFlags...), "--dir", dir, "--database", database, "--skip-deps")
-	args = append(args, newFlags...)
+	// The matrix generates organization-scoped and global resources, so a
+	// database application has organizations (forge new --tenants) unless
+	// the test chose its mode: --api, --auth, --tenants, or plainApplication
+	// for one without Forge identity.
+	plain := slices.Contains(newFlags, plainApplication)
+	args = append(args, slices.DeleteFunc(slices.Clone(newFlags), func(flag string) bool { return flag == plainApplication })...)
+	if database != "none" && !plain && !slices.ContainsFunc(newFlags, func(flag string) bool {
+		return flag == "--api" || flag == "--auth" || flag == "--tenants"
+	}) {
+		args = append(args, "--tenants")
+	}
 	if code := Run(args, &stdout, &stderr); code != 0 {
 		t.Fatalf("forge new: code=%d %s %s", code, stdout.String(), stderr.String())
 	}

@@ -8,6 +8,25 @@ The authentication middleware installs the tenant returned by the current
 session resolver. Applications must never resolve a tenant from an unsigned
 client header.
 
+## Organizations are opt-in
+
+Generated applications show tenants to their users as organizations, and
+only when created with `forge new --tenants` (PostgreSQL unless `-d` is given;
+[ADR 0050](adr/0050-opt-in-authentication-and-organizations.md)): generated
+tables are `--org-scoped` (an `org_id` column) or `--global`, sign-in asks
+for the organization, and `forge setup --org SLUG` creates the first one.
+The framework keeps its own names: `TenantContext`, `forge_tenants`,
+`forge.tenant_id`; generated SQL binds `org_id` to the tenant.
+
+An application created with `--auth` alone has plain tables and one
+organization. Identity still runs the same tenant-scoped code: `forge setup
+--email` creates a tenant with the hidden slug `default`
+(`auth.DefaultTenantSlug`), and the login and recovery services built with
+`auth.WithSingleTenant` and `auth.WithRecoverySingleTenant` always use it,
+ignoring any tenant a client posts. That is a sign-in rule only: a session still resolves to
+its membership's tenant, and nothing installs a tenant without one.
+`forge generate tenancy` converts such an application ([GENERATORS.md](GENERATORS.md#authentication-and-organizations)).
+
 ## PostgreSQL row-level security
 
 `postgres.DB.InTenantTx` and `InTenantTxWith` require a tenant in the context
@@ -32,9 +51,9 @@ USING (tenant_id = NULLIF(current_setting('forge.tenant_id', true), '')::uuid)
 WITH CHECK (tenant_id = NULLIF(current_setting('forge.tenant_id', true), '')::uuid);
 ```
 
-This is the predicate `forge generate resource --tenant-scoped` emits. It
-compares `uuid` values, so the `(tenant_id, id)` index stays usable (a
-`tenant_id::text` cast would defeat it), and `NULLIF` turns an unset or empty
+This is the predicate `forge generate resource --org-scoped` emits, on its
+`org_id` column under a policy named `<table>_org`. It compares `uuid` values,
+so the `(org_id, id)` index stays usable (a `::text` cast would defeat it), and `NULLIF` turns an unset or empty
 setting into `NULL`, which matches no row: the policy fails closed.
 
 The serving database role must not be a superuser or have `BYPASSRLS`, because

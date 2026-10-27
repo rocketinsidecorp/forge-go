@@ -68,8 +68,10 @@ func TestGeneratedJobsConfigureExampleCompiles(t *testing.T) {
 			if strings.Contains(main, "JobsConfigure") {
 				t.Error("main.go calls JobsConfigure besides Configure")
 			}
-			if !strings.Contains(main, "jobs"+adapter+".Migrations()") {
-				t.Error("main.go does not migrate forge_job_schedules, which the tick claimer needs")
+			// main.go runs bootstrap.Commands(), which migrate
+			// db.MigrationSets (db/migration_sets_gen.go).
+			if sets := readFile(t, filepath.Join(dir, "db", "migration_sets_gen.go")); !strings.Contains(main, "bootstrap.Commands()") || !strings.Contains(sets, "jobs"+adapter+".Migrations()") {
+				t.Error("the binary does not migrate forge_job_schedules, which the tick claimer needs")
 			}
 			runGo(t, dir, "go", "vet", "./app/bootstrap/")
 

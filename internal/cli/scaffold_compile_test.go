@@ -267,14 +267,13 @@ func TestGeneratedScaffoldBuildsWiresAndPasses(t *testing.T) {
 				request.Scaffold = true
 				specs = append(specs, resourceSpec{
 					resourceRequest: request, Module: "example.com/mx", Database: database.adapter,
-					Identity: database.adapter == "postgres", BrowserPipeline: true, ViewRenderer: database.adapter == "postgres",
+					Identity: true, Organizations: true, BrowserPipeline: true, ViewRenderer: true,
 				})
 			}
 			wireResources(t, dir, specs)
-			mfa := ""
-			if database.adapter == "postgres" {
-				mfa = "\tcfg.Auth.MFAKey = config.NewSecret(\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\")\n"
-			}
+			// Every database application here has Forge identity, which needs
+			// the MFA key.
+			mfa := "\tcfg.Auth.MFAKey = config.NewSecret(\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\")\n"
 			writeFile(t, filepath.Join(dir, "app", "bootstrap", "scaffold_wired_test.go"), fmt.Sprintf(scaffoldWiredTest, database.adapter, database.testPackage, mfa))
 			if database.adapter == "postgres" {
 				writeFile(t, filepath.Join(dir, "app", "bootstrap", "scaffold_sign_in_test.go"), scaffoldSignInFlowTest)
@@ -306,7 +305,7 @@ func TestGeneratedScaffoldBuildsWiresAndPasses(t *testing.T) {
 					t.Fatalf("the wired application test did not run, or an unexpected test was skipped\n%s", output)
 				}
 				if database.adapter == "postgres" {
-					for _, want := range []string{"--- PASS: TestOwnerSignsInAndReachesTheScaffoldPages", "--- PASS: TestPagesAgainstPostgres", "--- PASS: TestFailedSignInIsUniform", "--- PASS: TestMFAPagesAgainstPostgres", "--- PASS: TestMFASettingsNeedASignedInAccount"} {
+					for _, want := range []string{"--- PASS: TestOwnerSignsInAndReachesTheScaffoldPages", "--- PASS: TestPagesAgainstTheIdentityStore", "--- PASS: TestFailedSignInIsUniform", "--- PASS: TestMFAPagesAgainstTheIdentityStore", "--- PASS: TestMFASettingsNeedASignedInAccount"} {
 						if !strings.Contains(string(output), want) {
 							t.Fatalf("the sign-in flow did not run: missing %q\n%s", want, output)
 						}

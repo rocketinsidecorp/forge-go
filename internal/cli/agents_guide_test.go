@@ -21,21 +21,29 @@ var (
 // was generated, and a feature is mentioned only when the application has it.
 func TestGeneratedAgentsGuideMatchesTheApplication(t *testing.T) {
 	for _, c := range []struct {
-		name     string
-		options  scaffold.Options
-		database bool // migrations, tenant scoping
-		browser  bool // views and CSRF
-		identity bool // sign-in pages (PostgreSQL, full-stack)
-		roles    bool // the app_runtime and app_migrator roles (PostgreSQL, also API-only)
+		name          string
+		options       scaffold.Options
+		database      bool // migrations
+		browser       bool // views and CSRF
+		identity      bool // sign-in pages and setup (--auth, full-stack)
+		organizations bool // org-scoped tables (--tenants)
+		roles         bool // the app_runtime and app_migrator roles (PostgreSQL, also API-only)
 	}{
-		{"postgresql", scaffold.Options{Database: "postgresql"}, true, true, true, true},
-		{"sqlite", scaffold.Options{Database: "sqlite"}, true, true, false, false},
-		{"mysql", scaffold.Options{Database: "mysql"}, true, true, false, false},
-		{"sqlite js", scaffold.Options{Database: "sqlite", JS: true}, true, true, false, false},
-		{"api postgresql", scaffold.Options{Database: "postgresql", API: true}, true, false, false, true},
-		{"api sqlite", scaffold.Options{Database: "sqlite", API: true}, true, false, false, false},
-		{"no database", scaffold.Options{}, false, true, false, false},
-		{"api no database", scaffold.Options{API: true}, false, false, false, false},
+		{"default (sqlite, no auth)", scaffold.Options{Database: "sqlite"}, true, true, false, false, false},
+		{"sqlite --auth", scaffold.Options{Database: "sqlite", Auth: true}, true, true, true, false, false},
+		{"mysql --auth", scaffold.Options{Database: "mysql", Auth: true}, true, true, true, false, false},
+		{"mysql", scaffold.Options{Database: "mysql"}, true, true, false, false, false},
+		{"postgresql", scaffold.Options{Database: "postgresql"}, true, true, false, false, true},
+		{"postgresql --auth", scaffold.Options{Database: "postgresql", Auth: true}, true, true, true, false, true},
+		{"--tenants (postgresql)", scaffold.Options{Database: "postgresql", Tenants: true}, true, true, true, true, true},
+		{"sqlite --tenants", scaffold.Options{Database: "sqlite", Tenants: true}, true, true, true, true, false},
+		{"--api-auth", scaffold.Options{Database: "sqlite", APIAuth: true}, true, true, true, false, false},
+		{"sqlite --js", scaffold.Options{Database: "sqlite", JS: true}, true, true, false, false, false},
+		{"--auth --js", scaffold.Options{Database: "sqlite", Auth: true, JS: true}, true, true, true, false, false},
+		{"api postgresql", scaffold.Options{Database: "postgresql", API: true}, true, false, false, false, true},
+		{"api sqlite", scaffold.Options{Database: "sqlite", API: true}, true, false, false, false, false},
+		{"no database", scaffold.Options{}, false, true, false, false, false},
+		{"api no database", scaffold.Options{API: true}, false, false, false, false, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			options := c.options
@@ -79,18 +87,26 @@ func TestGeneratedAgentsGuideMatchesTheApplication(t *testing.T) {
 				text    string
 				present bool
 			}{
-				"migrations":      {"forge migrate", c.database},
-				"tenant scoping":  {"tenancy.Require", c.database},
-				"model generator": {"scaffold|resource|model", c.database && c.browser},
-				"CSRF":            {"csrfField", c.browser},
-				"view generator":  {"|view NAME", c.browser},
-				"sign-in":         {"Sign-in, sign-out", c.identity},
-				"runtime roles":   {"app_runtime", c.roles},
-				"migrator role":   {"app_migrator", c.roles},
-				"test files":      {"`_test.go` files too", true},
-				"TypeScript":      {"never edit `dist` by hand", c.browser && !c.options.JS},
-				"tsc":             {"tsc --noEmit", c.browser && !c.options.JS},
-				"plain JS":        {"plain JavaScript", c.browser && c.options.JS},
+				"migrations":       {"forge migrate", c.database},
+				"org scoping":      {"tenancy.Require", c.organizations},
+				"org scope flag":   {"`--org-scoped` (rows belong", c.organizations},
+				"tenant naming":    {"tenant_id", false},
+				"old scope flag":   {"--tenant-scoped", false},
+				"plain tables":     {"Generated tables are plain tables", c.database && !c.identity},
+				"one org":          {"This application has one organization", c.identity && !c.organizations},
+				"setup":            {"forge setup", c.identity},
+				"setup --org":      {"forge setup --org", c.organizations},
+				"generate tenancy": {"forge generate\ntenancy", c.identity && !c.organizations},
+				"model generator":  {"scaffold|resource|model", c.database && c.browser},
+				"CSRF":             {"csrfField", c.browser},
+				"view generator":   {"|view NAME", c.browser},
+				"sign-in":          {"Sign-in, sign-out", c.identity},
+				"runtime roles":    {"app_runtime", c.roles},
+				"migrator role":    {"app_migrator", c.roles},
+				"test files":       {"`_test.go` files too", true},
+				"TypeScript":       {"never edit `dist` by hand", c.browser && !c.options.JS},
+				"tsc":              {"tsc --noEmit", c.browser && !c.options.JS},
+				"plain JS":         {"plain JavaScript", c.browser && c.options.JS},
 			} {
 				if got := strings.Contains(guide, want.text); got != want.present {
 					t.Errorf("AGENTS.md mentions %s (%q) = %v, want %v", feature, want.text, got, want.present)

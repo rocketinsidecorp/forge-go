@@ -409,16 +409,16 @@ delete button is a small form:
 
 ## Authentication pages
 
-`forge new -d postgresql` generates the sign-in, sign-out, two-factor and
-password-reset pages and wires them in `bootstrap.Configure`; in an older
-PostgreSQL application, `forge generate authentication` adds the same files
-and prints the wiring (other databases are refused: Forge persists identities
-only in PostgreSQL). Create the first account with `forge setup`, then sign
-in at `/session/new`:
+`forge new --auth` (or `--tenants`) generates the sign-in, sign-out,
+two-factor and password-reset pages and mounts them through `identityRoutes`
+(`app/bootstrap/identity.go`), on every database; in an application created
+without it, `forge generate authentication` adds the same files and wires
+them. Create the first account with `forge setup`, then sign in at
+`/session/new` (the organization field appears only with `--tenants`):
 
 ```sh
 forge migrate
-forge setup --tenant acme --email you@example.com
+forge setup --email you@example.com      # with organizations: forge setup --org acme --email you@example.com
 forge dev     # http://localhost:8080/session/new
 ```
 
@@ -810,7 +810,7 @@ boundary.
 ### Live updates in the scaffold
 
 ```sh
-forge generate scaffold post title:string body:text --tenant-scoped --broadcast
+forge generate scaffold post title:string body:text --broadcast   # --org-scoped with organizations
 ```
 
 `--broadcast` is opt-in: it opens a long-lived endpoint and needs a signing

@@ -76,19 +76,24 @@ sure that directory is on your `PATH`.
 ## 3. Create the application
 
 ```sh
-forge new blog
+forge new blog --tenants
 cd blog
 ```
 
 `forge new` writes the application, runs `go mod tidy` and prints the next
-steps. Choose another database with `-d mysql`, `-d mariadb` or `-d sqlite`,
-and the default language of the pages with `--locale en|es|pt-BR`. The front
-end is TypeScript (compiled by `forge` itself, no Node needed); `--js` keeps
-plain JavaScript.
+steps. This guide builds the full-featured kind: `--tenants` gives it sign-in
+(`--auth`) and organizations, and selects PostgreSQL. A plain `forge new blog`
+is a SQLite application without sign-in, and `forge new blog --auth` one with
+sign-in but no organizations (below). Choose another database with
+`-d mysql`, `-d mariadb` or `-d sqlite`, and the default language of the pages
+with `--locale en|es|pt-BR`. The front end is TypeScript (compiled by `forge`
+itself, no Node needed); `--js` keeps plain JavaScript.
 
 ```text
 blog/
-  cmd/blog/main.go            the binary: forge.Main(...) plus migrate, seed and setup commands
+  cmd/blog/main.go            the binary: forge.Main(bootstrap.Configure, bootstrap.Commands()...)
+  app/bootstrap/app_gen.go    generator-owned: Organizations and the migrate/seed/setup commands
+  db/migration_sets_gen.go    generator-owned: the migration sets (identity, job schedules, db/migrations)
   app/bootstrap/              the composition root: opens the database, wires routes (yours to edit)
   app/adapters/htmlauth/      sign-in, sign-out, two-factor and password-reset pages
   app/views/                  layout, flash partial and the sign-in pages (Go html/template)
@@ -165,18 +170,18 @@ your own server one user can do both during development. In production keep
 them apart ([Database roles](DATABASE.md#database-roles-postgresql)): in
 staging and production the application refuses to start as a superuser.
 
-Then create the first organization, tenant and owner account. The command
-prompts twice for the password (12 or more characters) and never takes it as an
+Then create the first organization and owner account. The command prompts
+twice for the password (12 or more characters) and never takes it as an
 argument:
 
 ```sh
-forge setup --tenant acme --email you@example.com --organization "Acme Inc"
+forge setup --org acme --email you@example.com --org-name "Acme Inc"
 ```
 
 ```text
-Created organization "Acme Inc" with tenant "acme".
+Created organization "Acme Inc" with sign-in slug "acme".
 Created owner you@example.com with the "owner" role (0 permissions).
-Sign in at /session/new with tenant "acme".
+Sign in at /session/new with organization "acme".
 ```
 
 Run the application:
@@ -212,26 +217,24 @@ their own databases on the server named by `FORGE_TEST_DATABASE_URL`:
 forge test
 ```
 
-### SQLite instead of PostgreSQL
+### SQLite, without organizations
 
 ```sh
-forge new blog -d sqlite
+forge new blog --auth   # SQLite (the default) with sign-in
 cd blog
 forge db prepare        # creates storage/development.db
+forge setup --email you@example.com
 forge dev
 ```
 
-Generators, tests, views, translations, OpenAPI and `forge destroy` work the
-same. What SQLite does not have is Forge identity: no `forge setup`, no sign-in
-pages (`forge generate authentication` is refused) and nothing that supplies a
-tenant, so scaffold with `--global` instead of `--tenant-scoped`. A scaffold's
-pages and its `--broadcast` stream refuse everyone until you write the guard
-the printed wiring asks for; its placeholder is deny-all. For local
-experiments only, replace the body of that `protect` function with
-`return next, nil` (every request passes) and pages such as `/posts` work;
-never deploy that.
-Sections 5 (without sign-in), 8, 11, 12 and 15 apply; the rest of this guide was run
-on PostgreSQL.
+Generators, tests, views, translations, OpenAPI, sign-in and `forge destroy`
+work the same. Without organizations, sign-in asks for the email and password
+only, `forge setup` takes no `--org`, and generated tables are plain tables:
+drop `--org-scoped` from the commands below. `forge generate tenancy --org
+acme` adds organizations later. Without `--auth` there is no sign-in: a
+scaffold's pages refuse everyone until you write their guard (or generate them
+with `--public`), and `forge generate authentication` adds Forge identity.
+The rest of this guide was run on PostgreSQL with organizations.
 
 ### An API-only application
 
@@ -255,8 +258,8 @@ Instead of section 5's scaffold, generate the JSON layer alone and paste the
 printed wiring into `Configure`, after the `routes(ctx, app)` call:
 
 ```sh
-forge generate resource post title:string body:text --global   # /v1/posts
-forge generate scaffold post title:string --global             # refused: no pages in an --api application
+forge generate resource post title:string body:text   # /v1/posts
+forge generate scaffold post title:string             # refused: no pages in an --api application
 ```
 
 `forge generate view`, `scaffold`, `authentication` and `controller` without
@@ -269,7 +272,7 @@ cookie: nothing checks CSRF here).
 ## 5. Scaffold posts
 
 ```sh
-forge generate scaffold post title:string body:text --tenant-scoped --broadcast
+forge generate scaffold post title:string body:text --org-scoped --broadcast
 ```
 
 ```text
@@ -290,11 +293,12 @@ PostgreSQL repository, a JSON API (`/v1/posts`), HTML pages (`/posts`), forms
 with CSRF tokens, a translation file and tests for every layer.
 
 - `post` is singular `snake_case`; fields are `name:type` with `type` one of
-  `string`, `text`, `int`, `bool`, `time`, `uuid`; a trailing `?` (quoted:
+  `string`, `text`, `int` (or `integer`), `bool` (or `boolean`), `time` (or
+  `timestamp`), `uuid`; a trailing `?` (quoted:
   `'subtitle:string?'`) makes a field optional.
-- `--tenant-scoped` binds every query to the signed-in organization and, on
-  PostgreSQL, enforces it again with row-level security. `--global` is for
-  data every tenant shares.
+- `--org-scoped` binds every query to the signed-in organization (an `org_id`
+  column) and, on PostgreSQL, enforces it again with row-level security.
+  `--global` is for data every organization shares.
 - `--broadcast` adds live updates over Server-Sent Events (section 5.2).
 - Add `--dry-run` to any generator to list its files without writing them.
 
@@ -466,7 +470,7 @@ A **model** is the data and its rules without any HTTP; a **controller** is
 read-only pages without any data. Generate the model first:
 
 ```sh
-forge generate model comment post_id:uuid body:text --tenant-scoped
+forge generate model comment post_id:uuid body:text --org-scoped
 forge migrate
 forge test
 ```
@@ -537,8 +541,9 @@ See [GENERATORS.md](GENERATORS.md).
 
 ## 7. Authentication
 
-You already have it: `forge new` on PostgreSQL generates the sign-in, sign-out,
-two-factor and password-reset pages, and `forge setup` created the owner.
+You already have it: `forge new --tenants` (or `--auth`) generates the sign-in,
+sign-out, two-factor and password-reset pages, and `forge setup` created the
+owner.
 
 | URL | Page |
 | --- | ---- |
@@ -579,13 +584,13 @@ forge generate authentication --dry-run
 forge: refusing to overwrite app/adapters/htmlauth/htmlauth.go; nothing was written
 ```
 
-`forge setup` refuses once a tenant exists. The same command exists in the
+`forge setup` refuses once an organization exists. The same command exists in the
 application binary for containers and production, with the password piped
 (never an argument). After `forge build`, from the application directory:
 
 ```sh
 printf 'Owner password: '; read -rs OWNER_PASSWORD; echo   # bash or zsh
-printf '%s\n' "$OWNER_PASSWORD" | bin/blog setup --tenant acme --email you@example.com --password-stdin
+printf '%s\n' "$OWNER_PASSWORD" | bin/blog setup --org acme --email you@example.com --password-stdin
 unset OWNER_PASSWORD
 ```
 
@@ -1045,7 +1050,7 @@ job that was never wired:
 
 ```sh
 forge rollback                         # reverts the newest migration: create_comments
-forge destroy model comment post_id:uuid body:text --tenant-scoped --migrations
+forge destroy model comment post_id:uuid body:text --org-scoped --migrations
 forge destroy job send_welcome user_id:uuid --queue
 forge test
 ```

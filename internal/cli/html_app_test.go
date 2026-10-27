@@ -66,10 +66,10 @@ func TestGeneratedAPIAuthApplicationBuildsAndPasses(t *testing.T) {
 	}
 	t.Parallel()
 	dir := matrixApplicationWith(t, "postgresql", []string{"--api-auth"}, "resource", nil)
-	bootstrap := readFile(t, filepath.Join(dir, "app", "bootstrap", "bootstrap.go"))
+	identity := readFile(t, filepath.Join(dir, "app", "bootstrap", "identity.go"))
 	for _, want := range []string{"func apiAuthRoutes(", `"POST /auth/login"`, `"POST /auth/cookie/login"`, `"GET /v1/auth/session"`, "apiAuthRoutes(app, login, mfaService, recoveryService, repository, middleware)"} {
-		if !strings.Contains(bootstrap, want) {
-			t.Fatalf("bootstrap.go with --api-auth lacks %q", want)
+		if !strings.Contains(identity, want) {
+			t.Fatalf("identity.go with --api-auth lacks %q", want)
 		}
 	}
 	goInMatrix(t, dir, "vet", "./...")
@@ -88,7 +88,7 @@ func TestGeneratedAPIAuthApplicationBuildsAndPasses(t *testing.T) {
 		t.Fatalf("go test: %v\n%s", err, output)
 	}
 	if databaseAvailable("postgresql") {
-		for _, want := range []string{"--- PASS: TestConfigureConnectsToDatabase", "--- PASS: TestPagesAgainstPostgres"} {
+		for _, want := range []string{"--- PASS: TestConfigureConnectsToDatabase", "--- PASS: TestPagesAgainstTheIdentityStore"} {
 			if !strings.Contains(string(output), want) {
 				t.Fatalf("generated test did not pass: missing %q\n%s", want, output)
 			}
@@ -106,8 +106,8 @@ func TestGeneratedAPIAuthApplicationBuildsAndPasses(t *testing.T) {
 
 // TestPrintedAPIAuthWiringCompiles pastes the JSON API wiring that
 // `forge generate authentication --api-auth` prints for a default
-// application (the code lines, after htmlauth.Register) into its
-// bootstrap.go, and requires the application to vet and build.
+// application with sign-in pages (the code lines, after htmlauth.Register)
+// into its identity.go, and requires the application to vet and build.
 func TestPrintedAPIAuthWiringCompiles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the go toolchain on a generated project")
@@ -124,9 +124,9 @@ func TestPrintedAPIAuthWiringCompiles(t *testing.T) {
 			code.WriteString(line + "\n")
 		}
 	}
-	path := filepath.Join(dir, "app", "bootstrap", "bootstrap.go")
+	path := filepath.Join(dir, "app", "bootstrap", "identity.go")
 	source := readFile(t, path)
-	const anchor = "\tif err := htmlauth.Register(app, browser, renderer, middleware); err != nil {\n\t\treturn err\n\t}\n"
+	const anchor = "\tif err := htmlauth.Register(app, browser, renderer, middleware, htmlauth.WithOrganizations(Organizations)); err != nil {\n\t\treturn nil, nil, err\n\t}\n"
 	if code.Len() == 0 || !strings.Contains(source, anchor) {
 		t.Fatalf("no wiring or no anchor:\n%s", output)
 	}

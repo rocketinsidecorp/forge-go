@@ -5,14 +5,6 @@
 // {{.Name}} is an API-only application (forge new --api): JSON handlers
 // only, with no views, assets, translations or browser middleware (CSRF,
 // method override, flash). The generators that write pages refuse it.
-{{- if and .DB (eq .DB.Adapter "postgres")}}
-//
-// migrate applies Forge's identity, audit and session schema
-// (authpostgres.Migrations in cmd/{{.Name}}/main.go), as in a full-stack
-// application; nothing here serves it. When the application authenticates
-// its API clients, authpostgres.New(database) is the session and audit
-// store over those tables.
-{{- end}}
 {{- end}}
 package bootstrap
 
@@ -21,17 +13,9 @@ import (
 {{- if or (not .API) (and .DB .DB.Jobs)}}
 	"errors"
 {{- end}}
-	{{- if and .DB .DB.Identity}}
-	"log/slog"
-	{{- end}}
 	"net/http"
 
 	forge "github.com/rocketinsidecorp/forge-go"
-{{- if and .DB .DB.Identity}}
-	"github.com/rocketinsidecorp/forge-go/auth"
-	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
-	"github.com/rocketinsidecorp/forge-go/auth/recoverymail"
-{{- end}}
 {{- if not .API}}
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/i18n"
@@ -39,9 +23,6 @@ import (
 {{- if and .DB .DB.Jobs}}
 	"github.com/rocketinsidecorp/forge-go/jobs"
 	jobs{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/jobs/{{.DB.Adapter}}"
-{{- end}}
-{{- if and .DB .DB.Identity}}
-	"github.com/rocketinsidecorp/forge-go/mail"
 {{- end}}
 	"github.com/rocketinsidecorp/forge-go/openapi"
 {{- if .DB}}
@@ -52,10 +33,6 @@ import (
 
 	appassets "{{.Module}}/app/assets"
 	"{{.Module}}/config/locales"
-{{- end}}
-{{- if and .DB .DB.Identity}}
-	"{{.Module}}/app/adapters/htmlauth"
-	"{{.Module}}/app/views"
 {{- end}}
 )
 
@@ -111,17 +88,15 @@ func Configure(ctx context.Context, app *forge.App) error {
 		return err
 	}
 {{- end}}
-{{- if .DB.Identity}}
-	if err := identityRoutes(ctx, app, database, translator); err != nil {
-		return err
-	}
-{{- else}}
 	// The routes `forge generate scaffold`, `resource` and `controller` add
 	// (app/bootstrap/routes_gen.go, which they rewrite; this file is yours).
+{{- if .DB.Identity}}
+	// The seam mounts the sign-in pages first (identityRoutes, identity.go)
+	// and guards those routes with their session store.
+{{- end}}
 	if err := {{.RoutesCall}}; err != nil {
 		return err
 	}
-{{- end}}
 {{- if .DB.Jobs}}
 	// Recurring jobs. Their ticks are recorded in the database
 	// (forge_job_schedules), so with several replicas each tick of a job
@@ -315,314 +290,3 @@ type statusResponse struct {
 func status(*http.Request, openapi.NoBody) (statusResponse, error) {
 	return statusResponse{Service: "{{.Name}}", Status: "ok"}, nil
 }
-
-{{- if and .DB .DB.Identity}}
-
-func identityRoutes(ctx context.Context, app *forge.App, database *postgres.DB, translator *i18n.Translator) error {
-	// Sessions end after FORGE_AUTH_SESSION_IDLE_TIMEOUT (default 2h) without
-	// a request, before their absolute expiry.
-	repository, err := authpostgres.New(database, authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))
-	if err != nil {
-		return err
-	}
-	throttler, err := authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())
-	if err != nil {
-		return err
-	}
-	loginOptions := []auth.LoginOption{
-		auth.WithLoginThrottler(throttler),
-		auth.WithSecurityAuditor(repository),
-	}
-	var mfaService *auth.MFAService
-	if !app.Config().Auth.MFAKey.IsZero() {
-		cipher, err := auth.NewAESGCMSecretCipherBase64(app.Config().Auth.MFAKey.Reveal())
-		if err != nil {
-			return err
-		}
-		mfaThrottler, err := authpostgres.NewLoginThrottler(database, auth.DefaultMFAThrottleConfig())
-		if err != nil {
-			return err
-		}
-		mfa, err := auth.NewMFAService(
-			repository,
-			repository,
-			cipher,
-			auth.WithMFAThrottler(mfaThrottler),
-			auth.WithMFAAuditor(repository),
-		)
-		if err != nil {
-			return err
-		}
-		mfaService = mfa
-		loginOptions = append(loginOptions, auth.WithMFAChallengeIssuer(mfa))
-	}
-	login, err := auth.NewLoginService(repository, repository, loginOptions...)
-	if err != nil {
-		return err
-	}
-	// The view renderer every HTML page shares (app/views). Pages translate
-	// for the request's locale; the translator serves fragments rendered
-	// without a request (broadcasts) in the default locale.
-	renderer, err := views.New(views.WithI18n(translator))
-	if err != nil {
-		return err
-	}
-	middleware, err := auth.NewMiddleware(repository)
-	if err != nil {
-		return err
-	}
-
-	// Password recovery (public, non-enumerating). Reset links are emailed
-	// only when outgoing mail is configured (see passwordRecoveryDelivery);
-{{- if .APIAuth}}
-	// until then the HTML reset pages are not mounted and the JSON routes
-	// fail closed with their uniform answer.
-{{- else}}
-	// until then the HTML reset pages are not mounted.
-{{- end}}
-	delivery, mailConfigured, err := passwordRecoveryDelivery(app)
-	if err != nil {
-		return err
-	}
-	// Reset requests are answered at once (never sooner than 100 ms) and the
-	// account lookup, token issuance and mail delivery run on a bounded queue
-	// the application's lifecycle owns, so neither the response nor its timing
-	// tells whether an account exists. A full queue drops the request and logs
-	// it. Applications with a persistent job queue can use
-	// auth/recoveryqueue instead (docs/ACCOUNT_RECOVERY.md).
-	recoveryThrottler, err := authpostgres.NewRecoveryThrottler(database)
-	if err != nil {
-		return err
-	}
-	recoveryQueue, err := auth.NewRecoveryQueue(auth.RecoveryQueueConfig{Logger: app.Logger()})
-	if err != nil {
-		return err
-	}
-	// Registered after the database's hook, so it runs before the pool closes.
-	if err := app.OnShutdown(recoveryQueue.Shutdown); err != nil {
-		return err
-	}
-	recoveryService, err := auth.NewRecoveryService(repository, delivery,
-		auth.WithRecoveryThrottler(recoveryThrottler),
-		auth.WithRecoveryAuditor(repository),
-		auth.WithRecoveryDispatcher(recoveryQueue),
-		auth.WithRecoveryLogger(app.Logger()),
-	)
-	if err != nil {
-		return err
-	}
-	// `routes` and `openapi` only describe the application: no worker.
-	if app.Serving() {
-		if err := recoveryQueue.Start(recoveryService); err != nil {
-			return err
-		}
-	}
-
-{{- if .APIAuth}}
-	// HTML sign-in, sign-out, two-factor and password-reset pages
-	// (app/adapters/htmlauth); apiAuthRoutes below adds the JSON
-	// authentication APIs (--api-auth). auth.Browser verifies the CSRF token
-	// of every form. The reset pages and the "Forgot your password?" link
-	// exist only when reset emails can actually be sent.
-{{- else}}
-	// HTML sign-in, sign-out, two-factor and password-reset pages
-	// (app/adapters/htmlauth), the only way to enter a password: the JSON
-	// authentication APIs are opt-in (forge new --api-auth). auth.Browser
-	// verifies the CSRF token of every form. The reset pages and the "Forgot
-	// your password?" link exist only when reset emails can actually be sent.
-{{- end}}
-	browserOptions := auth.BrowserOptions{
-		Login:     login,
-		Sessions:  repository,
-		MFA:       mfaService,
-		Passwords: repository,
-		Auditor:   repository,
-	}
-	if mailConfigured {
-		browserOptions.Recovery = recoveryService
-	}
-	browser, err := auth.NewBrowser(browserOptions)
-	if err != nil {
-		return err
-	}
-	// The pages include the two-factor settings at /mfa (enrollment,
-	// rotation, backup codes, disable), behind the session cookie; every
-	// change asks for the password again (and a current code once a factor
-	// exists). They say so when FORGE_AUTH_MFA_KEY is not set.
-	if err := htmlauth.Register(app, browser, renderer, middleware); err != nil {
-		return err
-	}
-{{- if .APIAuth}}
-	if err := apiAuthRoutes(app, login, mfaService, recoveryService, repository, middleware); err != nil {
-		return err
-	}
-{{- end}}
-
-	// Pages behind a permission authenticate the session cookie and send
-	// signed-out browsers to the sign-in page, for example:
-	//
-	//	page, err := auth.RequireAudited("reports:read", reportsPage, repository)
-	//	...
-	//	guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
-
-	// The routes `forge generate scaffold`, `resource` and `controller` add,
-	// behind the same session and permissions (app/bootstrap/routes_gen.go,
-	// which they rewrite; this file is yours).
-	return {{.RoutesCall}}
-}
-{{- if .APIAuth}}
-
-// apiAuthRoutes mounts the JSON authentication APIs (forge new --api-auth)
-// beside the HTML pages: a bearer-token login for API clients, a cookie
-// login for browser scripts, MFA completion for both, JSON password
-// recovery and GET /v1/auth/session. Each is another place a password or a
-// one-time code is entered; remove the ones the application does not use.
-func apiAuthRoutes(app *forge.App, login *auth.LoginService, mfaService *auth.MFAService, recoveryService *auth.RecoveryService, repository *authpostgres.Repository, middleware *auth.Middleware) error {
-	// Bearer sessions (API clients)
-	loginHandler, err := auth.NewLoginHandler(login)
-	if err != nil {
-		return err
-	}
-	logoutHandler, err := auth.NewAuditedLogoutHandler(repository, repository)
-	if err != nil {
-		return err
-	}
-	if err := app.Handle("POST /auth/login", loginHandler); err != nil {
-		return err
-	}
-	if err := app.Handle("POST /auth/logout", logoutHandler); err != nil {
-		return err
-	}
-	if mfaService != nil {
-		mfaCompletion, err := auth.NewMFACompletionHandler(mfaService)
-		if err != nil {
-			return err
-		}
-		if err := app.Handle("POST /auth/mfa/complete", mfaCompletion); err != nil {
-			return err
-		}
-	}
-
-	// Password recovery (public, non-enumerating; fail closed without mail)
-	recoveryRequestHandler, err := auth.NewAuditedPasswordRecoveryRequestHandler(recoveryService, repository)
-	if err != nil {
-		return err
-	}
-	recoveryResetHandler, err := auth.NewAuditedPasswordResetHandler(recoveryService, repository)
-	if err != nil {
-		return err
-	}
-	if err := app.Handle("POST /auth/recovery/request", recoveryRequestHandler); err != nil {
-		return err
-	}
-	if err := app.Handle("POST /auth/recovery/reset", recoveryResetHandler); err != nil {
-		return err
-	}
-
-	// Cookie sessions for browser scripts: the same cookies as the HTML pages
-	cookieLoginHandler, err := auth.NewCookieLoginHandler(login)
-	if err != nil {
-		return err
-	}
-	if err := app.Handle("POST /auth/cookie/login", cookieLoginHandler); err != nil {
-		return err
-	}
-	if mfaService != nil {
-		cookieMFACompletionHandler, err := auth.NewCookieMFACompletionHandler(mfaService)
-		if err != nil {
-			return err
-		}
-		if err := app.Handle("POST /auth/cookie/mfa/complete", cookieMFACompletionHandler); err != nil {
-			return err
-		}
-	}
-	cookieLogoutHandler, err := auth.NewAuditedCookieLogoutHandler(repository, repository)
-	if err != nil {
-		return err
-	}
-	if err := app.Handle("POST /auth/cookie/logout", cookieLogoutHandler); err != nil {
-		return err
-	}
-
-	return app.Handle("GET /v1/auth/session", openapi.Describe(middleware.Authenticate(http.HandlerFunc(currentSession)), openapi.Operation{
-		Summary:       "The signed-in session",
-		Tags:          []string{"auth"},
-		Authenticated: true,
-		Responses:     []openapi.Response{openapi.JSON[sessionResponse](http.StatusOK)},
-	}))
-}
-{{- end}}
-
-// passwordRecoveryDelivery emails reset links through auth/recoverymail when
-// outgoing mail is configured:
-//
-//	FORGE_MAIL_URL=smtps://user:password@smtp.example.com:465   (file:///tmp/{{.Name}}-mail in development)
-//	FORGE_MAIL_FROM="{{.Name}} <no-reply@example.com>"
-//	FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit
-//
-// Without FORGE_MAIL_URL it returns recoveryDeliveryNotConfigured and false.
-// Delivery runs on the recovery queue (see identityRoutes), off the request
-// path, so a slow mail server neither slows the page nor reveals accounts.
-// FORGE_MAIL_URL without FORGE_AUTH_PASSWORD_RESET_URL is a startup error, so
-// a half-configured deployment never advertises a reset it cannot send.
-func passwordRecoveryDelivery(app *forge.App) (auth.RecoverySender, bool, error) {
-	cfg := app.Config()
-	sender, err := mail.FromConfig(cfg, mail.WithLogger(app.Logger()))
-	if errors.Is(err, mail.ErrNotConfigured) {
-		return recoveryDeliveryNotConfigured{logger: app.Logger()}, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if cfg.Auth.PasswordResetURL == "" {
-		return nil, false, errors.New("FORGE_MAIL_URL is set but FORGE_AUTH_PASSWORD_RESET_URL is not: reset emails need the public URL of /passwords/edit")
-	}
-	from, err := mail.DefaultFrom(cfg)
-	if err != nil {
-		return nil, false, err
-	}
-	delivery, err := recoverymail.New(sender, recoverymail.Config{
-		From:     from,
-		AppName:  "{{.Name}}",
-		ResetURL: cfg.Auth.PasswordResetURL,
-		Logger:   app.Logger(),
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	return delivery, true, nil
-}
-
-// recoveryDeliveryNotConfigured fails closed until outgoing mail is
-// configured. It never logs recipient addresses, tokens, or reset URLs.
-type recoveryDeliveryNotConfigured struct{ logger *slog.Logger }
-
-func (s recoveryDeliveryNotConfigured) SendPasswordRecovery(ctx context.Context, _ auth.PasswordRecoveryMessage) error {
-	if s.logger != nil {
-		s.logger.ErrorContext(ctx, "password recovery delivery is not configured")
-	}
-	return errors.New("password recovery delivery is not configured")
-}
-
-{{- if .APIAuth}}
-
-type sessionResponse struct {
-	SubjectID   string            `json:"subject_id"`
-	TenantID    string            `json:"tenant_id"`
-	Permissions []auth.Permission `json:"permissions"`
-}
-
-func currentSession(w http.ResponseWriter, r *http.Request) {
-	principal, ok := auth.FromContext(r.Context())
-	if !ok {
-		web.Error(w, r, auth.ErrCredentialsRequired)
-		return
-	}
-	web.JSON(w, http.StatusOK, sessionResponse{
-		SubjectID:   principal.SubjectID().String(),
-		TenantID:    principal.Tenant().ID.String(),
-		Permissions: principal.Permissions(),
-	})
-}
-{{- end}}
-{{- end}}

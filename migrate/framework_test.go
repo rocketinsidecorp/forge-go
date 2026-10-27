@@ -113,7 +113,7 @@ func TestFrameworkMigrationOnlyErrorNamesTheWayOut(t *testing.T) {
 	t.Parallel()
 	identity, _ := frameworkMigration(20260927090000)
 	err := error(&FrameworkMigrationOnlyError{Newest: identity})
-	for _, want := range []string{"20260927090000_identity", "auth/postgres", "DownFramework", "never reverts"} {
+	for _, want := range []string{"20260927090000_identity", "from the auth package", "DownFramework", "never reverts"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("%q lacks %q", err, want)
 		}

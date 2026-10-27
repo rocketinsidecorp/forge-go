@@ -96,6 +96,7 @@ func TestScaffoldDryRunWritesNothingAndPrintsTheHTMLWiring(t *testing.T) {
 func TestScaffoldWritesTheResourceAndThePagesAndReusesTheViewsBase(t *testing.T) {
 	t.Parallel()
 	root := scaffoldProject(t, "sqlite:storage/development.db")
+	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), "package main\n\nfunc main() {}\n") // no Forge identity
 	if _, err := runScaffold(root, "post", "title:string", "--global"); err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +192,8 @@ func TestScaffoldGeneratesTheSameResourceFilesAsTheResourceCommand(t *testing.T)
 		if err != nil || info.IsDir() {
 			continue
 		}
-		if readFile(t, filepath.Join(resourceRoot, path)) != readFile(t, filepath.Join(scaffoldRoot, path)) {
+		// The migrations differ only in the generator they record.
+		if strings.Replace(readFile(t, filepath.Join(resourceRoot, path)), "-- forge:generate resource ", "-- forge:generate scaffold ", 1) != readFile(t, filepath.Join(scaffoldRoot, path)) {
 			t.Errorf("%s differs between generate resource and generate scaffold", path)
 		}
 	}
@@ -276,8 +278,8 @@ func TestScaffoldWiringKeepsThePagesClosed(t *testing.T) {
 		{"no identity", "sqlite", false, true, []string{"htmlui.RegisterPosts(app, postService, renderer, protect)", "permission_denied"}, []string{"protectCookie", "auth."}},
 	} {
 		spec := resourceSpec{
-			resourceRequest: resourceRequest{Name: "post", Plural: "posts", TenantScoped: test.tenantScoped, Scaffold: true},
-			Module:          "example.com/shop", Database: test.database, Identity: test.identity, BrowserPipeline: true,
+			resourceRequest: resourceRequest{Name: "post", Plural: "posts", TenantScoped: test.tenantScoped, Global: test.identity && !test.tenantScoped, Scaffold: true},
+			Module:          "example.com/shop", Database: test.database, Identity: test.identity, Organizations: test.identity, BrowserPipeline: true,
 		}
 		wiring := resourceWiring(spec)
 		if strings.Contains(wiring, "return next, nil") {

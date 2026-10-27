@@ -113,3 +113,50 @@ func TestGeneratedArchitectureTestPassesAndCatchesViolations(t *testing.T) {
 		})
 	}
 }
+
+// TestGeneratedArchitectureTestPassesOnEveryApplicationKind: the
+// architecture test passes on every kind of application `forge new` makes
+// (no sign-in, --auth, --tenants, --js) with scaffolds of the scope each
+// takes, and after `forge generate authentication` and `forge generate
+// tenancy` changed an application.
+func TestGeneratedArchitectureTestPassesOnEveryApplicationKind(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the go toolchain on generated projects")
+	}
+	t.Parallel()
+	for _, c := range []struct {
+		name, database string
+		flags          []string
+		resources      [][]string
+		convert        bool
+	}{
+		{"default", "sqlite", []string{plainApplication}, [][]string{{"product", "name:string", "--public"}}, false},
+		{"auth", "sqlite", []string{"--auth"}, [][]string{{"product", "name:string"}}, false},
+		{"auth js", "sqlite", []string{"--auth", "--js"}, [][]string{{"product", "name:string"}}, false},
+		{"tenants", "postgresql", []string{"--tenants"}, [][]string{{"product", "name:string", "--org-scoped"}, {"category", "name:string", "--global"}}, false},
+		{"converted", "sqlite", []string{plainApplication}, [][]string{{"product", "name:string"}}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			dir := matrixApplicationWith(t, c.database, c.flags, "scaffold", c.resources)
+			if c.convert {
+				if _, err := runAuthentication(dir); err != nil {
+					t.Fatal(err)
+				}
+				if output, ok := runArchitectureTest(t, dir); !ok {
+					t.Fatalf("the architecture test fails after forge generate authentication:\n%s", output)
+				}
+				if _, err := runTenancy(dir, "--org", "acme"); err != nil {
+					t.Fatal(err)
+				}
+				var out bytes.Buffer
+				if err := runGenerateEnv([]string{"scaffold", "invoice", "total:integer", "--org-scoped"}, &out, dir, withoutDatabaseURL(), tenancyNow.Add(time.Hour)); err != nil {
+					t.Fatalf("an --org-scoped scaffold after the conversion: %v\n%s", err, out.String())
+				}
+			}
+			if output, ok := runArchitectureTest(t, dir); !ok {
+				t.Fatalf("the architecture test fails:\n%s", output)
+			}
+		})
+	}
+}

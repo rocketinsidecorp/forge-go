@@ -2,6 +2,9 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-03
+- **Amended by:** [ADR 0050](0050-opt-in-authentication-and-organizations.md)
+  (Forge identity on MySQL, MariaDB and SQLite, under the same mandatory
+  predicates)
 
 ## Context
 
