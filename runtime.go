@@ -132,13 +132,13 @@ func execute(ctx context.Context, args []string, lookup func(string) (string, bo
 		fmt.Fprintf(stderr, "invalid configuration: %v\n", err)
 		return 1
 	}
-	logger := newLogger(cfg.Environment, stdout)
+	logger := newLogger(cfg, stdout, lookup)
 	switch {
 	case name == "openapi":
 		// The document may go to stdout: logs go to stderr.
-		return describeAPI(ctx, cfg, newLogger(cfg.Environment, stderr), configure, describe, stdout, stderr)
+		return describeAPI(ctx, cfg, newLogger(cfg, stderr, lookup), configure, describe, stdout, stderr)
 	case name == "routes":
-		return describeRoutes(ctx, cfg, newLogger(cfg.Environment, stderr), configure, stdout, stderr)
+		return describeRoutes(ctx, cfg, newLogger(cfg, stderr, lookup), configure, stdout, stderr)
 	case isExtra:
 		env := CommandEnv{Config: cfg, Logger: logger, Stdout: stdout, Stderr: stderr, Stdin: stdin, LookupEnv: lookup}
 		if err := command.Run(ctx, env, args); err != nil {
@@ -306,16 +306,61 @@ func describeAPI(ctx context.Context, cfg config.Config, logger *slog.Logger, co
 	return 0
 }
 
-// newLogger emits JSON where logs are machine-collected and readable text
-// where a developer is watching the terminal.
-func newLogger(environment config.Environment, output io.Writer) *slog.Logger {
+// newLogger builds the application logger from cfg.Log. FORGE_LOG_FORMAT
+// picks the format; auto writes the colored development layout
+// (telemetry.NewPrettyHandler) to a terminal in development, logfmt text to a
+// pipe, a file or a test, and JSON where logs are machine-collected (staging
+// and production). Colors need a terminal and no NO_COLOR variable. Every
+// format redacts the values of attributes with a sensitive key
+// (telemetry.Redactor, extended by FORGE_LOG_REDACT_KEYS).
+func newLogger(cfg config.Config, output io.Writer, lookup func(string) (string, bool)) *slog.Logger {
+	level, _ := cfg.Log.LevelValue()
+	replace := telemetry.Redactor(cfg.Log.RedactKeys...)
+	terminal := isTerminal(output)
 	// Records logged with a traced context (logger.InfoContext(ctx, ...))
 	// carry trace_id and span_id, and the OTLP log exporter encodes values
 	// in the same format.
-	if environment == config.Development || environment == config.Test {
-		return slog.New(telemetry.NewOutputHandler(output, telemetry.LogFormatText, nil))
+	switch resolveLogFormat(cfg.Environment, cfg.Log.Format, terminal) {
+	case config.LogFormatPretty:
+		_, noColor := lookup("NO_COLOR")
+		return slog.New(telemetry.NewPrettyOutputHandler(output, telemetry.PrettyOptions{
+			Color: terminal && !noColor, Level: level, ReplaceAttr: replace,
+		}))
+	case config.LogFormatText:
+		return slog.New(telemetry.NewOutputHandler(output, telemetry.LogFormatText, &slog.HandlerOptions{Level: level, ReplaceAttr: replace}))
 	}
-	return slog.New(telemetry.NewOutputHandler(output, telemetry.LogFormatJSON, nil))
+	return slog.New(telemetry.NewOutputHandler(output, telemetry.LogFormatJSON, &slog.HandlerOptions{Level: level, ReplaceAttr: replace}))
+}
+
+// resolveLogFormat turns FORGE_LOG_FORMAT=auto into a format: pretty on a
+// terminal in development, text for development and test output that is not
+// a terminal, JSON elsewhere.
+func resolveLogFormat(environment config.Environment, format config.LogFormat, terminal bool) config.LogFormat {
+	if format != config.LogFormatAuto {
+		return format
+	}
+	switch {
+	case environment == config.Development && terminal:
+		return config.LogFormatPretty
+	case environment == config.Development || environment == config.Test:
+		return config.LogFormatText
+	}
+	return config.LogFormatJSON
+}
+
+// isTerminal reports whether output is a character device that is not the
+// null device: a terminal, as far as the standard library can tell.
+func isTerminal(output io.Writer) bool {
+	file, ok := output.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	null, err := os.Stat(os.DevNull)
+	return err != nil || !os.SameFile(info, null)
 }
 
 // probeLiveness calls the liveness endpoint over loopback on the configured

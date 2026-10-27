@@ -58,6 +58,10 @@ const (
 	// AppendText or MarshalText when the value has one, a byte slice as its
 	// text, anything else as fmt's %+v (which uses Error and String).
 	LogFormatText
+	// LogFormatPretty is the development layout of NewPrettyHandler. It
+	// encodes values as LogFormatText does, and reports itself to the log
+	// exporter as that format.
+	LogFormatPretty
 )
 
 // LogOutput describes how the handler that writes standard output renders a
@@ -89,7 +93,7 @@ type LogOutputHandler interface {
 
 // NewOutputHandler returns the standard-output handler that writes to w in
 // format with opts (nil means slog's defaults), as slog.NewJSONHandler or
-// slog.NewTextHandler would, wrapped by NewLogHandler for trace correlation.
+// slog.NewTextHandler would (LogFormatPretty without color: NewPrettyHandler), wrapped by NewLogHandler for trace correlation.
 // It reports format and opts.ReplaceAttr through LogOutputHandler, so the log
 // exporter that forge.New tees the logger into applies the same ReplaceAttr:
 //
@@ -102,9 +106,19 @@ func NewOutputHandler(w io.Writer, format LogFormat, opts *slog.HandlerOptions) 
 		output.ReplaceAttr = opts.ReplaceAttr
 	}
 	var handler slog.Handler
-	if format == LogFormatText {
+	switch format {
+	case LogFormatPretty:
+		pretty := PrettyOptions{Level: slog.LevelInfo}
+		if opts != nil {
+			pretty.ReplaceAttr = opts.ReplaceAttr
+			if opts.Level != nil {
+				pretty.Level = opts.Level
+			}
+		}
+		return NewPrettyOutputHandler(w, pretty)
+	case LogFormatText:
 		handler = slog.NewTextHandler(w, opts)
-	} else {
+	default:
 		output.Format = LogFormatJSON
 		handler = slog.NewJSONHandler(w, opts)
 	}

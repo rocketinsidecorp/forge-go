@@ -143,7 +143,12 @@ type WorkerOptions struct {
 	// claim one job per round trip.
 	BatchSize int
 	Logger    *slog.Logger
-	Hooks     Hooks
+	// LogSuccesses writes the line of a job that succeeded (queue, kind,
+	// attempt and duration) at Info instead of Debug, as development wants:
+	// cfg.EventLevel() == slog.LevelInfo. A failure is always logged at Warn
+	// (retry) or Error.
+	LogSuccesses bool
+	Hooks        Hooks
 	// Telemetry traces each attempt with a consumer span (the root of a new
 	// trace, so database spans of the handler nest under it) and records
 	// forge.queue.job.duration by queue, kind and outcome. Payloads and
@@ -858,7 +863,11 @@ func (w *Worker) settle(in *running, duration time.Duration, outcome Outcome, me
 	attrs := []any{"job_id", job.ID, "kind", job.Kind, "queue", job.Queue, "attempt", job.Attempt, "max_attempts", job.MaxAttempts, "outcome", outcome, "duration", duration}
 	switch outcome {
 	case OutcomeSucceeded:
-		w.logger.Debug("job succeeded", attrs...)
+		level := slog.LevelDebug
+		if w.opts.LogSuccesses {
+			level = slog.LevelInfo
+		}
+		w.logger.Log(context.Background(), level, "job succeeded", attrs...)
 	case OutcomeReleased:
 		w.logger.Info("job released at shutdown", attrs...)
 	case OutcomeRetry:

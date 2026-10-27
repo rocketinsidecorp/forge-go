@@ -205,3 +205,18 @@ func TestJSONSuccessKeepsStatusAndBody(t *testing.T) {
 		t.Fatalf("code=%d body=%q header=%v", recorder.Code, recorder.Body.String(), recorder.Header())
 	}
 }
+
+func TestRouteInfoFromContext(t *testing.T) {
+	if web.RouteInfoFromContext(context.Background()) != nil {
+		t.Fatal("no RouteInfo in a bare context")
+	}
+	info := &web.RouteInfo{}
+	ctx := web.WithRouteInfo(context.Background(), info)
+	if web.RouteInfoFromContext(ctx) != info {
+		t.Fatal("the installed RouteInfo is returned")
+	}
+	web.RecordRoute(ctx, "GET /x/{id}")
+	if info.Pattern() != "GET /x/{id}" {
+		t.Fatalf("pattern %q", info.Pattern())
+	}
+}
