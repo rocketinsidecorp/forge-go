@@ -226,11 +226,21 @@ func (fn MFAChangeAuthorizerFunc) AuthorizeMFAChange(ctx context.Context, princi
 }
 
 // AuthorizeMFAChange runs authorizer, the application's step-up check of the
-// JSON two-factor routes, for principal, and returns the proof of the change
-// it allowed: it carries no backup code. A non-nil error refuses the change.
-func AuthorizeMFAChange(ctx context.Context, authorizer MFAChangeAuthorizer, principal Principal) (MFAStepUpProof, error) {
+// JSON two-factor routes, for the authenticated principal of ctx, and returns
+// the proof of the change it allowed, bound to that principal's account: it
+// carries no backup code. The principal comes only from ctx, where
+// authhttp.Middleware puts the principal of the session it resolved (nothing
+// else can put one there), so a proof is never given for an account other
+// than the signed-in one. Without a principal it is ErrCredentialsRequired; a
+// nil authorizer is an error; an error of the authorizer refuses the change
+// and is returned as is.
+func AuthorizeMFAChange(ctx context.Context, authorizer MFAChangeAuthorizer) (MFAStepUpProof, error) {
 	if authorizer == nil {
 		return MFAStepUpProof{}, errors.New("auth: MFA change authorizer is required")
+	}
+	principal, ok := FromContext(ctx)
+	if !ok {
+		return MFAStepUpProof{}, ErrCredentialsRequired
 	}
 	if err := authorizer.AuthorizeMFAChange(ctx, principal); err != nil {
 		return MFAStepUpProof{}, err

@@ -162,7 +162,7 @@ func NewTOTPRotationHandler(service *auth.MFAService, issuer string, authorizer 
 			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer)
 		if err != nil {
 			web.Error(w, r, err)
 			return
@@ -203,7 +203,7 @@ func NewTOTPRotationConfirmationHandler(service *auth.MFAService, authorizer aut
 			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer)
 		if err != nil {
 			web.Error(w, r, err)
 			return
@@ -242,7 +242,7 @@ func NewMFADisableHandler(service *auth.MFAService, authorizer auth.MFAChangeAut
 			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer)
 		if err != nil {
 			web.Error(w, r, err)
 			return
@@ -483,7 +483,7 @@ func newTOTPRotationHandler(service *auth.MFAService, issuer string, authorizer 
 			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer)
 		if err != nil {
 			web.Error(w, r, err)
 			return
@@ -555,7 +555,7 @@ func newTOTPRotationConfirmationHandler(service *auth.MFAService, authorizer aut
 			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer)
 		if err != nil {
 			web.Error(w, r, err)
 			return
@@ -625,7 +625,7 @@ func newMFADisableHandler(service *auth.MFAService, authorizer auth.MFAChangeAut
 			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer)
 		if err != nil {
 			web.Error(w, r, err)
 			return

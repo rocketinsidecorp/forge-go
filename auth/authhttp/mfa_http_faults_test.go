@@ -232,7 +232,12 @@ func rigs() []handlerRig {
 			body: confirmBody,
 			prepare: func(f *faultMFA) {
 				f.enroll()
-				if _, err := f.service.BeginTOTPRotation(context.Background(), f.subject, "Forge", "ada", changeAuthorizedBy(f.subject)); err != nil {
+				// The rotation to confirm, begun with a current code.
+				proof, err := f.service.VerifyMFAStepUp(context.Background(), f.subject, f.code())
+				if err != nil {
+					f.t.Fatal(err)
+				}
+				if _, err := f.service.BeginTOTPRotation(context.Background(), f.subject, "Forge", "ada", proof); err != nil {
 					f.t.Fatal(err)
 				}
 			},

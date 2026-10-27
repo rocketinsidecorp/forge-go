@@ -10,8 +10,6 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/internal/principalctx"
-	"github.com/rocketinsidecorp/forge-go/tenancy"
-	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // The tests of this package drive auth's services through its exported API.
@@ -39,25 +37,6 @@ func totpCode(secret []byte, counter uint64) string {
 		panic(err)
 	}
 	return code
-}
-
-// changeAuthorizedBy is the proof auth.AuthorizeMFAChange gives a change an
-// MFAChangeAuthorizer allowed for subject.
-func changeAuthorizedBy(subject uuid.UUID) auth.MFAStepUpProof {
-	tenant, err := tenancy.New(uuid.MustNew())
-	if err != nil {
-		panic(err)
-	}
-	principal, err := auth.NewPrincipal(subject, tenant)
-	if err != nil {
-		panic(err)
-	}
-	allow := auth.MFAChangeAuthorizerFunc(func(context.Context, auth.Principal) error { return nil })
-	proof, err := auth.AuthorizeMFAChange(context.Background(), allow, principal)
-	if err != nil {
-		panic(err)
-	}
-	return proof
 }
 
 // backupCode is a backup code in auth's format: 15 random bytes in base32,
