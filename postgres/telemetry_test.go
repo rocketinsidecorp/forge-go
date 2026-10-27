@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -140,5 +141,43 @@ func TestPoolMetricsStopWhenThePoolCloses(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("closed pool, metrics lack %q:\n%s", want, text)
 		}
+	}
+}
+
+// PostgreSQL has no backslash escapes outside E'...': a statement that ends a
+// string with one must not leak the literal after it.
+func TestStatementLogMasksPostgreSQLLiterals(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&out, nil))
+	tel, err := telemetry.New(telemetry.Options{ServiceName: "test", QueryLog: &telemetry.QueryLog{Logger: logger, Level: slog.LevelInfo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tel.Shutdown(context.Background()) })
+	ctx := context.Background()
+	db, err := postgres.Open(ctx, postgrestest.Config(t), postgres.WithTelemetry(tel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(db.Close)
+	for _, query := range []string{
+		`SELECT 'C:\' || 'topsecret-bs' AS p`,
+		`SELECT $a$ dollar-secret $a$ AS d`,
+	} {
+		var scanned any
+		if err := db.QueryRow(ctx, query).Scan(&scanned); err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+	}
+	got := out.String()
+	t.Logf("statement log:\n%s", got)
+	for _, leak := range []string{"topsecret-bs", "dollar-secret"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("%q leaked into the statement log: %s", leak, got)
+		}
+	}
+	if !strings.Contains(got, `SELECT '?' || '?' AS p`) {
+		t.Fatalf("the statement is not logged: %s", got)
 	}
 }

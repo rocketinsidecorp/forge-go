@@ -603,8 +603,13 @@ func TestFromConfigMatchesTheStandardOutputFormat(t *testing.T) {
 			t.Errorf("%s: format %d replace %t, want %d %t", tc.name, got.Format, got.ReplaceAttr != nil, tc.want, tc.replace)
 		}
 	}
-	if _, err := New(Options{ServiceName: "x", LogFormat: LogFormatText + 1}); err == nil {
+	if _, err := New(Options{ServiceName: "x", LogFormat: LogFormatPretty + 1}); err == nil {
 		t.Fatal("an unknown log format must be rejected")
+	}
+	// The pretty layout prints values as the text format does.
+	pretty, err := New(Options{ServiceName: "x", LogFormat: LogFormatPretty})
+	if err != nil || pretty.logFormat != LogFormatText {
+		t.Fatalf("pretty format: %v, %d", err, pretty.logFormat)
 	}
 }
 

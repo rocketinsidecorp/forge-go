@@ -43,6 +43,12 @@ func FromConfig(cfg config.Config, logger *slog.Logger) (*Telemetry, error) {
 		Logger:          logger,
 	}
 	if logger != nil {
+		// Statement lines go to standard output only, never to the log
+		// exporter: they are for the developer watching, or for an operator
+		// who set FORGE_LOG_LEVEL=debug.
+		opts.QueryLog = &QueryLog{Logger: logger, Level: cfg.EventLevel(), Slow: cfg.Log.SlowQuery}
+	}
+	if logger != nil {
 		output := logOutputOf(logger.Handler())
 		opts.LogFormat, opts.LogReplaceAttr = output.Format, output.ReplaceAttr
 	}

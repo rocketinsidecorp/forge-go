@@ -174,6 +174,12 @@ func (a *App) build(settings options) error {
 	if err != nil {
 		return err
 	}
+	// The request line goes inside the telemetry middleware, whose request
+	// logger carries the trace. The adapters count a request's statements
+	// only with telemetry enabled, so only then does the line say how many.
+	instrument = withAccessLog(instrument, telemetry.AccessLog(telemetry.AccessLogOptions{
+		Level: a.config.EventLevel(), CountQueries: a.telemetry != nil,
+	}))
 	server, err := httpserver.NewWithOptions(a.config, http.HandlerFunc(a.dispatch), a.logger, httpserver.Options{
 		Instrument:  instrument,
 		Middlewares: settings.httpMiddlewares,
@@ -184,6 +190,14 @@ func (a *App) build(settings options) error {
 	}
 	a.server = server
 	return nil
+}
+
+// withAccessLog returns outer wrapped around inner; a nil outer is inner.
+func withAccessLog(outer, inner func(http.Handler) http.Handler) httpserver.Middleware {
+	if outer == nil {
+		return inner
+	}
+	return func(next http.Handler) http.Handler { return outer(inner(next)) }
 }
 
 // WithConfig sets the configuration, for example one from config.Load. New validates it.
