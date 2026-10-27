@@ -89,6 +89,11 @@ jobs:
         # TestGeneratedTypeScript* run in the generated job below, which names
         # them and installs the pinned tsc they need.
         run: go test -race -count=1 -timeout 30m -skip '^(TestGeneratedApplication|TestGeneratedTypeScript.*)$' ./...
+      - name: Test the FIPS build of auth (forge_pbkdf2)
+        # A binary built with -tags forge_pbkdf2 writes PBKDF2 even with
+        # Argon2id registered (ADR 0048, ADR 0053); auth/sqlite's
+        # pbkdf2_build_test.go asserts it, the rest must pass as built.
+        run: go test -race -count=1 -tags forge_pbkdf2 ./auth/...
       - name: Benchmarks
         run: go test -run='^$' -bench=. -benchmem -timeout 30m ./...
       - name: Vulnerabilities
