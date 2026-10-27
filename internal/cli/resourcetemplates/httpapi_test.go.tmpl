@@ -97,6 +97,9 @@ func (r *[[.Name]]MemoryRepository) Delete(_ context.Context, id uuid.UUID, vers
 	return nil
 }
 
+[[- .MemoryListBy (printf "%sMemoryRepository" .Name)]]
+[[- .ReferenceStubs]]
+
 // [[.Name]]AllowAll stands in for the application's guard: it lets every request
 // through. It exists only in tests.
 func [[.Name]]AllowAll(_ string, next http.Handler) (http.Handler, error) { return next, nil }
@@ -126,7 +129,7 @@ func new[[.Title]]Service(t *testing.T) *application.[[.Title]]Service {
 		ticks++
 		return time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC).Add(time.Duration(ticks) * time.Second)
 	}
-	service, err := application.New[[.Title]]Service(repo, clock, uuid.New)
+	service, err := application.New[[.Title]]Service(repo,[[.StubArgs]] clock, uuid.New)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +195,9 @@ func Test[[.Title]]OpenAPIDocument(t *testing.T) {
 		{"/v1/[[.Plural]]/{id}", "get", "get[[.Title]]", "[[.Plural]]:read"},
 		{"/v1/[[.Plural]]/{id}", "patch", "update[[.Title]]", "[[.Plural]]:write"},
 		{"/v1/[[.Plural]]/{id}", "delete", "delete[[.Title]]", "[[.Plural]]:write"},
+[[- range .References]]
+		{"/v1/[[.Plural]]/{[[.Field.Name]]}/[[$.Plural]]", "get", "list[[.Title]][[$.PluralTitle]]", "[[$.Plural]]:read"},
+[[- end]]
 	} {
 		operation, ok := document.Paths[want.path][want.method]
 		if !ok || operation.OperationID != want.id || operation.Permission != want.permission {
@@ -613,6 +619,9 @@ func Test[[.Title]]RoutesRequireTheirPermission(t *testing.T) {
 	reads := []struct{ method, target string }{
 		{http.MethodGet, "/v1/[[.Plural]]"},
 		{http.MethodGet, path},
+[[- range .References]]
+		{http.MethodGet, "/v1/[[.Plural]]/" + uuid.MustNew().String() + "/[[$.Plural]]"},
+[[- end]]
 	}
 	writes := []struct {
 		method, target string
@@ -680,7 +689,7 @@ func Test[[.Title]]ProtectIsAskedForEveryRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	slices.Sort(asked)
-	want := []string{"[[.Plural]]:read", "[[.Plural]]:read", "[[.Plural]]:write", "[[.Plural]]:write", "[[.Plural]]:write"}
+	want := []string{"[[.Plural]]:read", "[[.Plural]]:read",[[range .References]] "[[$.Plural]]:read",[[end]] "[[.Plural]]:write", "[[.Plural]]:write", "[[.Plural]]:write"}
 	if !slices.Equal(asked, want) {
 		t.Fatalf("protect asked for %v, want %v", asked, want)
 	}
@@ -712,3 +721,49 @@ func Test[[.Title]]RegisterRefusesPublicOrIncompleteSetups(t *testing.T) {
 		t.Error("a protect function that returns no handler was accepted")
 	}
 }
+[[- range .References]]
+
+// The [[$.Plural]] of a [[.Human]] are listed under it, and a [[$.Name]] cannot name a
+// [[.Human]] the caller cannot see: 422 with the field's code, nothing stored.
+func Test[[$.Title]]Belongs[[.Title]](t *testing.T) {
+	t.Parallel()
+	handler := new[[$.Title]]Handler(t)
+	mine := uuid.MustNew().String()
+	var created []string
+	for _, [[.Camel]]ID := range []string{mine, uuid.MustNew().String(), mine} {
+		body := [[$.Name]]Body{
+			[[$.SampleBody 1 true]]
+		}
+		body["[[.Field.Name]]"] = [[.Camel]]ID
+		recorder := [[$.Name]]Send(t, handler, http.MethodPost, "/v1/[[$.Plural]]", body)
+		[[$.Name]]Expect(t, recorder, http.StatusCreated)
+		if [[.Camel]]ID == mine {
+			id, _ := [[$.Name]]Decode(t, recorder)["id"].(string)
+			created = append([]string{id}, created...)
+		}
+	}
+	recorder := [[$.Name]]Send(t, handler, http.MethodGet, "/v1/[[.Plural]]/"+mine+"/[[$.Plural]]", nil)
+	[[$.Name]]Expect(t, recorder, http.StatusOK)
+	items, _ := [[$.Name]]Decode(t, recorder)["items"].([]any)
+	var got []string
+	for _, item := range items {
+		id, _ := item.(map[string]any)["id"].(string)
+		got = append(got, id)
+	}
+	if !slices.Equal(got, created) {
+		t.Fatalf("GET /v1/[[.Plural]]/{id}/[[$.Plural]] = %v, want %v", got, created)
+	}
+	[[$.Name]]Expect(t, [[$.Name]]Send(t, handler, http.MethodGet, "/v1/[[.Plural]]/"+[[.MissingVar]].String()+"/[[$.Plural]]", nil), http.StatusNotFound)
+	[[$.Name]]Expect(t, [[$.Name]]Send(t, handler, http.MethodGet, "/v1/[[.Plural]]/not-a-uuid/[[$.Plural]]", nil), http.StatusBadRequest)
+
+	body := [[$.Name]]Body{
+		[[$.SampleBody 1 true]]
+	}
+	body["[[.Field.Name]]"] = [[.MissingVar]].String()
+	recorder = [[$.Name]]Send(t, handler, http.MethodPost, "/v1/[[$.Plural]]", body)
+	[[$.Name]]Expect(t, recorder, http.StatusUnprocessableEntity)
+	if code := [[$.Name]]Decode(t, recorder)["error"].(map[string]any)["code"]; code != "[[$.Name]]_[[.Name]]_not_found" {
+		t.Fatalf("code = %v, want [[$.Name]]_[[.Name]]_not_found", code)
+	}
+}
+[[- end]]

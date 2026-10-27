@@ -51,6 +51,9 @@ const (
 // [[.Title]]Router is where Register[[.PluralTitle]] mounts the pages; *forge.App satisfies it.
 type [[.Title]]Router interface {
 	Resources(path string, handler any, middleware ...router.ResourceMiddleware) error
+[[- if .References]]
+	Handle(pattern string, handler http.Handler) error
+[[- end]]
 }
 
 // [[.Title]]Protect wraps next so that only callers holding permission reach it.
@@ -77,6 +80,10 @@ func With[[.Title]]Broadcast(broker broadcast.Broker) [[.Title]]Option {
 // Register[[.PluralTitle]] mounts the HTML pages of [[.Plural]]: index, new, create, show,
 // edit, update and destroy. Index and show require "[[.Plural]]:read"; the
 // forms (new and edit) and every change require "[[.Plural]]:write".
+[[- range .References]]
+// GET /[[.Plural]]/{[[.Field.Name]]}/[[$.Plural]] lists the [[$.Plural]] of one [[.Human]] (it requires
+// "[[$.Plural]]:read")[[if .Scaffold]]: the [[.Human]]'s page shows it in a Turbo Frame[[end]].
+[[- end]]
 //
 // The application must install web.MethodOverride, csrf.Protection and
 // web.Flash (forge new does): the forms rely on them for PATCH and DELETE, for
@@ -95,7 +102,7 @@ func Register[[.PluralTitle]](routes [[.Title]]Router, service *application.[[.T
 	}
 [[- end]]
 	// The literal path lets `forge routes` list these routes.
-	return routes.Resources("/[[.Plural]]", pages, func(action router.Action, next http.Handler) (http.Handler, error) {
+	[[if .References]]err := [[else]]return [[end]]routes.Resources("/[[.Plural]]", pages, func(action router.Action, next http.Handler) (http.Handler, error) {
 		// New and edit are forms for writing, so they need the write permission too.
 		permission := [[.PluralCamel]]WritePermission
 		if action == router.ActionIndex || action == router.ActionShow {
@@ -103,6 +110,28 @@ func Register[[.PluralTitle]](routes [[.Title]]Router, service *application.[[.T
 		}
 		return protect(permission, next)
 	})
+[[- if .References]]
+	if err != nil {
+		return err
+	}
+	for _, nested := range []struct {
+		pattern string
+		handler http.HandlerFunc
+	}{
+[[- range .References]]
+		{"GET /[[.Plural]]/{[[.Field.Name]]}/[[$.Plural]]", pages.By[[.Title]]},
+[[- end]]
+	} {
+		protected, err := protect([[.PluralCamel]]ReadPermission, nested.handler)
+		if err != nil {
+			return err
+		}
+		if err := routes.Handle(nested.pattern, protected); err != nil {
+			return err
+		}
+	}
+	return nil
+[[- end]]
 }
 
 type [[.Camel]]Pages struct {
@@ -149,7 +178,24 @@ type [[.Camel]]Page struct {
 	Values   [[.Camel]]Values
 	Errors   web.FormErrors
 	Conflict bool // another request changed the [[.Name]] since the form was loaded
+[[- range .References]]
+	// [[.Title]]Choices are the [[.Plural]] the form's [[.Field.Name]] select offers.
+	[[.Title]]Choices [][[$.Camel]]Choice
+[[- end]]
+[[- if .References]]
+
+	// ParentID is the row whose [[.Plural]] a nested index lists.
+	ParentID uuid.UUID
+[[- end]]
 }
+[[- if .References]]
+
+// [[.Camel]]Choice is one option of a select: a referenced row's id and what names it.
+type [[.Camel]]Choice struct {
+	Value string
+	Label string
+}
+[[- end]]
 
 // [[.Camel]]Form is a submitted new [[.Name]]. Only tagged fields can be set from a request.
 type [[.Camel]]Form struct {
@@ -246,6 +292,9 @@ func [[.Camel]]FieldError(err error) (web.FieldError, bool) {
 [[- range .Fields]]
 		{"[[.Name]]", domain.[[.Err]]},
 [[- end]]
+[[- range .References]]
+		{"[[.Field.Name]]", domain.Err[[$.Title]][[.Title]]NotFound},
+[[- end]]
 		{"version", domain.ErrInvalid[[.Title]]Version},
 	} {
 		if errors.Is(err, candidate.invalid) {
@@ -286,6 +335,14 @@ func [[.Camel]]Redirect(w http.ResponseWriter, r *http.Request, target string, k
 
 func (h [[.Camel]]Pages) render(w http.ResponseWriter, r *http.Request, page string, status int, data [[.Camel]]Page) {
 	data.Path = [[.PluralCamel]]Path
+[[- if .References]]
+	if page == "new" || page == "edit" {
+		if err := h.loadChoices(r, &data); err != nil {
+			web.Error(w, r, err)
+			return
+		}
+	}
+[[- end]]
 	if err := h.renderer.RenderRequest(w, r, "[[.Plural]]/"+page, status, data); err != nil {
 		web.Error(w, r, err)
 	}
@@ -334,9 +391,18 @@ func (h [[.Camel]]Pages) Index(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "index", http.StatusOK, [[.Camel]]Page{Items: items, NextCursor: page.NextCursor})
 }
 
-// New shows the empty form.
+// New shows the empty form.[[if .References]] A link from a referenced row's page
+// (?[[(index .References 0).Field.Name]]=ID) preselects that row.[[end]]
 func (h [[.Camel]]Pages) New(w http.ResponseWriter, r *http.Request) {
+[[- if .References]]
+	var values [[.Camel]]Values
+[[- range .References]]
+	values.[[.Field.Title]] = r.URL.Query().Get("[[.Field.Name]]")
+[[- end]]
+	h.render(w, r, "new", http.StatusOK, [[.Camel]]Page{Action: [[.PluralCamel]]Path, Values: values})
+[[- else]]
 	h.render(w, r, "new", http.StatusOK, [[.Camel]]Page{Action: [[.PluralCamel]]Path})
+[[- end]]
 }
 
 // Create saves the form. Success redirects to the new [[.Name]] with a notice;
@@ -466,6 +532,11 @@ func (h [[.Camel]]Pages) Destroy(w http.ResponseWriter, r *http.Request) {
 [[- end]]
 			[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path, web.FlashNotice, i18n.T(r.Context(), "[[.Plural]].flash.deleted"))
 			return
+		case errors.Is(err, domain.Err[[.Title]]InUse):
+			// Rows of another table still reference it: their foreign key
+			// refuses the delete, and the person is told why.
+			[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path+"/"+id.String(), web.FlashAlert, i18n.T(r.Context(), "[[.Plural]].flash.in_use"))
+			return
 		case errors.Is(err, domain.ErrStale[[.Title]]Version), errors.Is(err, domain.ErrInvalid[[.Title]]Version):
 		default:
 			h.fail(w, r, err)
@@ -474,6 +545,60 @@ func (h [[.Camel]]Pages) Destroy(w http.ResponseWriter, r *http.Request) {
 	}
 	[[.Camel]]Redirect(w, r, [[.PluralCamel]]Path+"/"+id.String(), web.FlashAlert, i18n.T(r.Context(), "[[.Plural]].flash.stale"))
 }
+[[- range .References]]
+
+// By[[.Title]] lists the [[$.Plural]] of the [[.Human]] the path names, newest first: the
+// nested index[[if .Scaffold]] the [[.Human]]'s page shows in its Turbo Frame[[end]]. A [[.Human]] the caller cannot
+// see is not found.
+func (h [[$.Camel]]Pages) By[[.Title]](w http.ResponseWriter, r *http.Request) {
+	[[.Camel]]ID, err := domain.Parse[[.Title]]ID(r.PathValue("[[.Field.Name]]"))
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	request, err := pagination.FromQuery(r.URL.Query())
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	page, err := h.service.ListBy[[.Title]](r.Context(), [[.Camel]]ID, request)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	items := make([][[$.Camel]]Item, len(page.Items))
+	for i, entity := range page.Items {
+		items[i] = new[[$.Title]]Item(entity)
+	}
+	h.render(w, r, "by_[[.Name]]", http.StatusOK, [[$.Camel]]Page{Items: items, NextCursor: page.NextCursor, ParentID: [[.Camel]]ID})
+}
+[[- end]]
+[[- if .References]]
+
+// loadChoices fills the selects of the form with the rows it may reference.
+// The row the form already names stays selectable even when it is not among
+// them (an older one).
+func (h [[.Camel]]Pages) loadChoices(r *http.Request, data *[[.Camel]]Page) error {
+[[- range .References]]
+	{
+		rows, err := h.service.[[.Title]]Choices(r.Context())
+		if err != nil {
+			return err
+		}
+		selected := data.Values.[[.Field.Title]] == ""
+		for _, row := range rows {
+			choice := [[$.Camel]]Choice{Value: row.ID.String(), Label: [[if .Label]][[.Label.Access "row"]][[else]]row.ID.String()[[end]]}
+			selected = selected || choice.Value == data.Values.[[.Field.Title]]
+			data.[[.Title]]Choices = append(data.[[.Title]]Choices, choice)
+		}
+		if !selected {
+			data.[[.Title]]Choices = append(data.[[.Title]]Choices, [[$.Camel]]Choice{Value: data.Values.[[.Field.Title]], Label: data.Values.[[.Field.Title]]})
+		}
+	}
+[[- end]]
+	return nil
+}
+[[- end]]
 [[- if .Broadcast]]
 
 // [[.Camel]]Channel is where the [[.Plural]] pages publish and subscribe: the

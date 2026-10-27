@@ -122,6 +122,21 @@ func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFil
 		}
 		files = append(files, generatedFile{path: filepath.Join("app", "views", spec.Plural, page.name+".gohtml"), content: content})
 	}
+	for _, reference := range view.References {
+		content, err := renderScaffoldTemplate("by_reference.gohtml.tmpl", byReferenceView{scaffoldView: view, Ref: reference})
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, generatedFile{path: filepath.Join("app", "views", spec.Plural, "by_"+reference.Name+".gohtml"), content: content})
+	}
+	entries, err := associationEntries(projectRoot, spec.resourceRequest)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, generatedFile{path: associationsPath(spec.Plural), content: renderAssociations(spec.resourceRequest, entries)})
+	if spec.rewrites, err = parentRewrites(projectRoot, *spec); err != nil {
+		return nil, err
+	}
 	if spec.Destroy {
 		// The views base and the live-update transport are shared with the
 		// rest of the application; destroying one scaffold never touches them.

@@ -93,6 +93,9 @@ func (r *[[.Name]]MemoryRepository) Delete(_ context.Context, id uuid.UUID, vers
 	return nil
 }
 
+[[- .MemoryListBy (printf "%sMemoryRepository" .Name)]]
+[[- .ReferenceStubs]]
+
 // bump simulates another request changing the [[.Name]] behind the service's back.
 func (r *[[.Name]]MemoryRepository) bump(id uuid.UUID) {
 	r.mu.Lock()
@@ -119,7 +122,7 @@ func new[[.Title]]Fixture(t *testing.T) [[.Name]]Fixture {
 		ticks++
 		return [[.Name]]ClockStart.Add(time.Duration(ticks) * time.Second)
 	}
-	service, err := application.New[[.Title]]Service(repo, clock, uuid.New)
+	service, err := application.New[[.Title]]Service(repo,[[.StubArgs]] clock, uuid.New)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,15 +152,20 @@ func [[.Name]]JSON(t *testing.T, entity domain.[[.Title]]) string {
 func Test[[.Title]]ServiceRequiresDependencies(t *testing.T) {
 	t.Parallel()
 	repo := new[[.Title]]MemoryRepository()
-	if _, err := application.New[[.Title]]Service(nil, time.Now, uuid.New); err == nil {
+	if _, err := application.New[[.Title]]Service(nil,[[.StubArgs]] time.Now, uuid.New); err == nil {
 		t.Error("nil repository accepted")
 	}
-	if _, err := application.New[[.Title]]Service(repo, nil, uuid.New); err == nil {
+	if _, err := application.New[[.Title]]Service(repo,[[.StubArgs]] nil, uuid.New); err == nil {
 		t.Error("nil clock accepted")
 	}
-	if _, err := application.New[[.Title]]Service(repo, time.Now, nil); err == nil {
+	if _, err := application.New[[.Title]]Service(repo,[[.StubArgs]] time.Now, nil); err == nil {
 		t.Error("nil id source accepted")
 	}
+[[- range $i, $r := .References]]
+	if _, err := application.New[[$.Title]]Service(repo,[[range $j, $other := $.References]] [[if eq $i $j]]nil[[else]][[$other.StubType]]{}[[end]],[[end]] time.Now, uuid.New); err == nil {
+		t.Error("nil [[$r.Human]] repository accepted")
+	}
+[[- end]]
 }
 
 func Test[[.Title]]ServiceCreate(t *testing.T) {
@@ -201,7 +209,7 @@ func Test[[.Title]]ServiceCreateRejectsInvalidInputAndStoresNothing(t *testing.T
 func Test[[.Title]]ServiceCreateReportsIDFailure(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("entropy exhausted")
-	service, err := application.New[[.Title]]Service(new[[.Title]]MemoryRepository(), time.Now, func() (uuid.UUID, error) { return uuid.UUID{}, failure })
+	service, err := application.New[[.Title]]Service(new[[.Title]]MemoryRepository(),[[.StubArgs]] time.Now, func() (uuid.UUID, error) { return uuid.UUID{}, failure })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,3 +353,82 @@ func Test[[.Title]]ServiceDelete(t *testing.T) {
 		t.Errorf("second delete: err = %v, want Err[[.Title]]NotFound", err)
 	}
 }
+[[- range .References]]
+
+// A [[$.Name]] names a [[.Human]] the caller can see: creating or changing one to
+// name a missing [[.Human]] fails with the field's error and stores nothing.
+func Test[[$.Title]]ServiceRefusesAMissing[[.Title]](t *testing.T) {
+	t.Parallel()
+	f := new[[$.Title]]Fixture(t)
+	ctx := context.Background()
+	input := domain.[[$.Title]]Input{
+		[[$.SampleInput 1 true]]
+	}
+	input.[[.Field.Title]] = [[.Field.Literal .MissingVar]]
+	if _, err := f.service.Create(ctx, input); !errors.Is(err, domain.Err[[$.Title]][[.Title]]NotFound) {
+		t.Fatalf("create: err = %v, want Err[[$.Title]][[.Title]]NotFound", err)
+	}
+	page, err := f.service.List(ctx, pagination.Request{})
+	if err != nil || len(page.Items) != 0 {
+		t.Fatalf("page = %+v, err = %v; want nothing stored", page, err)
+	}
+	entity := f.create(t, 1)
+	_, err = f.service.Update(ctx, entity.ID, entity.Version, domain.[[$.Title]]Changes{[[.Field.Title]]: new([[.MissingVar]])})
+	if !errors.Is(err, domain.Err[[$.Title]][[.Title]]NotFound) {
+		t.Fatalf("update: err = %v, want Err[[$.Title]][[.Title]]NotFound", err)
+	}
+	if stored, err := f.service.Get(ctx, entity.ID); err != nil || [[$.Name]]JSON(t, stored) != [[$.Name]]JSON(t, entity) {
+		t.Fatalf("a refused update changed the [[$.Name]]: %v, %v", stored, err)
+	}
+}
+
+// The nested list holds the [[$.Plural]] of one [[.Human]] only, newest first, and a
+// missing [[.Human]] is not found.
+func Test[[$.Title]]ServiceListBy[[.Title]](t *testing.T) {
+	t.Parallel()
+	f := new[[$.Title]]Fixture(t)
+	ctx := context.Background()
+	mine, other := uuid.MustNew(), uuid.MustNew()
+	var want []uuid.UUID
+	for i, [[.Camel]]ID := range []uuid.UUID{mine, other, mine, mine} {
+		input := domain.[[$.Title]]Input{
+			[[$.SampleInput 1 true]]
+		}
+		input.[[.Field.Title]] = [[.Field.Literal (printf "%sID" .Camel)]]
+		entity, err := f.service.Create(ctx, input)
+		if err != nil {
+			t.Fatalf("create #%d: %v", i, err)
+		}
+		if [[.Camel]]ID == mine {
+			want = append([]uuid.UUID{entity.ID}, want...)
+		}
+	}
+	var got []uuid.UUID
+	request := pagination.Request{Limit: 2}
+	for range 3 {
+		page, err := f.service.ListBy[[.Title]](ctx, mine, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entity := range page.Items {
+			got = append(got, entity.ID)
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		if request.After, err = pagination.DecodeCursor(page.NextCursor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the [[.Human]]'s [[$.Plural]] = %v, want %v", got, want)
+	}
+	if _, err := f.service.ListBy[[.Title]](ctx, [[.MissingVar]], pagination.Request{}); !errors.Is(err, domain.Err[[.Title]]NotFound) {
+		t.Fatalf("missing [[.Human]]: err = %v, want Err[[.Title]]NotFound", err)
+	}
+	choices, err := f.service.[[.Title]]Choices(ctx)
+	if err != nil || len(choices) != 1 || choices[0].ID != [[.KnownVar]] {
+		t.Fatalf("[[.Human]] choices = %v, %v", choices, err)
+	}
+}
+[[- end]]

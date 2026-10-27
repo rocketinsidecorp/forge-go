@@ -193,6 +193,9 @@ type resourceSpec struct {
 	// references are the references fields, resolved against the
 	// application (resolveReferences).
 	references []referenceSpec
+	// rewrites are the referenced scaffolds' _associations.gohtml, with this
+	// scaffold's frame added (or, for destroy, taken out).
+	rewrites []fileRewrite
 }
 
 func runGenerateResource(args []string, stdout io.Writer, root string, env []string, now time.Time) error {
@@ -222,6 +225,10 @@ func generateResourceFiles(stdout io.Writer, root string, spec resourceSpec, fil
 			return err
 		}
 	}
+	rewrites, err := checkRewritesAt(root, spec.rewrites, true)
+	if err != nil {
+		return err
+	}
 	if !spec.DryRun {
 		if err := applyGeneratedFiles(root, directories, newFiles(files)); err != nil {
 			return err
@@ -231,6 +238,12 @@ func generateResourceFiles(stdout io.Writer, root string, spec resourceSpec, fil
 				return err
 			}
 		}
+		if err := applyRewrites(root, rewrites); err != nil {
+			return err
+		}
+	}
+	if err := reportRewrites(stdout, rewrites, spec.DryRun); err != nil {
+		return err
 	}
 	return reportGenerated(stdout, spec, files, wiring)
 }

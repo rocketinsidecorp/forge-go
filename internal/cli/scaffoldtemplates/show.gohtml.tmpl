@@ -4,7 +4,9 @@
 <dl id="{{domID "[[.Name]]" .Item.ID}}">
 [[- range .Fields]]
 	<dt>{{t "[[$.Plural]].fields.[[.Name]]"}}</dt>
-[[- if .Optional]]
+[[- if and .IsReference .Ref.Scaffold]]
+	<dd>{{with .Item.[[.Title]]}}<a href="/[[.Ref.Plural]]/{{.}}">{{.}}</a>{{else}}<span class="muted">{{t "[[$.Plural]].form.not_set"}}</span>{{end}}</dd>
+[[- else if .Optional]]
 	<dd>{{with .Item.[[.Title]]}}[[if .IsText]]<pre>{{.}}</pre>[[else]]{{.}}[[end]]{{else}}<span class="muted">{{t "[[$.Plural]].form.not_set"}}</span>{{end}}</dd>
 [[- else]]
 	<dd>[[if .IsText]]<pre>{{.Item.[[.Title]]}}</pre>[[else]]{{.Item.[[.Title]]}}[[end]]</dd>
@@ -25,4 +27,5 @@
 	<input type="hidden" name="version" value="{{.Item.Version}}">
 	<button type="submit">{{t "[[.Plural]].show.delete"}}</button>
 </form>
+{{template "[[.Plural]]/_associations" .}}
 {{end}}

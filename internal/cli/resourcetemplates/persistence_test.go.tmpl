@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+[[- if .References]]
+	"slices"
+[[- end]]
 [[- if .HasString]]
 	"strings"
 [[- end]]
@@ -45,7 +48,7 @@ import (
 // FORGE_TEST_REQUIRE_DATABASE=true.
 [[- end]]
 
-func new[[.Title]]Repository(t *testing.T) (*persistence.[[.Title]]Repository, [[if .Postgres]]*postgrestest.RLS[[else]]*sqldb.DB[[end]]) {
+func new[[.Title]]Repository(t *testing.T) ([[.RepoUnderTest]], [[if .Postgres]]*postgrestest.RLS[[else]]*sqldb.DB[[end]]) {
 	t.Helper()
 [[- if .Postgres]]
 	// Migrated, as the application's migrate command does
@@ -53,14 +56,23 @@ func new[[.Title]]Repository(t *testing.T) (*persistence.[[.Title]]Repository, [
 	// The repository runs as the runtime role the application serves with:
 	// not a superuser, no BYPASSRLS, not the owner, only data privileges.
 	database := postgrestest.NewRLS(t, db.MigrationSets()...)
+[[- if .References]]
+	return [[.Name]]Store{[[.Title]]Repository: persistence.New[[.Title]]Repository(database.Runtime), t: t, database: database}, database
+[[- else]]
 	return persistence.New[[.Title]]Repository(database.Runtime), database
+[[- end]]
 [[- else]]
 	// Migrated as the application's migrate command does
 	// (db.MigrationSets).
 	database := [[.Database]]test.NewMigratedSets(t, db.MigrationSets()...)
+[[- if .References]]
+	return [[.Name]]Store{[[.Title]]Repository: persistence.New[[.Title]]Repository(database), t: t, database: database}, database
+[[- else]]
 	return persistence.New[[.Title]]Repository(database), database
 [[- end]]
+[[- end]]
 }
+[[- .ReferenceFixtures]]
 [[- if .Tenant]]
 
 [[- if .Postgres]]
@@ -135,7 +147,7 @@ func new[[.Title]]Entity(t *testing.T, full bool) domain.[[.Title]] {
 	return entity
 }
 
-func mustCreate[[.Title]](t *testing.T, ctx context.Context, repo *persistence.[[.Title]]Repository, full bool) domain.[[.Title]] {
+func mustCreate[[.Title]](t *testing.T, ctx context.Context, repo [[.RepoUnderTest]], full bool) domain.[[.Title]] {
 	t.Helper()
 	created, err := repo.Create(ctx, new[[.Title]]Entity(t, full))
 	if err != nil {
@@ -154,7 +166,7 @@ func [[.Name]]JSON(t *testing.T, entity domain.[[.Title]]) string {
 }
 
 [[- if .Tenant]]
-func [[.Name]]IDs(t *testing.T, ctx context.Context, repo *persistence.[[.Title]]Repository) []uuid.UUID {
+func [[.Name]]IDs(t *testing.T, ctx context.Context, repo [[.RepoUnderTest]]) []uuid.UUID {
 	t.Helper()
 	rows, err := repo.List(ctx, uuid.UUID{}, 100)
 	if err != nil {
@@ -621,5 +633,118 @@ func Test[[.Title]]RowLevelSecurityAppliesToTheOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+[[- end]]
+[[- range .References]]
+
+// The foreign key on [[.Field.Name]] refuses a [[.Human]] that does not exist[[if $.Tenant]], or that
+// belongs to another organization (it is (org_id, [[.Field.Name]]) -> [[.Plural]] (org_id, id)),[[end]]
+// even when the service's check is bypassed.
+func Test[[$.Title]]RepositoryRefusesAMissing[[.Title]](t *testing.T) {
+	repo, [[if $.Tenant]]database[[else]]_[[end]] := new[[$.Title]]Repository(t)
+[[- if $.Tenant]]
+	_, ctx := new[[$.Title]]Tenant(t, database)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	entity := new[[$.Title]]Entity(t, true)
+	entity.[[.Field.Title]] = [[.Field.Literal "uuid.MustNew()"]]
+	if _, err := repo.[[$.Title]]Repository.Create(ctx, entity); !errors.Is(err, domain.Err[[$.Title]][[.Title]]NotFound) {
+		t.Fatalf("missing [[.Human]]: err = %v, want Err[[$.Title]][[.Title]]NotFound", err)
+	}
+[[- if $.Tenant]]
+	other, _ := new[[$.Title]]Tenant(t, database)
+	foreign := uuid.MustNew()
+	[[.Child]]Insert[[.Title]](t, database, other.ID, foreign)
+	entity.[[.Field.Title]] = [[.Field.Literal "foreign"]]
+	if _, err := repo.[[$.Title]]Repository.Create(ctx, entity); !errors.Is(err, domain.Err[[$.Title]][[.Title]]NotFound) {
+		t.Fatalf("another organization's [[.Human]]: err = %v, want Err[[$.Title]][[.Title]]NotFound", err)
+	}
+	stored := mustCreate[[$.Title]](t, ctx, repo, true)
+	stored.[[.Field.Title]] = [[.Field.Literal "foreign"]]
+	if _, err := repo.[[$.Title]]Repository.Update(ctx, stored); !errors.Is(err, domain.Err[[$.Title]][[.Title]]NotFound) {
+		t.Fatalf("update to another organization's [[.Human]]: err = %v, want Err[[$.Title]][[.Title]]NotFound", err)
+	}
+[[- end]]
+}
+
+// ListBy[[.Title]] walks the [[$.Plural]] of one [[.Human]] only, newest first.
+func Test[[$.Title]]RepositoryListBy[[.Title]](t *testing.T) {
+	repo, [[if $.Tenant]]database[[else]]_[[end]] := new[[$.Title]]Repository(t)
+[[- if $.Tenant]]
+	_, ctx := new[[$.Title]]Tenant(t, database)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	mine, other := uuid.MustNew(), uuid.MustNew()
+	var want []uuid.UUID
+	for _, [[.Camel]]ID := range []uuid.UUID{mine, other, mine, mine, other} {
+		entity := new[[$.Title]]Entity(t, true)
+		entity.[[.Field.Title]] = [[.Field.Literal (printf "%sID" .Camel)]]
+		created, err := repo.Create(ctx, entity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if [[.Camel]]ID == mine {
+			want = append([]uuid.UUID{created.ID}, want...)
+		}
+	}
+	first, err := repo.ListBy[[.Title]](ctx, mine, uuid.UUID{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest, err := repo.ListBy[[.Title]](ctx, mine, first[len(first)-1].ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []uuid.UUID
+	for _, entity := range append(first, rest...) {
+		got = append(got, entity.ID)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the [[.Human]]'s [[$.Plural]] = %v, want %v", got, want)
+	}
+[[- if $.Tenant]]
+	_, otherCtx := new[[$.Title]]Tenant(t, database)
+	if rows, err := repo.ListBy[[.Title]](otherCtx, mine, uuid.UUID{}, 10); err != nil || len(rows) != 0 {
+		t.Fatalf("another organization lists %d of the [[.Human]]'s [[$.Plural]] (%v)", len(rows), err)
+	}
+[[- end]]
+}
+
+// Deleting a [[.Human]] that has [[$.Plural]] [[if $.Cascade]]deletes them too (--on-delete=cascade)[[else]]is refused with Err[[.Title]]InUse, and keeps everything[[end]].
+func Test[[$.Title]]Deleting[[.Title]]With[[$.PluralTitle]](t *testing.T) {
+	repo, database := new[[$.Title]]Repository(t)
+[[- if $.Tenant]]
+	_, ctx := new[[$.Title]]Tenant(t, database)
+[[- else]]
+	ctx := context.Background()
+[[- end]]
+	entity := new[[$.Title]]Entity(t, true)
+	[[.Camel]]ID := uuid.MustNew()
+	entity.[[.Field.Title]] = [[.Field.Literal (printf "%sID" .Camel)]]
+	created, err := repo.Create(ctx, entity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	[[.PluralCamel]] := persistence.New[[.Title]]Repository(database[[if $.Postgres]].Runtime[[end]])
+[[- if $.Cascade]]
+	if err := [[.PluralCamel]].Delete(ctx, [[.Camel]]ID, 1); err != nil {
+		t.Fatalf("delete the [[.Human]]: %v", err)
+	}
+	if _, err := repo.Get(ctx, created.ID); !errors.Is(err, domain.Err[[$.Title]]NotFound) {
+		t.Fatalf("the [[$.Name]] outlived its [[.Human]]: err = %v", err)
+	}
+[[- else]]
+	if err := [[.PluralCamel]].Delete(ctx, [[.Camel]]ID, 1); !errors.Is(err, domain.Err[[.Title]]InUse) {
+		t.Fatalf("delete a [[.Human]] with [[$.Plural]]: err = %v, want Err[[.Title]]InUse", err)
+	}
+	if _, err := [[.PluralCamel]].Get(ctx, [[.Camel]]ID); err != nil {
+		t.Fatalf("the refused delete removed the [[.Human]]: %v", err)
+	}
+	if _, err := repo.Get(ctx, created.ID); err != nil {
+		t.Fatalf("the refused delete removed the [[$.Name]]: %v", err)
+	}
+[[- end]]
 }
 [[- end]]

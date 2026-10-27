@@ -72,6 +72,9 @@ type fieldView struct {
 	Message    string // public error message
 	Resource   string // Product
 	Camel      string // product: the resource in lower camel case, for identifiers
+	// Ref is the resource a references field references, nil for any other
+	// field.
+	Ref *referenceView
 }
 
 func (f fieldView) IsString() bool { return f.Type == "string" }
@@ -106,6 +109,9 @@ type referenceView struct {
 	// Label is the referenced resource's field that names a row in a select
 	// (its first required string field), or nil for the id.
 	Label *fieldView
+	// Child is the referencing resource in lower camel case (comment), the
+	// prefix of the test doubles' names.
+	Child string
 }
 
 // Validated reports whether the domain checks values of this field's type
@@ -178,6 +184,13 @@ func newResourceView(spec resourceSpec) resourceView {
 	for _, reference := range spec.references {
 		view.References = append(view.References, newReferenceView(spec, view, reference))
 	}
+	for i := range view.Fields {
+		for j := range view.References {
+			if view.References[j].Field.Name == view.Fields[i].Name {
+				view.Fields[i].Ref = &view.References[j]
+			}
+		}
+	}
 	return view
 }
 
@@ -193,7 +206,7 @@ func newReferenceView(spec resourceSpec, view resourceView, reference referenceS
 		Camel: lowerCamel(parent.Name), PluralCamel: lowerCamel(parent.Plural), Human: strings.ReplaceAll(parent.Name, "_", " "),
 		Scaffold: reference.parent.Scaffold, AddsKey: reference.addsKey,
 		Constraint: view.Plural + "_" + reference.field.Name + "_fk", Index: view.Plural + "_" + reference.field.Name + "_idx",
-		Parent: parent,
+		Parent: parent, Child: lowerCamel(view.Name),
 	}
 	for _, field := range view.Fields {
 		if field.Name == reference.field.Name {

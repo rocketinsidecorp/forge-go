@@ -3,8 +3,10 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -244,4 +246,222 @@ func dependents(projectRoot *os.Root, name string) ([]string, error) {
 		}
 	}
 	return found, nil
+}
+
+// associationEntry is one Turbo Frame of a scaffold's
+// app/views/PLURAL/_associations.gohtml: the page of something that
+// references the row its show page displays.
+type associationEntry struct {
+	// sort orders the frames: the create migration of what they show.
+	sort string
+	// frame is the frame's id, src its path (a template, with the row's id),
+	// title the translation key of its fallback link.
+	frame, src, title string
+	// top makes the frame's links and forms navigate the whole page.
+	top bool
+}
+
+// associationsPath is the partial a scaffold's show page includes.
+func associationsPath(plural string) string {
+	return filepath.Join("app", "views", plural, "_associations.gohtml")
+}
+
+// childEntry is the frame of a scaffold whose references field names parent.
+func childEntry(parent resourceRequest, child resourceRequest, migration string) associationEntry {
+	return associationEntry{
+		sort:  path.Base(migration),
+		frame: parent.Name + "_" + child.Plural,
+		src:   "/" + parent.Plural + "/{{.Item.ID}}/" + child.Plural,
+		title: child.Plural + ".by_" + parent.Name + ".title",
+		top:   true,
+	}
+}
+
+// joinEntry is the frame of the join between left (parent) and right.
+func joinEntry(left resourceRequest, right resourceRequest, migration string) associationEntry {
+	return associationEntry{
+		sort:  path.Base(migration),
+		frame: joinTable(left, right),
+		src:   "/" + left.Plural + "/{{.Item.ID}}/" + right.Plural,
+		title: joinTable(left, right) + ".index.title",
+	}
+}
+
+// joinTable is the table of the join between left and right: post_tags.
+func joinTable(left, right resourceRequest) string { return left.Name + "_" + right.Plural }
+
+// associationEntries lists the frames of parent's page: the scaffolds that
+// reference it and the joins it is the first side of, whose pages exist.
+func associationEntries(projectRoot *os.Root, parent resourceRequest) ([]associationEntry, error) {
+	resources, err := recordedResources(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	exists := func(file string) bool {
+		_, err := projectRoot.Lstat(file)
+		return err == nil
+	}
+	var entries []associationEntry
+	for _, child := range resources {
+		if !child.request.Scaffold || child.request.Name == parent.Name {
+			continue
+		}
+		for _, field := range child.request.Fields {
+			if field.References == parent.Name && exists(filepath.Join("app", "adapters", "htmlui", child.request.Name+".go")) {
+				entries = append(entries, childEntry(parent, child.request, child.file))
+			}
+		}
+	}
+	joins, err := recordedJoins(projectRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, join := range joins {
+		if join.left != parent.Name {
+			continue
+		}
+		right, found := findRecorded(resources, join.right)
+		if !found {
+			continue
+		}
+		if exists(filepath.Join("app", "adapters", "htmlui", joinTable(parent, right.request)+".go")) {
+			entries = append(entries, joinEntry(parent, right.request, join.file))
+		}
+	}
+	return entries, nil
+}
+
+// renderAssociations is app/views/PLURAL/_associations.gohtml with entries.
+func renderAssociations(parent resourceRequest, entries []associationEntry) string {
+	slices.SortStableFunc(entries, func(a, b associationEntry) int { return strings.Compare(a.sort, b.sort) })
+	var out strings.Builder
+	fmt.Fprintf(&out, "{{/* forge:associations %s\n", parent.Plural)
+	fmt.Fprintf(&out, "What references a %s, on its page (%s/show includes this partial). Each\n", strings.ReplaceAll(parent.Name, "_", " "), parent.Plural)
+	out.WriteString("Turbo Frame loads the page that lists it. Generators rewrite this file when an\n")
+	out.WriteString("association is generated or destroyed, and refuse when it was edited. */}}\n")
+	if len(entries) == 0 {
+		return out.String()
+	}
+	out.WriteString("<section class=\"associations\">\n")
+	for _, entry := range entries {
+		target := ""
+		if entry.top {
+			target = ` target="_top"`
+		}
+		fmt.Fprintf(&out, "<turbo-frame id=\"%s\" src=\"%s\"%s>\n\t<a href=\"%s\">{{t %q}}</a>\n</turbo-frame>\n", entry.frame, entry.src, target, entry.src, entry.title)
+	}
+	out.WriteString("</section>\n")
+	return out.String()
+}
+
+// fileRewrite changes a file another generation owns (a parent's
+// _associations.gohtml): from what it must still be to what it becomes.
+type fileRewrite struct {
+	path     string
+	from, to string
+}
+
+// checkRewrites decides each rewrite against the file as it is: one that
+// already says to is dropped; a missing file is created when generating
+// (create is true); anything else but from is refused, as an edited file.
+func checkRewrites(projectRoot *os.Root, rewrites []fileRewrite, create bool) ([]fileRewrite, error) {
+	var planned []fileRewrite
+	for _, rewrite := range rewrites {
+		if err := rejectExistingSymlinkPaths(projectRoot, []string{rewrite.path}); err != nil {
+			return nil, err
+		}
+		current, err := projectRoot.ReadFile(rewrite.path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist) && create:
+			planned = append(planned, rewrite)
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			return nil, err
+		case string(current) == rewrite.to:
+		case string(current) == rewrite.from:
+			planned = append(planned, rewrite)
+		default:
+			return nil, fmt.Errorf("refusing to change %s: it is not what the generators wrote (it was edited), so the association's frame cannot be added or removed safely; nothing was written. Restore it (git checkout %s), or move your changes into the show page, and run the command again", filepath.ToSlash(rewrite.path), filepath.ToSlash(rewrite.path))
+		}
+	}
+	return planned, nil
+}
+
+// applyRewrites writes the planned rewrites.
+func applyRewrites(root string, rewrites []fileRewrite) error {
+	if len(rewrites) == 0 {
+		return nil
+	}
+	projectRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = projectRoot.Close() }()
+	for _, rewrite := range rewrites {
+		if err := writeRootFileAtomic(projectRoot, rewrite.path, []byte(rewrite.to)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkRewritesAt is checkRewrites for the application in root.
+func checkRewritesAt(root string, rewrites []fileRewrite, create bool) ([]fileRewrite, error) {
+	if len(rewrites) == 0 {
+		return nil, nil
+	}
+	projectRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = projectRoot.Close() }()
+	return checkRewrites(projectRoot, rewrites, create)
+}
+
+// reportRewrites lists the files rewrites change.
+func reportRewrites(stdout io.Writer, rewrites []fileRewrite, dryRun bool) error {
+	verb := "update"
+	if dryRun {
+		verb = "would update"
+	}
+	for _, rewrite := range rewrites {
+		if _, err := fmt.Fprintf(stdout, "  %s  %s\n", verb, rewrite.path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parentRewrites are the changes a scaffold with references fields makes to
+// the _associations.gohtml of every referenced scaffold: its frame added,
+// or, for destroy, taken out.
+func parentRewrites(projectRoot *os.Root, spec resourceSpec) ([]fileRewrite, error) {
+	var rewrites []fileRewrite
+	for _, reference := range spec.references {
+		if !reference.parent.Scaffold {
+			continue
+		}
+		natural, err := associationEntries(projectRoot, reference.parent)
+		if err != nil {
+			return nil, err
+		}
+		own := childEntry(reference.parent, spec.resourceRequest, "~") // a new migration sorts last
+		var without []associationEntry
+		present := false
+		for _, entry := range natural {
+			if entry.frame == own.frame {
+				present = true
+				continue
+			}
+			without = append(without, entry)
+		}
+		path := associationsPath(reference.parent.Plural)
+		switch {
+		case spec.Destroy && present:
+			rewrites = append(rewrites, fileRewrite{path: path, from: renderAssociations(reference.parent, natural), to: renderAssociations(reference.parent, without)})
+		case !spec.Destroy && !present:
+			rewrites = append(rewrites, fileRewrite{path: path, from: renderAssociations(reference.parent, natural), to: renderAssociations(reference.parent, append(natural, own))})
+		}
+	}
+	return rewrites, nil
 }
