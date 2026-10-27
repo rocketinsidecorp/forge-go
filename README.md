@@ -617,6 +617,7 @@ myapp/
   app/bootstrap/bootstrap_test.go
   app/bootstrap/routes_gen.go  # the routes generate scaffold/resource/controller add (generator-owned)
   app/architecture_test.go     # enforces the ring dependency rules (see Architecture test)
+  AGENTS.md                    # guide for AI coding agents (see AGENTS.md for AI coding agents)
   app/adapters/htmlauth/       # PostgreSQL: sign-in, sign-out, two-factor and password-reset pages
   app/views/                   # layout, flash partial (and, with PostgreSQL, sessions/ and passwords/)
   db/db.go                     # embeds db/migrations into the binary
@@ -671,6 +672,25 @@ rm app/domain/leak.go
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#architecture-test-of-the-generated-application)
 has the rules; `extraAllowedImports` in the test admits a third-party package
 to the inner rings on purpose.
+
+### AGENTS.md for AI coding agents
+
+Every generated application carries `AGENTS.md`, a guide of under 120 lines
+for AI coding agents (and new teammates): the rings and the architecture test,
+the `forge` commands (`generate`, `destroy`, `migrate`, `dev`, `test`, `check`,
+`build`), the routes seam (`app/bootstrap/routes_gen.go` is never edited by
+hand), the security defaults (CSRF, tenant scoping, secrets never logged) and
+how to run the tests. It describes only what that application has: an
+`--api` application has no CSRF or view paragraph, one without a database has
+no migration or tenant paragraph, and the sign-in paragraph appears only with
+PostgreSQL. A framework test checks that every command and file it names
+exists.
+
+```sh
+forge new myapp -d sqlite3 && cd myapp
+head -20 AGENTS.md                       # what an agent reads first
+printf '@AGENTS.md\n' > CLAUDE.md        # optional: tools that read only CLAUDE.md import it
+```
 
 ## Translations (i18n)
 

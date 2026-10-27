@@ -22,6 +22,7 @@ var apiOnlyFiles = []string{
 	".github/workflows/ci.yml",
 	".github/workflows/release.yml",
 	".gitignore",
+	"AGENTS.md",
 	"Dockerfile",
 	"README.md",
 	"app/architecture_test.go",

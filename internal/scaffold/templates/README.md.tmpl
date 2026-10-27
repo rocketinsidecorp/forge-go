@@ -461,6 +461,7 @@ forge generate authentication --api-auth
 | `db/seeds.go` | Idempotent seed data for `seed` |
 {{- end}}
 | `app/architecture_test.go` | Test that enforces the dependency rules of the rings (see Architecture) |
+| `AGENTS.md` | Guide for AI coding agents: the rings, the `forge` commands, the routes seam, security defaults, tests |
 | `Dockerfile` | Production image: static binary, distroless, non-root |
 | `compose.yaml` | Local stack running the same image in development mode |
 | `compose.observability.yaml`, `observability/` | Opt-in Grafana, Prometheus (with alert rules), Tempo, Loki and OpenTelemetry Collector stack, preconfigured |
@@ -495,6 +496,11 @@ forge test                                    # everything, including it
 
 To add a third-party package to the domain or application rings, list it in
 `extraAllowedImports` in that file, in a reviewed commit.
+
+`AGENTS.md` is the same rules, the commands, the routes seam and the security
+defaults written for AI coding agents; keep it in step when you change the
+layout. A tool that reads only `CLAUDE.md` can import it with a one-line
+`CLAUDE.md` that contains `@AGENTS.md`.
 {{- if and .DB .DB.Identity}}
 
 ## Identity
