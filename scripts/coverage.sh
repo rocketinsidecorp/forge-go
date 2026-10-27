@@ -51,6 +51,7 @@ module="$(awk '$1 == "module" { print $2; exit }' go.mod)"
 # "Coverage"). Add a package here only if it is a harness for other packages'
 # tests; the check below refuses anything shipped code depends on.
 kits=(
+	auth/authtest
 	cache/cachetest
 	queue/storetest
 	storage/storagetest
@@ -76,7 +77,10 @@ gross_floor=95.0
 package_floor=95.0
 guarded=(
 	auth
+	auth/internal/sqlidentity
+	auth/mysql
 	auth/postgres
+	auth/sqlite
 	credentials
 	csrf
 	encryption

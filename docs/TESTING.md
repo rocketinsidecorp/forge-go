@@ -110,7 +110,8 @@ COVERAGE_PROFILE=cover.out scripts/coverage.sh     # report and gate an existing
 - **Per-package floors.** Each security-relevant package must reach 95% of its
   own statements (`package_floor` and `guarded` in `scripts/coverage.sh`), so
   a well covered module cannot average away an untested one: `auth`,
-  `auth/postgres` (the identity store), `credentials`, `csrf`, `encryption`,
+  the identity stores `auth/postgres`, `auth/sqlite` and `auth/mysql` and
+  their shared SQL (`auth/internal/sqlidentity`), `credentials`, `csrf`, `encryption`,
   `internal/pgurl` (the PostgreSQL URL isolation) and `postgres`. The table in
   the job summary lists them with their numbers; a listed package that is not
   measured fails too. The comparison is exact, not the table's one-decimal
@@ -151,7 +152,7 @@ real backend (PostgreSQL 18 and 16, MariaDB/MySQL, SQLite) in CI, where a
 broken kit or a broken backend fails the suite. They are excluded from the
 gated total only, and still appear in the gross one:
 
-`cache/cachetest`, `queue/storetest`, `storage/storagetest`,
+`auth/authtest`, `cache/cachetest`, `queue/storetest`, `storage/storagetest`,
 `migrate/migratetest`, `ratelimit/limitertest`, `mail/mailtest`,
 `telemetry/telemetrytest`, `mysql/mysqltest`, `postgres/postgrestest`,
 `sqlite/sqlitetest`, `dbtest`.

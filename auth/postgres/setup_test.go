@@ -216,7 +216,7 @@ func TestSetupCommandReadsThePasswordSafely(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(stdout+stderr, ownerPassword) || !strings.Contains(stdout, `tenant "acme"`) || !strings.Contains(stdout, "/session/new") {
+	if strings.Contains(stdout+stderr, ownerPassword) || !strings.Contains(stdout, `sign-in slug "acme"`) || !strings.Contains(stdout, "/session/new") {
 		t.Fatalf("stdout=%q stderr=%q", stdout, stderr)
 	}
 	repository, err := authpostgres.New(db)
