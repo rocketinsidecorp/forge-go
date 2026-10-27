@@ -21,6 +21,13 @@ failure instead of a skip; CI sets them, so these tests can never silently stop
 running there (the generated application's TypeScript is type-checked in the
 `generated` job, [ADR 0049](adr/0049-typescript-by-default.md)).
 
+The `macos` job of `ci.yml` builds `./cmd/forge` and runs
+`go test -short ./router/... ./internal/deploy/...` on `macos-latest` with the
+runner's default `$TMPDIR`, which is long enough to have broken `forge deploy`'s
+SSH control socket (`internal/deploy/control_path_test.go`). Run the same on a
+Mac to check a change to the CLI or `forge deploy`; a test that only works on
+Linux skips with `runtime.GOOS` and says why.
+
 The PostgreSQL tests that need `uuidv7()` (any application table with
 `DEFAULT uuidv7()`; Forge's identity migrations no longer use it) require
 PostgreSQL 18. On an older

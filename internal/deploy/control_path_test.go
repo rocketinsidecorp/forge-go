@@ -75,6 +75,27 @@ func TestSSHRunnerKeepsTheControlSocketPathShortWithALongTMPDIR(t *testing.T) {
 	}
 }
 
+// TestSSHRunnerControlSocketFitsWithTheDefaultTMPDIR runs with whatever
+// $TMPDIR the machine has: on macOS (the macos job of ci.yml) that is
+// /var/folders/xx/.../T/, the path that broke `forge deploy` there.
+func TestSSHRunnerControlSocketFitsWithTheDefaultTMPDIR(t *testing.T) {
+	t.Parallel()
+	binary, argsFile, _ := fakeSSH(t, "", "", 0)
+	runner := &SSHRunner{Binary: binary}
+	defer func() { _ = runner.Close() }()
+	if _, err := runner.Run(t.Context(), "h", Command{Script: "true"}); err != nil {
+		t.Fatalf("the default TMPDIR (%s) broke the runner: %v", os.TempDir(), err)
+	}
+	argv, _ := os.ReadFile(argsFile)
+	match := regexp.MustCompile(`(?m)^ControlPath=(.+)$`).FindStringSubmatch(string(argv))
+	if match == nil {
+		t.Fatalf("ssh got no ControlPath:\n%s", argv)
+	}
+	if bound := len(strings.ReplaceAll(match[1], "%C", strings.Repeat("0", 40))) + len(".") + 16; bound >= 104 {
+		t.Errorf("with TMPDIR %s the socket path is %d bytes, macOS allows 103", os.TempDir(), bound)
+	}
+}
+
 func TestControlDirectoryStaysUnderTMPDIRWhenTheSocketsFit(t *testing.T) {
 	t.Parallel()
 	base, err := os.MkdirTemp("/tmp", "fc") // short by construction
