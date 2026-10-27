@@ -64,10 +64,27 @@ func TestGeneratedArchitectureTestPassesAndCatchesViolations(t *testing.T) {
 			if output, ok := runArchitectureTest(t, dir); !ok {
 				t.Fatalf("the architecture test fails on a freshly generated application:\n%s", output)
 			}
+			// A comment after the module path, and a quoted path, are valid go.mod.
+			goMod := filepath.Join(dir, "go.mod")
+			original := readFile(t, goMod)
+			for _, line := range []string{"module " + module + " // the application", "module \"" + module + "\""} {
+				writeFile(t, goMod, strings.Replace(original, "module "+module, line, 1))
+				if output, ok := runArchitectureTest(t, dir); !ok {
+					t.Fatalf("the architecture test fails with %q in go.mod:\n%s", line, output)
+				}
+			}
+			writeFile(t, goMod, original)
 
 			for _, violation := range []struct{ file, imports, want string }{
 				{"app/domain/leak.go", "net/http", "the domain ring must not do I/O or speak HTTP"},
 				{"app/domain/leak.go", "database/sql", "the domain ring must not do I/O or speak HTTP"},
+				{"app/domain/leak.go", "io/fs", "the domain ring must not do I/O or speak HTTP"},
+				{"app/domain/leak.go", "io/ioutil", "the domain ring must not do I/O or speak HTTP"},
+				{"app/domain/leak.go", "path/filepath", "the domain ring must not do I/O or speak HTTP"},
+				{"app/domain/leak.go", "unsafe", "the domain ring must not do I/O or speak HTTP"},
+				{"app/domain/leak.go", "C", "the domain ring must not do I/O or speak HTTP"},
+				{"app/domain/leak_test.go", "os", "the domain ring must not do I/O or speak HTTP"},
+				{"app/application/leak.go", "path/filepath", "the application ring must not do I/O or speak HTTP"},
 				{"app/domain/leak.go", "github.com/rocketinsidecorp/forge-go/web", "the domain ring may import only the framework's uuid, fault packages"},
 				{"app/domain/leak.go", module + "/app/application", "the domain ring may import only app/domain of this module"},
 				{"app/application/leak.go", module + "/app/adapters/persistence", "the application ring may import only app/domain, app/application of this module"},

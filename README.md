@@ -653,11 +653,13 @@ Every generated application carries `app/architecture_test.go`, a test that
 enforces the dependency direction of its rings with the standard library
 (`go/parser` on the import lines, no tools to install). `app/domain` imports
 only itself, the standard library without `net`, `net/http`, `database/sql`,
-`os`, `embed` and `html/template`, and Forge's `uuid` and `fault`;
+`os`, `io/fs`, `io/ioutil`, `path/filepath`, `embed`, `html/template`, `unsafe`
+and cgo, and Forge's `uuid` and `fault`;
 `app/application` imports `app/domain`, itself and Forge's `uuid`, `fault`,
 `pagination` and `tenancy`; `app/adapters` and every other package outside
-`app/bootstrap` never import `app/bootstrap`, the only composition root.
-It passes on a fresh application and after every generator, and a violation
+`app/bootstrap` never import `app/bootstrap`, the only composition root. Test
+files are checked too: domain and application tests use in-memory fakes. It
+passes on a fresh application and after every generator, and a violation
 fails with the file, the line and the import:
 
 ```sh

@@ -163,7 +163,7 @@ var (
 // promqlWords are the PromQL functions, aggregations and operators the rules
 // use; every other word of an expression must be an exported metric.
 var promqlWords = []string{
-	"sum", "rate", "increase", "histogram_quantile", "absent_over_time", "and", "or", "unless", "on", "ignoring",
+	"sum", "rate", "increase", "histogram_quantile", "absent_over_time", "and", "or", "unless", "on", "ignoring", "offset",
 }
 
 // builtinMetrics are series Prometheus itself creates for every target.
@@ -273,6 +273,40 @@ func TestAlertRulesAreWellFormed(t *testing.T) {
 		}
 	}
 
+	// A counter series is born at 1 and increase() of it is empty, so an
+	// alert on a counter of rare events must also catch the series that
+	// appeared inside the window: "x unless x offset W".
+	for _, rule := range rules {
+		name, _ := rule["alert"].(string)
+		expr, _ := rule["expr"].(string)
+		if name != "ForgeQueueJobsDead" && name != "ForgeScheduledJobFailing" {
+			continue
+		}
+		if !strings.Contains(expr, "increase(") || !strings.Contains(expr, " unless ") || !strings.Contains(expr, "offset 15m)") {
+			t.Errorf("%s = %q; it must also fire for a series born inside the window (x unless x offset 15m)", name, expr)
+		}
+		if strings.Contains(fmt.Sprint(mapAt(t, rule, "annotations")["description"]), "$value") {
+			t.Errorf("%s quotes $value, which is a counter total and not an event count in the second half of the expression", name)
+		}
+	}
+
+	// The latency alert leaves out the event stream route the scaffold's
+	// --broadcast option mounts.
+	streams, err := os.ReadFile(filepath.Join("..", "cli", "scaffoldtemplates", "htmlstreams.go.tmpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(streams), `const Path = "/streams"`) {
+		t.Error("the event stream is no longer mounted at /streams: update the http_route exclusion of ForgeHighRequestLatencyP95")
+	}
+	for _, rule := range rules {
+		if rule["alert"] == "ForgeHighRequestLatencyP95" {
+			if expr, _ := rule["expr"].(string); !strings.Contains(expr, `http_route!~"/streams"`) {
+				t.Errorf("ForgeHighRequestLatencyP95 = %q; it must exclude the /streams event stream", expr)
+			}
+		}
+	}
+
 	// Prometheus loads the file the overlay mounts.
 	files := stringList(t, readYAML(t, dir, "observability/prometheus.yml")["rule_files"])
 	if len(files) != 1 || files[0] != "/etc/prometheus/alerts.yml" {
@@ -322,7 +356,9 @@ func TestAlertRuleCheckRejectsWhatItShouldReject(t *testing.T) {
 		`sum(rate(http_server_request_duration_seconds_count[5m]))`:                            "",
 		`sum by (le) (rate(http_server_request_duration_seconds_bucket{http_route="/x"}[5m]))`: "",
 		`up == 0`: "",
-		`db_client_connection_count{db_client_connection_state="used"}`:                              "",
+		`sum by (job) (go_goroutine_count) unless sum by (job) (go_goroutine_count offset 15m)`: "",
+		`rate(http_server_request_duration_seconds_count{http_route!~"/streams"}[5m])`:          "",
+		`db_client_connection_count{db_client_connection_state="used"}`:                         "",
 		`http_server_requests_total`:                                                                 `"http_server_requests_total" is not a metric`,
 		`rate(http_server_request_duration_seconds_total[5m])`:                                       `"http_server_request_duration_seconds_total" is not a metric`,
 		`db_client_connection_count_bucket`:                                                          `"db_client_connection_count_bucket" is not a metric`,

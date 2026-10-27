@@ -48,15 +48,20 @@ groups:
           summary: "More than 5% of requests to {{ $labels.job }} fail with 5xx"
           description: "The 5xx ratio of {{ $labels.job }} has been {{ $value | humanizePercentage }} over 5 minutes."
 
+      # Server-Sent Events (the generated GET /streams of scaffold --broadcast)
+      # keep a request open for as long as a browser tab is, and the request
+      # is recorded when it ends, so their durations would swamp the p95.
+      # They are left out by route; add your own long-lived routes to the
+      # http_route regular expression (an exact path, alternatives with |).
       - alert: ForgeHighRequestLatencyP95
         expr: |
-          histogram_quantile(0.95, sum by (job, le) (rate(http_server_request_duration_seconds_bucket[5m]))) > 0.5
+          histogram_quantile(0.95, sum by (job, le) (rate(http_server_request_duration_seconds_bucket{http_route!~"/streams"}[5m]))) > 0.5
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: "p95 request latency of {{ $labels.job }} is above 500 ms"
-          description: "The 95th percentile request duration of {{ $labels.job }} has been {{ $value | humanizeDuration }} for 10 minutes."
+          description: "The 95th percentile request duration of {{ $labels.job }}, without the /streams event stream, has been {{ $value | humanizeDuration }} for 10 minutes."
 
   - name: forge-database
     rules:
@@ -83,20 +88,34 @@ groups:
 
   - name: forge-jobs
     rules:
+      # A counter series is created by its first event, at the value 1, and
+      # increase() of a series with a single sample is empty: "increase(x[15m])
+      # > 0" alone never fires for the first dead job (or the first failure of
+      # a job) after the application started. "x unless x offset 15m" is the
+      # series that exists now and did not 15 minutes ago, that is, one born
+      # inside the window; the two halves together cover the first event and
+      # every later one. Both sum by the outcome label too, so a first
+      # "timeout" is not hidden by an older "failed" series of the same job.
+      # The value is not an event count (the second half is the counter
+      # itself), so the descriptions do not quote it.
       - alert: ForgeQueueJobsDead
         expr: |
-          sum by (job, forge_job_kind) (increase(forge_queue_job_duration_seconds_count{forge_job_outcome="dead"}[15m])) > 0
+          (sum by (job, forge_job_kind) (increase(forge_queue_job_duration_seconds_count{forge_job_outcome="dead"}[15m])) > 0)
+            or (sum by (job, forge_job_kind) (forge_queue_job_duration_seconds_count{forge_job_outcome="dead"})
+              unless sum by (job, forge_job_kind) (forge_queue_job_duration_seconds_count{forge_job_outcome="dead"} offset 15m))
         labels:
           severity: warning
         annotations:
           summary: "Queue jobs of kind {{ $labels.forge_job_kind }} of {{ $labels.job }} failed for good"
-          description: "{{ $value }} job(s) exhausted their attempts in the last 15 minutes."
+          description: "At least one job of this kind used up its attempts in the last 15 minutes."
 
       - alert: ForgeScheduledJobFailing
         expr: |
-          sum by (job, forge_scheduler_job) (increase(forge_scheduler_job_duration_seconds_count{forge_scheduler_outcome=~"failed|timeout"}[15m])) > 0
+          (sum by (job, forge_scheduler_job, forge_scheduler_outcome) (increase(forge_scheduler_job_duration_seconds_count{forge_scheduler_outcome=~"failed|timeout"}[15m])) > 0)
+            or (sum by (job, forge_scheduler_job, forge_scheduler_outcome) (forge_scheduler_job_duration_seconds_count{forge_scheduler_outcome=~"failed|timeout"})
+              unless sum by (job, forge_scheduler_job, forge_scheduler_outcome) (forge_scheduler_job_duration_seconds_count{forge_scheduler_outcome=~"failed|timeout"} offset 15m))
         labels:
           severity: warning
         annotations:
-          summary: "Scheduled job {{ $labels.forge_scheduler_job }} of {{ $labels.job }} is failing"
-          description: "The job failed or timed out in the last 15 minutes."
+          summary: "Scheduled job {{ $labels.forge_scheduler_job }} of {{ $labels.job }} is failing ({{ $labels.forge_scheduler_outcome }})"
+          description: "The job ended with this outcome at least once in the last 15 minutes."

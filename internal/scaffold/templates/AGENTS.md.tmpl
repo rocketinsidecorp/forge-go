@@ -11,13 +11,14 @@ fails with the file, the line and the forbidden import:
 
 | Directory | Holds | May import |
 | --- | --- | --- |
-| `app/domain` | entities, value objects, rules, errors | itself, the standard library without `net/http`, `database/sql`, `os`, Forge's `uuid` and `fault` |
+| `app/domain` | entities, value objects, rules, errors | itself, the standard library without `net`, `net/http`, `database/sql`, `os`, `io/fs`, `path/filepath`, `unsafe`, Forge's `uuid` and `fault` |
 | `app/application` | use cases and the ports they need | `app/domain`, itself, Forge's `uuid`, `fault`, `pagination`, `tenancy` |
 | `app/adapters/*` | HTTP handlers, persistence, pages | the inner rings and Forge; never `app/bootstrap` |
 | `app/bootstrap` | the composition root: wires everything | anything; the only place that composes |
 
 `app/jobs`, `app/mailers`{{if not .API}}, `app/views`{{end}}, `db` and `config` sit outside the rings and never import
-`app/bootstrap`. `cmd/{{.Name}}` is `main`. Do not weaken the architecture test to make code compile: move the
+`app/bootstrap`. The rules cover `_test.go` files too: domain and application tests use in-memory fakes, no I/O.
+`cmd/{{.Name}}` is `main`. Do not weaken the architecture test to make code compile: move the
 code to the right ring. A new third-party package for the inner rings goes in `extraAllowedImports`, in a
 reviewed commit.
 
@@ -78,10 +79,12 @@ function, copy it out of `routes_gen.go` into another file of package `bootstrap
 {{- if .DB}}
 - Tenant-scoped repositories take the tenant from `tenancy.Require(ctx)` and bind `tenant_id` in every statement;
   never read a tenant id from the request body or a query string.
+{{- if eq .DB.Adapter "postgres"}}
+- PostgreSQL row-level security backs the tenant predicates: the application serves as `app_runtime` and migrates
+  as `app_migrator` (`.env.development` and compose set both); do not point it at a superuser.
+{{- end}}
 {{- if .DB.Identity}}
-- Sign-in, sign-out, two-factor and password-reset pages come with the application. PostgreSQL row-level security
-  backs the tenant predicates: the application serves as `app_runtime` and migrates as `app_migrator`
-  (`.env.development` and compose set both); do not point it at a superuser.
+- Sign-in, sign-out, two-factor and password-reset pages come with the application.
 {{- end}}
 - Identifiers are UUIDv7 generated in Go; migrations use no database UUID generator and a released migration is never edited.
 {{- end}}

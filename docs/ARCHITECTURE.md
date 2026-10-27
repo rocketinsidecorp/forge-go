@@ -548,11 +548,12 @@ rules are enforced in every generated application by `app/architecture_test.go`
 `forge new` writes `app/architecture_test.go`, a standard-library-only test
 (`go/parser` with `parser.ImportsOnly` over every Go file of the module,
 `vendor`, `node_modules`, `testdata` and dot or underscore directories
-skipped) that fails on any import against the direction of the rings:
+skipped, `_test.go` files included: domain and application tests use in-memory fakes and do no I/O either; the
+`module` line of `go.mod` may be quoted or followed by a `//` comment) that fails on any import against the direction of the rings:
 
 | Ring (directory) | Rule |
 | ---------------- | ---- |
-| `app/domain` | Imports only `app/domain`, the standard library except `net`, `net/http`, `net/rpc`, `net/smtp`, `database/sql`, `os`, `embed`, `html/template`, `syscall` and `plugin` (and everything below them), and the framework's `uuid` and `fault`. No third-party package unless listed in `extraAllowedImports` |
+| `app/domain` | Imports only `app/domain`, the standard library except `net`, `net/http`, `net/rpc`, `net/smtp`, `database/sql`, `os`, `io/ioutil`, `io/fs`, `path/filepath`, `embed`, `html/template`, `syscall`, `plugin` and `unsafe` (and everything below them), and cgo's `C`, and the framework's `uuid` and `fault`. No third-party package unless listed in `extraAllowedImports` |
 | `app/application` | Imports `app/domain` and `app/application`, the same standard library subset, and the framework's `uuid`, `fault`, `pagination` and `tenancy` |
 | `app/adapters` | Imports inward and any framework package; never `app/bootstrap` |
 | `app/bootstrap` | Unrestricted: the only ring that composes |

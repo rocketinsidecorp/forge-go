@@ -26,14 +26,15 @@ func TestGeneratedAgentsGuideMatchesTheApplication(t *testing.T) {
 		database bool // migrations, tenant scoping
 		browser  bool // views and CSRF
 		identity bool // sign-in pages (PostgreSQL, full-stack)
+		roles    bool // the app_runtime and app_migrator roles (PostgreSQL, also API-only)
 	}{
-		{"postgresql", scaffold.Options{Database: "postgresql"}, true, true, true},
-		{"sqlite", scaffold.Options{Database: "sqlite"}, true, true, false},
-		{"mysql", scaffold.Options{Database: "mysql"}, true, true, false},
-		{"api postgresql", scaffold.Options{Database: "postgresql", API: true}, true, false, false},
-		{"api sqlite", scaffold.Options{Database: "sqlite", API: true}, true, false, false},
-		{"no database", scaffold.Options{}, false, true, false},
-		{"api no database", scaffold.Options{API: true}, false, false, false},
+		{"postgresql", scaffold.Options{Database: "postgresql"}, true, true, true, true},
+		{"sqlite", scaffold.Options{Database: "sqlite"}, true, true, false, false},
+		{"mysql", scaffold.Options{Database: "mysql"}, true, true, false, false},
+		{"api postgresql", scaffold.Options{Database: "postgresql", API: true}, true, false, false, true},
+		{"api sqlite", scaffold.Options{Database: "sqlite", API: true}, true, false, false, false},
+		{"no database", scaffold.Options{}, false, true, false, false},
+		{"api no database", scaffold.Options{API: true}, false, false, false, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			options := c.options
@@ -77,16 +78,41 @@ func TestGeneratedAgentsGuideMatchesTheApplication(t *testing.T) {
 				text    string
 				present bool
 			}{
-				"migrations":         {"forge migrate", c.database},
-				"tenant scoping":     {"tenancy.Require", c.database},
-				"model generator":    {"scaffold|resource|model", c.database && c.browser},
-				"CSRF":               {"csrfField", c.browser},
-				"view generator":     {"|view NAME", c.browser},
-				"sign-in":            {"Sign-in, sign-out", c.identity},
-				"row-level security": {"app_runtime", c.identity},
+				"migrations":      {"forge migrate", c.database},
+				"tenant scoping":  {"tenancy.Require", c.database},
+				"model generator": {"scaffold|resource|model", c.database && c.browser},
+				"CSRF":            {"csrfField", c.browser},
+				"view generator":  {"|view NAME", c.browser},
+				"sign-in":         {"Sign-in, sign-out", c.identity},
+				"runtime roles":   {"app_runtime", c.roles},
+				"migrator role":   {"app_migrator", c.roles},
+				"test files":      {"`_test.go` files too", true},
 			} {
 				if got := strings.Contains(guide, want.text); got != want.present {
 					t.Errorf("AGENTS.md mentions %s (%q) = %v, want %v", feature, want.text, got, want.present)
+				}
+			}
+
+			// An API-only application has no app/views: no document names it,
+			// and the other applications name it in each of them.
+			readme, err := os.ReadFile(filepath.Join(options.Dir, "README.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, architectureSection, _ := strings.Cut(string(readme), "\n## Architecture\n")
+			architectureSection, _, _ = strings.Cut(architectureSection, "\n## ")
+			if architectureSection == "" {
+				t.Fatal("README.md has no Architecture section")
+			}
+			testFile, err := os.ReadFile(filepath.Join(options.Dir, "app", "architecture_test.go"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for document, text := range map[string]string{
+				"AGENTS.md": guide, "the README Architecture section": architectureSection, "app/architecture_test.go": string(testFile),
+			} {
+				if got := strings.Contains(text, "app/views"); got != c.browser {
+					t.Errorf("%s mentions app/views = %v, want %v", document, got, c.browser)
 				}
 			}
 
