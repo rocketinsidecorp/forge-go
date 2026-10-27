@@ -56,8 +56,8 @@ func identityRoutes(ctx context.Context, app *forge.App, database {{if eq .DB.Ad
 	if !Organizations {
 		// One hidden organization (app_gen.go): the forms ask for no
 		// organization, and sign-ins and reset requests go to it.
-		loginOptions = append(loginOptions, auth.WithDefaultTenant(auth.DefaultTenantSlug))
-		recoveryOptions = append(recoveryOptions, auth.WithRecoveryDefaultTenant(auth.DefaultTenantSlug))
+		loginOptions = append(loginOptions, auth.WithSingleTenant(auth.DefaultTenantSlug))
+		recoveryOptions = append(recoveryOptions, auth.WithRecoverySingleTenant(auth.DefaultTenantSlug))
 	}
 	var mfaService *auth.MFAService
 	if !app.Config().Auth.MFAKey.IsZero() {

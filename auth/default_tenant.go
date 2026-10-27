@@ -1,9 +1,6 @@
 package auth
 
-import (
-	"errors"
-	"strings"
-)
+import "errors"
 
 // DefaultTenantSlug is the slug of the one tenant of a single-tenant
 // application (`forge new --auth`, decision D33). Forge identity always signs
@@ -14,39 +11,40 @@ import (
 // multi-tenant application.
 const DefaultTenantSlug = "default"
 
-// WithDefaultTenant makes a sign-in that names no tenant (an empty
-// LoginInput.TenantSlug, as the sign-in form of a single-tenant application
-// sends) sign in to slug, normally DefaultTenantSlug. A sign-in that names a
-// tenant still uses that one. Without this option a sign-in must name its
-// tenant.
-func WithDefaultTenant(slug string) LoginOption {
+// WithSingleTenant makes every sign-in sign in to slug, normally
+// DefaultTenantSlug: the one tenant of a single-organization application.
+// The tenant a LoginInput names is ignored, so a client that posts another
+// organization's slug still signs in (or fails) against slug only. Without
+// this option a sign-in must name its tenant.
+func WithSingleTenant(slug string) LoginOption {
 	return func(service *LoginService) error {
 		canonical, ok := canonicalTenant(slug)
 		if !ok {
-			return errors.New("default tenant must be a tenant slug (a lowercase letter, then 1 to 62 lowercase letters, digits or hyphens)")
+			return errors.New("single tenant must be a tenant slug (a lowercase letter, then 1 to 62 lowercase letters, digits or hyphens)")
 		}
-		service.defaultTenant = canonical
+		service.singleTenant = canonical
 		return nil
 	}
 }
 
-// WithRecoveryDefaultTenant is WithDefaultTenant for password recovery: a
-// reset request that names no tenant is for an account of slug.
-func WithRecoveryDefaultTenant(slug string) RecoveryOption {
+// WithRecoverySingleTenant is WithSingleTenant for password recovery: every
+// reset request is for an account of slug, whatever tenant it names.
+func WithRecoverySingleTenant(slug string) RecoveryOption {
 	return func(service *RecoveryService) error {
 		canonical, ok := canonicalTenant(slug)
 		if !ok {
-			return errors.New("default recovery tenant must be a tenant slug (a lowercase letter, then 1 to 62 lowercase letters, digits or hyphens)")
+			return errors.New("single recovery tenant must be a tenant slug (a lowercase letter, then 1 to 62 lowercase letters, digits or hyphens)")
 		}
-		service.defaultTenant = canonical
+		service.singleTenant = canonical
 		return nil
 	}
 }
 
-// tenantOrDefault is slug, or fallback when slug is blank.
-func tenantOrDefault(slug, fallback string) string {
-	if fallback != "" && strings.TrimSpace(slug) == "" {
-		return fallback
+// effectiveTenant is single when it is set, whatever slug the input names,
+// and slug otherwise.
+func effectiveTenant(slug, single string) string {
+	if single != "" {
+		return single
 	}
 	return slug
 }

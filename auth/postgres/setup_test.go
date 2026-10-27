@@ -272,7 +272,7 @@ func TestSingleOrganizationSetupCreatesTheDefaultOrganization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	login, err := auth.NewLoginService(repository, repository, auth.WithDefaultTenant(auth.DefaultTenantSlug))
+	login, err := auth.NewLoginService(repository, repository, auth.WithSingleTenant(auth.DefaultTenantSlug))
 	if err != nil {
 		t.Fatal(err)
 	}

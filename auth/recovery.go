@@ -205,9 +205,9 @@ type RecoveryService struct {
 	now          func() time.Time
 	ttl          time.Duration
 	responseTime time.Duration
-	// defaultTenant is the tenant a request that names none uses
-	// (WithRecoveryDefaultTenant).
-	defaultTenant string
+	// singleTenant is the tenant every request is for, whatever it names
+	// (WithRecoverySingleTenant).
+	singleTenant string
 }
 
 // RecoveryOption configures a RecoveryService.
@@ -378,7 +378,7 @@ func (s *RecoveryService) Request(ctx context.Context, request RecoveryRequest) 
 
 func (s *RecoveryService) request(ctx context.Context, request RecoveryRequest) error {
 	login, loginOK := CanonicalLogin(request.Email)
-	tenant, tenantOK := canonicalTenant(tenantOrDefault(request.TenantSlug, s.defaultTenant))
+	tenant, tenantOK := canonicalTenant(effectiveTenant(request.TenantSlug, s.singleTenant))
 	account := login
 	if !loginOK {
 		account = invalidLoginAccount(request.Email)

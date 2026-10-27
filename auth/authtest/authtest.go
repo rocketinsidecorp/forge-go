@@ -103,6 +103,7 @@ func Run(t *testing.T, newHarness NewHarness) {
 		{"ThrottleCountsAndRefuses", throttleCountsAndRefuses},
 		{"ThrottleHoldsUnderConcurrency", throttleHoldsUnderConcurrency},
 		{"RecoveryTokensAreOneTime", recoveryTokensAreOneTime},
+		{"SingleTenantIgnoresAPostedTenant", singleTenantIgnoresAPostedTenant},
 		{"MFAEnrollmentAndChallenges", mfaEnrollmentAndChallenges},
 		{"MFARotationDisableAndStepUp", mfaRotationDisableAndStepUp},
 		{"MFAChallengeIsConsumedOnce", mfaChallengeIsConsumedOnce},
@@ -261,7 +262,7 @@ func provisionOwnerOnce(t *testing.T, e *env) {
 	failIf(t, !found || session.Principal.SubjectID() != owner.UserID || session.Principal.Tenant().ID != owner.TenantID || !session.Principal.Can("posts:write"), "owner session = %+v found=%v", session, found)
 	// A single-tenant application signs in to the default tenant without
 	// naming it; here no tenant has that slug, so nobody signs in.
-	defaulted, err := auth.NewLoginService(e.h.Store, e.h.Store, auth.WithDefaultTenant(auth.DefaultTenantSlug))
+	defaulted, err := auth.NewLoginService(e.h.Store, e.h.Store, auth.WithSingleTenant(auth.DefaultTenantSlug))
 	must(t, err)
 	_, err = defaulted.Login(e.ctx, auth.LoginInput{Email: "owner@example.com", Password: "correct horse battery staple", Source: "192.0.2.1"})
 	failIf(t, !errors.Is(err, auth.ErrCredentialsInvalid), "sign-in to a missing default tenant: %v", err)
@@ -489,6 +490,13 @@ func recoveryTokensAreOneTime(t *testing.T, e *env) {
 	s := e.signedIn("acme", "ivan@example.com")
 	identity, found, err := e.h.Store.LookupRecovery(e.ctx, "ivan@example.com", "acme")
 	failIf(t, err != nil || !found || identity.SubjectID != s.user || identity.Email != "ivan@example.com", "LookupRecovery = %+v %v %v", identity, found, err)
+	// A reset requested in another tenant finds nobody: ivan is no member
+	// of globex, and other@ is no member of acme.
+	e.signedIn("globex", "other@example.com")
+	_, found, err = e.h.Store.LookupRecovery(e.ctx, "ivan@example.com", "globex")
+	failIf(t, err != nil || found, "LookupRecovery in a tenant ivan is no member of found=%v err=%v", found, err)
+	_, found, err = e.h.Store.LookupRecovery(e.ctx, "other@example.com", "acme")
+	failIf(t, err != nil || found, "LookupRecovery of another tenant's user found=%v err=%v", found, err)
 	first, second := digest("first"), digest("second")
 	must(t, e.h.Store.CreateRecovery(e.ctx, s.user, first, time.Now().Add(time.Hour)))
 	must(t, e.h.Store.CreateRecovery(e.ctx, s.user, second, time.Now().Add(time.Hour)))
@@ -834,4 +842,29 @@ func errorIf(t testing.TB, failed bool, format string, args ...any) {
 	if failed {
 		t.Errorf(format, args...)
 	}
+}
+
+// singleTenantIgnoresAPostedTenant: a single-organization application's
+// login service (auth.WithSingleTenant) signs in to its one tenant whatever
+// tenant the client posts, so posting another organization's slug never
+// signs in to that organization.
+func singleTenantIgnoresAPostedTenant(t *testing.T, e *env) {
+	const password = "correct horse battery staple"
+	hash, err := auth.DefaultPasswordHasher().Hash(e.ctx, password)
+	must(t, err)
+	acme, globex := e.tenant("acme"), e.tenant("globex")
+	both, outsider := e.user("both@example.com"), e.user("outsider@example.com")
+	e.exec(`UPDATE forge_users SET password_hash = ? WHERE id IN (?, ?)`, hash, both, outsider)
+	e.member(both, acme)
+	e.member(both, globex)
+	e.member(outsider, globex)
+	login, err := auth.NewLoginService(e.h.Store, e.h.Store, auth.WithSingleTenant("acme"))
+	must(t, err)
+	_, err = login.Login(e.ctx, auth.LoginInput{Email: "outsider@example.com", Password: password, TenantSlug: "globex", Source: "192.0.2.1"})
+	failIf(t, !errors.Is(err, auth.ErrCredentialsInvalid), "a member of globex only signed in to a single-tenant application by posting globex: %v", err)
+	result, err := login.Login(e.ctx, auth.LoginInput{Email: "both@example.com", Password: password, TenantSlug: "globex", Source: "192.0.2.1"})
+	must(t, err)
+	session, found := e.resolve(e.h.Store, result.Token)
+	failIf(t, !found, "the session of a single-tenant sign-in does not resolve")
+	failIf(t, session.Principal.Tenant().ID != acme.id, "posting globex signed in to tenant %v, want acme %v", session.Principal.Tenant().ID, acme.id)
 }

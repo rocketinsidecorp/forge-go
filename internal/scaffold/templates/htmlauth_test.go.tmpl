@@ -786,7 +786,7 @@ func TestPagesAgainstTheIdentityStore(t *testing.T) {
 // a sign-in with the email and password reaches the one organization.
 func TestSingleOrganizationFormsAskForTheEmailOnly(t *testing.T) {
 	identity := newMemoryIdentity(t)
-	login, err := auth.NewLoginService(identity, identity, auth.WithDefaultTenant(testTenant))
+	login, err := auth.NewLoginService(identity, identity, auth.WithSingleTenant(testTenant))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -809,5 +809,12 @@ func TestSingleOrganizationFormsAskForTheEmailOnly(t *testing.T) {
 	}
 	if _, err := auth.ParseToken(visitor.cookies[auth.SessionCookieName].Value); err != nil {
 		t.Fatalf("no session cookie: %v", err)
+	}
+	// A posted organization is ignored: the sign-in still goes to the one
+	// organization, never to the one named.
+	other := newClient(t, serve(t, browser, identity, htmlauth.WithOrganizations(false)))
+	other.do(http.MethodGet, htmlauth.SignInPath, nil)
+	if posted := other.submit("/session", url.Values{"tenant": {"another-org"}, "email": {testEmail}, "password": {testPassword}}); posted.Code != http.StatusSeeOther {
+		t.Fatalf("posting another organization: status=%d:\n%s", posted.Code, posted.Body.String())
 	}
 }

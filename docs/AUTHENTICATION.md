@@ -597,8 +597,9 @@ An application without organizations (`forge new --auth`) takes `--email`
 only: setup creates the one organization every user belongs to, with the
 hidden sign-in slug `default` (`auth.DefaultTenantSlug`), and refuses
 `--org`. Its login and recovery services are built with
-`auth.WithDefaultTenant` and `auth.WithRecoveryDefaultTenant`, so a sign-in
-without an organization resolves to that one; tenant isolation, roles and
+`auth.WithSingleTenant` and `auth.WithRecoverySingleTenant`, so every
+sign-in and reset request is for that one, and a tenant the client posts
+anyway is ignored; tenant isolation, roles and
 permissions work as with organizations. With organizations (`--tenants`)
 `--org SLUG` is required (`--tenant` is an alias, `--organization` one of
 `--org-name`), and the sign-in page asks for it. `forge generate tenancy

@@ -22,8 +22,8 @@ An application created with `--auth` alone has plain tables and one
 organization. Identity still runs the same tenant-scoped code: `forge setup
 --email` creates a tenant with the hidden slug `default`
 (`auth.DefaultTenantSlug`), and the login and recovery services built with
-`auth.WithDefaultTenant` and `auth.WithRecoveryDefaultTenant` use it when the
-form names none. That is a sign-in default only: a session still resolves to
+`auth.WithSingleTenant` and `auth.WithRecoverySingleTenant` always use it,
+ignoring any tenant a client posts. That is a sign-in rule only: a session still resolves to
 its membership's tenant, and nothing installs a tenant without one.
 `forge generate tenancy` converts such an application ([GENERATORS.md](GENERATORS.md#authentication-and-organizations)).
 

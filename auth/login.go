@@ -85,9 +85,9 @@ type LoginService struct {
 	hasher    *PasswordHasher
 	now       func() time.Time
 	ttl       time.Duration
-	// defaultTenant is the tenant a sign-in that names none uses
-	// (WithDefaultTenant); empty means every sign-in must name one.
-	defaultTenant string
+	// singleTenant is the tenant every sign-in uses, whatever the input
+	// names (WithSingleTenant); empty means every sign-in names its own.
+	singleTenant string
 }
 
 // LoginOption configures a LoginService.
@@ -229,7 +229,7 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		return LoginResult{}, ErrCredentialsInvalid
 	}
 	email, emailOK := CanonicalLogin(input.Email)
-	tenant, tenantOK := canonicalTenant(tenantOrDefault(input.TenantSlug, s.defaultTenant))
+	tenant, tenantOK := canonicalTenant(effectiveTenant(input.TenantSlug, s.singleTenant))
 	wellFormed := emailOK && tenantOK
 	account := email
 	if !emailOK {

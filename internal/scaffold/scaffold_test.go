@@ -116,8 +116,8 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"auth.NewMFAService(",
 			"auth.WithMFAAuditor(repository)",
 			"htmlauth.Register(app, browser, renderer, middleware, htmlauth.WithOrganizations(Organizations))",
-			"auth.WithDefaultTenant(auth.DefaultTenantSlug)",
-			"auth.WithRecoveryDefaultTenant(auth.DefaultTenantSlug)",
+			"auth.WithSingleTenant(auth.DefaultTenantSlug)",
+			"auth.WithRecoverySingleTenant(auth.DefaultTenantSlug)",
 		},
 		"db/db.go": {"//go:embed all:migrations"},
 		"README.md": {
