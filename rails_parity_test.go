@@ -288,14 +288,14 @@ func parityViolations(text string, catalog parityCatalog, exists func(string) bo
 		if row.GoStatus == "Done" {
 			for _, span := range parityCodeSpan.FindAllStringSubmatch(row.Go, -1) {
 				for _, missing := range catalog.spanClaims(span[1]) {
-					problems = append(problems, fmt.Sprintf("%s: Forge-Go is Done but `forge help --json` has no %s (in `%s`)", where, missing, span[1]))
+					problems = append(problems, fmt.Sprintf("%s: Forge-Go is Done but `forge help --json` has no %s (in %#q)", where, missing, span[1]))
 				}
 			}
 		}
 		if row.GoStatus == "Planned" {
 			for _, span := range parityCodeSpan.FindAllStringSubmatch(row.Go, -1) {
 				if parityFlag.MatchString(span[1]) && strings.HasPrefix(span[1], "forge ") && len(catalog.spanClaims(span[1])) == 0 {
-					problems = append(problems, fmt.Sprintf("%s: Forge-Go is Planned but `%s` already exists: mark it Done", where, span[1]))
+					problems = append(problems, fmt.Sprintf("%s: Forge-Go is Planned but %#q already exists: mark it Done", where, span[1]))
 				}
 			}
 		}
