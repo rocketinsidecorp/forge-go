@@ -89,6 +89,9 @@ func TestRegisterArgon2idRefusesArgon2iAndClampedCosts(t *testing.T) {
 		"cost clamped to t=2, m=32, p=2": func(password, salt []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
 			return argon2.IDKey(password, salt, 2, 32, 2, keyLen)
 		},
+		"cost clamped to t=3, m=48, p=3": func(password, salt []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
+			return argon2.IDKey(password, salt, 3, 48, 3, keyLen)
+		},
 		"memory ignored": func(password, salt []byte, time, _ uint32, threads uint8, keyLen uint32) []byte {
 			return argon2.IDKey(password, salt, time, 8*uint32(threads), threads, keyLen)
 		},

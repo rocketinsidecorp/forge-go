@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,6 +153,14 @@ type argon2idKDF = func(password, salt []byte, time, memory uint32, threads uint
 // argon2Registry holds the one Argon2id implementation of the process.
 type argon2Registry struct {
 	kdf atomic.Pointer[argon2idKDF]
+	// checked runs, once, the known answer at Forge's default cost
+	// (argon2idDefaultCostAnswer) against the registered implementation, at
+	// its first use; sound records the result. An implementation that fails
+	// it counts as not registered.
+	checked sync.Once
+	sound   atomic.Bool
+	// mismatch reports a failed check; nil logs it with slog.Default.
+	mismatch func()
 }
 
 // argon2id is the process-wide registry RegisterArgon2id writes.
@@ -166,12 +175,35 @@ func (r *argon2Registry) register(kdf argon2idKDF) bool {
 	return r.kdf.CompareAndSwap(nil, &kdf)
 }
 
-// load returns the registered implementation, or nil.
+// load returns the registered implementation, or nil when none is
+// registered or the registered one failed the known answer at the default
+// cost. The first call with an implementation registered runs that check
+// (about one Argon2id hash at m=19456 KiB, once per process); concurrent
+// callers wait for it.
 func (r *argon2Registry) load() argon2idKDF {
-	if kdf := r.kdf.Load(); kdf != nil {
-		return *kdf
+	kdf := r.kdf.Load()
+	if kdf == nil {
+		return nil
 	}
-	return nil
+	r.checked.Do(func() {
+		known := argon2idDefaultCostAnswer
+		got := (*kdf)(argon2idKnownPassword, argon2idKnownSalt, known.time, known.memory, known.threads, uint32(len(known.key))) // #nosec G115 -- 32
+		r.sound.Store(subtle.ConstantTimeCompare(got, known.key) == 1)
+		if r.sound.Load() {
+			return
+		}
+		if r.mismatch != nil {
+			r.mismatch()
+			return
+		}
+		slog.Default().Error("auth: the function given to auth.RegisterArgon2id does not compute Argon2id at Forge's cost (m=19456 KiB, t=2, p=1): " +
+			"it is ignored, so every Argon2id hash and verification fails with ErrPasswordAlgorithmUnavailable and new passwords are PBKDF2; " +
+			"register golang.org/x/crypto/argon2.IDKey itself, not a wrapper that changes the cost")
+	})
+	if !r.sound.Load() {
+		return nil
+	}
+	return *kdf
 }
 
 // defaultAlgorithm is DefaultPasswordAlgorithm for this registry.
@@ -217,7 +249,25 @@ var (
 	}
 )
 
-// answersArgon2id reports whether kdf computes every known Argon2id answer.
+// argon2idDefaultCostAnswer is Argon2id v19 of the same password and salt at
+// Forge's default cost (m=19456 KiB, t=2, p=1, a 32-byte key), computed with
+// golang.org/x/crypto/argon2.IDKey and, independently, with the RustCrypto
+// argon2 0.6.0 crate Forge-Rust uses. The small answers miss a wrapper that
+// changes only large costs (one that caps m at 4096 KiB, say); this one
+// catches any change at the cost Forge writes. It costs one hash, so it runs
+// once per process at the first use of the implementation (argon2Registry.load),
+// not at registration.
+var argon2idDefaultCostAnswer = struct {
+	time, memory uint32
+	threads      uint8
+	key          []byte
+}{time: argon2Iterations, memory: argon2MemoryKiB, threads: argon2Parallelism, key: []byte{
+	0x17, 0x3c, 0x92, 0x1d, 0x12, 0xfc, 0xcd, 0x89, 0x56, 0x7d, 0x56, 0x96, 0xf0, 0x65, 0xd3, 0x36,
+	0x14, 0x58, 0x7c, 0x74, 0x9e, 0x3e, 0x0f, 0x2a, 0xb1, 0x0a, 0x9b, 0x7d, 0x97, 0xf0, 0x89, 0x4d,
+}}
+
+// answersArgon2id reports whether kdf computes every small known Argon2id
+// answer.
 func answersArgon2id(kdf argon2idKDF) bool {
 	for _, known := range argon2idKnownAnswers {
 		got := kdf(argon2idKnownPassword, argon2idKnownSalt, known.time, known.memory, known.threads, uint32(len(known.key))) // #nosec G115 -- 24 or 32
@@ -246,11 +296,18 @@ func answersArgon2id(kdf argon2idKDF) bool {
 // after they are built.
 //
 // kdf must be Argon2id (RFC 9106, version 19) honouring every argument.
-// RegisterArgon2id computes two small known answers with it first and
-// panics when either differs, so a function with the same signature that is
-// not Argon2id (argon2.Key is Argon2i), or that ignores the cost it is given,
-// cannot write hashes labelled $argon2id$ that are cheaper than they claim
-// or that no other verifier reads.
+// RegisterArgon2id computes two small known answers with it first (t=2,
+// m=32 KiB, p=2, 32 bytes; t=3, m=48 KiB, p=3, 24 bytes) and panics when
+// either differs: that catches a function that is not Argon2id v19
+// (argon2.Key is Argon2i) and one that ignores or clamps t, p, the key
+// length or a memory of 48 KiB or less. At its first use the registry also
+// checks a known answer at Forge's default cost (m=19456 KiB, t=2, p=1),
+// which catches any change there (a cap on m, say); a function that fails it
+// is logged and ignored, as if none were registered, so Argon2id hashes fail
+// closed with ErrPasswordAlgorithmUnavailable rather than claim a cost they
+// did not pay. Neither check covers other costs: a function that misbehaves
+// only for a stored hash naming a cost other than the default and above the
+// small answers' is not detected.
 //
 // It reports whether kdf is now the implementation: false for nil or when
 // another one was registered first.

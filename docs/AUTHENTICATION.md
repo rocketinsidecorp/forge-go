@@ -105,9 +105,13 @@ func init() { auth.RegisterArgon2id(argon2.IDKey) }
 
 The first registration wins and later ones are ignored; hashers look the
 function up at each hash, so the order of initialization does not matter. A
-function that is not Argon2id v19 with the parameters it is given
-(`argon2.Key` is Argon2i, with the same signature; a wrapper could clamp the
-cost) fails two known-answer checks and panics at registration.
+function that is not Argon2id v19 (`argon2.Key` is Argon2i, with the same
+signature), or that ignores t, p, the key length or a small memory, fails
+two small known answers and panics at registration. At the first hash or
+verification, once per process, a third answer at the default cost
+(m=19456 KiB, t=2, p=1) catches a wrapper that changes that cost (a memory
+cap, say): the function is logged and ignored, as if none were registered.
+Costs other than the default are covered by the small answers only.
 `auth.DefaultPasswordAlgorithm()` reports what new hashes use. With nothing
 registered:
 

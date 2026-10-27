@@ -271,14 +271,20 @@ var errInjected = errors.New("injected store failure")
 // that links an identity adapter. The real Argon2id is tested by the
 // adapters.
 func fakeArgon2idKDF(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
-	// auth.RegisterArgon2id checks two known answers (auth/password.go,
-	// argon2idKnownAnswers); the fake knows them.
+	// auth.RegisterArgon2id checks two known answers and the registry one at
+	// the default cost (auth/password.go, argon2idKnownAnswers and
+	// argon2idDefaultCostAnswer); the fake knows them.
 	if string(password) == "forge-argon2id-known-answer" && string(salt) == "forge-kat-salt-1" {
 		switch {
 		case time == 2 && memory == 32 && threads == 2 && keyLen == 32:
 			return []byte{
 				0x58, 0x74, 0x24, 0xed, 0xfa, 0x8d, 0xb8, 0x4b, 0x8c, 0xf0, 0x55, 0xc3, 0x1f, 0x78, 0xf9, 0xa4,
 				0x5e, 0xbf, 0xcd, 0xc5, 0x68, 0xc2, 0x34, 0x17, 0x14, 0xf3, 0xdd, 0xf6, 0x04, 0xe4, 0x86, 0x72,
+			}
+		case time == 2 && memory == 19456 && threads == 1 && keyLen == 32:
+			return []byte{
+				0x17, 0x3c, 0x92, 0x1d, 0x12, 0xfc, 0xcd, 0x89, 0x56, 0x7d, 0x56, 0x96, 0xf0, 0x65, 0xd3, 0x36,
+				0x14, 0x58, 0x7c, 0x74, 0x9e, 0x3e, 0x0f, 0x2a, 0xb1, 0x0a, 0x9b, 0x7d, 0x97, 0xf0, 0x89, 0x4d,
 			}
 		case time == 3 && memory == 48 && threads == 3 && keyLen == 24:
 			return []byte{

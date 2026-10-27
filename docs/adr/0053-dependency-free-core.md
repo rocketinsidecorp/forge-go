@@ -66,13 +66,27 @@ afterwards the core needs nothing, which the later steps rely on.
   `golang.org/x/crypto/argon2` and register it in `init`, so generated
   `--auth` applications keep writing `$argon2id$` hashes with no change.
   An import rule lets only those three packages import `argon2`.
-  `RegisterArgon2id` first computes two small known answers with the
-  function (t=2, m=32 KiB, p=2, a 32-byte key; t=3, m=48 KiB, p=3, a 24-byte
-  key: every argument differs) and panics when either is not Argon2id v19:
-  `argon2.Key` (Argon2i) has the same signature, and a wrapper that ignores
-  or clamps the cost would write hashes that claim `m=19456,t=2,p=1` and cost
-  next to nothing. It returns whether this call's function is now the one
-  in use (false for nil or a later registration).
+  `RegisterArgon2id` checks the function against known answers computed
+  with `x/crypto/argon2.IDKey` and, independently, with the RustCrypto
+  `argon2` 0.6.0 crate Forge-Rust uses. It returns whether this call's
+  function is now the one in use (false for nil or a later registration).
+  - At registration, two small answers (t=2, m=32 KiB, p=2, a 32-byte key;
+    t=3, m=48 KiB, p=3, a 24-byte key: every argument differs); a miss
+    panics. They catch a function that is not Argon2id v19 (`argon2.Key`,
+    Argon2i, has the same signature) and one that ignores or clamps t, p,
+    the key length, or a memory of 48 KiB or less. Each is needed: a
+    wrapper fixed to either one's parameters passes the other.
+  - At the first use (hash or verification) in the process, once, an answer
+    at Forge's default cost (m=19456 KiB, t=2, p=1, a 32-byte key); it costs
+    one hash, so it does not run at init. A miss is logged at error level
+    and the function is treated as not registered: Argon2id hashes and
+    verifications fail with `ErrPasswordAlgorithmUnavailable`, new passwords
+    are PBKDF2, nothing panics in the request path. It catches any change at
+    the default cost, such as a cap on memory.
+  - Not detected: a function that is right at those three parameter sets
+    and wrong at others. Forge writes only the default cost, so this
+    concerns verifying stored hashes that name another cost (an older
+    parameter set, or hashes from another system).
   - With nothing registered, new hashes are PBKDF2-HMAC-SHA256 with 600,000
     iterations (the format and parameters of ADR 0048's PBKDF2), and
     verifying a stored `$argon2id$` hash fails closed with

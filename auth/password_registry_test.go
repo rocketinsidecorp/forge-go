@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rocketinsidecorp/forge-go/fault"
@@ -19,10 +20,10 @@ import (
 func TestRegisterArgon2idKeepsTheFirstImplementation(t *testing.T) {
 	t.Parallel()
 	var registry argon2Registry
-	if registry.load() != nil || registry.defaultAlgorithm() != PasswordAlgorithmPBKDF2SHA256 {
+	if registry.kdf.Load() != nil || registry.load() != nil || registry.defaultAlgorithm() != PasswordAlgorithmPBKDF2SHA256 {
 		t.Fatal("an empty registry has an implementation")
 	}
-	if registry.register(nil) || registry.load() != nil {
+	if registry.register(nil) || registry.kdf.Load() != nil {
 		t.Fatal("a nil implementation was registered")
 	}
 	first := func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
@@ -37,11 +38,13 @@ func TestRegisterArgon2idKeepsTheFirstImplementation(t *testing.T) {
 	if registry.register(second) || registry.register(nil) {
 		t.Fatal("a later registration was kept")
 	}
-	if key := registry.load()(nil, nil, 1, 8, 1, 4); !bytes.Equal(key, []byte{1, 1, 1, 1}) {
+	if key := (*registry.kdf.Load())(nil, nil, 1, 8, 1, 4); !bytes.Equal(key, []byte{1, 1, 1, 1}) {
 		t.Fatalf("registered implementation returned %v, want the first one's", key)
 	}
-	if !pbkdf2Build && registry.defaultAlgorithm() != PasswordAlgorithmArgon2id {
-		t.Fatalf("default algorithm with Argon2id registered: %q", registry.defaultAlgorithm())
+	var sound argon2Registry
+	sound.register(fakeArgon2idKDF)
+	if !pbkdf2Build && sound.defaultAlgorithm() != PasswordAlgorithmArgon2id {
+		t.Fatalf("default algorithm with Argon2id registered: %q", sound.defaultAlgorithm())
 	}
 
 	// The process-wide registry already holds the fake (password_cheap_test.go):
@@ -62,6 +65,64 @@ func TestRegisterArgon2idKeepsTheFirstImplementation(t *testing.T) {
 	}
 }
 
+// A function that passes the small known answers but changes the default
+// cost (a cap on memory) fails the default-cost answer at its first use: it
+// is reported once and treated as not registered, so Argon2id hashes and
+// verifications fail closed and new passwords are PBKDF2. Nothing panics in
+// the request path.
+func TestARegisteredArgon2idThatChangesTheDefaultCostIsIgnoredAtFirstUse(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	stored := argon2Hash("secret", defaultArgon2Params, bytes.Repeat([]byte{3}, passwordSaltBytes), passwordKeyBytes)
+	for name, clamped := range map[string]argon2idKDF{
+		"memory capped at 4096 KiB": func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+			return fakeArgon2idKDF(password, salt, time, min(memory, 4096), threads, keyLen)
+		},
+		"memory divided by 8 above 1024 KiB": func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+			if memory > 1024 {
+				memory /= 8
+			}
+			return fakeArgon2idKDF(password, salt, time, memory, threads, keyLen)
+		},
+	} {
+		if !answersArgon2id(clamped) {
+			t.Fatalf("%s: the small answers already refuse it; the test needs one they miss", name)
+		}
+		var reported atomic.Int32
+		registry := &argon2Registry{mismatch: func() { reported.Add(1) }}
+		if !registry.register(clamped) {
+			t.Fatalf("%s: not registered", name)
+		}
+		hasher := cheapPasswordHasher(t)
+		hasher.algorithm, hasher.argon2 = "", defaultArgon2Params
+		hasher.setDummy()
+		hasher.kdfs = registry
+		for range 3 {
+			if match, rehash, err := hasher.Verify(ctx, stored, "secret"); match || rehash || !errors.Is(err, ErrPasswordAlgorithmUnavailable) {
+				t.Errorf("%s: Verify = (%v, %v, %v), want ErrPasswordAlgorithmUnavailable", name, match, rehash, err)
+			}
+		}
+		if hash, err := hasher.Hash(ctx, "secret"); err != nil || !strings.HasPrefix(hash, "$pbkdf2-sha256$") {
+			t.Errorf("%s: Hash = %q, %v; want PBKDF2", name, hash, err)
+		}
+		strict := cheapPasswordHasher(t)
+		strict.kdfs = registry
+		if _, err := strict.Hash(ctx, "secret"); !errors.Is(err, ErrPasswordAlgorithmUnavailable) {
+			t.Errorf("%s: Argon2id hasher Hash = %v", name, err)
+		}
+		if registry.defaultAlgorithm() != PasswordAlgorithmPBKDF2SHA256 || reported.Load() != 1 {
+			t.Errorf("%s: default %q, reported %d times; want PBKDF2, once", name, registry.defaultAlgorithm(), reported.Load())
+		}
+	}
+	// The fake itself passes, once, and is used.
+	var reported atomic.Int32
+	registry := &argon2Registry{mismatch: func() { reported.Add(1) }}
+	registry.register(fakeArgon2idKDF)
+	if registry.load() == nil || registry.load() == nil || reported.Load() != 0 {
+		t.Fatal("a sound implementation was refused")
+	}
+}
+
 // RegisterArgon2id refuses, loudly, a function that does not compute
 // Argon2id: argon2.Key (Argon2i) has the same signature, and hashes it wrote
 // as $argon2id$ would verify nowhere else.
@@ -75,6 +136,10 @@ func TestRegisterArgon2idPanicsOnAFunctionThatIsNotArgon2id(t *testing.T) {
 		"cost clamped to the first answer's": func(password, salt []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
 			first := argon2idKnownAnswers[0]
 			return fakeArgon2idKDF(password, salt, first.time, first.memory, first.threads, keyLen)
+		},
+		"cost clamped to the second answer's": func(password, salt []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
+			second := argon2idKnownAnswers[1]
+			return fakeArgon2idKDF(password, salt, second.time, second.memory, second.threads, keyLen)
 		},
 		"key length ignored": func(password, salt []byte, time, memory uint32, threads uint8, _ uint32) []byte {
 			return fakeArgon2idKDF(password, salt, time, memory, threads, 32)
