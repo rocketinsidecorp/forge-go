@@ -253,9 +253,11 @@ func runDoctorAt(args []string, output io.Writer, root string, baseEnv []string)
 	var diagnostics []doctorDiagnostic
 	if !cfg.Database.URL.IsZero() {
 		database = describeDatabase(cfg.Database.URL.Reveal())
-		status, reason := probeDatabase(context.Background(), cfg.Database, root)
+		status, reason, malformed := probeDatabase(context.Background(), cfg.Database, root)
 		reachability = status
-		if reason != "" {
+		if malformed {
+			diagnostics = append(diagnostics, doctorDatabaseMalformed())
+		} else if reason != "" {
 			reachability = "unreachable (" + reason + ")"
 			diagnostics = append(diagnostics, doctorDatabaseUnreachable(reason))
 		}

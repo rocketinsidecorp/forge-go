@@ -73,7 +73,7 @@ func TestDoctorExplainsEachProblemInTextAndJSON(t *testing.T) {
 		"text invalid config":     {[]string{"FORGE_ENV=moon"}, nil, "configuration invalid"},
 		"json invalid config":     {[]string{"FORGE_ENV=moon"}, []string{"--json"}, `"configuration.invalid"`},
 		"json without a database": {nil, []string{"--json"}, `"database":"none"`},
-		"text healthy":            {[]string{"FORGE_DATABASE_URL=postgres://u:pw@127.0.0.1:1/shop?sslmode=disable"}, nil, "database: postgres://u@127.0.0.1:1/shop?sslmode=disable"},
+		"text database line":      {[]string{"FORGE_DATABASE_URL=postgres://u:pw@127.0.0.1:1/shop?sslmode=disable"}, nil, "database: postgres://u@127.0.0.1:1/shop?sslmode=disable"},
 		"json healthy":            {[]string{"FORGE_DATABASE_URL=sqlite:storage/dev.db"}, []string{"--json"}, `"database":"sqlite"`},
 	} {
 		var out bytes.Buffer

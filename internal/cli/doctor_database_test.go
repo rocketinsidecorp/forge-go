@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/config"
 )
 
 // listenForDoctor starts a TCP listener that records what a client sends and
@@ -136,6 +138,20 @@ func TestDoctorSQLiteAndSocketsAreNotProbedOverTheNetwork(t *testing.T) {
 	if got := run("sqlite:storage/dev.db"); !strings.Contains(got, "database reachability: the file exists\n") {
 		t.Errorf("an existing SQLite file:\n%s", got)
 	}
+	// An absolute path is used as it is, not relative to the application.
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere.db")
+	if got := run("sqlite://" + elsewhere); !strings.Contains(got, "database reachability: the file does not exist yet") {
+		t.Errorf("a missing absolute SQLite file:\n%s", got)
+	}
+	if err := os.WriteFile(elsewhere, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("sqlite://" + elsewhere); !strings.Contains(got, "database reachability: the file exists\n") {
+		t.Errorf("an existing absolute SQLite file:\n%s", got)
+	}
+	if status, _, malformed := probeDatabase(t.Context(), config.Database{URL: config.NewSecret("sqlite::memory:")}, root); malformed || !strings.Contains(status, "not checked") {
+		t.Errorf("an in-memory SQLite URL: %q, malformed %v", status, malformed)
+	}
 	if got := run("postgres://alice@localhost/shop?host=/var/run/postgresql&sslmode=disable"); !strings.Contains(got, "database reachability: not checked (a Unix socket)\n") {
 		t.Errorf("a PostgreSQL socket:\n%s", got)
 	}
@@ -156,6 +172,20 @@ func TestProbeDatabaseUsesTheDriversHostAndPort(t *testing.T) {
 		if err := runDoctorAt(nil, &out, t.TempDir(), []string{"FORGE_DATABASE_URL=" + url}); err != nil {
 			t.Errorf("%s: %v\n%s", name, err, out.String())
 		}
+	}
+}
+
+// A URL the probe cannot read is Forge-Rust's database.url_malformed error,
+// without echoing the URL.
+func TestDoctorReportsAMalformedDatabaseURL(t *testing.T) {
+	t.Parallel()
+	status, _, malformed := probeDatabase(t.Context(), config.Database{URL: config.NewSecret("postgres://u:hunter2@%zz/db")}, t.TempDir())
+	if !malformed || status != "not checked (the URL is malformed)" {
+		t.Fatalf("status %q, malformed %v", status, malformed)
+	}
+	diagnostic := doctorDatabaseMalformed()
+	if diagnostic.Code != "database.url_malformed" || diagnostic.Severity != "error" || diagnostic.Summary != "FORGE_DATABASE_URL is malformed." || strings.Contains(diagnostic.Remediation, "hunter2") {
+		t.Errorf("diagnostic = %+v", diagnostic)
 	}
 }
 
