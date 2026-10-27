@@ -81,9 +81,27 @@ Considered and rejected: `AfterRelease` runs in a goroutine on every release,
 during which a concurrent Acquire can open an extra connection;
 `CancelRequestContextWatcherHandler` still sets the fallback deadline (and
 waits 100 ms on every cancellation); a handler without a deadline cannot
-interrupt a query on a dead network. The guard does not help a query that
-runs on the same acquired connection after the cancelled one (inside one
-transaction), which already ends with the cancelled request.
+interrupt a query on a dead network.
+
+What the guard does not cover:
+- A statement on the same acquired connection after the cancelled one, as
+  inside a transaction. When the request itself was cancelled the
+  transaction ends anyway; but when only one statement had its own derived
+  timeout, the next statement on that connection (`COMMIT` included) can
+  fail with `i/o timeout` although the server ran it. A commit that fails
+  this way is ambiguous: treat it like any commit whose outcome is unknown.
+  This predates the guard.
+- The connect phase: pgx uses its own deadline handler while connecting, so
+  a connection whose connect timeout fires just after the server's
+  ReadyForQuery could carry the stored error unmarked. The window is a few
+  microseconds wide.
+- A marked connection idle for over a second is pinged by the pool before
+  PrepareConn destroys it: one wasted round trip. In a storm of
+  cancellations, Acquire can meet more marked connections in a row than the
+  pool retries and return its "too many failed attempts" error, as it
+  already does for failing pings.
+- The guard owns PrepareConn; pgxpool ignores BeforeAcquire when
+  PrepareConn is set, and Open sets neither, so none is lost today.
 `TestCancelledQueryPoisonsUnguardedPool` reproduces the interleaving
 deterministically and fails when a pgx upgrade stops storing the error, at
 which point the guard can be revisited.

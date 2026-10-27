@@ -222,13 +222,16 @@ func TestOpenGuardsCancelledConnections(t *testing.T) {
 		return err == nil && running
 	})
 	cancel()
-	if err := <-failed; err == nil {
+	err = <-failed
+	marked := postgres.Cancelled(conn.Conn())
+	// Released before any failure, or the deferred Close waits on it forever.
+	conn.Release()
+	if err == nil {
 		t.Fatal("the cancelled query succeeded")
 	}
-	if !postgres.Cancelled(conn.Conn()) {
+	if !marked {
 		t.Error("the cancellation did not mark the connection")
 	}
-	conn.Release()
 
 	// A marked connection that is otherwise healthy is destroyed too.
 	conn, err = pool.Acquire(ctx)
@@ -236,10 +239,11 @@ func TestOpenGuardsCancelledConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	healthy := conn.Conn().PgConn().PID()
-	if !postgres.MarkCancelled(conn.Conn()) {
+	carried := postgres.MarkCancelled(conn.Conn())
+	conn.Release()
+	if !carried {
 		t.Fatal("Open's pool does not carry the cancellation mark")
 	}
-	conn.Release()
 	if next := pid(); next == healthy {
 		t.Error("the pool reused a marked connection")
 	}
