@@ -8,7 +8,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/queue"
-	"github.com/rocketinsidecorp/forge-go/queue/internal/jobscmd"
+	"github.com/rocketinsidecorp/forge-go/queue/queuecmd"
 	forgesqlite "github.com/rocketinsidecorp/forge-go/sqlite"
 )
 
@@ -29,7 +29,7 @@ func Migrations() fs.FS {
 // Commands returns the "jobs" operator command (see queuecmd) backed by
 // this store.
 func Commands() []command.Command {
-	return jobscmd.Commands(func(ctx context.Context, cfg config.Database) (queue.Admin, func() error, error) {
+	return queuecmd.Commands(func(ctx context.Context, cfg config.Database) (queue.Admin, func() error, error) {
 		db, err := forgesqlite.Open(ctx, cfg)
 		if err != nil {
 			return nil, nil, err

@@ -1,7 +1,13 @@
-// Package setupcmd is the command line of the "setup" subcommand every Forge
+// Package authsetup is the command line of the "setup" subcommand every Forge
 // identity store ships (auth/postgres, auth/sqlite, auth/mysql): its flags,
 // how it reads the owner's password and what it prints. The store provisions.
-package setupcmd
+//
+// It is public because the identity stores depend on it and are to live in
+// their own Go modules, which may not import another module's internal
+// packages (ADR 0053). Applications use their store's SetupCommand, not this
+// package; an alternative identity store may use it to offer the same
+// command line.
+package authsetup
 
 import (
 	"bytes"
@@ -127,7 +133,7 @@ func run(ctx context.Context, config Config, env command.Env, args []string) err
 	if err := ValidOrganizationName(account.OrganizationName); err != nil {
 		return fmt.Errorf("%w: --org-name (--organization): %w", command.ErrUsage, err)
 	}
-	password, err := Password(env, *passwordStdin, normalizedEmail)
+	password, err := readPassword(env, *passwordStdin, normalizedEmail)
 	if err != nil {
 		return err
 	}
@@ -157,10 +163,10 @@ func ValidOrganizationName(name string) error {
 	return nil
 }
 
-// Password returns the owner password from the environment variable, piped
+// readPassword returns the owner password from the environment variable, piped
 // standard input or an interactive prompt (twice, without echo), and checks
 // its length. It is never accepted as an argument, printed or logged.
-func Password(env command.Env, fromStdin bool, email string) (string, error) {
+func readPassword(env command.Env, fromStdin bool, email string) (string, error) {
 	var password []byte
 	value, fromEnv := "", false
 	if env.LookupEnv != nil {

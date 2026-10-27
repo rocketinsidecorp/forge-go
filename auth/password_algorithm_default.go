@@ -2,6 +2,7 @@
 
 package auth
 
-// defaultPasswordAlgorithm is Argon2id unless the binary is built with the
-// forge_pbkdf2 tag (password_algorithm_pbkdf2.go).
-const defaultPasswordAlgorithm = PasswordAlgorithmArgon2id
+// pbkdf2Build is false: the default algorithm is Argon2id once an
+// implementation is registered (password_algorithm_pbkdf2.go has the
+// forge_pbkdf2 build).
+const pbkdf2Build = false

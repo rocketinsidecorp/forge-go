@@ -1,4 +1,4 @@
-package sqlidentity
+package authsql
 
 import (
 	"context"
@@ -70,10 +70,10 @@ func WithSessionIdleTimeout(timeout time.Duration) Option {
 	}
 }
 
-// WithClock sets the clock that checks the expiries callers pass (they must
+// withClock sets the clock that checks the expiries callers pass (they must
 // be in the future); the database clock decides everything else. It is for
 // tests.
-func WithClock(now func() time.Time) Option {
+func withClock(now func() time.Time) Option {
 	return func(r *Repository) error {
 		if now == nil {
 			return errors.New("identity store clock is required")
@@ -323,7 +323,7 @@ func (r *Repository) ResolveSession(ctx context.Context, digest auth.Digest) (au
 		found       bool
 		subjectID   uuid.UUID
 		tenantID    uuid.UUID
-		expiresAt   Timestamp
+		expiresAt   timestamp
 		stale       bool
 		permissions []auth.Permission
 	)

@@ -11,38 +11,6 @@ import (
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
-// Written by Forge-Rust's generated Argon2idPasswordHasher (argon2 0.6.0,
-// Argon2id v19, m=19456, t=2, p=1, 32-byte output, a random 16-byte salt)
-// for a test-only password.
-const (
-	forgeRustArgon2idFixture         = "$argon2id$v=19$m=19456,t=2,p=1$66DIwPvWLVzp/qkTyDQLqw$AMsFRwhoUEWdrArkL3sE7DfMOkuFGT8kuA6RIuNqZdU" // #nosec G101 -- the hash of a public test-only password
-	forgeRustArgon2idFixturePassword = "forge-cross-framework-fixture"                                                                     // #nosec G101 -- a public test-only password
-)
-
-func TestArgon2idHashWrittenByForgeRustVerifies(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	hasher, err := NewPasswordHasher(WithPasswordAlgorithm(PasswordAlgorithmArgon2id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	match, rehash, err := hasher.Verify(ctx, forgeRustArgon2idFixture, forgeRustArgon2idFixturePassword)
-	if err != nil || !match || rehash {
-		t.Fatalf("Forge-Rust hash: (%v, %v, %v), want a match in the current parameters", match, rehash, err)
-	}
-	if match, _, err := hasher.Verify(ctx, forgeRustArgon2idFixture, forgeRustArgon2idFixturePassword+"x"); err != nil || match {
-		t.Fatalf("wrong password: match=%v err=%v", match, err)
-	}
-	// Forge-Go writes the same shape, so Forge-Rust reads it back.
-	ours, err := hasher.Hash(ctx, forgeRustArgon2idFixturePassword)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ours) != len(forgeRustArgon2idFixture) || !strings.HasPrefix(ours, "$argon2id$v=19$m=19456,t=2,p=1$") {
-		t.Fatalf("Forge-Go hash %q does not have Forge-Rust's shape", ours)
-	}
-}
-
 // rehashStore is a PasswordStore holding one account whose hash
 // ReplacePasswordHash really replaces.
 type rehashStore struct {
@@ -157,16 +125,16 @@ func TestLoginRehashesAWeakerArgon2idHash(t *testing.T) {
 func TestLoginMissVerifiesADummyHashAtTheCurrentCost(t *testing.T) {
 	t.Parallel()
 	for _, hasher := range []*PasswordHasher{cheapPasswordHasher(t), DefaultPasswordHasher()} {
-		stored, err := parseStoredPasswordHash(hasher.dummy)
-		if err != nil || stored.algorithm != hasher.Algorithm() || hasher.needsRehash(stored) {
-			t.Fatalf("dummy %q: %+v err=%v", hasher.dummy, stored, err)
+		stored, err := parseStoredPasswordHash(hasher.dummy())
+		if err != nil || stored.algorithm != hasher.Algorithm() || hasher.needsRehash(stored, hasher.Algorithm()) {
+			t.Fatalf("dummy %q: %+v err=%v", hasher.dummy(), stored, err)
 		}
-		if match, _, err := hasher.Verify(context.Background(), hasher.dummy, "any password"); err != nil || match {
+		if match, _, err := hasher.Verify(context.Background(), hasher.dummy(), "any password"); err != nil || match {
 			t.Fatalf("dummy matched: %v %v", match, err)
 		}
 	}
-	if DefaultPasswordAlgorithm == PasswordAlgorithmArgon2id && !strings.HasPrefix(DefaultPasswordHasher().dummy, "$argon2id$v=19$m=19456,t=2,p=1$") {
-		t.Fatalf("default dummy %q is not at the production Argon2id cost", DefaultPasswordHasher().dummy)
+	if DefaultPasswordAlgorithm() == PasswordAlgorithmArgon2id && !strings.HasPrefix(DefaultPasswordHasher().dummy(), "$argon2id$v=19$m=19456,t=2,p=1$") {
+		t.Fatalf("default dummy %q is not at the production Argon2id cost", DefaultPasswordHasher().dummy())
 	}
 
 	limiter, err := NewPasswordWorkLimiter(1, 0)
@@ -174,7 +142,7 @@ func TestLoginMissVerifiesADummyHashAtTheCurrentCost(t *testing.T) {
 		t.Fatal(err)
 	}
 	hasher := cheapPasswordHasher(t, WithPasswordWorkLimiter(limiter))
-	service, err := NewLoginService(newRehashStore(t, hasher.dummy), &sessionStub{}, WithLoginPasswordHasher(hasher))
+	service, err := NewLoginService(newRehashStore(t, hasher.dummy()), &sessionStub{}, WithLoginPasswordHasher(hasher))
 	if err != nil {
 		t.Fatal(err)
 	}

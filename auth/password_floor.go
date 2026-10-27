@@ -106,7 +106,7 @@ func (f *legacyTimingFloor) pad(ctx context.Context, started time.Time) error {
 }
 
 // WithLegacyHashTimingFloor turns the legacy-hash timing floor on or off.
-// While it is on (the default when the hasher writes Argon2id), a failed
+// While it is on (the default while the hasher writes Argon2id), a failed
 // password check of LoginService and of the step-up of authhttp.Browser (an
 // unknown account or tenant, a malformed login, a wrong password against any
 // hash) does not answer before one PBKDF2-600k verification would have
@@ -128,13 +128,15 @@ func WithLegacyHashTimingFloor(enabled bool) PasswordHasherOption {
 // padFailedCheck pads a failed password check that started at started up to
 // the legacy timing floor, when the floor is on.
 func (h *PasswordHasher) padFailedCheck(ctx context.Context, started time.Time) error {
-	if h.floor == nil {
+	floor := h.activeFloor()
+	if floor == nil {
 		return nil
 	}
-	return h.floor.pad(ctx, started)
+	return floor.pad(ctx, started)
 }
 
-// checkStarted is the time a password check starts, on the floor's clock.
+// checkStarted is the time a password check starts, on the floor's clock
+// (whether or not the floor applies yet).
 func (h *PasswordHasher) checkStarted() time.Time {
 	if h.floor == nil {
 		return time.Time{}

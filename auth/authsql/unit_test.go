@@ -1,19 +1,38 @@
-package sqlidentity
+package authsql
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/sqldb"
-
-	_ "modernc.org/sqlite"
 )
+
+// noConnector is a database/sql connector that never connects: New
+// validates its arguments without touching the database, so these unit
+// tests need no driver (the store itself is tested against SQLite and MySQL
+// in their adapters and in sqlite/internal/integration).
+type noConnector struct{}
+
+func (noConnector) Connect(context.Context) (driver.Conn, error) {
+	return nil, errors.New("no database in a unit test")
+}
+
+func (noConnector) Driver() driver.Driver { return noDriver{} }
+
+type noDriver struct{}
+
+func (noDriver) Open(string) (driver.Conn, error) {
+	return nil, errors.New("no database in a unit test")
+}
 
 func TestTimestampScan(t *testing.T) {
 	t.Parallel()
-	var stamp Timestamp
+	var stamp timestamp
 	at := time.Date(2026, 10, 27, 9, 30, 0, 123456000, time.FixedZone("x", 3600))
 	if err := stamp.Scan(at); err != nil || !stamp.Time.Equal(at) || stamp.Time.Location() != time.UTC {
 		t.Fatalf("time.Time: %v %v", stamp.Time, err)
@@ -33,10 +52,7 @@ func TestTimestampScan(t *testing.T) {
 
 func TestNewValidatesItsArguments(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := sql.OpenDB(noConnector{})
 	db, err := sqldb.New(raw, config.Default().Database, func(error) sqldb.Classification { return sqldb.Classification{} })
 	if err != nil {
 		t.Fatal(err)
@@ -50,11 +66,11 @@ func TestNewValidatesItsArguments(t *testing.T) {
 func TestOptions(t *testing.T) {
 	t.Parallel()
 	r := &Repository{}
-	if err := WithClock(nil)(r); err == nil {
+	if err := withClock(nil)(r); err == nil {
 		t.Fatal("nil clock accepted")
 	}
 	now := func() time.Time { return time.Unix(0, 0) }
-	if err := WithClock(now)(r); err != nil || r.now().Unix() != 0 {
+	if err := withClock(now)(r); err != nil || r.now().Unix() != 0 {
 		t.Fatal("clock not set")
 	}
 	for _, bad := range []time.Duration{time.Minute, 31 * 24 * time.Hour} {

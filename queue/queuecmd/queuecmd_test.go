@@ -12,7 +12,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/queue/queuecmd"
 )
 
-// queuecmd.Commands is the jobs command (tested in queue/internal/jobscmd)
+// queuecmd.Commands is the jobs command (tested in commands_test.go)
 // backed by the caller's opener.
 func TestCommandsIsTheJobsCommandBackedByTheOpener(t *testing.T) {
 	t.Parallel()

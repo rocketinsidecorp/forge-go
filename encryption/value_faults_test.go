@@ -1,13 +1,11 @@
 package encryption_test
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/rocketinsidecorp/forge-go/encryption"
-	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
 )
 
 func TestValueReportsWhatItCannotSealOrDecode(t *testing.T) {
@@ -61,39 +59,5 @@ func TestValueReportsWhatItCannotSealOrDecode(t *testing.T) {
 	}
 	if value, err := cleared.Value(); err != nil || value != nil {
 		t.Errorf("a cleared value stores %v, %v; want NULL", value, err)
-	}
-}
-
-func TestSQLRewriterReportsADatabaseThatFails(t *testing.T) {
-	t.Parallel()
-	if _, err := encryption.NewSQLRewriter(nil, encryption.SQLColumn{Table: "people", Column: "ssn"}); err == nil {
-		t.Error("a nil database was accepted")
-	}
-	db := sqlitetest.New(t)
-	if _, err := encryption.NewSQLRewriter(db, encryption.SQLColumn{Table: "people; DROP", Column: "ssn"}); err == nil {
-		t.Error("an unsafe identifier was accepted")
-	}
-	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, `CREATE TABLE people (id TEXT PRIMARY KEY, ssn TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	// Without an index column a blind index cannot be written.
-	plain, err := encryption.NewSQLRewriter(db, encryption.SQLColumn{Table: "people", Column: "ssn"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed, err := plain.Replace(ctx, encryption.Update{ID: "a", OldSealed: "x", NewSealed: "y", Index: "digest"}); err == nil || changed {
-		t.Errorf("Replace with an index and no index column = %v, %v", changed, err)
-	}
-	// A missing column is reported by the database, for pages and for updates.
-	broken, err := encryption.NewSQLRewriter(db, encryption.SQLColumn{Table: "people", Column: "nope"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := broken.Page(ctx, "", 10); err == nil {
-		t.Error("Page over a missing column succeeded")
-	}
-	if changed, err := broken.Replace(ctx, encryption.Update{ID: "a", OldSealed: "x", NewSealed: "y"}); err == nil || changed {
-		t.Errorf("Replace over a missing column = %v, %v", changed, err)
 	}
 }

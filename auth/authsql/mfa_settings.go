@@ -1,4 +1,4 @@
-package sqlidentity
+package authsql
 
 import (
 	"context"

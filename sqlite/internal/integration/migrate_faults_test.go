@@ -1,4 +1,4 @@
-package migrate_test
+package integration_test
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 	_ "modernc.org/sqlite" // the driver the dialect below runs on
 )
 
-var errInjected = errors.New("injected failure")
+var errMigrateInjected = errors.New("injected failure")
 
 // logLines records log messages so a test can wait for or count them.
 type logLines struct {
@@ -147,13 +147,13 @@ func TestMigrationSessionFailuresAreReportedAndLeaveNothingApplied(t *testing.T)
 		want    string
 	}{
 		"session setup": {func() migrate.Dialect {
-			return &scriptedDialect{prepare: func() error { return errInjected }}
+			return &scriptedDialect{prepare: func() error { return errMigrateInjected }}
 		}, "configure migration session"},
 		"session identity": {func() migrate.Dialect {
-			return &identifyingDialect{identity: func() (string, error) { return "", errInjected }}
+			return &identifyingDialect{identity: func() (string, error) { return "", errMigrateInjected }}
 		}, "identify migration session"},
 		"lock": {func() migrate.Dialect {
-			return &scriptedDialect{tryLock: func() (bool, error) { return false, errInjected }}
+			return &scriptedDialect{tryLock: func() (bool, error) { return false, errMigrateInjected }}
 		}, "acquire migration lock"},
 	}
 	for name, tc := range cases {
@@ -164,7 +164,7 @@ func TestMigrationSessionFailuresAreReportedAndLeaveNothingApplied(t *testing.T)
 				"Up":   func() error { _, err := migrator.Up(context.Background()); return err },
 				"Down": func() error { _, err := migrator.Down(context.Background(), 1); return err },
 			} {
-				if err := run(); !errors.Is(err, errInjected) || !strings.Contains(err.Error(), tc.want) {
+				if err := run(); !errors.Is(err, errMigrateInjected) || !strings.Contains(err.Error(), tc.want) {
 					t.Errorf("%s = %v, want %q wrapping the failure", operation, err, tc.want)
 				}
 			}
@@ -178,10 +178,10 @@ func TestMigrationSessionFailuresAreReportedAndLeaveNothingApplied(t *testing.T)
 
 func TestAMigrationThatCannotReleaseItsLockReportsIt(t *testing.T) {
 	t.Parallel()
-	migrator, db, _ := newMigrator(t, &scriptedDialect{unlock: func() error { return errInjected }},
+	migrator, db, _ := newMigrator(t, &scriptedDialect{unlock: func() error { return errMigrateInjected }},
 		migration(1, "first", "CREATE TABLE first (id INTEGER)", "DROP TABLE first"))
 	applied, err := migrator.Up(context.Background())
-	if !errors.Is(err, errInjected) || !strings.Contains(err.Error(), "release migration lock") {
+	if !errors.Is(err, errMigrateInjected) || !strings.Contains(err.Error(), "release migration lock") {
 		t.Fatalf("Up = %v", err)
 	}
 	if len(applied) != 1 {
@@ -239,9 +239,9 @@ func TestMigratorsOverAClosedDatabaseReportThatNoSessionOpened(t *testing.T) {
 
 func TestStatusReportsAnUnreadableTrackingTable(t *testing.T) {
 	t.Parallel()
-	migrator, db, _ := newMigrator(t, &scriptedDialect{tableExists: func() error { return errInjected }},
+	migrator, db, _ := newMigrator(t, &scriptedDialect{tableExists: func() error { return errMigrateInjected }},
 		migration(1, "first", "SELECT 1", "SELECT 1"))
-	if _, err := migrator.Status(context.Background()); !errors.Is(err, errInjected) || !strings.Contains(err.Error(), "read applied migrations") {
+	if _, err := migrator.Status(context.Background()); !errors.Is(err, errMigrateInjected) || !strings.Contains(err.Error(), "read applied migrations") {
 		t.Errorf("Status with a failing TableExists = %v", err)
 	}
 

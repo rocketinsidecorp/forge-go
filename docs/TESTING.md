@@ -122,7 +122,7 @@ COVERAGE_PROFILE=cover.out scripts/coverage.sh     # report and gate an existing
   own statements (`package_floor` and `guarded` in `scripts/coverage.sh`), so
   a well covered module cannot average away an untested one: `auth` and
   its HTTP adapter `auth/authhttp`, the identity stores `auth/postgres`, `auth/sqlite` and `auth/mysql` and
-  their shared SQL (`auth/internal/sqlidentity`), `credentials`, `csrf`, `encryption`,
+  their shared SQL (`auth/authsql`), `credentials`, `csrf`, `encryption`,
   `postgres/internal/pgurl` (the PostgreSQL URL isolation) and `postgres`. The table in
   the job summary lists them with their numbers; a listed package that is not
   measured fails too. The comparison is exact, not the table's one-decimal

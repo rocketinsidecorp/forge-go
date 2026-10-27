@@ -1,4 +1,4 @@
-package sqlidentity
+package authsql
 
 import (
 	"context"
@@ -152,7 +152,7 @@ func (r *Repository) LoadPendingTOTP(ctx context.Context, subjectID uuid.UUID) (
 	var (
 		record    auth.TOTPSecretRecord
 		rawDigest []byte
-		expiresAt Timestamp
+		expiresAt timestamp
 	)
 	// One statement, one snapshot: the key is a rotation's exactly when the
 	// account has a factor.
@@ -417,7 +417,7 @@ func (r *Repository) LoadMFAChallenge(ctx context.Context, digest auth.Digest) (
 	var (
 		record                      auth.MFAChallengeRecord
 		rawDigest                   []byte
-		expiresAt, sessionExpiresAt Timestamp
+		expiresAt, sessionExpiresAt timestamp
 	)
 	err := r.db.QueryRowContext(ctx, r.q(`
 		SELECT u.id, m.id, c.credential_version, f.secret_digest, f.secret_ciphertext,

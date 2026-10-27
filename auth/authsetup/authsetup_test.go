@@ -1,4 +1,4 @@
-package setupcmd_test
+package authsetup_test
 
 import (
 	"bytes"
@@ -10,26 +10,26 @@ import (
 
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/auth"
-	"github.com/rocketinsidecorp/forge-go/auth/internal/setupcmd"
+	"github.com/rocketinsidecorp/forge-go/auth/authsetup"
 )
 
 const password = "correct horse battery staple"
 
 type recorder struct {
-	accounts []setupcmd.Account
+	accounts []authsetup.Account
 	err      error
 }
 
-func (r *recorder) provision(_ context.Context, _ forge.CommandEnv, account setupcmd.Account) (setupcmd.Provisioned, error) {
+func (r *recorder) provision(_ context.Context, _ forge.CommandEnv, account authsetup.Account) (authsetup.Provisioned, error) {
 	r.accounts = append(r.accounts, account)
-	return setupcmd.Provisioned{Email: account.Email, OrgSlug: account.OrgSlug, Permissions: 4}, r.err
+	return authsetup.Provisioned{Email: account.Email, OrgSlug: account.OrgSlug, Permissions: 4}, r.err
 }
 
 func run(t *testing.T, organizations bool, stdin string, env map[string]string, args ...string) (*recorder, string, error) {
 	t.Helper()
 	r := &recorder{}
 	var stdout, stderr bytes.Buffer
-	command := setupcmd.Command(setupcmd.Config{Organizations: organizations, Provision: r.provision})
+	command := authsetup.Command(authsetup.Config{Organizations: organizations, Provision: r.provision})
 	err := command.Run(context.Background(), forge.CommandEnv{
 		Stdin: strings.NewReader(stdin), Stdout: &stdout, Stderr: &stderr,
 		LookupEnv: func(key string) (string, bool) { value, ok := env[key]; return value, ok },
@@ -46,7 +46,7 @@ func TestSingleTenantSetupTakesTheEmailOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.accounts) != 1 || r.accounts[0].OrgSlug != auth.DefaultTenantSlug || r.accounts[0].OrganizationName != setupcmd.DefaultOrganizationName || r.accounts[0].Password != password {
+	if len(r.accounts) != 1 || r.accounts[0].OrgSlug != auth.DefaultTenantSlug || r.accounts[0].OrganizationName != authsetup.DefaultOrganizationName || r.accounts[0].Password != password {
 		t.Fatalf("accounts = %+v", r.accounts)
 	}
 	if strings.Contains(stdout, "organization") || !strings.Contains(stdout, "Sign in at /session/new.") || !strings.Contains(stdout, "(4 permissions)") {
@@ -61,14 +61,14 @@ func TestSingleTenantSetupTakesTheEmailOnly(t *testing.T) {
 			t.Fatalf("%v: %v", args, err)
 		}
 	}
-	if !strings.Contains(setupcmd.Command(setupcmd.Config{}).Summary, "owner account") {
+	if !strings.Contains(authsetup.Command(authsetup.Config{}).Summary, "owner account") {
 		t.Fatal("summary")
 	}
 }
 
 func TestMultiTenantSetupRequiresTheOrganization(t *testing.T) {
 	t.Parallel()
-	r, stdout, err := run(t, true, "", map[string]string{setupcmd.PasswordVariable: password}, "--org", "Acme", "--email", "owner@example.com", "--org-name", "  Acme Inc ")
+	r, stdout, err := run(t, true, "", map[string]string{authsetup.PasswordVariable: password}, "--org", "Acme", "--email", "owner@example.com", "--org-name", "  Acme Inc ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestMultiTenantSetupRequiresTheOrganization(t *testing.T) {
 	if err != nil || r.accounts[0].OrganizationName != "globex" {
 		t.Fatalf("--tenant alias: %+v %v", r.accounts, err)
 	}
-	if !strings.Contains(setupcmd.Command(setupcmd.Config{Organizations: true}).Summary, "organization") {
+	if !strings.Contains(authsetup.Command(authsetup.Config{Organizations: true}).Summary, "organization") {
 		t.Fatal("summary")
 	}
 	for name, args := range map[string][]string{
@@ -103,7 +103,7 @@ func TestMultiTenantSetupRequiresTheOrganization(t *testing.T) {
 func TestSetupReadsThePasswordSafely(t *testing.T) {
 	t.Parallel()
 	valid := []string{"--email", "owner@example.com"}
-	if _, _, err := run(t, false, password+"\n", map[string]string{setupcmd.PasswordVariable: password}, append(valid, "--password-stdin")...); !errors.Is(err, forge.ErrUsage) {
+	if _, _, err := run(t, false, password+"\n", map[string]string{authsetup.PasswordVariable: password}, append(valid, "--password-stdin")...); !errors.Is(err, forge.ErrUsage) {
 		t.Fatalf("both sources: %v", err)
 	}
 	if _, _, err := run(t, false, "too short\n", nil, append(valid, "--password-stdin")...); err == nil || errors.Is(err, forge.ErrUsage) {
@@ -112,24 +112,24 @@ func TestSetupReadsThePasswordSafely(t *testing.T) {
 	if _, _, err := run(t, false, "", nil, valid...); !errors.Is(err, forge.ErrUsage) {
 		t.Fatalf("no terminal: %v", err)
 	}
-	command := setupcmd.Command(setupcmd.Config{Provision: (&recorder{}).provision})
+	command := authsetup.Command(authsetup.Config{Provision: (&recorder{}).provision})
 	if err := command.Run(context.Background(), forge.CommandEnv{Stdout: os.Stdout, Stderr: os.Stderr}, append(valid, "--password-stdin")); err == nil {
 		t.Fatal("--password-stdin without standard input succeeded")
 	}
 	if err := command.Run(context.Background(), forge.CommandEnv{Stdin: errReader{}, Stdout: os.Stdout, Stderr: os.Stderr}, append(valid, "--password-stdin")); err == nil {
 		t.Fatal("an unreadable standard input succeeded")
 	}
-	if err := setupcmd.Command(setupcmd.Config{}).Run(context.Background(), forge.CommandEnv{}, valid); err == nil {
+	if err := authsetup.Command(authsetup.Config{}).Run(context.Background(), forge.CommandEnv{}, valid); err == nil {
 		t.Fatal("a command without a store succeeded")
 	}
 	failing := &recorder{err: errors.New("database down")}
-	err := setupcmd.Command(setupcmd.Config{Provision: failing.provision}).Run(context.Background(), forge.CommandEnv{
+	err := authsetup.Command(authsetup.Config{Provision: failing.provision}).Run(context.Background(), forge.CommandEnv{
 		Stdin: strings.NewReader(password + "\n"), Stdout: os.Stdout, Stderr: os.Stderr,
 	}, append(valid, "--password-stdin"))
 	if err == nil || err.Error() != "database down" {
 		t.Fatalf("provision failure: %v", err)
 	}
-	if setupcmd.Usage(true) == setupcmd.Usage(false) {
+	if authsetup.Usage(true) == authsetup.Usage(false) {
 		t.Fatal("usage does not depend on organizations")
 	}
 }

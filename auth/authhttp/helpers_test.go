@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync"
@@ -263,7 +264,37 @@ func (s *recoverySenderStub) SendPasswordRecovery(_ context.Context, message aut
 
 var errInjected = errors.New("injected store failure")
 
-// A password hash costs one production Argon2id hash; the fixtures share one.
+// fakeArgon2idKDF stands in for golang.org/x/crypto/argon2.IDKey, which the
+// core does not link (ADR 0053): a fast, deterministic function of every
+// input with IDKey's signature, registered for this package's tests so the
+// default hasher writes and verifies $argon2id$ hashes as in an application
+// that links an identity adapter. The real Argon2id is tested by the
+// adapters.
+func fakeArgon2idKDF(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+	digest := sha256.New()
+	var header [17]byte
+	binary.BigEndian.PutUint32(header[0:], time)
+	binary.BigEndian.PutUint32(header[4:], memory)
+	header[8] = threads
+	binary.BigEndian.PutUint32(header[9:], keyLen)
+	binary.BigEndian.PutUint32(header[13:], uint32(len(salt))) // #nosec G115 -- salts are at most 64 bytes
+	digest.Write(header[:])
+	digest.Write(salt)
+	digest.Write(password)
+	seed := digest.Sum(nil)
+	key := make([]byte, 0, keyLen+sha256.Size)
+	for block := byte(0); uint32(len(key)) < keyLen; block++ { // #nosec G115 -- keys are 32 bytes
+		sum := sha256.Sum256(append([]byte{block}, seed...))
+		key = append(key, sum[:]...)
+	}
+	return key[:keyLen]
+}
+
+func init() {
+	auth.RegisterArgon2id(fakeArgon2idKDF)
+}
+
+// The fixtures share one password hash.
 var mfaTestPasswordHash = sync.OnceValues(func() (string, error) { return auth.HashPassword(mfaTestPassword) })
 
 func cachedPasswordHash(t *testing.T) string {
@@ -594,9 +625,8 @@ func cheapPasswordHash(password string) (string, error) {
 }
 
 // cheapPasswordHasher is NewPasswordHasher(options...) writing Argon2id
-// without the legacy timing floor unless options turn it on. (Package auth's
-// own tests also lower the Argon2id cost; these few hashes pay the
-// production one.)
+// (the registered fake) without the legacy timing floor unless options turn
+// it on.
 func cheapPasswordHasher(t testing.TB, options ...auth.PasswordHasherOption) *auth.PasswordHasher {
 	t.Helper()
 	defaults := []auth.PasswordHasherOption{auth.WithPasswordAlgorithm(auth.PasswordAlgorithmArgon2id), auth.WithLegacyHashTimingFloor(false)}

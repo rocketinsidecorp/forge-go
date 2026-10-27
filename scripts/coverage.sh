@@ -77,7 +77,7 @@ package_floor=95.0
 guarded=(
 	auth
 	auth/authhttp
-	auth/internal/sqlidentity
+	auth/authsql
 	auth/mysql
 	auth/postgres
 	auth/sqlite

@@ -1,142 +1,259 @@
 package forge_test
 
 import (
+	"go/parser"
+	"go/token"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 const modulePath = "github.com/rocketinsidecorp/forge-go"
 
-// corePackages may import only the standard library and each other (ADR 0006,
-// ADR 0007). Applications that never touch the database therefore never link
-// a third-party module through Forge.
-var corePackages = []string{
-	modulePath,
-	modulePath + "/assets",
-	modulePath + "/auth",
-	modulePath + "/auth/authhttp",
-	modulePath + "/auth/internal/backupcode",
-	modulePath + "/auth/recoverymail",
-	modulePath + "/auth/recoveryqueue",
-	modulePath + "/cache",
-	modulePath + "/command",
-	modulePath + "/cache/cachetest",
-	modulePath + "/broadcast",
-	modulePath + "/agent",
-	modulePath + "/config",
-	modulePath + "/csrf",
-	modulePath + "/credentials",
-	modulePath + "/dbtest",
-	modulePath + "/encryption",
-	modulePath + "/events",
-	modulePath + "/fault",
-	modulePath + "/health",
-	modulePath + "/hotwire",
-	modulePath + "/i18n",
-	modulePath + "/internal/langtag",
-	modulePath + "/internal/principalctx",
-	modulePath + "/internal/principalctx/internal/key",
-	modulePath + "/internal/principalctx/principalwrite",
-	modulePath + "/mail",
-	modulePath + "/mail/mailtest",
-	modulePath + "/jobs",
-	modulePath + "/jobs/ticktest",
-	modulePath + "/migrate",
-	modulePath + "/migrate/migratetest",
-	modulePath + "/openapi",
-	modulePath + "/httpserver",
-	modulePath + "/pagination",
-	modulePath + "/queue",
-	modulePath + "/queue/internal/jobscmd",
-	modulePath + "/queue/queuecmd",
-	modulePath + "/queue/storetest",
-	modulePath + "/ratelimit",
-	modulePath + "/ratelimit/limitertest",
-	modulePath + "/router",
-	modulePath + "/sqldb",
-	modulePath + "/storage",
-	modulePath + "/storage/disk",
-	modulePath + "/storage/storagetest",
-	modulePath + "/telemetry",
-	modulePath + "/telemetry/telemetrytest",
-	modulePath + "/tenancy",
-	modulePath + "/turbo",
-	modulePath + "/uuid",
-	modulePath + "/views",
-	modulePath + "/web",
+// nonCorePackages are the packages that will leave the core module when
+// forge-go splits into modules (decision D38, ADR 0053), as import paths or
+// "x/..." prefixes. Every other package of the module is core: it, its
+// tests and everything they import may use only the standard library and
+// other core packages, so an application that depends on the core alone
+// links no third-party module, and the core module will need no require
+// line (ADR 0006, ADR 0053).
+var nonCorePackages = []string{
+	// The database drivers' modules: the adapters, their test kits and the
+	// tests of core packages that need a driver (*/internal/integration).
+	modulePath + "/postgres/...",
+	modulePath + "/mysql/...",
+	modulePath + "/sqlite/...",
+	modulePath + "/auth/postgres/...",
+	modulePath + "/auth/mysql/...",
+	modulePath + "/auth/sqlite/...",
+	modulePath + "/queue/postgres/...",
+	modulePath + "/queue/mysql/...",
+	modulePath + "/queue/sqlite/...",
+	modulePath + "/cache/postgres/...",
+	modulePath + "/cache/mysql/...",
+	modulePath + "/cache/sqlite/...",
+	modulePath + "/ratelimit/postgres/...",
+	modulePath + "/ratelimit/mysql/...",
+	modulePath + "/ratelimit/sqlite/...",
+	modulePath + "/jobs/postgres/...",
+	modulePath + "/jobs/mysql/...",
+	modulePath + "/broadcast/postgres/...",
+	modulePath + "/outbox/postgres/...",
+	modulePath + "/agent/postgres/...",
+	// The tools module: the forge CLI and forge-proxy with what only they use
+	// (esbuild, yaml, ACME, pgx for the db commands).
+	modulePath + "/cmd/...",
+	modulePath + "/internal/cli/...",
+	modulePath + "/internal/scaffold/...",
+	modulePath + "/internal/frontend/...",
+	modulePath + "/internal/deploy/...",
+	modulePath + "/internal/dbtasks/...",
+	modulePath + "/internal/devloop/...",
+	modulePath + "/internal/exectest/...",
+	modulePath + "/internal/proxy/...",
+	modulePath + "/internal/version/...",
+	modulePath + "/internal/loadgen/...",
+	// The example application, a module of its own.
+	modulePath + "/examples/...",
 }
 
-// coreThirdPartyImports admits packages outside the standard library and the
-// core, each by its own ADR as ADR 0006 requires. Packages, not modules: the
-// rest of golang.org/x/crypto stays out. The value lists the only core
-// packages that may import the package directly; with none, the package may
-// only be reached through another admitted one.
-var coreThirdPartyImports = map[string][]string{
-	// ADR 0048: auth's Argon2id password hashing (golang.org/x/crypto, Go
-	// team, BSD-3-Clause) and what argon2 imports.
-	"golang.org/x/crypto/argon2":  {modulePath + "/auth"},
-	"golang.org/x/crypto/blake2b": nil,
-	"golang.org/x/sys/cpu":        nil,
+// rootToolTests are the root package's repository-wide test files that use
+// the forge CLI's packages or yaml (Rails parity, supply chain, release
+// gate). They are the core's remaining non-core edges and move under cmd/
+// with the tools (ADR 0053); until then the core rule reads the root
+// package's other test files only. A file listed here must still need a
+// non-core package, so the list cannot outlive its reason.
+var rootToolTests = []string{
+	"rails_parity_test.go",
+	"release_ci_gate_test.go",
+	"supply_chain_allowlist_negative_test.go",
+	"supply_chain_allowlist_test.go",
+	"supply_chain_rules_test.go",
+	"supply_chain_test.go",
 }
 
-// coreImportViolations checks the output of
-// go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{range .Imports}} {{.}}{{end}}{{end}}' pkg.
-func coreImportViolations(pkg, listing string) []string {
+// isCore reports whether pkg, an import path, is a core package.
+func isCore(pkg string) bool {
+	return (pkg == modulePath || strings.HasPrefix(pkg, modulePath+"/")) && !matchesPath(pkg, nonCorePackages)
+}
+
+// isStandard reports whether pkg is in the standard library: its first path
+// element has no dot (cmd/go's rule for the import paths a module can use).
+func isStandard(pkg string) bool {
+	return !strings.Contains(strings.SplitN(pkg, "/", 2)[0], ".")
+}
+
+// basePackage strips the test variant of a go list -test import path:
+// "p [q.test]" is p compiled for q's tests.
+func basePackage(pkg string) string {
+	base, _, _ := strings.Cut(pkg, " [")
+	return base
+}
+
+// coreDependencyViolations checks listing, the output of
+// go list -deps -test -f '{{.ImportPath}}{{range .Imports}},{{.}}{{end}}'
+// run on core packages: every import of a core package (or of the test
+// main of one) must be the standard library or core. Only the first edge
+// out of the core is reported; what lies beyond it is the same problem.
+func coreDependencyViolations(listing string) []string {
 	var problems []string
+	seen := map[string]bool{}
 	for line := range strings.Lines(listing) {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
+		fields := strings.Split(strings.TrimSpace(line), ",")
+		if fields[0] == "" {
 			continue
 		}
-		dep, imports := fields[0], fields[1:]
-		if !slices.Contains(corePackages, dep) {
-			if _, admitted := coreThirdPartyImports[dep]; !admitted {
-				problems = append(problems, "core package "+pkg+" depends on "+dep+"; core may import only the standard library and core packages")
-			}
+		importer := basePackage(fields[0])
+		if !isCore(strings.TrimSuffix(importer, ".test")) {
 			continue
 		}
-		for _, imported := range imports {
-			thirdParty := !slices.Contains(corePackages, imported) && strings.Contains(strings.SplitN(imported, "/", 2)[0], ".")
-			if thirdParty && !slices.Contains(coreThirdPartyImports[imported], dep) {
-				problems = append(problems, "core package "+dep+" imports "+imported+"; only "+strings.Join(coreThirdPartyImports[imported], ", ")+" may (ADR 0048)")
+		for _, imported := range fields[1:] {
+			dep := basePackage(imported)
+			if isStandard(dep) || isCore(dep) || seen[importer+" "+dep] {
+				continue
 			}
+			seen[importer+" "+dep] = true
+			problems = append(problems, "core package "+importer+" (or its tests) imports "+dep+
+				": core packages and their tests may import only the standard library and core packages (ADR 0053); move a test that needs a driver to <db>/internal/integration")
 		}
 	}
 	return problems
 }
 
-func TestCorePackagesDependOnlyOnStandardLibraryAndCore(t *testing.T) {
+// rootTestImports returns the imports of the root package's test files other
+// than rootToolTests, and the rootToolTests that import nothing outside the
+// standard library and core.
+func rootTestImports(t *testing.T) (imports, staleToolTests []string) {
+	t.Helper()
+	files, err := filepath.Glob("*_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, file := range files {
+		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tool, needsNonCore := slices.Contains(rootToolTests, file), false
+		for _, spec := range parsed.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !isStandard(path) && !isCore(path) {
+				needsNonCore = true
+			}
+			if !tool && !seen[path] {
+				seen[path] = true
+				imports = append(imports, path)
+			}
+		}
+		if tool && !needsNonCore {
+			staleToolTests = append(staleToolTests, file)
+		}
+	}
+	for _, file := range rootToolTests {
+		if !slices.Contains(files, file) {
+			staleToolTests = append(staleToolTests, file)
+		}
+	}
+	slices.Sort(imports)
+	return imports, staleToolTests
+}
+
+func TestCorePackagesAndTheirTestsDependOnlyOnStandardLibraryAndCore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs go list")
 	}
 	t.Parallel()
-	for _, pkg := range corePackages {
-		output, err := exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}{{range .Imports}} {{.}}{{end}}{{end}}", pkg).CombinedOutput()
-		if err != nil {
-			t.Fatalf("go list %s: %v\n%s", pkg, err, output)
+	output, err := exec.Command("go", "list", "./...").CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list: %v\n%s", err, output)
+	}
+	var core []string
+	for _, pkg := range strings.Fields(string(output)) {
+		if isCore(pkg) && pkg != modulePath {
+			core = append(core, pkg)
 		}
-		for _, problem := range coreImportViolations(pkg, string(output)) {
-			t.Error(problem)
+	}
+	if len(core) < 40 || !slices.Contains(core, modulePath+"/auth") || slices.Contains(core, modulePath+"/auth/postgres") {
+		t.Fatalf("the core set looks wrong (%d packages): %v", len(core), core)
+	}
+	const format = "{{.ImportPath}}{{range .Imports}},{{.}}{{end}}"
+	listing, err := exec.Command("go", append([]string{"list", "-deps", "-test", "-f", format}, core...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -deps -test: %v\n%s", err, listing)
+	}
+	// The root package: its code and the test files other than
+	// rootToolTests (its test imports, then what they import).
+	imports, stale := rootTestImports(t)
+	for _, file := range stale {
+		t.Errorf("%s is in rootToolTests but is missing or needs no package outside the core: remove it from the list", file)
+	}
+	roots := []string{modulePath}
+	for _, path := range imports {
+		if !isStandard(path) {
+			if !isCore(path) {
+				t.Errorf("a root test file imports %s: only the files in rootToolTests may, until they move under cmd/ (ADR 0053)", path)
+				continue
+			}
+			roots = append(roots, path)
 		}
+	}
+	rootListing, err := exec.Command("go", append([]string{"list", "-deps", "-f", format}, roots...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list -deps (root): %v\n%s", err, rootListing)
+	}
+	for _, problem := range coreDependencyViolations(string(listing) + string(rootListing)) {
+		t.Error(problem)
 	}
 }
 
-func TestCoreThirdPartyImportsAreScopedToTheirImporter(t *testing.T) {
+func TestCoreDependencyViolationsFollowTestVariantsAndStopAtTheCore(t *testing.T) {
 	t.Parallel()
-	auth, views := modulePath+"/auth", modulePath+"/views"
-	allowed := auth + " golang.org/x/crypto/argon2 errors\ngolang.org/x/crypto/argon2 golang.org/x/crypto/blake2b golang.org/x/sys/cpu\ngolang.org/x/crypto/blake2b golang.org/x/sys/cpu\ngolang.org/x/sys/cpu\n" + views + " " + auth + "\n"
-	if problems := coreImportViolations(views, allowed); len(problems) != 0 {
-		t.Fatalf("auth importing argon2, reached from views, refused: %v", problems)
+	auth, sqldb := modulePath+"/auth", modulePath+"/sqldb"
+	clean := strings.Join([]string{
+		auth + ",errors," + modulePath + "/fault",
+		auth + " [" + auth + ".test]," + modulePath + "/fault,testing",
+		auth + ".test," + auth + " [" + auth + ".test],testing",
+		sqldb + "_test [" + sqldb + ".test]," + sqldb + "," + modulePath + "/internal/waittest",
+		// Beyond the core is not the core rule's business.
+		modulePath + "/sqlite,modernc.org/sqlite",
+		"",
+	}, "\n")
+	if problems := coreDependencyViolations(clean); len(problems) != 0 {
+		t.Fatalf("a clean graph was refused: %v", problems)
 	}
-	for name, listing := range map[string]string{
-		"another core package imports argon2": views + " golang.org/x/crypto/argon2\ngolang.org/x/crypto/argon2\n",
-		"auth imports blake2b directly":       auth + " golang.org/x/crypto/blake2b\ngolang.org/x/crypto/blake2b\n",
-		"auth imports other x/crypto":         auth + " golang.org/x/crypto/sha3\ngolang.org/x/crypto/sha3\n",
+	for name, extra := range map[string]string{
+		"auth imports x/crypto":           auth + ",golang.org/x/crypto/argon2",
+		"a test variant imports a driver": sqldb + "_test [" + sqldb + ".test]," + modulePath + "/sqlite/sqlitetest",
+		"a test imports a module":         sqldb + " [" + sqldb + ".test],modernc.org/sqlite",
+		"core imports the CLI":            modulePath + "/views," + modulePath + "/internal/cli",
+		"core imports an adapter":         modulePath + "/auth/authhttp," + modulePath + "/auth/postgres",
+		"a test main imports a driver":    auth + ".test,github.com/jackc/pgx/v5",
 	} {
-		if problems := coreImportViolations(auth, listing); len(problems) == 0 {
-			t.Errorf("%s: accepted", name)
+		if problems := coreDependencyViolations(clean + extra + "\n"); len(problems) != 1 {
+			t.Errorf("%s: problems %v, want exactly one", name, problems)
+		}
+	}
+	for pkg, want := range map[string]bool{
+		modulePath:                              true,
+		modulePath + "/internal/terminal":       true,
+		modulePath + "/postgres":                false,
+		modulePath + "/postgres/internal/pgurl": false,
+		modulePath + "/auth/sqlite":             false,
+		modulePath + "/auth/authsql":            true,
+		modulePath + "/internal/cli":            false,
+		modulePath + "/cmd/forge":               false,
+		modulePath + "-other":                   false,
+		"golang.org/x/crypto/argon2":            false,
+	} {
+		if isCore(pkg) != want {
+			t.Errorf("isCore(%s) = %v", pkg, !want)
 		}
 	}
 }
@@ -297,9 +414,20 @@ var importRules = []importRule{
 		Forbidden: []string{modulePath + "/auth", modulePath + "/auth/..."},
 	},
 	{
-		Name:      "the queue stores do not depend on queuecmd",
-		From:      []string{modulePath + "/queue/postgres", modulePath + "/queue/mysql", modulePath + "/queue/sqlite"},
-		Forbidden: []string{modulePath + "/queue/queuecmd"},
+		// ADR 0053: the core has no Argon2; the identity stores register
+		// golang.org/x/crypto/argon2 with auth.RegisterArgon2id.
+		Name:      "only the identity stores import golang.org/x/crypto/argon2",
+		From:      []string{modulePath + "/..."},
+		Forbidden: []string{"golang.org/x/crypto/argon2"},
+		Except:    []string{modulePath + "/auth/postgres", modulePath + "/auth/mysql", modulePath + "/auth/sqlite"},
+		Direct:    true,
+	},
+	{
+		// ADR 0052 A-5 as amended by ADR 0053: the stores delegate their
+		// Commands() to queuecmd, which stays independent of every store.
+		Name:      "queuecmd imports no queue store",
+		From:      []string{modulePath + "/queue/queuecmd"},
+		Forbidden: []string{modulePath + "/queue/postgres", modulePath + "/queue/mysql", modulePath + "/queue/sqlite"},
 	},
 }
 
@@ -394,8 +522,8 @@ func TestImportRuleViolationsFollowsImportsAndHonoursExceptions(t *testing.T) {
 		modulePath + "/fault net/http",
 		modulePath + "/auth/authhttp " + modulePath + "/auth " + modulePath + "/web net/http",
 		modulePath + "/broadcast " + modulePath + "/internal/principalctx " + modulePath + "/web",
-		modulePath + "/queue/postgres " + modulePath + "/queue/internal/jobscmd " + modulePath + "/command",
-		modulePath + "/queue/queuecmd " + modulePath + "/queue/internal/jobscmd",
+		modulePath + "/queue/postgres " + modulePath + "/queue/queuecmd " + modulePath + "/command",
+		modulePath + "/queue/queuecmd " + modulePath + "/command " + modulePath + "/queue",
 		"",
 	}, "\n")
 	if problems := importRuleViolations(clean, importRules); len(problems) != 0 {
@@ -413,7 +541,8 @@ func TestImportRuleViolationsFollowsImportsAndHonoursExceptions(t *testing.T) {
 		"command imports uuid":           modulePath + "/command " + modulePath + "/uuid",
 		"config reaches i18n":            modulePath + "/config " + modulePath + "/x\n" + modulePath + "/x " + modulePath + "/i18n",
 		"broadcast reaches auth":         modulePath + "/broadcast " + modulePath + "/views2\n" + modulePath + "/views2 " + modulePath + "/auth/authhttp",
-		"a queue store uses queuecmd":    modulePath + "/queue/sqlite " + modulePath + "/queue/queuecmd",
+		"queuecmd uses a queue store":    modulePath + "/queue/queuecmd " + modulePath + "/queue/sqlite",
+		"queuecmd reaches a queue store": modulePath + "/queue/queuecmd " + modulePath + "/x\n" + modulePath + "/x " + modulePath + "/queue/mysql",
 	} {
 		if problems := importRuleViolations(clean+extra+"\n", importRules); len(problems) != 1 {
 			t.Errorf("%s: problems %v, want exactly one", name, problems)

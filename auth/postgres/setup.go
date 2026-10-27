@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
-	"github.com/rocketinsidecorp/forge-go/auth/internal/setupcmd"
+	"github.com/rocketinsidecorp/forge-go/auth/authsetup"
 	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -19,15 +19,15 @@ import (
 // holding every permission: setup grants every permission registered at that
 // moment, and the migrations `forge generate resource` writes grant their new
 // permissions to every role with this name.
-const OwnerRole = setupcmd.OwnerRole
+const OwnerRole = authsetup.OwnerRole
 
 // SetupPasswordVariable is the environment variable the setup command reads
 // the owner's password from when it is set. Prefer typing it at the prompt
 // or piping it with --password-stdin; never pass it as an argument.
-const SetupPasswordVariable = setupcmd.PasswordVariable
+const SetupPasswordVariable = authsetup.PasswordVariable
 
 // MinOwnerPasswordRunes is the shortest owner password setup accepts.
-const MinOwnerPasswordRunes = setupcmd.MinPasswordRunes
+const MinOwnerPasswordRunes = authsetup.MinPasswordRunes
 
 var (
 	// ErrAlreadyProvisioned refuses setup on a database that already has a
@@ -148,10 +148,10 @@ func (r *Repository) ProvisionOwner(ctx context.Context, account OwnerAccount) (
 	return owner, nil
 }
 
-func validOrganizationName(name string) error { return setupcmd.ValidOrganizationName(name) }
+func validOrganizationName(name string) error { return authsetup.ValidOrganizationName(name) }
 
 // SetupOption configures SetupCommand.
-type SetupOption func(*setupcmd.Config)
+type SetupOption func(*authsetup.Config)
 
 // SetupOrganizations says whether the application has organizations
 // (`forge new --tenants`, or converted by `forge generate tenancy`): setup
@@ -160,7 +160,7 @@ type SetupOption func(*setupcmd.Config)
 // sign-in page signs everyone in to. Without this option setup requires
 // --org, as before single-tenant applications existed.
 func SetupOrganizations(enabled bool) SetupOption {
-	return func(config *setupcmd.Config) { config.Organizations = enabled }
+	return func(config *authsetup.Config) { config.Organizations = enabled }
 }
 
 // SetupCommand returns the "setup" subcommand of a PostgreSQL application
@@ -178,24 +178,24 @@ func SetupOrganizations(enabled bool) SetupOption {
 // MinOwnerPasswordRunes characters. Running setup again refuses with
 // ErrAlreadyProvisioned.
 func SetupCommand(options ...SetupOption) command.Command {
-	config := setupcmd.Config{Organizations: true, Provision: provision}
+	config := authsetup.Config{Organizations: true, Provision: provision}
 	for _, option := range options {
 		if option != nil {
 			option(&config)
 		}
 	}
-	return setupcmd.Command(config)
+	return authsetup.Command(config)
 }
 
-func provision(ctx context.Context, env command.Env, account setupcmd.Account) (setupcmd.Provisioned, error) {
+func provision(ctx context.Context, env command.Env, account authsetup.Account) (authsetup.Provisioned, error) {
 	database, err := postgres.Open(ctx, env.Config.Database)
 	if err != nil {
-		return setupcmd.Provisioned{}, err
+		return authsetup.Provisioned{}, err
 	}
 	defer database.Close()
 	repository, err := New(database)
 	if err != nil {
-		return setupcmd.Provisioned{}, err
+		return authsetup.Provisioned{}, err
 	}
 	owner, err := repository.ProvisionOwner(ctx, OwnerAccount{
 		Organization: account.OrganizationName,
@@ -204,7 +204,7 @@ func provision(ctx context.Context, env command.Env, account setupcmd.Account) (
 		Password:     account.Password,
 	})
 	if err != nil {
-		return setupcmd.Provisioned{}, err
+		return authsetup.Provisioned{}, err
 	}
-	return setupcmd.Provisioned{Email: owner.Email, OrgSlug: owner.TenantSlug, Permissions: len(owner.Permissions)}, nil
+	return authsetup.Provisioned{Email: owner.Email, OrgSlug: owner.TenantSlug, Permissions: len(owner.Permissions)}, nil
 }

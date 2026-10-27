@@ -4,6 +4,11 @@
 - **Date:** 2026-10-26
 - **Amends:** [ADR 0006](0006-zero-dependency-core.md) (admits three
   `golang.org/x` packages to the core)
+- **Amended by:** [ADR 0053](0053-dependency-free-core.md): `auth` no longer
+  imports `golang.org/x/crypto/argon2`. The identity stores register it
+  through `auth.RegisterArgon2id`; with nothing registered new hashes are
+  PBKDF2 and an Argon2id hash fails closed (`503`). Everything else below
+  stands.
 - **Parity with:** Forge-Rust's generated `Argon2idPasswordHasher` and
   `forge::auth::PasswordWorkLimiter`
 

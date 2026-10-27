@@ -1,4 +1,4 @@
-package jobscmd_test
+package queuecmd_test
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/queue"
-	"github.com/rocketinsidecorp/forge-go/queue/internal/jobscmd"
+	"github.com/rocketinsidecorp/forge-go/queue/queuecmd"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
@@ -83,7 +83,7 @@ func (a *fakeAdmin) Prune(context.Context, time.Duration, int) (int64, error) {
 
 func run(t *testing.T, admin *fakeAdmin, closeErr error, args ...string) (stdout string, err error) {
 	t.Helper()
-	command := jobscmd.Commands(func(context.Context, config.Database) (queue.Admin, func() error, error) {
+	command := queuecmd.Commands(func(context.Context, config.Database) (queue.Admin, func() error, error) {
 		return admin, func() error { return closeErr }, nil
 	})[0]
 	cfg := config.Default()
@@ -105,7 +105,7 @@ func deadJob(kind, lastError string, finished time.Time) queue.Info {
 func TestJobsCommandValidatesUsageBeforeConnecting(t *testing.T) {
 	t.Parallel()
 	connected := false
-	command := jobscmd.Commands(func(context.Context, config.Database) (queue.Admin, func() error, error) {
+	command := queuecmd.Commands(func(context.Context, config.Database) (queue.Admin, func() error, error) {
 		connected = true
 		return &fakeAdmin{}, func() error { return nil }, nil
 	})[0]
@@ -151,7 +151,7 @@ func TestJobsCommandOpenAndCloseFailuresAreReported(t *testing.T) {
 	cfg := config.Default()
 	cfg.Database.URL = config.NewSecret("postgres://u:p@127.0.0.1/db")
 	openErr := errors.New("cannot connect")
-	command := jobscmd.Commands(func(context.Context, config.Database) (queue.Admin, func() error, error) {
+	command := queuecmd.Commands(func(context.Context, config.Database) (queue.Admin, func() error, error) {
 		return nil, nil, openErr
 	})[0]
 	if err := command.Run(t.Context(), forge.CommandEnv{Config: cfg, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, []string{"status"}); !errors.Is(err, openErr) {

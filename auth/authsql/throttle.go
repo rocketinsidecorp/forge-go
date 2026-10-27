@@ -1,4 +1,4 @@
-package sqlidentity
+package authsql
 
 import (
 	"context"
@@ -72,7 +72,7 @@ func (l *LoginThrottler) Attempt(ctx context.Context, key auth.LoginThrottleKey)
 	}
 	decision := auth.LoginThrottleDecision{Allowed: true}
 	err := r.inTx(ctx, func(tx *sql.Tx) error {
-		var stamp Timestamp
+		var stamp timestamp
 		if err := tx.QueryRowContext(ctx, r.q(`SELECT {now}`)).Scan(&stamp); err != nil {
 			return r.translate(err)
 		}
@@ -105,7 +105,7 @@ func (l *LoginThrottler) Attempt(ctx context.Context, key auth.LoginThrottleKey)
 			var (
 				scope   int16
 				current stored
-				reset   Timestamp
+				reset   timestamp
 			)
 			if err := rows.Scan(&scope, &current.count, &reset); err != nil {
 				return r.translate(err)

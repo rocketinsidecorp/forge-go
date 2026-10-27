@@ -170,7 +170,7 @@ esbuild is tooling. `architecture_test.go` computes which packages import it,
 directly or through others, and requires exactly `cmd/forge`, `internal/cli`,
 `internal/frontend` and `internal/scaffold` (`TestEsbuildIsLinkedOnlyByTheForgeCommandLine`),
 so it never reaches a request-handling package, a core package
-(`TestCorePackagesDependOnlyOnStandardLibraryAndCore` still applies), `forge-proxy`
+(`TestCorePackagesDependOnlyOnStandardLibraryAndCore` still applies; [ADR 0053](0053-dependency-free-core.md) renamed it `TestCorePackagesAndTheirTestsDependOnlyOnStandardLibraryAndCore`), `forge-proxy`
 or an application. Generated applications import only the framework packages
 they did before; esbuild appears in their `go.sum` (it is in Forge's module
 graph) but not in their `go.mod`, `vendor/` or binary.

@@ -1,4 +1,4 @@
-// Package sqlidentity is the database/sql identity store that auth/sqlite and
+// Package authsql is the database/sql identity store that auth/sqlite and
 // auth/mysql share: the same queries as auth/postgres, written once for the
 // SQL both databases accept, with the few constructs they spell differently
 // (the clock, locking reads, upserts, the setup lock) supplied by a Dialect.
@@ -13,7 +13,13 @@
 // the database's current UTC time, {ago} the current time minus the duration
 // bound to its one parameter (Dialect.AgoArg), and {lock} the suffix of a
 // locking read.
-package sqlidentity
+//
+// It is public because auth/sqlite and auth/mysql depend on it and are to
+// live in their own Go modules, which may not import another module's
+// internal packages (ADR 0053). Applications use those stores, not this
+// package; its API follows them and carries no compatibility promise of its
+// own beyond theirs.
+package authsql
 
 import (
 	"context"
@@ -70,12 +76,12 @@ func (d *Dialect) validate() error {
 // columns compare and sort chronologically (the format of queue/sqlite).
 const TimeFormat = "2006-01-02 15:04:05.000000"
 
-// Timestamp scans a timestamp column: a time.Time (MySQL) or TimeFormat text
+// timestamp scans a timestamp column: a time.Time (MySQL) or TimeFormat text
 // (SQLite).
-type Timestamp struct{ Time time.Time }
+type timestamp struct{ Time time.Time }
 
 // Scan implements sql.Scanner.
-func (t *Timestamp) Scan(value any) error {
+func (t *timestamp) Scan(value any) error {
 	switch v := value.(type) {
 	case time.Time:
 		t.Time = v.UTC()
@@ -89,7 +95,7 @@ func (t *Timestamp) Scan(value any) error {
 	}
 }
 
-func (t *Timestamp) parse(text string) error {
+func (t *timestamp) parse(text string) error {
 	parsed, err := time.ParseInLocation(TimeFormat, text, time.UTC)
 	if err != nil {
 		return fmt.Errorf("identity store: invalid stored timestamp %q: %w", text, err)

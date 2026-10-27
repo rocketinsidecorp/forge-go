@@ -13,29 +13,40 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
-	"golang.org/x/crypto/argon2"
+	"github.com/rocketinsidecorp/forge-go/fault"
 )
 
 // PasswordAlgorithm names the algorithm a PasswordHasher writes new hashes
-// with. Both are always verified, whichever writes.
+// with. Both are verified whichever writes; Argon2id only once an
+// implementation is registered (RegisterArgon2id).
 type PasswordAlgorithm string
 
 const (
 	// PasswordAlgorithmArgon2id is Argon2id v19 (RFC 9106) with Forge-Rust's
 	// parameters: m=19456 KiB, t=2, p=1, a 16-byte salt and a 32-byte key,
-	// encoded as a PHC string.
+	// encoded as a PHC string. The core has no Argon2 of its own: it hashes
+	// and verifies with the function given to RegisterArgon2id, which the
+	// identity adapters (auth/postgres, auth/mysql, auth/sqlite) register.
 	PasswordAlgorithmArgon2id PasswordAlgorithm = "argon2id"
 	// PasswordAlgorithmPBKDF2SHA256 is PBKDF2-HMAC-SHA256 from the Go
 	// standard library, DefaultPasswordIterations rounds: the choice of a
 	// FIPS 140 deployment, where Argon2id is not an approved algorithm.
 	PasswordAlgorithmPBKDF2SHA256 PasswordAlgorithm = "pbkdf2-sha256" // #nosec G101 -- an algorithm name, not a credential
-
-	// DefaultPasswordAlgorithm is the algorithm of DefaultPasswordHasher and
-	// HashPassword: Argon2id, or PBKDF2-HMAC-SHA256 in a binary built with
-	// the forge_pbkdf2 build tag (go build -tags forge_pbkdf2).
-	DefaultPasswordAlgorithm = defaultPasswordAlgorithm
 )
+
+// DefaultPasswordAlgorithm returns the algorithm DefaultPasswordHasher,
+// HashPassword and every hasher built without WithPasswordAlgorithm write
+// new hashes with at this moment: Argon2id once an implementation is
+// registered (RegisterArgon2id; linking an identity adapter does it), and
+// PBKDF2-HMAC-SHA256 before that or in a binary built with the forge_pbkdf2
+// build tag (go build -tags forge_pbkdf2). Registration is permanent, so the
+// answer changes at most once, from PBKDF2 to Argon2id, normally during
+// package initialization.
+func DefaultPasswordAlgorithm() PasswordAlgorithm {
+	return argon2id.defaultAlgorithm()
+}
 
 const (
 	// DefaultPasswordIterations is Forge's PBKDF2-HMAC-SHA256 work factor.
@@ -77,6 +88,19 @@ var (
 	// ErrPasswordHashInvalid is returned for a stored hash that is malformed or uses parameters
 	// this package does not accept.
 	ErrPasswordHashInvalid = errors.New("invalid password hash")
+
+	// ErrPasswordAlgorithmUnavailable is returned for a stored $argon2id$
+	// hash, or an Argon2id hasher asked to hash, while no Argon2id
+	// implementation is registered (RegisterArgon2id). It fails closed: it
+	// is not a wrong password, the hash is never rewritten, and HTTP
+	// adapters answer 503 through web.Error, which logs the Cause naming
+	// the fix. It is a deployment error, not a transient one.
+	ErrPasswordAlgorithmUnavailable = &fault.Error{
+		Code:     "password_algorithm_unavailable",
+		Message:  "service temporarily unavailable",
+		Category: fault.CategoryUnavailable,
+		Cause:    errors.New("a password hash is Argon2id but no Argon2id implementation is registered: import an identity adapter (auth/postgres, auth/mysql or auth/sqlite), or call auth.RegisterArgon2id(argon2.IDKey) with golang.org/x/crypto/argon2, in the application binary"),
+	}
 )
 
 // argon2Params is the cost of one Argon2id hash.
@@ -94,27 +118,96 @@ var defaultArgon2Params = argon2Params{memoryKiB: argon2MemoryKiB, iterations: a
 // base64) and Forge's PBKDF2 format ($pbkdf2-sha256$v=1$i=…$salt$key)
 // whichever algorithm writes, and reports a hash that is not in the writing
 // algorithm with its current parameters as needing a rehash, so a successful
-// sign-in upgrades it.
+// sign-in upgrades it. Argon2id runs the function given to RegisterArgon2id,
+// looked up at each hash and verification, so the order of package
+// initialization does not matter; with none registered, an Argon2id hash
+// fails with ErrPasswordAlgorithmUnavailable.
 type PasswordHasher struct {
+	// algorithm is what WithPasswordAlgorithm set; empty follows
+	// DefaultPasswordAlgorithm at each hash.
 	algorithm PasswordAlgorithm
 	argon2    argon2Params
-	work      *PasswordWorkLimiter
-	entropy   io.Reader
-	// dummy is a well-formed hash with the writing algorithm's current cost
-	// that no password matches: a sign-in for an unknown account verifies
-	// against it, so it costs what a known account costs.
-	dummy string
+	// kdfs is where the Argon2id implementation is looked up: the
+	// process-wide registry, or (tests only) another one.
+	kdfs    *argon2Registry
+	work    *PasswordWorkLimiter
+	entropy io.Reader
+	// pbkdf2Dummy and argon2Dummy are well-formed hashes with each
+	// algorithm's current cost that no password matches: a sign-in for an
+	// unknown account verifies against the one of the writing algorithm, so
+	// it costs what a known account costs.
+	pbkdf2Dummy, argon2Dummy string
 	// floor pads failed checks while legacy PBKDF2 hashes may exist; nil
-	// when off (WithLegacyHashTimingFloor).
+	// when off (WithLegacyHashTimingFloor). Unless the option set it, it
+	// applies only while the hasher writes Argon2id (activeFloor).
 	floor                  *legacyTimingFloor
 	floorSet, floorEnabled bool
+}
+
+// argon2idKDF is the signature of golang.org/x/crypto/argon2.IDKey.
+type argon2idKDF = func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte
+
+// argon2Registry holds the one Argon2id implementation of the process.
+type argon2Registry struct {
+	kdf atomic.Pointer[argon2idKDF]
+}
+
+// argon2id is the process-wide registry RegisterArgon2id writes.
+var argon2id argon2Registry
+
+// register keeps kdf unless one is already registered or kdf is nil; it
+// reports whether kdf was kept.
+func (r *argon2Registry) register(kdf argon2idKDF) bool {
+	if kdf == nil {
+		return false
+	}
+	return r.kdf.CompareAndSwap(nil, &kdf)
+}
+
+// load returns the registered implementation, or nil.
+func (r *argon2Registry) load() argon2idKDF {
+	if kdf := r.kdf.Load(); kdf != nil {
+		return *kdf
+	}
+	return nil
+}
+
+// defaultAlgorithm is DefaultPasswordAlgorithm for this registry.
+func (r *argon2Registry) defaultAlgorithm() PasswordAlgorithm {
+	if pbkdf2Build || r.load() == nil {
+		return PasswordAlgorithmPBKDF2SHA256
+	}
+	return PasswordAlgorithmArgon2id
+}
+
+// RegisterArgon2id sets the Argon2id implementation of the process, a
+// function with the signature of golang.org/x/crypto/argon2.IDKey, which is
+// what the identity adapters (auth/postgres, auth/mysql, auth/sqlite)
+// register in their init. The core imports no third-party module, so it has
+// no Argon2 of its own: without a registration, new hashes are
+// PBKDF2-HMAC-SHA256 and verifying an existing $argon2id$ hash fails with
+// ErrPasswordAlgorithmUnavailable. An application whose credential store is
+// not one of those adapters calls
+//
+//	auth.RegisterArgon2id(argon2.IDKey)
+//
+// in main or an init. The first registration wins; later ones, and a nil
+// kdf, are ignored, so a second import of an adapter cannot swap the
+// implementation. It is safe for concurrent use, and hashers look the
+// implementation up at each hash and verification, so it may run before or
+// after they are built. kdf must be a correct Argon2id (RFC 9106, version
+// 19): Forge does not check it beyond verifying the hashes it writes.
+func RegisterArgon2id(kdf func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte) {
+	argon2id.register(kdf)
 }
 
 // PasswordHasherOption configures NewPasswordHasher.
 type PasswordHasherOption func(*PasswordHasher) error
 
 // WithPasswordAlgorithm sets the algorithm new hashes are written with; the
-// default is DefaultPasswordAlgorithm.
+// default follows DefaultPasswordAlgorithm. A hasher set to Argon2id fails
+// to hash with ErrPasswordAlgorithmUnavailable while no implementation is
+// registered (RegisterArgon2id).
 func WithPasswordAlgorithm(algorithm PasswordAlgorithm) PasswordHasherOption {
 	return func(h *PasswordHasher) error {
 		if algorithm != PasswordAlgorithmArgon2id && algorithm != PasswordAlgorithmPBKDF2SHA256 {
@@ -141,9 +234,9 @@ func WithPasswordWorkLimiter(limiter *PasswordWorkLimiter) PasswordHasherOption 
 // DefaultPasswordWorkLimiter unless options say otherwise.
 func NewPasswordHasher(options ...PasswordHasherOption) (*PasswordHasher, error) {
 	h := &PasswordHasher{
-		algorithm: DefaultPasswordAlgorithm,
-		argon2:    defaultArgon2Params,
-		entropy:   rand.Reader,
+		argon2:  defaultArgon2Params,
+		kdfs:    &argon2id,
+		entropy: rand.Reader,
 	}
 	for _, option := range options {
 		if option == nil {
@@ -156,7 +249,9 @@ func NewPasswordHasher(options ...PasswordHasherOption) (*PasswordHasher, error)
 	if h.work == nil {
 		h.work = DefaultPasswordWorkLimiter()
 	}
-	if (h.floorSet && h.floorEnabled) || (!h.floorSet && h.algorithm == PasswordAlgorithmArgon2id) {
+	// The floor's calibration is lazy, so a hasher that may come to write
+	// Argon2id (the default one) carries one at no cost until it is used.
+	if (h.floorSet && h.floorEnabled) || (!h.floorSet && h.algorithm != PasswordAlgorithmPBKDF2SHA256) {
 		h.floor = newLegacyTimingFloor()
 	}
 	h.setDummy()
@@ -166,11 +261,40 @@ func NewPasswordHasher(options ...PasswordHasherOption) (*PasswordHasher, error)
 func (h *PasswordHasher) setDummy() {
 	zeroSalt := make([]byte, passwordSaltBytes)
 	zeroKey := make([]byte, passwordKeyBytes)
-	if h.algorithm == PasswordAlgorithmPBKDF2SHA256 {
-		h.dummy = encodePBKDF2(DefaultPasswordIterations, zeroSalt, zeroKey)
-		return
+	h.pbkdf2Dummy = encodePBKDF2(DefaultPasswordIterations, zeroSalt, zeroKey)
+	h.argon2Dummy = encodeArgon2id(h.argon2, zeroSalt, zeroKey)
+}
+
+// writing returns the algorithm h writes new hashes with now, given kdf,
+// the registered Argon2id implementation or nil.
+func (h *PasswordHasher) writing(kdf argon2idKDF) PasswordAlgorithm {
+	switch {
+	case h.algorithm != "":
+		return h.algorithm
+	case pbkdf2Build || kdf == nil:
+		return PasswordAlgorithmPBKDF2SHA256
+	default:
+		return PasswordAlgorithmArgon2id
 	}
-	h.dummy = encodeArgon2id(h.argon2, zeroSalt, zeroKey)
+}
+
+// dummy returns the hash an unknown account is verified against: one in
+// the writing algorithm, which nothing matches.
+func (h *PasswordHasher) dummy() string {
+	if h.Algorithm() == PasswordAlgorithmPBKDF2SHA256 {
+		return h.pbkdf2Dummy
+	}
+	return h.argon2Dummy
+}
+
+// activeFloor returns the legacy timing floor when it applies now: always
+// when WithLegacyHashTimingFloor(true) set it, otherwise while h writes
+// Argon2id (a hasher writing PBKDF2 already pays PBKDF2 on every check).
+func (h *PasswordHasher) activeFloor() *legacyTimingFloor {
+	if h.floor == nil || (!h.floorSet && h.Algorithm() != PasswordAlgorithmArgon2id) {
+		return nil
+	}
+	return h.floor
 }
 
 var defaultPasswordHasher = sync.OnceValue(func() *PasswordHasher {
@@ -183,14 +307,16 @@ var defaultPasswordHasher = sync.OnceValue(func() *PasswordHasher {
 
 // DefaultPasswordHasher returns the process-wide hasher HashPassword,
 // VerifyPassword and the authentication services use unless given another:
-// DefaultPasswordAlgorithm through DefaultPasswordWorkLimiter.
+// DefaultPasswordAlgorithm, looked up at each hash, through
+// DefaultPasswordWorkLimiter.
 func DefaultPasswordHasher() *PasswordHasher {
 	return defaultPasswordHasher()
 }
 
-// Algorithm returns the algorithm h writes new hashes with.
+// Algorithm returns the algorithm h writes new hashes with now: the one
+// WithPasswordAlgorithm set, or else DefaultPasswordAlgorithm.
 func (h *PasswordHasher) Algorithm() PasswordAlgorithm {
-	return h.algorithm
+	return h.writing(h.kdfs.load())
 }
 
 // HashPassword hashes password with DefaultPasswordHasher. Password bytes are
@@ -208,7 +334,9 @@ func VerifyPassword(encoded, password string) (match, needsRehash bool, err erro
 }
 
 // Hash derives a salted hash of password in h's algorithm. It fails with
-// ErrPasswordHashingUnavailable when the limiter stays saturated.
+// ErrPasswordHashingUnavailable when the limiter stays saturated, and with
+// ErrPasswordAlgorithmUnavailable when h is set to Argon2id and no
+// implementation is registered.
 func (h *PasswordHasher) Hash(ctx context.Context, password string) (string, error) {
 	switch {
 	case password == "":
@@ -216,7 +344,9 @@ func (h *PasswordHasher) Hash(ctx context.Context, password string) (string, err
 	case len(password) > maxPasswordBytes:
 		return "", ErrPasswordTooLong
 	}
-	if h.algorithm == PasswordAlgorithmPBKDF2SHA256 {
+	kdf := h.kdfs.load()
+	algorithm := h.writing(kdf)
+	if algorithm == PasswordAlgorithmPBKDF2SHA256 {
 		var encoded string
 		var hashErr error
 		if err := h.work.Do(ctx, func() {
@@ -226,13 +356,16 @@ func (h *PasswordHasher) Hash(ctx context.Context, password string) (string, err
 		}
 		return encoded, hashErr
 	}
+	if kdf == nil {
+		return "", ErrPasswordAlgorithmUnavailable
+	}
 	salt := make([]byte, passwordSaltBytes)
 	if _, err := io.ReadFull(h.entropy, salt); err != nil {
 		return "", fmt.Errorf("read password salt: %w", err)
 	}
 	var key []byte
 	if err := h.work.Do(ctx, func() {
-		key = argon2.IDKey([]byte(password), salt, h.argon2.iterations, h.argon2.memoryKiB, h.argon2.parallelism, passwordKeyBytes)
+		key = kdf([]byte(password), salt, h.argon2.iterations, h.argon2.memoryKiB, h.argon2.parallelism, passwordKeyBytes)
 	}); err != nil {
 		return "", err
 	}
@@ -242,7 +375,9 @@ func (h *PasswordHasher) Hash(ctx context.Context, password string) (string, err
 // Verify checks password against encoded, with the parameters encoded names
 // (within bounds). needsRehash is true when encoded is valid but not in h's
 // algorithm with its current parameters. An empty password never matches and
-// costs nothing.
+// costs nothing. A well-formed $argon2id$ hash while no Argon2id
+// implementation is registered fails with ErrPasswordAlgorithmUnavailable,
+// before any hashing: not a mismatch, and never a rehash.
 func (h *PasswordHasher) Verify(ctx context.Context, encoded, password string) (match, needsRehash bool, err error) {
 	if password == "" {
 		return false, false, nil
@@ -254,18 +389,23 @@ func (h *PasswordHasher) Verify(ctx context.Context, encoded, password string) (
 	if err != nil {
 		return false, false, err
 	}
+	kdf := h.kdfs.load()
+	if stored.algorithm == PasswordAlgorithmArgon2id && kdf == nil {
+		return false, false, ErrPasswordAlgorithmUnavailable
+	}
+	floor := h.activeFloor()
 	var derived []byte
 	var deriveErr error
 	if err := h.work.Do(ctx, func() {
-		if h.floor == nil || stored.algorithm != PasswordAlgorithmPBKDF2SHA256 {
-			derived, deriveErr = stored.derive(password)
+		if floor == nil || stored.algorithm != PasswordAlgorithmPBKDF2SHA256 {
+			derived, deriveErr = stored.derive(password, kdf)
 			return
 		}
 		// A legacy verification may be slower than the calibrated floor
 		// (more iterations, a slower moment): the floor follows it.
-		start := h.floor.now()
-		derived, deriveErr = stored.derive(password)
-		h.floor.observe(h.floor.now().Sub(start))
+		start := floor.now()
+		derived, deriveErr = stored.derive(password, kdf)
+		floor.observe(floor.now().Sub(start))
 	}); err != nil {
 		return false, false, err
 	}
@@ -273,18 +413,20 @@ func (h *PasswordHasher) Verify(ctx context.Context, encoded, password string) (
 		return false, false, deriveErr
 	}
 	match = subtle.ConstantTimeCompare(derived, stored.key) == 1
-	return match, h.needsRehash(stored), nil
+	return match, h.needsRehash(stored, h.writing(kdf)), nil
 }
 
 // verifyDummy costs what verifying a stored hash in h's algorithm costs, and
 // never matches.
 func (h *PasswordHasher) verifyDummy(ctx context.Context, password string) error {
-	_, _, err := h.Verify(ctx, h.dummy, password)
+	_, _, err := h.Verify(ctx, h.dummy(), password)
 	return err
 }
 
-func (h *PasswordHasher) needsRehash(stored storedPasswordHash) bool {
-	if stored.algorithm != h.algorithm {
+// needsRehash reports whether stored is not in algorithm, the writing one,
+// with its current parameters.
+func (h *PasswordHasher) needsRehash(stored storedPasswordHash, algorithm PasswordAlgorithm) bool {
+	if stored.algorithm != algorithm {
 		return true
 	}
 	if stored.algorithm == PasswordAlgorithmPBKDF2SHA256 {
@@ -344,7 +486,9 @@ type storedPasswordHash struct {
 	key        []byte
 }
 
-func (s storedPasswordHash) derive(password string) ([]byte, error) {
+// derive computes the key of password with s's algorithm and parameters;
+// kdf is the Argon2id implementation, not nil for an Argon2id hash.
+func (s storedPasswordHash) derive(password string, kdf argon2idKDF) ([]byte, error) {
 	if s.algorithm == PasswordAlgorithmPBKDF2SHA256 {
 		key, err := pbkdf2.Key(sha256.New, password, s.salt, s.iterations, passwordKeyBytes)
 		if err != nil {
@@ -352,7 +496,7 @@ func (s storedPasswordHash) derive(password string) ([]byte, error) {
 		}
 		return key, nil
 	}
-	return argon2.IDKey([]byte(password), s.salt, s.argon2.iterations, s.argon2.memoryKiB, s.argon2.parallelism, passwordKeyBytes), nil
+	return kdf([]byte(password), s.salt, s.argon2.iterations, s.argon2.memoryKiB, s.argon2.parallelism, passwordKeyBytes), nil
 }
 
 func parseStoredPasswordHash(encoded string) (storedPasswordHash, error) {

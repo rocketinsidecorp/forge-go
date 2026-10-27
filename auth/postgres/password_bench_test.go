@@ -1,4 +1,4 @@
-package auth_test
+package postgres_test
 
 import (
 	"testing"
@@ -11,7 +11,9 @@ import (
 // parameters, so the two frameworks' password_verify measure the same work)
 // makes each guess of an attacker as expensive as one iteration of this
 // benchmark.
-// Do not optimize it; compare it only with itself.
+// Do not optimize it; compare it only with itself. It lives here because
+// this adapter registers the real Argon2id (the auth package's own tests use
+// a fast stand-in).
 func BenchmarkPasswordVerify(b *testing.B) {
 	hash, err := auth.HashPassword("correct horse battery staple")
 	if err != nil {

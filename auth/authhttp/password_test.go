@@ -1,7 +1,9 @@
 package authhttp
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/csrf"
+	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 // A saturated limiter answers the JSON and browser sign-ins 503 with
@@ -100,5 +103,49 @@ func TestPasswordResetHashesThroughTheRecoveryHasher(t *testing.T) {
 	}
 	if _, err := auth.NewRecoveryService(store, &recoverySenderStub{}, auth.WithRecoveryPasswordHasher(nil)); err == nil {
 		t.Fatal("nil hasher accepted")
+	}
+}
+
+// A stored Argon2id hash in a binary with no Argon2id implementation
+// registered (auth.ErrPasswordAlgorithmUnavailable, which auth's tests
+// produce from a real hasher) is a deployment error: the JSON and browser
+// sign-ins answer 503 without Retry-After, never 401/422, and the request
+// log names the fix.
+func TestUnavailablePasswordAlgorithmAnswers503AndLogsTheFix(t *testing.T) {
+	t.Parallel()
+	store := &loginStoreStub{lookupErr: auth.ErrPasswordAlgorithmUnavailable}
+	service, err := auth.NewLoginService(store, &sessionStub{}, auth.WithLoginPasswordHasher(cheapPasswordHasher(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewLoginHandler(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	body := `{"email":"ada@example.com","password":"correct horse","tenant":"acme"}`
+	request := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+	request = request.WithContext(web.WithLogger(request.Context(), logger))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "" ||
+		!strings.Contains(recorder.Body.String(), "password_algorithm_unavailable") || strings.Contains(recorder.Body.String(), "argon2") {
+		t.Fatalf("JSON sign-in: status=%d retry-after=%q body=%s", recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String())
+	}
+	if !strings.Contains(logs.String(), "auth.RegisterArgon2id(argon2.IDKey)") || !strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("the request log does not name the fix: %s", logs.String())
+	}
+
+	browser, err := NewBrowser(BrowserOptions{Login: service, Sessions: &revokeStub{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := browserApp(t, browser, csrf.Options{})
+	form := url.Values{"email": {"ada@example.com"}, "password": {"correct horse"}, "tenant": {"acme"}}
+	recorder = submit(app, "/session", form, true)
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "" {
+		t.Fatalf("browser sign-in: status=%d retry-after=%q", recorder.Code, recorder.Header().Get("Retry-After"))
 	}
 }

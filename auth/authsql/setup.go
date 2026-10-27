@@ -1,4 +1,4 @@
-package sqlidentity
+package authsql
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
-	"github.com/rocketinsidecorp/forge-go/auth/internal/setupcmd"
+	"github.com/rocketinsidecorp/forge-go/auth/authsetup"
 	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/sqldb"
@@ -25,8 +25,8 @@ var (
 	ErrOwnerEmailTaken = errors.New("a user with this email already exists")
 )
 
-// SetupLockName names the lock that serializes setup runs.
-const SetupLockName = "forge:identity_setup"
+// setupLockName names the lock that serializes setup runs.
+const setupLockName = "forge:identity_setup"
 
 // OwnerAccount is the first tenant and its owner.
 type OwnerAccount struct {
@@ -67,7 +67,7 @@ func (r *Repository) ProvisionOwner(ctx context.Context, account OwnerAccount) (
 		return ProvisionedOwner{}, errors.New("owner email or tenant slug is invalid (email: ASCII only; slug: lowercase letter, then 1-62 lowercase letters, digits or hyphens)")
 	}
 	organization := strings.TrimSpace(account.Organization)
-	if err := setupcmd.ValidOrganizationName(organization); err != nil {
+	if err := authsetup.ValidOrganizationName(organization); err != nil {
 		return ProvisionedOwner{}, err
 	}
 	passwordHash, err := auth.DefaultPasswordHasher().Hash(ctx, account.Password)
@@ -80,7 +80,7 @@ func (r *Repository) ProvisionOwner(ctx context.Context, account OwnerAccount) (
 			return ProvisionedOwner{}, err
 		}
 	}
-	err = r.dialect.SetupLock(ctx, r.db, SetupLockName, r.dialect.Tx, func(tx *sql.Tx) error {
+	err = r.dialect.SetupLock(ctx, r.db, setupLockName, r.dialect.Tx, func(tx *sql.Tx) error {
 		owner.Permissions = nil
 		var provisioned bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM forge_tenants)`).Scan(&provisioned); err != nil {
@@ -97,7 +97,7 @@ func (r *Repository) ProvisionOwner(ctx context.Context, account OwnerAccount) (
 			{`INSERT INTO forge_tenants (id, organization_id, slug, created_at, updated_at) VALUES (?, ?, ?, {now}, {now})`, []any{owner.TenantID, owner.OrganizationID, tenant}},
 			{`INSERT INTO forge_users (id, email, email_normalized, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, {now}, {now})`, []any{owner.UserID, owner.Email, email, passwordHash}},
 			{`INSERT INTO forge_memberships (id, user_id, tenant_id, created_at, updated_at) VALUES (?, ?, ?, {now}, {now})`, []any{owner.MembershipID, owner.UserID, owner.TenantID}},
-			{`INSERT INTO forge_roles (id, tenant_id, name, created_at) VALUES (?, ?, ?, {now})`, []any{owner.RoleID, owner.TenantID, setupcmd.OwnerRole}},
+			{`INSERT INTO forge_roles (id, tenant_id, name, created_at) VALUES (?, ?, ?, {now})`, []any{owner.RoleID, owner.TenantID, authsetup.OwnerRole}},
 			{`INSERT INTO forge_membership_roles (membership_id, role_id, tenant_id) VALUES (?, ?, ?)`, []any{owner.MembershipID, owner.RoleID, owner.TenantID}},
 			{`INSERT INTO forge_role_permissions (role_id, permission) SELECT ?, name FROM forge_permissions`, []any{owner.RoleID}},
 		}
@@ -142,16 +142,16 @@ func (r *Repository) ProvisionOwner(ctx context.Context, account OwnerAccount) (
 // Provision is setup's Provision for dialect: it opens the database env
 // configures with open, creates the first organization and owner with
 // ProvisionOwner and closes the database.
-func Provision(open func(context.Context, config.Database) (*sqldb.DB, error), dialect *Dialect) func(context.Context, command.Env, setupcmd.Account) (setupcmd.Provisioned, error) {
-	return func(ctx context.Context, env command.Env, account setupcmd.Account) (_ setupcmd.Provisioned, err error) {
+func Provision(open func(context.Context, config.Database) (*sqldb.DB, error), dialect *Dialect) func(context.Context, command.Env, authsetup.Account) (authsetup.Provisioned, error) {
+	return func(ctx context.Context, env command.Env, account authsetup.Account) (_ authsetup.Provisioned, err error) {
 		database, err := open(ctx, env.Config.Database)
 		if err != nil {
-			return setupcmd.Provisioned{}, err
+			return authsetup.Provisioned{}, err
 		}
 		defer func() { err = errors.Join(err, database.Close()) }()
 		repository, err := New(database, dialect)
 		if err != nil {
-			return setupcmd.Provisioned{}, err
+			return authsetup.Provisioned{}, err
 		}
 		owner, err := repository.ProvisionOwner(ctx, OwnerAccount{
 			Organization: account.OrganizationName,
@@ -160,9 +160,9 @@ func Provision(open func(context.Context, config.Database) (*sqldb.DB, error), d
 			Password:     account.Password,
 		})
 		if err != nil {
-			return setupcmd.Provisioned{}, err
+			return authsetup.Provisioned{}, err
 		}
-		return setupcmd.Provisioned{Email: owner.Email, OrgSlug: owner.TenantSlug, Permissions: len(owner.Permissions)}, nil
+		return authsetup.Provisioned{Email: owner.Email, OrgSlug: owner.TenantSlug, Permissions: len(owner.Permissions)}, nil
 	}
 }
 
