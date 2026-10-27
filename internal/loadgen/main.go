@@ -298,10 +298,19 @@ type sample struct {
 	latencies  []time.Duration // of the successful requests, sorted
 }
 
-// drive runs the closed loop for d with the given number of workers.
+// drive runs the closed loop with the given number of workers: each worker
+// sends requests back to back until d has passed, and a request in flight
+// when the window closes is finished and counted, not cancelled.
+//
+// The window is a deadline checked between requests, not a context handed to
+// the requests. Cancelling a request at the end of a window tears down its
+// connection, and net/http can still hand that closing connection to a
+// request of the next window, which then fails with the stale
+// "context deadline exceeded" although its own window has just begun. A
+// worker always sends one request, so a window that a starved machine
+// shortens still has an outcome. Only the caller's ctx (an interrupt)
+// cancels requests, and that ends the run.
 func (t *target) drive(ctx context.Context, r request, workers int, d time.Duration) sample {
-	ctx, cancel := context.WithTimeout(ctx, d)
-	defer cancel()
 	type part struct {
 		latencies []time.Duration
 		errors    int
@@ -309,19 +318,20 @@ func (t *target) drive(ctx context.Context, r request, workers int, d time.Durat
 	parts := make([]part, workers)
 	var wg sync.WaitGroup
 	start := time.Now()
+	end := start.Add(d)
 	for w := range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			mine := &parts[w]
 			mine.latencies = make([]time.Duration, 0, 1<<16)
-			for ctx.Err() == nil {
+			for first := true; first || time.Now().Before(end); first = false {
 				began := time.Now()
 				_, _, _, err := t.do(ctx, r)
 				took := time.Since(began)
 				switch {
 				case ctx.Err() != nil && err != nil:
-					return // the window closed under this request: not an outcome
+					return // the run was interrupted under this request: not an outcome
 				case err != nil:
 					mine.errors++
 				default:
