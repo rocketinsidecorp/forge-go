@@ -138,14 +138,18 @@ jobs:
           go-version-file: go.mod
       - name: Test generated applications
         run: go test -count=1 -timeout 30m -run '^TestGeneratedApplication$' -skip '^TestGeneratedApplication$/^readme_quickstart' ./internal/cli
-      - name: README quickstart end to end (PostgreSQL and SQLite)
+      - name: README quickstarts end to end (SQLite, MySQL and PostgreSQL)
         # The generated README's Quickstart block, run as written by a real
-        # forge binary in a fresh `forge new` application (the PostgreSQL
-        # service container stands in for `docker compose up -d --wait
-        # postgres`), with no code edited; then `forge dev` is driven over
-        # HTTP: sign in as the owner, list, create, show, edit and delete
-        # products through the CSRF-protected forms, and /v1/products as JSON.
-        # See internal/cli/readme_quickstart_test.go.
+        # forge binary in a fresh `forge new` application, with no code
+        # edited: `forge new shop --auth` (SQLite, no Docker), `forge new shop
+        # -d mysql --auth` and `forge new shop --tenants` (PostgreSQL; the
+        # service containers stand in for `docker compose up -d --wait`).
+        # Then `forge dev` is driven over HTTP: sign in as the owner, list,
+        # create, show, edit and delete products through the CSRF-protected
+        # forms, /v1/products as JSON, and with organizations a second
+        # organization that gets 404 for every row of the first. `forge new
+        # site` must serve its welcome page. See
+        # internal/cli/readme_quickstart_test.go.
         run: go test -count=1 -timeout 20m -run '^TestGeneratedApplication$/^readme_quickstart' -v ./internal/cli
 
   coverage:
@@ -285,8 +289,9 @@ jobs:
           if-no-files-found: error
 
   mariadb:
-    # The mysql adapter also serves MariaDB, whose error codes and statement
-    # timeout differ: run its tests against a real MariaDB too.
+    # The mysql adapter (and auth/mysql) also serves MariaDB, whose error
+    # codes and statement timeout differ: run their tests against a real
+    # MariaDB too.
     runs-on: ubuntu-24.04
     services:
       mariadb:
@@ -310,10 +315,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Test the mysql adapter against MariaDB
-        run: go test -race -count=1 -timeout 30m ./mysql/...
-      - name: Test generated applications and resources against MariaDB
-        run: go test -count=1 -timeout 30m -run 'TestGeneratedApplication/database_workflow_(mysql|mariadb)$' ./internal/cli
+      - name: Test the mysql adapter and Forge identity on MySQL against MariaDB
+        run: go test -race -count=1 -timeout 30m ./mysql/... ./auth/mysql/...
+      - name: Test generated applications, resources and the README quickstart against MariaDB
+        run: go test -count=1 -timeout 30m -run 'TestGeneratedApplication/(database_workflow_(mysql|mariadb)|readme_quickstart_mysql)$' ./internal/cli
 
   docker:
     runs-on: ubuntu-24.04
