@@ -20,6 +20,7 @@
       "sign_out": "Cerrar sesión",
       "signed_in": "Sesión iniciada.",
       "signed_out": "Sesión cerrada.",
+      "invalid_credentials_email": "Ese correo electrónico y esa contraseña no coinciden con ninguna cuenta.",
       "invalid_credentials": "Esa organización, correo electrónico y contraseña no coinciden con ninguna cuenta.",
       "sign_in_to_continue": "Inicia sesión para continuar.",
       "expired": "Tu inicio de sesión expiró. Inicia sesión de nuevo.",
@@ -28,6 +29,7 @@
     "passwords": {
       "new": {
         "title": "¿Olvidaste tu contraseña?",
+        "instructions_email": "Introduce tu correo electrónico. Si coincide con una cuenta, enviaremos un enlace para elegir una nueva contraseña.",
         "instructions": "Introduce tu organización y tu correo electrónico. Si coinciden con una cuenta, enviaremos un enlace para elegir una nueva contraseña.",
         "organization": "Organización",
         "email": "Correo electrónico",

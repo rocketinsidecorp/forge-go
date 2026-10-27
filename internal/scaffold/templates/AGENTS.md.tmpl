@@ -42,6 +42,11 @@ forge destroy KIND NAME ...               # d is short; removes exactly what the
 forge migrate [status]                    # apply pending migrations; forge rollback reverts the latest
 forge seed                                # db.Seed, idempotent
 {{- end}}
+{{- if and .DB .DB.Identity .Tenants}}
+forge setup --org SLUG --email EMAIL      # the first organization and its owner, once
+{{- else if and .DB .DB.Identity}}
+forge setup --email EMAIL                 # the owner of the application's one organization, once
+{{- end}}
 forge dev                                 # run with rebuild and browser reload
 forge test [./pkg ...]                    # go test with .env.development loaded (default ./...)
 forge check                               # go build ./... and go vet ./...
@@ -51,12 +56,25 @@ forge build                               # static binary in bin/
 forge routes                              # every route of the composed application
 ```
 
-Generator arguments are `name:type` with `string`, `text`, `int`, `bool`, `time` or `uuid`; a trailing `?` makes
-the field optional (quote it: `'summary:text?'`). Money is an integer in minor units, never a float.
-{{- if .DB}}
+Generator arguments are `name:type` with `string`, `text`, `int` (`integer`), `bool` (`boolean`), `time`
+(`timestamp`) or `uuid`; a trailing `?` makes the field optional (quote it: `'summary:text?'`). Money is an integer
+in minor units, never a float.
+{{- if and .DB .DB.Identity .Tenants}}
 
-Models, resources and scaffolds need exactly one of `--tenant-scoped` (rows belong to one tenant) or `--global`
-(shared by all): decide by who owns the data, never by convenience.
+This application has organizations: models, resources and scaffolds need exactly one of `--org-scoped` (rows belong
+to one organization, through an `org_id` column) or `--global` (shared by all of them): decide by who owns the data,
+never by convenience.
+{{- else if and .DB .DB.Identity}}
+
+This application has one organization: generated tables are plain tables and take no scope flag. `forge generate
+tenancy` converts it into one with organizations (`--org-scoped` tables); do not add `org_id` columns by hand.
+{{- else if and .DB (not .API)}}
+
+Generated tables are plain tables, and nothing signs users in yet: `forge generate authentication` adds sign-in,
+and `forge generate tenancy` then adds organizations.
+{{- else if .DB}}
+
+Generated tables are plain tables.
 {{- end}}
 
 ## Routes seam
@@ -84,21 +102,24 @@ temporary overlay and leaves `dist` alone. `forge check` also runs `tsc --noEmit
 ## Security defaults
 
 - Generated routes are never public by accident: they need the permission guard, or answer 403 until you wire one
-  (`--public` exists only for `--global` in applications without Forge identity, for prototypes).
+  (`--public` exists only in applications without sign-in, for prototypes).
 {{- if not .API}}
 - Forms carry a CSRF token (`csrfField`) and unsafe browser requests without it are rejected; JSON calls that
   authenticate with the session cookie send it in `X-CSRF-Token`. Templates escape HTML automatically: never
   build HTML by string concatenation.
 {{- end}}
 {{- if .DB}}
-- Tenant-scoped repositories take the tenant from `tenancy.Require(ctx)` and bind `tenant_id` in every statement;
-  never read a tenant id from the request body or a query string.
+{{- if and .DB.Identity .Tenants}}
+- Org-scoped repositories take the organization from `tenancy.Require(ctx)` and bind `org_id` in every statement;
+  never read an organization id from the request body or a query string.
+{{- end}}
 {{- if eq .DB.Adapter "postgres"}}
-- PostgreSQL row-level security backs the tenant predicates: the application serves as `app_runtime` and migrates
-  as `app_migrator` (`.env.development` and compose set both); do not point it at a superuser.
+- The application serves as `app_runtime` and migrates as `app_migrator` (`.env.development` and compose set
+  both){{if and .DB.Identity .Tenants}}, so PostgreSQL row-level security backs the `org_id` predicates{{end}}; do not point it at a superuser.
 {{- end}}
 {{- if .DB.Identity}}
-- Sign-in, sign-out, two-factor and password-reset pages come with the application.
+- Sign-in, sign-out, two-factor and password-reset pages come with the application{{if not .Tenants}}; it has one
+  hidden organization, and sign-in ignores any organization a client posts{{end}}.
 {{- end}}
 - Identifiers are UUIDv7 generated in Go; migrations use no database UUID generator and a released migration is never edited.
 {{- end}}

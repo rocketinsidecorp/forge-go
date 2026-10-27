@@ -15,7 +15,7 @@ import (
 
 func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "billing-api")
-	paths, err := scaffold.Generate(scaffold.Options{Name: "billing-api", Module: "example.com/acme/billing", Dir: dir, Database: "postgresql"})
+	paths, err := scaffold.Generate(scaffold.Options{Name: "billing-api", Module: "example.com/acme/billing", Dir: dir, Database: "postgresql", Auth: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,15 +80,31 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		"go.mod":     {"module example.com/acme/billing"},
 		"cmd/billing-api/main.go": {
 			`"example.com/acme/billing/app/bootstrap"`,
+			"forge.Main(bootstrap.Configure, bootstrap.Commands()...)",
+		},
+		"db/migration_sets_gen.go": {
+			"package db",
+			"return []fs.FS{authpostgres.Migrations(), jobspostgres.Migrations(), Migrations()}",
+		},
+		"app/bootstrap/app_gen.go": {
 			`authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"`,
-			"postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations())",
+			"postgres.CommandsFromSets(db.MigrationSets()...)",
+			"authpostgres.SetupCommand(authpostgres.SetupOrganizations(Organizations))",
+			"const Organizations = false",
+		},
+		"app/bootstrap/routes_gen.go": {
+			"// forge:identity repository\n\t// The sign-in",
+			"repository, middleware, err := identityRoutes(ctx, app, database, translator)",
 		},
 		"app/bootstrap/bootstrap.go": {
 			"postgres.Open(ctx, app.Config().Database, postgres.WithTelemetry(app.Telemetry()),\n\t\tpostgres.Lazy(!app.Serving()))",
 			"\tif !app.Serving() {\n\t\t// `routes` and `openapi` only describe the application: no job",
-			"\tif app.Serving() {\n\t\tif err := recoveryQueue.Start(recoveryService); err != nil {",
 			"Open refuses a role that could bypass\n\t// row-level security",
 			`app.Readiness("database", database.Ping)`,
+			"if err := generatedRoutes(ctx, app, database, translator); err != nil",
+		},
+		"app/bootstrap/identity.go": {
+			"\tif app.Serving() {\n\t\tif err := recoveryQueue.Start(recoveryService); err != nil {",
 			"authpostgres.New(database, authpostgres.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))",
 			"authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())",
 			"auth.NewLoginService(",
@@ -102,7 +118,9 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"auth.NewAESGCMSecretCipherBase64(app.Config().Auth.MFAKey.Reveal())",
 			"auth.NewMFAService(",
 			"auth.WithMFAAuditor(repository)",
-			"htmlauth.Register(app, browser, renderer, middleware)",
+			"htmlauth.Register(app, browser, renderer, middleware, htmlauth.WithOrganizations(Organizations))",
+			"auth.WithSingleTenant(auth.DefaultTenantSlug)",
+			"auth.WithRecoverySingleTenant(auth.DefaultTenantSlug)",
 		},
 		"db/db.go": {"//go:embed all:migrations"},
 		"README.md": {
@@ -134,10 +152,10 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 	}
 }
 
-// TestJSONAuthenticationAPIsAreOptIn: a PostgreSQL application gets only
-// the HTML sign-in flow; --api-auth adds the bearer and cookie JSON logins,
-// MFA completion, JSON recovery and GET /v1/auth/session, documented in its
-// README. Other databases have no identity, so the flag is refused there.
+// TestJSONAuthenticationAPIsAreOptIn: an application with Forge identity
+// gets only the HTML sign-in flow; --api-auth adds the bearer and cookie JSON
+// logins, MFA completion, JSON recovery and GET /v1/auth/session, documented
+// in its README. It implies --auth, on any database, and needs one.
 func TestJSONAuthenticationAPIsAreOptIn(t *testing.T) {
 	t.Parallel()
 	routes := []string{
@@ -148,10 +166,10 @@ func TestJSONAuthenticationAPIsAreOptIn(t *testing.T) {
 	}
 	for _, apiAuth := range []bool{false, true} {
 		dir := filepath.Join(t.TempDir(), "shop")
-		if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: "postgresql", APIAuth: apiAuth}); err != nil {
+		if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: "postgresql", Auth: true, APIAuth: apiAuth}); err != nil {
 			t.Fatal(err)
 		}
-		bootstrap := readText(t, filepath.Join(dir, "app", "bootstrap", "bootstrap.go"))
+		bootstrap := readText(t, filepath.Join(dir, "app", "bootstrap", "identity.go"))
 		readme := readText(t, filepath.Join(dir, "README.md"))
 		test := readText(t, filepath.Join(dir, "app", "bootstrap", "bootstrap_test.go"))
 		for _, route := range routes {
@@ -159,7 +177,7 @@ func TestJSONAuthenticationAPIsAreOptIn(t *testing.T) {
 				t.Errorf("apiAuth=%v: bootstrap.go mounts %s = %v", apiAuth, route, !apiAuth)
 			}
 		}
-		for _, always := range []string{"htmlauth.Register(app, browser, renderer, middleware)", "authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())", "auth.NewRecoveryService("} {
+		for _, always := range []string{"htmlauth.Register(app, browser, renderer, middleware, htmlauth.WithOrganizations(Organizations))", "authpostgres.NewLoginThrottler(database, auth.DefaultLoginThrottleConfig())", "auth.NewRecoveryService("} {
 			if !strings.Contains(bootstrap, always) {
 				t.Errorf("apiAuth=%v: bootstrap.go lacks %q", apiAuth, always)
 			}
@@ -194,9 +212,13 @@ func TestJSONAuthenticationAPIsAreOptIn(t *testing.T) {
 			t.Error("the default bootstrap test does not check that the JSON routes are absent")
 		}
 	}
-	for _, database := range []string{"", "mysql", "mariadb", "sqlite"} {
-		if _, err := scaffold.Normalize(scaffold.Options{Name: "shop", Database: database, APIAuth: true}); err == nil || !strings.Contains(err.Error(), "--api-auth") {
-			t.Errorf("--api-auth with database %q: err=%v, want a refusal", database, err)
+	if _, err := scaffold.Normalize(scaffold.Options{Name: "shop", APIAuth: true}); err == nil || !strings.Contains(err.Error(), "--api-auth") {
+		t.Errorf("--api-auth without a database: err=%v, want a refusal", err)
+	}
+	for _, database := range []string{"mysql", "mariadb", "sqlite"} {
+		opts, err := scaffold.Normalize(scaffold.Options{Name: "shop", Database: database, APIAuth: true})
+		if err != nil || !opts.Auth {
+			t.Errorf("--api-auth with database %q: %+v err=%v, want Forge identity", database, opts, err)
 		}
 	}
 }
@@ -370,7 +392,8 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 			want: map[string][]string{
 				"compose.yaml":                    {"image: mysql:8.4", "MYSQL_DATABASE: shop_development", "mysql:/var/lib/mysql", "FORGE_DATABASE_URL: mysql://shop:development@mysql:3306/shop_development", `"mysqladmin", "ping"`},
 				".env.development":                {"FORGE_DATABASE_URL=mysql://shop:development@127.0.0.1:", "FORGE_TEST_DATABASE_URL=mysql://root:development@127.0.0.1:"},
-				"cmd/shop/main.go":                {`"github.com/rocketinsidecorp/forge-go/mysql"`, "mysql.CommandsFromSets(jobsmysql.Migrations(), db.Migrations())"},
+				"app/bootstrap/app_gen.go":        {`"github.com/rocketinsidecorp/forge-go/mysql"`, "mysql.CommandsFromSets(db.MigrationSets()...)"},
+				"db/migration_sets_gen.go":        {"return []fs.FS{jobsmysql.Migrations(), Migrations()}"},
 				"app/bootstrap/bootstrap.go":      {"mysql.Open(ctx, app.Config().Database, mysql.WithTelemetry(app.Telemetry()),\n\t\tmysql.Lazy(!app.Serving()))"},
 				"app/bootstrap/bootstrap_test.go": {`"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"`, "mysqltest.Config(t)"},
 				".github/workflows/ci.yml":        {"image: mysql:8.4", "MYSQL_ROOT_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
@@ -380,21 +403,21 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"compose.yaml":               "postgres",
 				"Dockerfile":                 "storage",
 				"app/bootstrap/bootstrap.go": "authpostgres",
-				"cmd/shop/main.go":           "authpostgres",
+				"app/bootstrap/app_gen.go":   "forge-go/auth/",
 			},
 		},
 		{
 			database: "mariadb",
 			want: map[string][]string{
 				"compose.yaml":             {"image: mariadb:11.8", "MARIADB_DATABASE: shop_development", "FORGE_DATABASE_URL: mysql://shop:development@mariadb:3306/shop_development", "healthcheck.sh"},
-				"cmd/shop/main.go":         {"mysql.CommandsFromSets(jobsmysql.Migrations(), db.Migrations())"},
+				"db/migration_sets_gen.go": {"return []fs.FS{jobsmysql.Migrations(), Migrations()}"},
 				".github/workflows/ci.yml": {"image: mariadb:11.8", "MARIADB_ROOT_PASSWORD: forge", "healthcheck.sh --connect --innodb_initialized", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
 				"README.md":                {"MariaDB 11.8"},
 			},
 			forbidden: map[string]string{
 				"compose.yaml":               "mysql:8.4",
 				"app/bootstrap/bootstrap.go": "authpostgres",
-				"cmd/shop/main.go":           "authpostgres",
+				"app/bootstrap/app_gen.go":   "forge-go/auth/",
 			},
 		},
 		{
@@ -405,7 +428,8 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"Dockerfile":                      {"COPY --from=build --chown=nonroot:nonroot /out/storage /app/storage", "FORGE_DATABASE_URL=sqlite:///app/storage/production.db"},
 				".gitignore":                      {"/storage/"},
 				".dockerignore":                   {"storage"},
-				"cmd/shop/main.go":                {"sqlite.Commands(db.Migrations())"},
+				"app/bootstrap/app_gen.go":        {"sqlite.CommandsFromSets(db.MigrationSets()...)"},
+				"db/migration_sets_gen.go":        {"return []fs.FS{Migrations()}"},
 				"README.md":                       {"queuesqlite.Commands()", "docker compose run --rm app jobs dead"},
 				"app/bootstrap/bootstrap_test.go": {"sqlitetest.Config(t)"},
 			},
@@ -414,7 +438,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				".github/workflows/ci.yml":   "services:",
 				".env.development":           "FORGE_TEST_DATABASE_URL",
 				"app/bootstrap/bootstrap.go": "authpostgres",
-				"cmd/shop/main.go":           "authpostgres",
+				"app/bootstrap/app_gen.go":   "forge-go/auth/",
 			},
 		},
 	}
@@ -578,11 +602,11 @@ func testServerRenderedHTML(t *testing.T, database string, js bool) {
 	}
 }
 
-// TestGenerateAuthenticationPagesForPostgreSQLOnly: PostgreSQL applications,
-// whose identity Forge persists, get the sign-in pages wired by default;
-// every database application gets an empty, valid seed function and the seed
-// command; nothing else changes for other databases.
-func TestGenerateAuthenticationPagesForPostgreSQLOnly(t *testing.T) {
+// TestGenerateAuthenticationPagesWithAuth: an application created with
+// --auth gets the sign-in pages wired, on every database (decision D31);
+// without it there are none. Every database application gets an empty, valid
+// seed function and the seed command.
+func TestGenerateAuthenticationPagesWithAuth(t *testing.T) {
 	t.Parallel()
 	authFiles := []string{
 		"app/adapters/htmlauth/htmlauth.go", "app/adapters/htmlauth/htmlauth_test.go",
@@ -593,12 +617,12 @@ func TestGenerateAuthenticationPagesForPostgreSQLOnly(t *testing.T) {
 		t.Run("database "+database, func(t *testing.T) {
 			t.Parallel()
 			dir := filepath.Join(t.TempDir(), "shop")
-			paths, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: database})
+			paths, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: database, Auth: database != "" && database != "mysql"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, path := range authFiles {
-				if contains(paths, filepath.FromSlash(path)) != (database == "postgresql") {
+				if contains(paths, filepath.FromSlash(path)) != (database == "postgresql" || database == "sqlite") {
 					t.Errorf("%s generated=%v for database %q", path, contains(paths, filepath.FromSlash(path)), database)
 				}
 			}
@@ -608,20 +632,26 @@ func TestGenerateAuthenticationPagesForPostgreSQLOnly(t *testing.T) {
 			switch database {
 			case "postgresql":
 				assertContains(t, dir, map[string][]string{
-					"app/bootstrap/bootstrap.go": {
-						`"example.com/shop/app/adapters/htmlauth"`, "auth.NewBrowser(browserOptions)", "htmlauth.Register(app, browser, renderer, middleware)",
+					"app/bootstrap/identity.go": {
+						`"example.com/shop/app/adapters/htmlauth"`, "auth.NewBrowser(browserOptions)", "htmlauth.Register(app, browser, renderer, middleware, htmlauth.WithOrganizations(Organizations))",
 						"if mailConfigured {\n\t\tbrowserOptions.Recovery = recoveryService", "recoverymail.New(sender, recoverymail.Config{", "FORGE_AUTH_PASSWORD_RESET_URL",
 						"middleware.AuthenticateBrowser(htmlauth.SignInPath, page)",
 					},
-					"cmd/shop/main.go":         {"authpostgres.SetupCommand()", "postgres.SeedCommand(db.Seed)"},
+					"app/bootstrap/app_gen.go": {"authpostgres.SetupCommand(authpostgres.SetupOrganizations(Organizations))", "postgres.SeedCommand(db.Seed)"},
 					"db/seeds.go":              {"func Seed(ctx context.Context, tx pgx.Tx) error {", "`shop setup`"},
 					"app/bootstrap/welcome.go": {`href="/session/new"`},
-					"README.md":                {"forge setup --tenant acme --email you@example.com", "/session/new"},
+					"README.md":                {"forge setup --email you@example.com", "/session/new"},
 				})
-			case "sqlite", "mysql":
+			case "sqlite":
 				assertContains(t, dir, map[string][]string{
-					"cmd/shop/main.go": {database + ".SeedCommand(db.Seed)"},
-					"db/seeds.go":      {"func Seed(ctx context.Context, tx *sql.Tx) error {"},
+					"app/bootstrap/app_gen.go":  {"authsqlite.SetupCommand(authsqlite.SetupOrganizations(Organizations))", "sqlite.SeedCommand(db.Seed)"},
+					"app/bootstrap/identity.go": {"authsqlite.New(database", "database *sqldb.DB"},
+					"db/seeds.go":               {"func Seed(ctx context.Context, tx *sql.Tx) error {", "`shop setup`"},
+				})
+			case "mysql":
+				assertContains(t, dir, map[string][]string{
+					"app/bootstrap/app_gen.go": {"mysql.SeedCommand(db.Seed)"},
+					"db/seeds.go":              {"func Seed(ctx context.Context, tx *sql.Tx) error {"},
 				})
 			}
 			for _, path := range paths {
@@ -645,14 +675,14 @@ func TestGenerateAuthenticationPagesForPostgreSQLOnly(t *testing.T) {
 func TestAuthenticationFilesMatchForgeNew(t *testing.T) {
 	t.Parallel()
 	dir := filepath.Join(t.TempDir(), "shop")
-	if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: "postgresql"}); err != nil {
+	if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Module: "example.com/shop", Dir: dir, Database: "postgresql", Auth: true}); err != nil {
 		t.Fatal(err)
 	}
-	files, err := scaffold.AuthenticationFiles("shop", "example.com/shop")
+	files, err := scaffold.AuthenticationFiles(scaffold.Options{Name: "shop", Module: "example.com/shop", Database: "postgresql"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 13 || files[12].Path != filepath.Join("config", "locales", "authentication.en.json") {
+	if len(files) != 15 || files[14].Path != filepath.Join("config", "locales", "authentication.en.json") {
 		t.Fatalf("got %d authentication files", len(files))
 	}
 	for _, file := range files {
@@ -723,7 +753,7 @@ func TestShippedTranslationsAgree(t *testing.T) {
 	dir := t.TempDir()
 	for _, locale := range scaffold.Locales {
 		app := filepath.Join(dir, "app-"+strings.ToLower(locale))
-		if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: app, Database: "postgresql", Locale: locale}); err != nil {
+		if _, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: app, Database: "postgresql", Locale: locale, Auth: true}); err != nil {
 			t.Fatal(err)
 		}
 		for _, name := range []string{locale + ".json", "authentication." + locale + ".json"} {

@@ -2,6 +2,9 @@
 
 - **Status:** Accepted (amends [ADR 0007](0007-postgresql-adapter-with-pgx.md) and [ADR 0008](0008-sql-migrations-embedded-in-the-binary.md))
 - **Date:** 2026-09-26
+- **Amended by:** [ADR 0050](0050-opt-in-authentication-and-organizations.md)
+  (2026-10-26: SQLite is the default; `--tenants` selects PostgreSQL unless
+  `-d` is given)
 
 ## Context
 
@@ -16,8 +19,8 @@ migrations, test databases, health checks and the generated Docker setup.
 
 ## Decision
 
-- **Supported databases:** PostgreSQL 18 (default), MySQL 8.4, MariaDB 11.8
-  and SQLite. `forge new --database postgresql|mysql|mariadb|sqlite|none`
+- **Supported databases:** PostgreSQL 18 (the default until ADR 0050 made
+  it SQLite), MySQL 8.4, MariaDB 11.8 and SQLite. `forge new --database postgresql|mysql|mariadb|sqlite|none`
   (`-d`; `--skip-database` is `none`) generates the adapter wiring, compose
   service, CI service container and development settings for the choice.
 - **Selection by URL scheme.** `FORGE_DATABASE_URL` starting with

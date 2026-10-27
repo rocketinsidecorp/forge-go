@@ -99,7 +99,7 @@ func appSet(names ...string) fstest.MapFS {
 }
 
 func identitySet(t *testing.T) fstest.MapFS {
-	version := frameworkVersion(t, "auth/postgres", "identity")
+	version := frameworkVersion(t, "auth", "identity")
 	return fstest.MapFS{
 		fmt.Sprintf("%d_identity.up.sql", version):   {Data: []byte("CREATE TABLE forge_test_identity (id BIGINT PRIMARY KEY);\n")},
 		fmt.Sprintf("%d_identity.down.sql", version): {Data: []byte("DROP TABLE forge_test_identity;\n")},

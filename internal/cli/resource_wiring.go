@@ -158,7 +158,7 @@ const seamCookieJSONGuard = `// protect guards the JSON routes with the session 
 // them), the CSRF token in the X-CSRF-Token header of every change (the
 // csrf-token meta tag of a page, or the __Host-forge_csrf cookie), and the
 // permission.
-func protect(repository *authpostgres.Repository, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
+func protect(repository auth.SecurityAuditor, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
 	return func(permission string, next http.Handler) (http.Handler, error) {
 		required, err := auth.NewPermission(permission)
 		if err != nil {
@@ -180,7 +180,7 @@ func protect(repository *authpostgres.Repository, middleware *auth.Middleware) f
 // seamBearerJSONGuard is identityJSONGuard as the seam declares it.
 const seamBearerJSONGuard = `// protect guards the JSON routes with the bearer token of POST /auth/login
 // and the permission.
-func protect(repository *authpostgres.Repository, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
+func protect(repository auth.SecurityAuditor, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
 	return func(permission string, next http.Handler) (http.Handler, error) {
 		required, err := auth.NewPermission(permission)
 		if err != nil {
@@ -199,7 +199,7 @@ func protect(repository *authpostgres.Repository, middleware *auth.Middleware) f
 const seamPagesGuard = `// protectCookie guards the HTML pages with the session cookie and the
 // permission. Signed-out browsers go to the sign-in page and come back; API
 // clients get the 401 JSON error.
-func protectCookie(repository *authpostgres.Repository, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
+func protectCookie(repository auth.SecurityAuditor, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
 	return func(permission string, next http.Handler) (http.Handler, error) {
 		required, err := auth.NewPermission(permission)
 		if err != nil {
@@ -333,7 +333,7 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 			parts.Guard = cookieJSONGuard
 			parts.Notes = append(parts.Notes, cookieJSONNote)
 		}
-		if !spec.TenantScoped {
+		if spec.Organizations && !spec.TenantScoped {
 			// Roles belong to tenants, so a tenant administrator can grant
 			// itself any permission. Writes to rows every tenant reads need
 			// authorization above the tenant.
@@ -416,7 +416,7 @@ func addScaffoldWiring(spec resourceSpec, parts *resourceWiringParts) {
 		parts.CookieGuard = identityPagesGuard
 		parts.Notes = append(parts.Notes, "The pages authenticate the session cookie the sign-in page (/session/new) sets (as does POST /auth/cookie/login in applications created with --api-auth); a signed-out browser is redirected to /session/new and back, while API clients get the 401 JSON error. forge new generates the sign-in page; run `forge generate authentication` in an application that lacks it. Their forms are protected by the CSRF middleware that bootstrap.go installs.")
 	}
-	if spec.Identity && !spec.TenantScoped {
+	if spec.Identity && spec.Organizations && !spec.TenantScoped {
 		parts.Usage += fmt.Sprintf(`	if err := htmlui.Register%[1]s(app, %[2]sService, renderer, func(permission string, next http.Handler) (http.Handler, error) {
 		if permission == %[3]q {
 			return protectPlatformWrite(permission, next)

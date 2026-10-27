@@ -255,7 +255,7 @@ func planController(root string, request controllerRequest, env []string, now ti
 		return controllerSpec{}, nil, errors.New("environment files could not be loaded: check .env.development and .env.local syntax")
 	}
 	spec := controllerSpec{controllerRequest: request, Module: module}
-	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot) && !apiOnlyApplication(projectRoot)
+	spec.Identity = hasIdentityMigrations(projectRoot, adapter) && !apiOnlyApplication(projectRoot)
 	spec.BearerSignIn = spec.Identity && hasBearerSignIn(projectRoot)
 	spec.NoDatabase = adapter == "none"
 	spec.seam = openRoutesSeam(projectRoot, module, adapter, spec.Identity)
@@ -310,7 +310,7 @@ func planController(root string, request controllerRequest, env []string, now ti
 			}
 		}
 		if spec.PermissionOwner == "" {
-			up, down := controllerPermissionMigration(request.Name)
+			up, down := controllerPermissionMigration(request.Name, adapter)
 			migrations, existing, err := planMigrationPair(projectRoot, migrationName, request.Destroy, now, up, down)
 			if err != nil {
 				return controllerSpec{}, nil, err
@@ -339,19 +339,11 @@ func planController(root string, request controllerRequest, env []string, now ti
 // grant and the permission, and fails (changing nothing, because
 // forge_role_permissions restricts the delete) while another role still holds
 // the permission, instead of silently revoking grants an administrator made.
-func controllerPermissionMigration(name string) (up, down string) {
+func controllerPermissionMigration(name, database string) (up, down string) {
 	permission := name + ":read"
 	up = fmt.Sprintf(`-- Permission that guards the %[1]s controller's routes (the protect argument of Register%[2]sController).
 -- This migration owns it: its rollback removes it.
-INSERT INTO forge_permissions (name) VALUES ('%[3]s')
-ON CONFLICT (name) DO NOTHING;
-
--- The owner role (created by `+"`setup`"+`) holds every permission.
-INSERT INTO forge_role_permissions (role_id, permission)
-SELECT r.id, p.name FROM forge_roles r CROSS JOIN (VALUES ('%[3]s')) AS p (name)
-WHERE r.name = 'owner'
-ON CONFLICT (role_id, permission) DO NOTHING;
-`, name, exportedName(name), permission)
+`, name, exportedName(name)) + grantPermissions(database, permission)
 	down = fmt.Sprintf(`-- Removes the permission this migration registered and the owner role's grant
 -- of it. While another role still holds %[1]s the delete is restricted and the
 -- rollback fails without changing anything: revoke those grants first.

@@ -77,7 +77,6 @@ func TestParseModelArgs(t *testing.T) {
 		t.Fatalf("request = %+v", request)
 	}
 	for name, args := range map[string][]string{
-		"no scope":           {"post", "title:string"},
 		"no field":           {"post", "--global"},
 		"broadcast":          {"post", "title:string", "--global", "--broadcast"},
 		"uppercase name":     {"Post", "title:string", "--global"},
@@ -136,7 +135,9 @@ func TestGenerateModelHasNoHTTPLayer(t *testing.T) {
 			resourceRoot := resourceProject(t, database.url)
 			mustGenerate(t, resourceRoot, "resource", "post", "title:string", "body:text?", "--tenant-scoped")
 			for _, path := range []string{"app/domain/post.go", "app/application/post.go", "app/adapters/persistence/post.go", "app/adapters/persistence/post_test.go", "db/migrations/20261020120001_create_posts.up.sql"} {
-				if readFile(t, filepath.Join(root, filepath.FromSlash(path))) != readFile(t, filepath.Join(resourceRoot, filepath.FromSlash(path))) {
+				// The migrations differ only in the generator they record.
+				model := strings.Replace(readFile(t, filepath.Join(root, filepath.FromSlash(path))), "-- forge:generate model ", "-- forge:generate resource ", 1)
+				if model != readFile(t, filepath.Join(resourceRoot, filepath.FromSlash(path))) {
 					t.Errorf("%s differs from what `generate resource` writes", path)
 				}
 			}
@@ -245,7 +246,7 @@ func TestControllerRejectedNamesWriteNothing(t *testing.T) {
 
 func TestGenerateControllerHTML(t *testing.T) {
 	t.Parallel()
-	root := resourceProject(t, "sqlite:storage/development.db")
+	root := plainProject(t, "sqlite:storage/development.db")
 	output := mustGenerate(t, root, "controller", "pages", "index", "about_us")
 	for _, want := range []string{
 		"create  " + filepath.Join("app", "adapters", "htmlui", "pages_controller.go"),
@@ -291,7 +292,7 @@ func TestGenerateControllerHTML(t *testing.T) {
 
 func TestGenerateControllerAPIAndPublic(t *testing.T) {
 	t.Parallel()
-	root := resourceProject(t, "sqlite:storage/development.db")
+	root := plainProject(t, "sqlite:storage/development.db")
 	output := mustGenerate(t, root, "controller", "status_checks", "index", "detail", "--api", "--public")
 	for _, want := range []string{
 		"create  " + filepath.Join("app", "adapters", "httpapi", "status_checks_controller.go"),
@@ -464,7 +465,7 @@ func TestGenerateResourceRefusesAPermissionAnotherMigrationRegisters(t *testing.
 		t.Errorf("a resource registered a permission a hand-written migration owns: %v", err)
 	}
 	// Without Forge identity nothing registers permissions, so nothing collides.
-	plain := resourceProject(t, "sqlite:storage/development.db")
+	plain := plainProject(t, "sqlite:storage/development.db")
 	mustGenerate(t, plain, "controller", "widgets", "dashboard")
 	mustGenerate(t, plain, "scaffold", "widget", "title:string", "--global")
 }

@@ -30,7 +30,7 @@ type FrameworkMigration struct {
 // entries never change; TestFrameworkMigrationsMatchShippedFiles keeps the
 // list and the migration files in the repository in sync.
 var frameworkMigrations = []FrameworkMigration{
-	{Version: 20260927090000, Name: "identity", Owner: "auth/postgres"},
+	{Version: 20260927090000, Name: "identity", Owner: "auth"},
 	{Version: 20260927124500, Name: "login_throttle", Owner: "auth/postgres"},
 	{Version: 20260927142000, Name: "password_recovery", Owner: "auth/postgres"},
 	{Version: 20260927200000, Name: "totp_mfa", Owner: "auth/postgres"},

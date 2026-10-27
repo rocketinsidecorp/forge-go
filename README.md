@@ -18,7 +18,7 @@ email, jobs, OpenAPI and tests.
 Pre-release. Phases 1 (core runtime, configuration, CLI, lifecycle, HTTP) and
 2 (databases, migrations, transactions, repositories) are implemented,
 including support for several databases. Phase 3 provides an identity and
-tenancy foundation with PostgreSQL persistence, password and browser-session
+tenancy foundation with PostgreSQL, MySQL/MariaDB and SQLite persistence, password and browser-session
 flows, recovery and MFA primitives, security auditing, generated sign-in
 pages and a `setup` command for the first owner. Phase 4 adds
 background jobs, a transactional outbox with bounded concurrent dispatch,
@@ -108,36 +108,51 @@ Requires Go 1.27.3+ and Docker with BuildKit and Compose.
 
 ```sh
 go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest
-forge new myapp                 # PostgreSQL; or -d mysql, -d mariadb, -d sqlite, -d none
+forge new myapp                 # SQLite; or -d postgresql, -d mysql, -d mariadb, -d none
 cd myapp
-docker compose up --build
+docker compose up --build       # or, without Docker: forge migrate && forge dev
 curl -i http://127.0.0.1:8080/v1/status
 curl -i http://127.0.0.1:8080/health/ready   # includes the "database" check
 ```
+
+Authentication and organizations are opt-in (owner decisions of 2026-10-26):
+
+```sh
+forge new site                  # SQLite, no sign-in: a welcome page and plain tables
+forge new shop --auth           # SQLite with sign-in, two-factor and password-reset pages
+forge new saas --tenants        # PostgreSQL (row-level security), sign-in, organizations
+forge new saas --tenants -d mysql   # organizations on MySQL: isolation by mandatory org_id predicates
+forge new shop -d mariadb --auth    # any -d works with --auth
+```
+
+`--tenants` implies `--auth` and selects PostgreSQL unless `-d` is given.
+An application grows later without edits: `forge generate authentication`
+adds sign-in to one created without `--auth`, and `forge generate tenancy`
+turns an `--auth` application into one with organizations (below).
 
 An API-only application, like `rails new --api`: JSON handlers with no views,
 assets, JavaScript, translations, sign-in pages or browser middleware (CSRF,
 method override, flash). Every `-d` works with it.
 
 ```sh
-forge new myapi --api           # or: forge new myapi --api -d sqlite
+forge new myapi --api           # or: forge new myapi --api -d postgresql
 cd myapi
 docker compose up --build       # or, without Docker: forge migrate && forge dev
 curl -s http://127.0.0.1:8080/            # {"application":"myapi","version":"0.1.0"}
 curl -s http://127.0.0.1:8080/v1/status   # {"service":"myapi","status":"ok"}
 curl -s http://127.0.0.1:8080/health      # JSON liveness and readiness
 curl -s http://127.0.0.1:8080/openapi.json
-forge generate resource post title:string --tenant-scoped   # a JSON API under /v1/posts
+forge generate resource post title:string                  # a JSON API under /v1/posts (closed until you write its guard, or --public)
 forge generate controller status_checks index --api         # read-only JSON endpoints
-forge generate scaffold post title:string --global          # refused: an --api application has no pages
+forge generate scaffold post title:string                  # refused: an --api application has no pages
 ```
 
 | `--database` (`-d`) | Compose service | Adapter |
 | ------------------- | --------------- | ------- |
-| `postgresql` (default; also `postgres`, `pg`) | `postgres:18-alpine` | `postgres` |
+| `sqlite` (default; also `sqlite3`) | none; the database file is on a `storage` volume | `sqlite` |
+| `postgresql` (default with `--tenants`; also `postgres`, `pg`) | `postgres:18-alpine` | `postgres` |
 | `mysql` | `mysql:8.4` | `mysql` |
 | `mariadb` | `mariadb:11.8` | `mysql` |
-| `sqlite` (also `sqlite3`) | none; the database file is on a `storage` volume | `sqlite` |
 | `none` (same as `--skip-database`) | none | none |
 
 `docker compose up` starts the database server (if any), runs the
@@ -160,28 +175,48 @@ directly.
 
 ### End to end: a CRUD with sign-in, no code edited
 
-The generated README carries this sequence too. PostgreSQL (the default):
+The generated README carries these sequences too. SQLite with sign-in, no
+Docker:
 
 ```sh
-forge new shop
+forge new shop --auth
 cd shop
-docker compose up -d --wait postgres
 forge migrate
-forge setup --tenant acme --email you@example.com --organization "Acme Inc"
-forge generate scaffold product name:string price:int --tenant-scoped
+forge setup --email you@example.com
+forge generate scaffold product name:string price:integer
 forge migrate
 forge dev
 ```
 
 `forge setup` asks for the owner's password twice (or reads
 `FORGE_SETUP_PASSWORD`). Open `http://localhost:8080/session/new`, sign in
-with organization `acme`, then list, create, edit and delete products at
+with your email and password, then list, create, edit and delete products at
 `http://localhost:8080/products`. The scaffold mounted itself in
 `app/bootstrap/routes_gen.go` behind sign-in and the `products:read` and
-`products:write` permissions its migration grants to the owner role. The JSON
-API at `/v1/products` authenticates the same session cookie (and, in an
-application created with `--api-auth`, bearer tokens); changes send the CSRF
-token in the `X-CSRF-Token` header:
+`products:write` permissions its migration grants to the owner role. Field
+types take the names Rails uses too: `integer`, `boolean` and `timestamp`
+(or `datetime`) are `int`, `bool` and `time`.
+
+With organizations (PostgreSQL, row-level security), every user signs in to
+an organization, and every scaffolded row belongs to one:
+
+```sh
+forge new saas --tenants
+cd saas
+docker compose up -d --wait postgres
+forge migrate
+forge setup --org acme --email you@example.com
+forge generate scaffold product name:string price:integer --org-scoped
+forge migrate
+forge dev
+```
+
+Sign in with organization `acme`. Tables are `--org-scoped` (an `org_id`
+column every query and policy filters by) or `--global` (shared by every
+organization). The JSON API at `/v1/products` authenticates the same session
+cookie (and, in an application created with `--api-auth`, bearer tokens);
+changes send the CSRF token in the `X-CSRF-Token` header (drop
+`--data-urlencode tenant=acme` in an application without organizations):
 
 ```sh
 jar=$(mktemp)
@@ -192,17 +227,18 @@ curl -s -b "$jar" http://localhost:8080/v1/products
 curl -s -b "$jar" -H "X-CSRF-Token: $(awk '$6 == "__Host-forge_csrf" {print $7}' "$jar")" -H 'Content-Type: application/json' -d '{"name":"Lamp","price":1999}' http://localhost:8080/v1/products
 ```
 
-SQLite (also MySQL and MariaDB, with `docker compose up -d --wait mysql` or
-`mariadb` after `cd`) has no Forge identity: the sign-in pages and
-`forge setup` are PostgreSQL-only, so generated routes are closed (`403`)
-unless generated with `--public`, which serves them to anyone who can reach
-the server (forms still need their CSRF token) and needs `--global`:
+MySQL and MariaDB work the same way (`forge new shop -d mysql --auth`, then
+`docker compose up -d --wait mysql` or `mariadb` after `cd`).
+
+An application without `--auth` has no sign-in, so generated routes are
+closed (`403`) unless generated with `--public`, which serves them to anyone
+who can reach the server (forms still need their CSRF token):
 
 ```sh
-forge new shop -d sqlite3
+forge new shop
 cd shop
 forge migrate
-forge generate scaffold product name:string price:int --global --public
+forge generate scaffold product name:string price:integer --public
 forge migrate
 forge dev
 ```
@@ -210,8 +246,28 @@ forge dev
 Then open `http://localhost:8080/products`, or
 `curl -s http://localhost:8080/v1/products`. To put your own authentication in
 front, copy the guard function (`public`, or `protect` for routes generated without `--public`) from `app/bootstrap/routes_gen.go` into another file of `app/bootstrap`, change it there, and run any `forge generate` command again (repeating the last one is enough): until then the build fails with `public redeclared`, never silently; afterwards the generators leave their own out and use yours.
-CI runs both sequences as written, with a real `forge` binary, and drives
-them over HTTP (`TestGeneratedApplication/readme_quickstart_*`).
+Or add Forge's: `forge generate authentication`, then `forge migrate` and
+`forge setup --email you@example.com`.
+
+Growing an `--auth` application into one with organizations converts every
+generated table: a migration adds `org_id` to each (filled with the one
+organization `forge setup` created, then indexed and `NOT NULL`; on
+PostgreSQL with row-level security forced), the generated code is rewritten
+as `--org-scoped` would write it, and sign-in starts asking for the
+organization. It refuses files you edited and runs backwards with
+`forge rollback`, which refuses (changing nothing) while a second
+organization exists:
+
+```sh
+forge generate tenancy --org acme --dry-run   # the migration and every file it rewrites
+forge generate tenancy --org acme             # the default organization becomes acme
+forge migrate
+```
+
+CI runs the SQLite, MySQL and PostgreSQL sequences above as written, with a
+real `forge` binary, and drives them over HTTP: sign-in, the CRUD pages, the
+JSON API and, with organizations, a second organization that gets `404` for
+every row of the first (`TestGeneratedApplication/readme_quickstart_*`).
 
 ### Database roles (PostgreSQL)
 
@@ -320,36 +376,40 @@ FORGE_ALLOW_DESTRUCTIVE=true forge db drop --force-production --yes
 schema owner) for `create`, `drop`, `schema:*`, `console`, `migrate` and
 `rollback`; the database itself always comes from `FORGE_DATABASE_URL`.
 
-### Sign in (PostgreSQL)
+### Sign in
 
-PostgreSQL applications come with Rails-style sign-in, sign-out, two-factor
-and password-reset pages. End to end, from a new application to a signed-in
-owner using a scaffold:
+Applications created with `--auth` (or `--tenants`) come with Rails-style
+sign-in, sign-out, two-factor and password-reset pages, on every database:
+Forge identity persists in PostgreSQL, MySQL, MariaDB and SQLite alike
+(`auth/postgres`, `auth/mysql`, `auth/sqlite`, one shared contract suite).
+End to end, from a new application to a signed-in owner using a scaffold:
 
 ```sh
-forge new myapp && cd myapp
-docker compose up -d postgres
+forge new myapp --auth && cd myapp
 forge migrate                   # identity tables and the application's migrations
-forge setup --tenant acme --email you@example.com --organization "Acme Inc"
+forge setup --email you@example.com
                                 # prompts twice for the owner password (12+ characters)
 forge seed                      # optional: loads db/seeds.go (idempotent)
 forge dev
 ```
 
-Open `http://localhost:8080/session/new` and sign in with organization `acme`,
-your email and password (use `localhost`: the `__Host-` cookies need a secure
-context, which browsers grant to `http://localhost`). Then add pages and use
-them as the owner:
+Open `http://localhost:8080/session/new` and sign in with your email and
+password (use `localhost`: the `__Host-` cookies need a secure context, which
+browsers grant to `http://localhost`). An application with organizations
+(`--tenants`) creates the first one with
+`forge setup --org acme --email you@example.com --org-name "Acme Inc"`, and
+its sign-in page also asks for the organization. Then add pages and use them
+as the owner:
 
 ```sh
-forge generate scaffold post title:string body:text --tenant-scoped   # mounts itself in app/bootstrap/routes_gen.go
+forge generate scaffold post title:string body:text   # --org-scoped with organizations; mounts itself in app/bootstrap/routes_gen.go
 forge migrate                   # also grants posts:read and posts:write to the owner role
 forge dev                       # http://localhost:8080/posts (signed-out visitors go to /session/new and back)
 ```
 
 | URL | Page |
 | --- | ---- |
-| `/session/new` | sign in (organization, email, password) |
+| `/session/new` | sign in (email, password; and the organization, with `--tenants`) |
 | `/session/mfa` | authenticator or backup code, when `FORGE_AUTH_MFA_KEY` is set |
 | `/mfa` | two-factor settings of the signed-in account: turn on, replace the authenticator, new backup codes, turn off |
 | `/passwords/new` | forgot password (only when reset emails are configured, below) |
@@ -429,13 +489,15 @@ In production set `FORGE_MAIL_URL=smtps://user:password@smtp.example.com:465`
 [docs/MAIL.md](docs/MAIL.md).
 
 Sign out with a `DELETE /session` form: include
-`{{template "sessions/_sign_out" .}}` in a page. `forge setup` refuses once a
-tenant exists. The same commands exist in the application binary, for
-containers and production (the password is never an argument):
+`{{template "sessions/_sign_out" .}}` in a page. `forge setup` refuses once an
+organization exists. The same commands exist in the application binary, for
+containers and production (the password is never an argument; `--org SLUG`
+only with organizations):
 
 ```sh
-docker compose run --rm app setup --tenant acme --email you@example.com
-printf '%s\n' "$OWNER_PASSWORD" | myapp setup --tenant acme --email you@example.com --password-stdin
+docker compose run --rm app setup --email you@example.com
+printf '%s\n' "$OWNER_PASSWORD" | myapp setup --email you@example.com --password-stdin
+printf '%s\n' "$OWNER_PASSWORD" | myapp setup --org acme --email you@example.com --password-stdin   # --tenants
 myapp seed
 ```
 
@@ -446,9 +508,9 @@ login for browser scripts, MFA completion, JSON password recovery and
 entered:
 
 ```sh
-forge new myapi --api-auth      # the pages plus the JSON authentication APIs
+forge new myapi --api-auth      # implies --auth: the pages plus the JSON authentication APIs
 curl -s -X POST http://127.0.0.1:8080/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"you@example.com","password":"your password","tenant":"acme"}'
+  -d '{"email":"you@example.com","password":"your password"}'   # with organizations, also "tenant":"acme"
 ```
 
 An application created without the flag adds them later: in one that has
@@ -462,11 +524,17 @@ forge generate authentication --api-auth   # the pages exist: prints the JSON AP
 Applications generated earlier mount the JSON routes; remove those no API
 client uses (`forge generate authentication` lists them,
 [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#json-authentication-apis-opt-in)).
-An application created before the sign-in pages existed gets them with:
+An application created without `--auth` gets everything `--auth` generates,
+wired with no edits (the pages, `app/bootstrap/identity.go`, the identity
+migrations in `db/migration_sets_gen.go` and the `setup` command in
+`app/bootstrap/app_gen.go`, the `identityRoutes` call in `routes_gen.go`, a
+development MFA key in `.env.local`, and an `AGENTS.md` that describes
+sign-in). Routes generated before keep the guard they were generated with:
 
 ```sh
-forge generate authentication --dry-run   # preview files and the wiring to paste
-forge generate authentication             # app/adapters/htmlauth, app/views/{sessions,passwords}
+forge generate authentication --dry-run   # preview the files and what is wired
+forge generate authentication             # app/adapters/htmlauth, app/views/{sessions,passwords,mfa}, identity.go
+forge migrate && forge setup --email you@example.com
 forge generate authentication --api-auth  # the same, and the wiring of the JSON authentication APIs
 ```
 
@@ -491,8 +559,7 @@ A FIPS 140 build writes PBKDF2-HMAC-SHA256 instead
 go build -tags forge_pbkdf2 -o bin/myapp ./cmd/myapp
 ```
 
-MySQL, MariaDB and SQLite applications are refused: Forge persists identities
-only in PostgreSQL. They still get `db/seeds.go` and `forge seed`. See
+Applications created with `--api` have no pages and are refused. See
 [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md#server-rendered-sign-in-pages).
 
 ### Tables, pages and jobs
@@ -562,10 +629,14 @@ get the wiring printed to paste. The mailer and job generators print theirs. Fie
 (a trailing `?` makes one optional; quote it in shells that expand `?`). The
 full reference is [docs/GENERATORS.md](docs/GENERATORS.md).
 
+In an application with organizations (`forge new --tenants`), tables take a
+scope, `--org-scoped` (`--tenant-scoped` is an alias) or `--global`; in any
+other application they are plain tables and take none, as below.
+
 ```sh
 # g is short for generate and d for destroy, as in Rails
-forge g scaffold product name:string price:int --tenant-scoped
-forge d scaffold product name:string price:int --tenant-scoped
+forge g scaffold product name:string price:integer
+forge d scaffold product name:string price:integer
 
 # Migration: add_COLUMNS_to_TABLE / remove_COLUMNS_from_TABLE with fields write the ALTER TABLE
 forge g migration add_sku_to_products sku:string 'discontinued_at:time?'
@@ -573,9 +644,13 @@ forge g migration remove_sku_from_products sku:string
 forge g migration backfill_prices   # blank: fill in both files before forge migrate (an empty migration is refused)
 
 # Model: migration, domain entity, repository port and use cases, persistence adapter, tests; no HTTP
-forge generate model post title:string 'body:text?' published:bool --tenant-scoped --dry-run
-forge generate model post title:string 'body:text?' published:bool --tenant-scoped
+forge generate model post title:string 'body:text?' published:bool --dry-run
+forge generate model post title:string 'body:text?' published:bool
 forge migrate && forge test
+
+# Sign-in and organizations, added to an existing application
+forge generate authentication            # what forge new --auth generates, wired
+forge generate tenancy --org acme        # an --auth application gains organizations: org_id on every table
 
 # Controller: handlers, routes, views and tests for read-only actions, no persistence
 forge generate controller pages home about_us --public     # GET /pages/home, GET /pages/about_us
@@ -595,7 +670,7 @@ forge generate job cleanup                                 # the recurring in-pr
 # Everything above, then the same arguments with destroy to take it away again
 forge destroy controller pages home about_us --dry-run
 forge destroy controller pages home about_us
-forge destroy model post title:string 'body:text?' published:bool --tenant-scoped --migrations
+forge destroy model post title:string 'body:text?' published:bool --migrations
 ```
 
 `forge destroy GENERATOR ARGUMENTS...` (the arguments the generator was run
@@ -844,7 +919,7 @@ response against the document. Details, type mapping and tags:
 
 | Command | Description |
 | ------- | ----------- |
-| `forge new NAME [--database DB] [--locale LOCALE] [--api-auth \| --api] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps \| --skip-lockfile] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. `--skip-lockfile` is Forge-Rust's name for `--skip-deps` |
+| `forge new NAME [--database DB] [--auth] [--tenants] [--locale LOCALE] [--js] [--api-auth \| --api] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps \| --skip-lockfile] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. `--skip-lockfile` is Forge-Rust's name for `--skip-deps` |
 | `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge check` | Type-check the application: compile its TypeScript, then `go build ./...`, `go vet ./...` and, when `tsc` is on PATH, `tsc --noEmit` (without `tsc` one note says how to install it; Forge-Rust: `cargo check --all-targets`) |
@@ -854,18 +929,19 @@ response against the document. Details, type mapping and tags:
 | `forge db COMMAND` | Database lifecycle like Rails' `db:*`: `create`, `drop`, `reset`, `setup`, `prepare`, `migrate`, `rollback`, `status`, `seed`, `schema:dump`, `schema:load`, `console`; see [Development loop](#development-loop) |
 | `forge migrate [status]` | Build the application and run its `migrate` (or `migrate status`) command (same as `forge db migrate`) |
 | `forge rollback [-steps N]` | Build the application and run its `rollback` command (default 1 step): only the application's own migrations, never Forge's framework migrations |
-| `forge setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | PostgreSQL: create the first organization, tenant and owner account; the password is prompted for (or piped, or `FORGE_SETUP_PASSWORD`), never an argument; refuses once a tenant exists |
+| `forge setup [--org SLUG] --email EMAIL [--org-name NAME] [--password-stdin]` | Applications with Forge identity (`--auth`): create the first organization and owner account (`--org` only with organizations, `--tenants`; otherwise the one hidden organization); the password is prompted for (or piped, or `FORGE_SETUP_PASSWORD`), never an argument; refuses once an organization exists |
 | `forge seed` | Run the application's `seed` command: `db.Seed` in one transaction |
 | `forge generate migration NAME [--dry-run]` | Create or preview `db/migrations/<UTC timestamp>_NAME.{up,down}.sql` |
 | `forge generate view [DIR/]NAME [--dry-run]` | Create or preview a server-rendered page, `app/views/DIR/NAME.gohtml` (DIR defaults to `pages`), in the layout `forge new` generates |
 | `forge generate job NAME [--dry-run]` | Create or preview a cancellation-aware recurring job stub and tests; registration and schedule remain explicit |
-| `forge generate model NAME field:type... (--tenant-scoped \| --global) [--plural P] [--dry-run]` | Create or preview a model: migration, domain, application (repository port, use cases) and persistence layers with tests; the model and persistence files of `generate resource`, without the HTTP layer |
+| `forge generate model NAME field:type... [--org-scoped \| --global] [--plural P] [--dry-run]` | Create or preview a model: migration, domain, application (repository port, use cases) and persistence layers with tests; the model and persistence files of `generate resource`, without the HTTP layer |
 | `forge generate controller NAME ACTION... [--api] [--public] [--dry-run]` | Create or preview HTTP handlers for read-only actions, their routes, views (HTML) and tests, without persistence; `--api` generates JSON handlers; guarded unless `--public` |
 | `forge generate mailer NAME METHOD[:field,field]... [--dry-run]` | Create or preview a mailer: typed methods, text and HTML templates, previews and tests, on the `mail` package |
 | `forge generate job NAME [field:type...] --queue [--dry-run]` | Create or preview a typed handler for the persistent job queue, its enqueue function and tests |
-| `forge generate resource NAME field:type... (--tenant-scoped \| --global) [--plural P] [--public] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database, mounted in `app/bootstrap/routes_gen.go`. Never public unless `--public` (no Forge identity, `--global`): see below |
-| `forge generate scaffold NAME field:type... (--tenant-scoped \| --global) [--plural P] [--broadcast] [--public] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests; `--broadcast` adds live updates over Server-Sent Events. Never public unless `--public`: see below |
-| `forge generate authentication [--api-auth] [--dry-run]` | PostgreSQL: add the sign-in, sign-out, two-factor and password-reset pages `forge new` generates to an application that lacks them, and print their wiring (with `--api-auth`, also the JSON authentication APIs'); other databases are refused (identity persistence is PostgreSQL-only) |
+| `forge generate resource NAME field:type... [--org-scoped \| --global] [--plural P] [--public] [--dry-run]` | Create or preview a complete resource: migration, domain, application, persistence and HTTP layers with tests, for the application's database, mounted in `app/bootstrap/routes_gen.go`. A scope only with organizations. Never public unless `--public` (no Forge identity): see below |
+| `forge generate scaffold NAME field:type... [--org-scoped \| --global] [--plural P] [--broadcast] [--public] [--dry-run]` | Everything `generate resource` creates plus server-rendered HTML CRUD pages, forms and their tests; `--broadcast` adds live updates over Server-Sent Events. Never public unless `--public`: see below |
+| `forge generate authentication [--api-auth] [--dry-run]` | Add what `forge new --auth` generates (sign-in, sign-out, two-factor and password-reset pages, identity migrations, the `setup` command) to an application created without it, wired with no edits; in one that has it, `--api-auth` prints the JSON authentication APIs' wiring |
+| `forge generate tenancy [--org SLUG] [--dry-run]` | Turn an `--auth` application into one with organizations: a reversible migration adds `org_id` to every generated table (backfilled, indexed, `NOT NULL`, row-level security on PostgreSQL), rewrites the generated code as `--org-scoped`, and renames the default organization to `SLUG`; refuses edited files, applications without `--auth` and those that have organizations |
 | `forge destroy GENERATOR ARGUMENTS... [--force] [--migrations] [--dry-run]` | Remove what a generator created (`model`, `resource`, `scaffold`, `controller`, `mailer`, `job`, `view`): the same arguments as the generate command; a file that differs from what the generator writes, or that a bigger generation still needs, is never removed without `--force`, migrations are kept without `--migrations` |
 | `forge deploy [init\|setup\|rollback VERSION\|prune\|details\|lock\|maintenance] [--dry-run] [--json]` | Deploy the image to your servers over SSH with zero-downtime switches through forge-proxy, Kamal-style: see [Deploy](#deploy) |
 | `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream container logs from every host, prefixed `host\|` |
@@ -901,9 +977,16 @@ Flags for `forge new`:
 - `--dir DIR` sets the output directory (default: `NAME`); it must be absent
   or empty.
 - `--skip-deps` skips dependency resolution (`go get`, `go mod tidy`).
-- `--database DB` / `-d DB` chooses the database: `postgresql` (default;
-  aliases `postgres`, `pg`), `mysql`, `mariadb`, `sqlite` (alias `sqlite3`), or
-  `none`.
+- `--database DB` / `-d DB` chooses the database: `sqlite` (default; alias
+  `sqlite3`), `postgresql` (default with `--tenants`; aliases `postgres`,
+  `pg`), `mysql`, `mariadb`, or `none`.
+- `--auth` adds Forge identity: sign-in, sign-out, two-factor and
+  password-reset pages, the identity migrations and the `setup` command, on
+  any database. Without it the application has no sign-in.
+- `--tenants` (implies `--auth`) gives users organizations: sign-in and
+  `setup` take the organization, and generated tables are `--org-scoped`
+  (an `org_id` column) or `--global`; PostgreSQL adds forced row-level
+  security.
 - `--skip-database` is `--database none`; combining it with `--database` is
   an error.
 - `--locale LOCALE` sets the default locale of the generated pages: `en`
@@ -915,7 +998,7 @@ Flags for `forge new`:
   [TypeScript front end](#typescript-front-end-the-default).
 - `--api-auth` also mounts the JSON authentication APIs (bearer and cookie
   login and logout, MFA completion, JSON password recovery,
-  `GET /v1/auth/session`) beside the HTML sign-in pages; PostgreSQL only.
+  `GET /v1/auth/session`) beside the HTML sign-in pages; implies `--auth`.
   Without it the pages are the only way to sign in.
 - `--api` generates an API-only application, like `rails new --api` and
   Forge-Rust's `forge new --api`: `GET /` answers
@@ -923,12 +1006,11 @@ Flags for `forge new`:
   routes and the OpenAPI document stay, and there is no `app/views`,
   `app/assets`, `app/javascript`, `config/locales`, `app/adapters/htmlauth`,
   `setup` command or browser middleware (CSRF, method override, flash,
-  locale negotiation). On PostgreSQL `migrate` still applies Forge's
-  identity, audit and session schema (`authpostgres.Migrations()`), as
-  Forge-Rust's `--api` applications do, so authentication can be added
-  later without rewriting migrations. The database flags are unchanged. `--api-auth` and
-  `--locale` cannot be combined with it (usage error, exit 2), as in
-  Forge-Rust. In such an application `forge generate view`, `scaffold`,
+  locale negotiation). Authentication is opt-in, so `migrate` applies the
+  application's own migrations (and the job schedules') and no identity
+  schema. The database flags are unchanged. `--api-auth`, `--auth`,
+  `--tenants` and `--locale` cannot be combined with it (usage error,
+  exit 2). In such an application `forge generate view`, `scaffold`,
   `authentication` and `controller` without `--api` refuse and write
   nothing; `resource`, `model`, `controller --api`, `mailer`, `job` and
   `migration` work and write no view or asset.
@@ -1027,20 +1109,22 @@ forge migrate        # creates forge_job_schedules once main.go composes the job
 forge test
 ```
 
-`forge generate resource NAME field:type... (--tenant-scoped | --global)
+`forge generate resource NAME field:type... [--org-scoped | --global]
 [--plural PLURAL] [--public] [--dry-run]` generates a working, tested CRUD resource for
 the application's database (read from `FORGE_DATABASE_URL`, as `forge inspect`
 does). `NAME` is singular snake_case; the table and routes use the plural
 (`category` becomes `categories`; pass `--plural` for irregular words).
-Exactly one scope flag is required. A field is `name:type` with `type` one of
-`string` (up to 255 characters), `text`, `int` (64-bit), `bool`, `time` (UTC)
-or `uuid`; a trailing `?` makes it optional (`NULL`). Quote optional fields in
+In an application with organizations exactly one scope flag is required; in
+any other there is none. A field is `name:type` with `type` one of
+`string` (up to 255 characters), `text`, `int` (64-bit; alias `integer`),
+`bool` (alias `boolean`), `time` (UTC; aliases `timestamp`, `datetime`) or
+`uuid`; a trailing `?` makes it optional (`NULL`). Quote optional fields in
 shells that expand `?`. There is no floating-point or decimal type: store money
 as an `int` in minor units.
 
 ```sh
-forge generate resource product name:string 'summary:text?' price_cents:int --tenant-scoped --dry-run
-forge generate resource product name:string 'summary:text?' price_cents:int --tenant-scoped
+forge generate resource product name:string 'summary:text?' price_cents:int --dry-run
+forge generate resource product name:string 'summary:text?' price_cents:int   # --org-scoped with organizations
 forge migrate
 ```
 
@@ -1048,8 +1132,8 @@ It writes `db/migrations/<timestamp>_create_products.{up,down}.sql` and, for
 each of `app/domain`, `app/application`, `app/adapters/persistence` and
 `app/adapters/httpapi`, `product.go` with its `product_test.go`. Identifiers are
 UUIDv7 (`uuid` on PostgreSQL, `CHAR(36)` on MySQL and MariaDB, `TEXT` in a
-`STRICT` table on SQLite). Tenant-scoped resources read the tenant from the
-context, bind `tenant_id` in every statement and, on PostgreSQL, run behind
+`STRICT` table on SQLite). Org-scoped resources read the organization from
+the context, bind `org_id` in every statement and, on PostgreSQL, run behind
 forced row-level security; MySQL, MariaDB and SQLite rely on the statement
 predicates alone. Updates and deletes need the version the client read (`409`
 when stale), lists are newest-first keyset pages, and `PATCH` changes only the
@@ -1059,8 +1143,8 @@ The generator refuses to overwrite any file (running it again with the same
 arguments is a no-op) and never edits `app/bootstrap/bootstrap.go`: it mounts
 the routes in `app/bootstrap/routes_gen.go`. `RegisterProducts` needs a
 `protect` function and asks it for `products:read` or `products:write` per
-route, so the endpoints are never public by accident. On PostgreSQL (Forge
-identity) the migration adds those permissions to `forge_permissions`, grants
+route, so the endpoints are never public by accident. With Forge identity
+(`--auth`) the migration adds those permissions to `forge_permissions`, grants
 them to the `owner` role, and `protect` uses `auth.RequireAudited`: behind the
 bearer token of `POST /auth/login` in an application created with
 `--api-auth` (or given it by `forge generate authentication --api-auth`), and
@@ -1078,18 +1162,18 @@ the next generator writes the bearer one, or replace `protect` with your own
 (copy it out of `routes_gen.go` into another file of `app/bootstrap`, then run
 a generator again).
 
-A global resource's
+With organizations, a global resource's
 write routes additionally stay behind a deny-all `protectPlatformWrite` you replace
-with operator-level authorization (tenant roles must not be able to change rows every
-tenant reads); on other databases the
+with operator-level authorization (organization roles must not be able to change rows every
+organization reads); without Forge identity the
 guard denies every request until you replace `protect` with your own (copy
 it out of `routes_gen.go` into another file of `app/bootstrap`, then run a
-generator again) (or generate the routes with `--public`, which needs
-`--global` and serves them to anyone). The generated integration tests need the test
+generator again) (or generate the routes with `--public`, which serves them
+to anyone). The generated integration tests need the test
 database (`FORGE_TEST_DATABASE_URL`, set by `.env.development`) and fail instead
 of skipping when `FORGE_TEST_REQUIRE_DATABASE=true`.
 
-`forge generate scaffold NAME field:type... (--tenant-scoped | --global)
+`forge generate scaffold NAME field:type... [--org-scoped | --global]
 [--plural PLURAL] [--broadcast] [--public] [--dry-run]` is `forge generate resource` plus the HTML
 pages, the equivalent of `rails g scaffold`. It takes exactly the same
 arguments, writes exactly the same resource files, and adds:
@@ -1200,7 +1284,7 @@ Server-Sent Events, with signed, tenant-scoped channel names, and PostgreSQL
 
 ```sh
 export FORGE_STREAMS_KEY=$(openssl rand -base64 32)     # required in staging and production
-forge generate scaffold post title:string body:text --tenant-scoped --broadcast
+forge generate scaffold post title:string body:text --broadcast   # --org-scoped with organizations
 forge migrate
 forge test                                              # includes an end-to-end event stream test on PostgreSQL
 ```
@@ -1376,7 +1460,7 @@ FORGE_DATABASE_URL=postgres://app:app@127.0.0.1:1/down forge routes   # still li
 | `help` | List the available commands |
 | `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database); `rollback` reverts application migrations only |
 | `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |
-| `setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]` | Added by `authpostgres.SetupCommand()` (PostgreSQL): the first tenant and owner, once |
+| `setup [--org SLUG] --email EMAIL [--org-name NAME] [--password-stdin]` | Added by `auth<adapter>.SetupCommand(auth<adapter>.SetupOrganizations(Organizations))` in `app/bootstrap/app_gen.go` (applications with `--auth`): the first organization and owner, once |
 | `jobs status`, `jobs dead [-queue Q] [-kind K] [-limit N]`, `jobs show ID`, `jobs retry ID`, `jobs discard ID`, `jobs prune [-older D]` | Added by `queuepostgres.Commands()` (`queuemysql`, `queuesqlite` for the other databases) once the persistent job queue is wired ([JOBS](docs/JOBS.md)): inspect and repair the queue; payloads are never printed |
 
 The `jobs` commands ship inside the production image, so operators need no
@@ -1723,7 +1807,8 @@ Coverage: `scripts/coverage.sh` measures statement coverage (`go test
 prints the gross total and the gated total (production code, without the
 contract test kits) with a per-package table, and fails when the gated total is
 below `.coverage-floor`, the gross total is below 95.0%, or one of the
-security-relevant packages (`auth`, `auth/postgres`, `credentials`, `csrf`,
+security-relevant packages (`auth`, `auth/postgres`, `auth/mysql`,
+`auth/sqlite`, `auth/internal/sqlidentity`, `credentials`, `csrf`,
 `encryption`, `internal/pgurl`, `postgres`) is below 95% of its own statements
 ([docs/TESTING.md](docs/TESTING.md#coverage)).
 
@@ -1735,12 +1820,15 @@ CI (`.github/workflows/ci.yml`):
   govulncheck;
 - `generated`: `TestGeneratedApplication`, the applications `forge new`
   generates for each database, vetted, built and tested against PostgreSQL 18
-  and MySQL 8.4 (a job of its own: these workflows are serial and slow);
+  and MySQL 8.4, then the README quickstarts (SQLite `--auth`, MySQL `--auth`,
+  PostgreSQL `--tenants`, the welcome page) driven over HTTP (a job of its
+  own: these workflows are serial and slow);
 - `coverage`: `scripts/coverage.sh` against PostgreSQL 18 and 16 and MariaDB,
   gated by `.coverage-floor`, the gross floor and the per-package floors;
 - `fuzz`: every fuzz target for 10 seconds (`scripts/fuzz.sh`);
 - `sbom`: CycloneDX SBOMs of the `forge` and `forge-proxy` binaries;
-- `mariadb`: the `mysql` adapter's tests against MariaDB 11.8;
+- `mariadb`: the `mysql` and `auth/mysql` tests, the generated MySQL
+  applications and the MySQL quickstart against MariaDB 11.8;
 - `docker`: for each of PostgreSQL, MySQL, MariaDB, and SQLite, generates an
   application, builds its image, and smoke-tests its Compose stack with
   `docker compose up --wait` (the PostgreSQL run also builds the example

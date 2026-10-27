@@ -19,7 +19,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
-const resourceUsage = "usage: forge generate resource NAME field:type... (--tenant-scoped | --global) [--plural PLURAL] [--public] [--dry-run]"
+const resourceUsage = "usage: forge generate resource NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--public] [--dry-run]"
 
 const (
 	maxResourceFields     = 40
@@ -34,8 +34,14 @@ var resourceName = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z][a-z0-9]*)*$`)
 // minor units).
 var resourceFieldTypes = []string{"string", "text", "int", "bool", "time", "uuid"}
 
+// fieldTypeAliases are the other spellings a field type is accepted under
+// (decision D22: Rails's integer, boolean, timestamp and datetime).
+var fieldTypeAliases = map[string]string{"integer": "int", "boolean": "bool", "timestamp": "time", "datetime": "time"}
+
 // reservedColumns are the columns every generated table owns.
-var reservedColumns = []string{"id", "tenant_id", "version", "created_at", "updated_at"}
+// tenant_id stays reserved beside org_id: it is the framework's name for the
+// organization (forge_tenants), and a column so named would read as one.
+var reservedColumns = []string{"id", "org_id", "tenant_id", "version", "created_at", "updated_at"}
 
 // fileNameSuffixes are the segments that make Go treat a file name as a build
 // constraint (name_linux.go, name_test.go), which would silently exclude the
@@ -74,7 +80,10 @@ type resourceRequest struct {
 	Plural       string
 	Fields       []resourceField
 	TenantScoped bool
-	DryRun       bool
+	// Global is --global: rows shared by every organization of an
+	// application with organizations.
+	Global bool
+	DryRun bool
 	// Scaffold is set by `forge generate scaffold`: the resource plus its
 	// server-rendered HTML pages. It changes only what is generated around
 	// the resource, never the resource itself.
@@ -94,6 +103,10 @@ type resourceRequest struct {
 	// Destroy plans for `forge destroy`: the same files, found where they
 	// are, with no refusal for files that already exist.
 	Destroy bool
+	// organizations renders the resource for an application with
+	// organizations whatever app_gen.go says: `forge generate tenancy`
+	// renders the converted code before it flips the application.
+	organizations bool
 }
 
 // resourceField is one user-declared column.
@@ -109,6 +122,11 @@ type resourceSpec struct {
 	Module   string
 	Database string // postgres, mysql (also MariaDB) or sqlite
 	Identity bool   // Forge identity (permissions table) is available
+	// Organizations reports an application with organizations (forge new
+	// --tenants): tables need a scope, and global rows are written only by
+	// platform operators. Without them every generated table is a plain
+	// table of the application's one organization.
+	Organizations bool
 	// BearerSignIn reports that bootstrap.go mounts the bearer-token login
 	// (POST /auth/login, from --api-auth): without it no caller can hold the
 	// bearer token the JSON routes of an identity application authenticate,
@@ -228,7 +246,7 @@ func reportGenerated(stdout io.Writer, spec resourceSpec, files []generatedFile,
 	return err
 }
 
-// parseResourceArgs reads `NAME field:type... --tenant-scoped|--global
+// parseResourceArgs reads `NAME field:type... [--org-scoped|--global]
 // [--plural P] [--dry-run]`. Flags may appear anywhere. It touches no files.
 func parseResourceArgs(args []string) (resourceRequest, error) {
 	return parseGeneratorArgs(args, resourceUsage)
@@ -258,7 +276,7 @@ func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 				return resourceRequest{}, errors.New("--public given more than once")
 			}
 			request.Public = true
-		case arg == "--tenant-scoped":
+		case arg == "--org-scoped" || arg == "--tenant-scoped":
 			tenantScoped = true
 		case arg == "--global":
 			global = true
@@ -282,15 +300,12 @@ func parseGeneratorArgs(args []string, usage string) (resourceRequest, error) {
 			positional = append(positional, arg)
 		}
 	}
-	switch {
-	case tenantScoped && global:
-		return resourceRequest{}, errors.New("--tenant-scoped and --global are mutually exclusive: choose exactly one")
-	case !tenantScoped && !global:
-		return resourceRequest{}, errors.New("choose a scope: --tenant-scoped (rows belong to one tenant) or --global (rows are shared by all tenants)")
+	if tenantScoped && global {
+		return resourceRequest{}, errors.New("--org-scoped and --global are mutually exclusive: choose exactly one")
 	}
-	request.TenantScoped = tenantScoped
+	request.TenantScoped, request.Global = tenantScoped, global
 	if request.Public && tenantScoped {
-		return resourceRequest{}, errors.New("--public serves the routes without sign-in, and a tenant-scoped resource needs the caller's tenant, which an anonymous request does not carry: use --global with --public")
+		return resourceRequest{}, errors.New("--public serves the routes without sign-in, and an org-scoped resource needs the caller's organization, which an anonymous request does not carry: drop --org-scoped (or use --global) with --public")
 	}
 	if len(positional) == 0 {
 		return resourceRequest{}, usageError{usage}
@@ -400,6 +415,9 @@ func parseField(declaration string, reserveColumns bool) (resourceField, error) 
 	if trimmed, found := strings.CutSuffix(kind, "?"); found {
 		kind, optional = trimmed, true
 	}
+	if canonical, ok := fieldTypeAliases[kind]; ok {
+		kind = canonical
+	}
 	switch {
 	case len(name) > maxResourceNameLength || !resourceName.MatchString(name):
 		return resourceField{}, fmt.Errorf("field name %q must be snake_case (lowercase letters and digits, starting with a letter, at most %d characters)", name, maxResourceNameLength)
@@ -415,7 +433,7 @@ func parseField(declaration string, reserveColumns bool) (resourceField, error) 
 // the 63-byte PostgreSQL and 64-character MySQL limits.
 func validateIdentifierLengths(request resourceRequest) error {
 	const limit = 63
-	longest := len(request.Plural) + len("_tenant_id_idx")
+	longest := len(request.Plural) + len("_org_id_idx")
 	for _, field := range request.Fields {
 		longest = max(longest, len(request.Plural)+1+len(field.Name)+len("_length"))
 	}
@@ -522,7 +540,24 @@ func planResourceWith(root string, request resourceRequest, env []string, now ti
 		return resourceSpec{}, nil, errors.New("FORGE_DATABASE_URL does not select a supported database (postgres, mysql or sqlite)")
 	}
 	spec := resourceSpec{resourceRequest: request, Module: module, Database: adapter}
-	spec.Identity = adapter == "postgres" && hasIdentityMigrations(projectRoot) && !apiOnlyApplication(projectRoot)
+	spec.Identity = hasIdentityMigrations(projectRoot, adapter) && !apiOnlyApplication(projectRoot)
+	if spec.Identity {
+		if spec.Organizations, err = hasOrganizations(projectRoot); err != nil {
+			return resourceSpec{}, nil, err
+		}
+	}
+	spec.Organizations = spec.Organizations || request.organizations
+	if !spec.Organizations {
+		// --global means nothing in an application with one organization:
+		// its tables are plain tables, recorded as such.
+		spec.Global = false
+	}
+	switch {
+	case request.TenantScoped && !spec.Organizations:
+		return resourceSpec{}, nil, errors.New("--org-scoped (--tenant-scoped) is for applications with organizations: this one has a single organization, so its tables are plain tables and need no scope. Create the app with --tenants (forge new NAME --tenants), or convert this one with `forge generate tenancy`")
+	case spec.Organizations && !request.TenantScoped && !request.Global:
+		return resourceSpec{}, nil, errors.New("choose a scope: --org-scoped (rows belong to one organization: an org_id column every query is filtered by) or --global (rows are shared by every organization)")
+	}
 	spec.BearerSignIn = spec.Identity && hasBearerSignIn(projectRoot)
 	if request.Public && spec.Identity && !request.Model {
 		return resourceSpec{}, nil, errors.New("--public is for applications without Forge identity: this one signs users in, so the routes need sign-in and the " + request.Plural + ":read and " + request.Plural + ":write permissions, which the migration grants to the owner role `forge setup` creates")
@@ -764,11 +799,15 @@ func allIdentical(projectRoot *os.Root, files []generatedFile) bool {
 
 // hasIdentityMigrations reports whether the application composes the Forge
 // identity migrations, which create the forge_permissions table the generated
-// migration seeds. PostgreSQL applications from `forge new` always do, API-only
-// ones (`forge new --api`) included; those have no identity wiring
-// (identityRoutes, the auth middleware), so the generators also check
-// apiOnlyApplication before printing wiring that needs it.
-func hasIdentityMigrations(projectRoot *os.Root) bool {
+// migration seeds: app/bootstrap/app_gen.go imports an auth adapter (forge new
+// --auth, forge generate authentication), or, in an application from before
+// app_gen.go, cmd/<name>/main.go does. The auth adapter must be the
+// database's (adapter, as databaseAdapter reports it).
+func hasIdentityMigrations(projectRoot *os.Root, adapter string) bool {
+	identity := regexp.MustCompile(`"github.com/rocketinsidecorp/forge-go/auth/` + regexp.QuoteMeta(adapter) + `"`)
+	if source, err := projectRoot.ReadFile(scaffold.AppFile); err == nil {
+		return identity.Match(source)
+	}
 	entries, err := fs.ReadDir(projectRoot.FS(), "cmd")
 	if err != nil {
 		return false
@@ -778,7 +817,7 @@ func hasIdentityMigrations(projectRoot *os.Root) bool {
 			continue
 		}
 		source, err := fs.ReadFile(projectRoot.FS(), filepath.Join("cmd", entry.Name(), "main.go"))
-		if err == nil && strings.Contains(string(source), `"github.com/rocketinsidecorp/forge-go/auth/postgres"`) {
+		if err == nil && identity.Match(source) {
 			return true
 		}
 	}

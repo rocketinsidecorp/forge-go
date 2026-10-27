@@ -2,6 +2,9 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-19
+- **Amended by:** [ADR 0050](0050-opt-in-authentication-and-organizations.md)
+  (the pages and `setup` only with `forge new --auth`, on every database;
+  `setup --org`, and `--email` alone without organizations)
 
 ## Context
 

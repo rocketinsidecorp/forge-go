@@ -20,6 +20,7 @@
       "sign_out": "Sign out",
       "signed_in": "Signed in.",
       "signed_out": "Signed out.",
+      "invalid_credentials_email": "That email and password do not match an account.",
       "invalid_credentials": "That organization, email and password do not match an account.",
       "sign_in_to_continue": "Sign in to continue.",
       "expired": "Your sign-in expired. Sign in again.",
@@ -28,6 +29,7 @@
     "passwords": {
       "new": {
         "title": "Forgot your password?",
+        "instructions_email": "Enter your email. If it matches an account, we send a link to choose a new password.",
         "instructions": "Enter your organization and email. If they match an account, we send a link to choose a new password.",
         "organization": "Organization",
         "email": "Email",

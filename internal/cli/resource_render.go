@@ -35,14 +35,18 @@ type resourceView struct {
 	Title       string // Product
 	PluralTitle string // Products
 	Module      string
-	Tenant      bool
-	Identity    bool
-	Database    string
-	Postgres    bool
-	MySQL       bool
-	SQLite      bool
-	Fields      []fieldView
-	SQL         sqlStatements
+	// Command is the generator command line that renders this resource,
+	// recorded in its create migration (forge:generate) so that `forge
+	// generate tenancy` can render it again.
+	Command  string
+	Tenant   bool
+	Identity bool
+	Database string
+	Postgres bool
+	MySQL    bool
+	SQLite   bool
+	Fields   []fieldView
+	SQL      sqlStatements
 
 	HasText      bool // a string or text field exists (validation helpers)
 	HasString    bool
@@ -115,7 +119,7 @@ func newResourceView(spec resourceSpec) resourceView {
 	title := exportedName(spec.Name)
 	view := resourceView{
 		Name: spec.Name, Plural: spec.Plural, Title: title, PluralTitle: exportedName(spec.Plural),
-		Module: spec.Module, Tenant: spec.TenantScoped, Identity: spec.Identity, Database: spec.Database,
+		Module: spec.Module, Command: generatorCommand(spec.resourceRequest), Tenant: spec.TenantScoped, Identity: spec.Identity, Database: spec.Database,
 		Postgres: spec.Database == "postgres", MySQL: spec.Database == "mysql", SQLite: spec.Database == "sqlite",
 	}
 	for _, field := range spec.Fields {
@@ -303,9 +307,9 @@ func (v resourceView) InvalidCases() []invalidCase {
 
 // RawInsert is a hand-written INSERT of one row with only the required
 // fields, for tests that talk to the table without the repository. It binds
-// the id, the tenant (when scoped), the required fields, the version and both
-// timestamps in that order; RawInsertArgs lists their Go expressions, with the
-// tenant as tenantID.
+// the id, the organization (when scoped), the required fields, the version and
+// both timestamps in that order; RawInsertArgs lists their Go expressions, with
+// the organization as orgID.
 func (v resourceView) RawInsert() string {
 	names, placeholders := v.rawInsertColumns()
 	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", v.Q(v.Plural), strings.Join(names, ", "), strings.Join(placeholders, ", "))
@@ -318,7 +322,7 @@ func (v resourceView) rawInsertColumns() (names, placeholders []string) {
 	}
 	add("id")
 	if v.Tenant {
-		add("tenant_id")
+		add("org_id")
 	}
 	for _, f := range v.RequiredFields() {
 		add(f.Name)
@@ -333,7 +337,7 @@ func (v resourceView) rawInsertColumns() (names, placeholders []string) {
 func (v resourceView) RawInsertArgs() string {
 	args := []string{"uuid.MustNew()"}
 	if v.Tenant {
-		args = append(args, "tenantID")
+		args = append(args, "orgID")
 	}
 	for _, f := range v.RequiredFields() {
 		args = append(args, sampleExpr(f, 1))
@@ -485,4 +489,35 @@ func renderResource(spec resourceSpec) (renderedResource, error) {
 		result.sources = append(result.sources, renderedSource{dir: source.dir, suffix: source.suffix, content: content})
 	}
 	return result, nil
+}
+
+// generatorCommand is the canonical command line of request: the generator,
+// the name, the fields with their canonical types, the plural and the flags
+// that change what is rendered.
+func generatorCommand(request resourceRequest) string {
+	kind := "resource"
+	switch {
+	case request.Model:
+		kind = "model"
+	case request.Scaffold:
+		kind = "scaffold"
+	}
+	parts := []string{kind, request.Name}
+	for _, field := range request.Fields {
+		declaration := field.Name + ":" + field.Type
+		if field.Optional {
+			declaration += "?"
+		}
+		parts = append(parts, declaration)
+	}
+	parts = append(parts, "--plural", request.Plural)
+	for _, flag := range []struct {
+		set  bool
+		name string
+	}{{request.TenantScoped, "--org-scoped"}, {request.Global, "--global"}, {request.Broadcast, "--broadcast"}, {request.Public, "--public"}} {
+		if flag.set {
+			parts = append(parts, flag.name)
+		}
+	}
+	return strings.Join(parts, " ")
 }

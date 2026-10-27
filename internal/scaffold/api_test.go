@@ -26,6 +26,7 @@ var apiOnlyFiles = []string{
 	"Dockerfile",
 	"README.md",
 	"app/architecture_test.go",
+	"app/bootstrap/app_gen.go",
 	"app/bootstrap/bootstrap.go",
 	"app/bootstrap/bootstrap_test.go",
 	"app/bootstrap/routes_gen.go",
@@ -37,6 +38,7 @@ var apiOnlyFiles = []string{
 	"config/credentials/development.json.enc",
 	"config/credentials/development.key",
 	"db/db.go",
+	"db/migration_sets_gen.go",
 	"db/migrations/.keep",
 	"db/seeds.go",
 	"docker/postgres/init.sql",
@@ -122,15 +124,15 @@ func TestGenerateAPIOnlyApplicationForEveryDatabase(t *testing.T) {
 			if !strings.Contains(tests, "func TestNoBrowserPipeline(") || strings.Contains(tests, "TestBrowserPipelineRequiresCSRFToken") {
 				t.Errorf("bootstrap_test.go does not test the absent browser pipeline")
 			}
-			// Decision D15: on PostgreSQL the identity, audit and session
-			// schema is composed as in Forge-Rust's --api applications, but
-			// no setup command (no sign-in pages to set up).
-			main := read("cmd/shop/main.go")
-			if strings.Contains(main, "SetupCommand") {
-				t.Errorf("main.go of an API-only application has the setup command:\n%s", main)
-			}
-			if composes := strings.Contains(main, "postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations())"); composes != (database == "postgresql") {
-				t.Errorf("main.go composes the identity schema = %v on %q:\n%s", composes, database, main)
+			// Decision D31 (superseding D15): no application gets Forge
+			// identity unless created with --auth, which --api refuses, so
+			// an API-only application composes no identity schema and has
+			// no setup command.
+			if database != "" {
+				commands := read("app/bootstrap/app_gen.go")
+				if strings.Contains(commands, "SetupCommand") || strings.Contains(commands, "forge-go/auth/") {
+					t.Errorf("app_gen.go of an API-only application composes Forge identity:\n%s", commands)
+				}
 			}
 			if env := read(".env.development"); strings.Contains(env, "FORGE_AUTH_") || strings.Contains(env, "PASSWORD_RESET") {
 				t.Errorf(".env.development of an API-only application configures the sign-in pages:\n%s", env)

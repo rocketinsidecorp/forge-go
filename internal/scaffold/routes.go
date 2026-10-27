@@ -46,10 +46,25 @@ type RoutesApp struct {
 	// API reports an API-only application (`forge new --api`): no
 	// translator, since there are no pages.
 	API bool
-	// Identity reports Forge identity (full-stack PostgreSQL): the session
-	// repository and the authentication middleware are passed too.
+	// Identity reports Forge identity: the seam starts with the identity
+	// block (IdentityBlock), which mounts the sign-in pages and declares the
+	// session store and middleware the guards use.
 	Identity bool
 }
+
+// IdentityBlock is the seam's first block in an application with Forge
+// identity: identityRoutes (app/bootstrap/identity.go) mounts the sign-in
+// pages and returns the session store and middleware the generated routes
+// are guarded with.
+var IdentityBlock = RouteBlock{Kind: "identity", Name: "repository", Body: `	// The sign-in, sign-out, two-factor and password-reset pages
+	// (identity.go). The routes below are guarded with this session store
+	// and middleware.
+	repository, middleware, err := identityRoutes(ctx, app, database, translator)
+	if err != nil {
+		return err
+	}
+	_, _ = repository, middleware
+`}
 
 // RouteBlock is one block of routes_gen.go.
 type RouteBlock struct {
@@ -79,7 +94,7 @@ func (b RouteBlock) ID() string { return b.Kind + " " + b.Name }
 // than written for one of them.
 func (b RouteBlock) Shared() bool {
 	switch b.Kind {
-	case "guard", "signer", "renderer", "streams":
+	case "guard", "signer", "renderer", "streams", "identity":
 		return true
 	}
 	return false
@@ -102,25 +117,24 @@ var markerLine = regexp.MustCompile(`^\t// forge:([a-z]+) ([A-Za-z_][A-Za-z0-9_]
 // when a block (or the signature) refers to it.
 func routesPackages(module, adapter string) map[string]string {
 	packages := map[string]string{
-		"context":      "context",
-		"http":         "net/http",
-		"os":           "os",
-		"time":         "time",
-		"forge":        FrameworkModule,
-		"auth":         FrameworkModule + "/auth",
-		"authpostgres": FrameworkModule + "/auth/postgres",
-		"broadcast":    FrameworkModule + "/broadcast",
-		"fault":        FrameworkModule + "/fault",
-		"i18n":         FrameworkModule + "/i18n",
-		"sqldb":        FrameworkModule + "/sqldb",
-		"uuid":         FrameworkModule + "/uuid",
-		"web":          FrameworkModule + "/web",
-		"application":  module + "/app/application",
-		"htmlstreams":  module + "/app/adapters/htmlstreams",
-		"htmlui":       module + "/app/adapters/htmlui",
-		"httpapi":      module + "/app/adapters/httpapi",
-		"persistence":  module + "/app/adapters/persistence",
-		"views":        module + "/app/views",
+		"context":     "context",
+		"http":        "net/http",
+		"os":          "os",
+		"time":        "time",
+		"forge":       FrameworkModule,
+		"auth":        FrameworkModule + "/auth",
+		"broadcast":   FrameworkModule + "/broadcast",
+		"fault":       FrameworkModule + "/fault",
+		"i18n":        FrameworkModule + "/i18n",
+		"sqldb":       FrameworkModule + "/sqldb",
+		"uuid":        FrameworkModule + "/uuid",
+		"web":         FrameworkModule + "/web",
+		"application": module + "/app/application",
+		"htmlstreams": module + "/app/adapters/htmlstreams",
+		"htmlui":      module + "/app/adapters/htmlui",
+		"httpapi":     module + "/app/adapters/httpapi",
+		"persistence": module + "/app/adapters/persistence",
+		"views":       module + "/app/views",
 	}
 	if adapter != "" {
 		packages[adapter] = FrameworkModule + "/" + adapter
@@ -130,7 +144,7 @@ func routesPackages(module, adapter string) map[string]string {
 
 // routesAliases are the imports whose name differs from the last element of
 // their path.
-var routesAliases = map[string]bool{"forge": true, "authpostgres": true}
+var routesAliases = map[string]bool{"forge": true}
 
 // RoutesParameters is the parameter list of RoutesFunction for app.
 func RoutesParameters(app RoutesApp) string {
@@ -145,9 +159,6 @@ func RoutesParameters(app RoutesApp) string {
 	if !app.API {
 		parameters = append(parameters, "translator *i18n.Translator")
 	}
-	if app.Identity {
-		parameters = append(parameters, "repository *authpostgres.Repository", "middleware *auth.Middleware")
-	}
 	return strings.Join(parameters, ", ")
 }
 
@@ -159,9 +170,6 @@ func RoutesCall(app RoutesApp) string {
 	}
 	if !app.API {
 		arguments = append(arguments, "translator")
-	}
-	if app.Identity {
-		arguments = append(arguments, "repository", "middleware")
 	}
 	return RoutesFunction + "(" + strings.Join(arguments, ", ") + ")"
 }
@@ -376,9 +384,15 @@ func parseDeclarations(blocks []RouteBlock, lines []string) ([]RouteBlock, error
 	return blocks, nil
 }
 
-// routesFile renders the empty seam `forge new` generates.
+// routesFile renders the seam `forge new` generates: empty, or with the
+// identity block alone.
 func routesFile(data templateData) ([]byte, error) {
-	return RenderRoutes(routesAppOf(data), nil)
+	app := routesAppOf(data)
+	var blocks []RouteBlock
+	if app.Identity {
+		blocks = append(blocks, IdentityBlock)
+	}
+	return RenderRoutes(app, blocks)
 }
 
 func routesAppOf(data templateData) RoutesApp {

@@ -17,9 +17,12 @@ func TestRoutesSignatureFollowsTheApplication(t *testing.T) {
 		parameters string
 		call       string
 	}{
+		// With Forge identity the seam's first block (IdentityBlock) builds
+		// the session store: the signature does not change when
+		// authentication is added.
 		{scaffold.RoutesApp{Module: "m", Adapter: "postgres", Identity: true},
-			"ctx context.Context, app *forge.App, database *postgres.DB, translator *i18n.Translator, repository *authpostgres.Repository, middleware *auth.Middleware",
-			"generatedRoutes(ctx, app, database, translator, repository, middleware)"},
+			"ctx context.Context, app *forge.App, database *postgres.DB, translator *i18n.Translator",
+			"generatedRoutes(ctx, app, database, translator)"},
 		{scaffold.RoutesApp{Module: "m", Adapter: "sqlite"}, "ctx context.Context, app *forge.App, database *sqldb.DB, translator *i18n.Translator", "generatedRoutes(ctx, app, database, translator)"},
 		{scaffold.RoutesApp{Module: "m", Adapter: "postgres", API: true}, "ctx context.Context, app *forge.App, database *postgres.DB", "generatedRoutes(ctx, app, database)"},
 		{scaffold.RoutesApp{Module: "m"}, "ctx context.Context, app *forge.App, translator *i18n.Translator", "generatedRoutes(ctx, app, translator)"},

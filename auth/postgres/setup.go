@@ -1,22 +1,16 @@
 package postgres
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
-	"os"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/auth"
-	"github.com/rocketinsidecorp/forge-go/internal/terminal"
+	"github.com/rocketinsidecorp/forge-go/auth/internal/setupcmd"
 	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
@@ -25,15 +19,15 @@ import (
 // holding every permission: setup grants every permission registered at that
 // moment, and the migrations `forge generate resource` writes grant their new
 // permissions to every role with this name.
-const OwnerRole = "owner"
+const OwnerRole = setupcmd.OwnerRole
 
 // SetupPasswordVariable is the environment variable the setup command reads
 // the owner's password from when it is set. Prefer typing it at the prompt
 // or piping it with --password-stdin; never pass it as an argument.
-const SetupPasswordVariable = "FORGE_SETUP_PASSWORD" // #nosec G101 -- the name of a variable, not a credential
+const SetupPasswordVariable = setupcmd.PasswordVariable
 
 // MinOwnerPasswordRunes is the shortest owner password setup accepts.
-const MinOwnerPasswordRunes = 12
+const MinOwnerPasswordRunes = setupcmd.MinPasswordRunes
 
 var (
 	// ErrAlreadyProvisioned refuses setup on a database that already has a
@@ -154,132 +148,63 @@ func (r *Repository) ProvisionOwner(ctx context.Context, account OwnerAccount) (
 	return owner, nil
 }
 
-func validOrganizationName(name string) error {
-	if name == "" || utf8.RuneCountInString(name) > 200 || !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) {
-		return errors.New("organization name must be 1 to 200 characters without control characters")
-	}
-	return nil
+func validOrganizationName(name string) error { return setupcmd.ValidOrganizationName(name) }
+
+// SetupOption configures SetupCommand.
+type SetupOption func(*setupcmd.Config)
+
+// SetupOrganizations says whether the application has organizations
+// (`forge new --tenants`, or converted by `forge generate tenancy`): setup
+// then requires --org. Without them (`forge new --auth`) setup takes --email
+// only and creates the one hidden organization (auth.DefaultTenantSlug) the
+// sign-in page signs everyone in to. Without this option setup requires
+// --org, as before single-tenant applications existed.
+func SetupOrganizations(enabled bool) SetupOption {
+	return func(config *setupcmd.Config) { config.Organizations = enabled }
 }
 
 // SetupCommand returns the "setup" subcommand of a PostgreSQL application
-// binary. It creates the first organization, tenant and owner account with
+// binary. It creates the first organization and owner account with
 // ProvisionOwner, once:
 //
-//	app setup --tenant acme --email owner@example.com [--organization "Acme Inc"] [--password-stdin]
+//	app setup --org acme --email owner@example.com [--org-name "Acme Inc"] [--password-stdin]
+//	app setup --email owner@example.com [--password-stdin]   # SetupOrganizations(false)
 //
-// The password is read, in order, from the FORGE_SETUP_PASSWORD variable,
-// from one line of standard input with --password-stdin, or from an
-// interactive terminal prompt (twice, without echo). It is never accepted as
-// an argument, printed or logged, and must be at least MinOwnerPasswordRunes
-// characters. Running setup again refuses with ErrAlreadyProvisioned.
-func SetupCommand() forge.Command {
-	return forge.Command{
-		Name:    "setup",
-		Summary: "create the first tenant and its owner account (refuses once a tenant exists)",
-		Run:     runSetup,
+// --tenant and --organization are accepted as aliases of --org and
+// --org-name. The password is read, in order, from the FORGE_SETUP_PASSWORD
+// variable, from one line of standard input with --password-stdin, or from
+// an interactive terminal prompt (twice, without echo). It is never accepted
+// as an argument, printed or logged, and must be at least
+// MinOwnerPasswordRunes characters. Running setup again refuses with
+// ErrAlreadyProvisioned.
+func SetupCommand(options ...SetupOption) forge.Command {
+	config := setupcmd.Config{Organizations: true, Provision: provision}
+	for _, option := range options {
+		if option != nil {
+			option(&config)
+		}
 	}
+	return setupcmd.Command(config)
 }
 
-func runSetup(ctx context.Context, env forge.CommandEnv, args []string) error {
-	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	tenant := flags.String("tenant", "", "tenant slug users type at sign-in, e.g. acme")
-	email := flags.String("email", "", "owner's email")
-	organization := flags.String("organization", "", "organization name (default: the tenant slug)")
-	passwordStdin := flags.Bool("password-stdin", false, "read the password from the first line of standard input")
-	usage := "usage: setup --tenant SLUG --email EMAIL [--organization NAME] [--password-stdin]"
-	if err := flags.Parse(args); err != nil {
-		return fmt.Errorf("%w: %w; %s", forge.ErrUsage, err, usage)
-	}
-	if flags.NArg() != 0 || *tenant == "" || *email == "" {
-		return fmt.Errorf("%w: %s", forge.ErrUsage, usage)
-	}
-	normalizedEmail, normalizedTenant, ok := auth.NormalizeIdentity(*email, *tenant)
-	if !ok {
-		return fmt.Errorf("%w: --email must be an ASCII email address and --tenant a slug (lowercase letter, then 1-62 lowercase letters, digits or hyphens)", forge.ErrUsage)
-	}
-	if *organization == "" {
-		*organization = normalizedTenant
-	}
-	if err := validOrganizationName(strings.TrimSpace(*organization)); err != nil {
-		return fmt.Errorf("%w: --organization: %w", forge.ErrUsage, err)
-	}
-	password, err := setupPassword(env, *passwordStdin, normalizedEmail)
-	if err != nil {
-		return err
-	}
-
+func provision(ctx context.Context, env forge.CommandEnv, account setupcmd.Account) (setupcmd.Provisioned, error) {
 	database, err := postgres.Open(ctx, env.Config.Database)
 	if err != nil {
-		return err
+		return setupcmd.Provisioned{}, err
 	}
 	defer database.Close()
 	repository, err := New(database)
 	if err != nil {
-		return err
+		return setupcmd.Provisioned{}, err
 	}
 	owner, err := repository.ProvisionOwner(ctx, OwnerAccount{
-		Organization: *organization,
-		TenantSlug:   normalizedTenant,
-		Email:        *email,
-		Password:     password,
+		Organization: account.OrganizationName,
+		TenantSlug:   account.OrgSlug,
+		Email:        account.Email,
+		Password:     account.Password,
 	})
 	if err != nil {
-		return err
+		return setupcmd.Provisioned{}, err
 	}
-	fmt.Fprintf(env.Stdout, "Created organization %q with tenant %q.\n", strings.TrimSpace(*organization), owner.TenantSlug)
-	fmt.Fprintf(env.Stdout, "Created owner %s with the %q role (%d permissions).\n", owner.Email, OwnerRole, len(owner.Permissions))
-	fmt.Fprintf(env.Stdout, "Sign in at /session/new with tenant %q.\n", owner.TenantSlug)
-	return nil
-}
-
-// setupPassword returns the owner password from the environment variable,
-// piped standard input or an interactive prompt, and checks its length.
-func setupPassword(env forge.CommandEnv, fromStdin bool, email string) (string, error) {
-	var password []byte
-	value, fromEnv := "", false
-	if env.LookupEnv != nil {
-		value, fromEnv = env.LookupEnv(SetupPasswordVariable)
-		fromEnv = fromEnv && value != ""
-	}
-	switch {
-	case fromEnv && fromStdin:
-		return "", fmt.Errorf("%w: use either %s or --password-stdin, not both", forge.ErrUsage, SetupPasswordVariable)
-	case fromEnv:
-		password = []byte(value)
-	case fromStdin:
-		if env.Stdin == nil {
-			return "", errors.New("--password-stdin: no standard input")
-		}
-		line, err := terminal.ReadLine(env.Stdin)
-		if err != nil {
-			return "", fmt.Errorf("read the password from standard input: %w", err)
-		}
-		password = line
-	default:
-		input, ok := env.Stdin.(*os.File)
-		if !ok || !terminal.IsTerminal(input) {
-			return "", fmt.Errorf("%w: no password: type it at a terminal, pipe it with --password-stdin, or set %s", forge.ErrUsage, SetupPasswordVariable)
-		}
-		fmt.Fprintf(env.Stderr, "Password for %s: ", email)
-		first, err := terminal.ReadSecret(input)
-		fmt.Fprintln(env.Stderr)
-		if err != nil {
-			return "", fmt.Errorf("read the password: %w", err)
-		}
-		fmt.Fprint(env.Stderr, "Confirm password: ")
-		second, err := terminal.ReadSecret(input)
-		fmt.Fprintln(env.Stderr)
-		if err != nil {
-			return "", fmt.Errorf("read the password: %w", err)
-		}
-		if !bytes.Equal(first, second) {
-			return "", errors.New("the passwords do not match")
-		}
-		password = first
-	}
-	if !utf8.Valid(password) || utf8.RuneCount(password) < MinOwnerPasswordRunes {
-		return "", fmt.Errorf("the owner password must be valid UTF-8 of at least %d characters", MinOwnerPasswordRunes)
-	}
-	return string(password), nil
+	return setupcmd.Provisioned{Email: owner.Email, OrgSlug: owner.TenantSlug, Permissions: len(owner.Permissions)}, nil
 }

@@ -37,7 +37,7 @@ func TestRoutesListsTheJSONRoutesOfGeneratedScaffolds(t *testing.T) {
 					t.Fatal(err)
 				}
 				request.Scaffold = true
-				specs = append(specs, resourceSpec{resourceRequest: request, Module: modulePath, Database: "sqlite", BrowserPipeline: true})
+				specs = append(specs, resourceSpec{resourceRequest: request, Module: modulePath, Database: "sqlite", Identity: true, Organizations: true, BrowserPipeline: true})
 			}
 			wireResources(t, dir, specs)
 

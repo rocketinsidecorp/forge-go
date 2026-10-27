@@ -243,7 +243,7 @@ func TestGeneratedBroadcastScaffoldBuildsWiresAndPasses(t *testing.T) {
 				request.Scaffold = true
 				specs = append(specs, resourceSpec{
 					resourceRequest: request, Module: "example.com/mx", Database: database.adapter,
-					Identity: database.adapter == "postgres", BrowserPipeline: true, ViewRenderer: database.adapter == "postgres",
+					Identity: true, Organizations: true, BrowserPipeline: true, ViewRenderer: true,
 				})
 			}
 			for _, path := range []string{"app/adapters/htmlstreams/streams.go", "app/adapters/htmlstreams/streams_test.go", "app/views/products/_item.gohtml", "app/views/categories/_item.gohtml"} {

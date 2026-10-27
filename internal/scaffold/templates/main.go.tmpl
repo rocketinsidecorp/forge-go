@@ -6,57 +6,21 @@
 //	{{.Name}} migrate      apply database migrations ("migrate status" lists them)
 //	{{.Name}} rollback     revert the latest migration
 //	{{.Name}} seed         load db.Seed's data in one transaction
-{{- end}}
-{{- if and .DB .DB.Identity}}
-//	{{.Name}} setup        create the first tenant and its owner account, once
+//	{{.Name}} setup        create the owner account, once (with Forge identity)
+//
+// The commands come from app/bootstrap/app_gen.go, which `forge generate
+// authentication` and `forge generate tenancy` rewrite.
 {{- end}}
 package main
 
 import (
 	forge "github.com/rocketinsidecorp/forge-go"
-{{- if and .DB (eq .DB.Adapter "postgres")}}
-	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
-{{- end}}
-{{- if and .DB .DB.Jobs}}
-	jobs{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/jobs/{{.DB.Adapter}}"
-{{- end}}
-{{- if .DB}}
-	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
-{{- end}}
 
 	"{{.Module}}/app/bootstrap"
-{{- if .DB}}
-	"{{.Module}}/db"
-{{- end}}
 )
 
-{{ if and .DB .DB.Identity -}}
-func main() {
-	forge.Main(
-		bootstrap.Configure,
-		append(
-			postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations()),
-			authpostgres.SetupCommand(),
-			postgres.SeedCommand(db.Seed),
-		)...,
-	)
-}
-{{- else if and .DB .API (eq .DB.Adapter "postgres") -}}
-// main composes Forge's identity, audit and session schema
-// (authpostgres.Migrations), the schema of a full-stack application, so
-// authentication can be added later without rewriting migrations. This
-// API-only application serves none of it and has no setup command.
-func main() {
-	forge.Main(bootstrap.Configure, append(postgres.CommandsFromSets(authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations()), postgres.SeedCommand(db.Seed))...)
-}
-{{- else if and .DB .DB.Jobs -}}
-func main() {
-	forge.Main(bootstrap.Configure, append({{.DB.Adapter}}.CommandsFromSets(jobs{{.DB.Adapter}}.Migrations(), db.Migrations()), {{.DB.Adapter}}.SeedCommand(db.Seed))...)
-}
-{{- else if .DB -}}
-func main() {
-	forge.Main(bootstrap.Configure, append({{.DB.Adapter}}.Commands(db.Migrations()), {{.DB.Adapter}}.SeedCommand(db.Seed))...)
-}
+{{ if .DB -}}
+func main() { forge.Main(bootstrap.Configure, bootstrap.Commands()...) }
 {{- else -}}
 func main() { forge.Main(bootstrap.Configure) }
 {{- end}}
