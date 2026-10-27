@@ -194,6 +194,7 @@ func Test[[.Title]]OpenAPIDocument(t *testing.T) {
 		{"/v1/[[.Plural]]", "get", "list[[.PluralTitle]]", "[[.Plural]]:read"},
 		{"/v1/[[.Plural]]/{id}", "get", "get[[.Title]]", "[[.Plural]]:read"},
 		{"/v1/[[.Plural]]/{id}", "patch", "update[[.Title]]", "[[.Plural]]:write"},
+		{"/v1/[[.Plural]]/{id}", "put", "replace[[.Title]]", "[[.Plural]]:write"},
 		{"/v1/[[.Plural]]/{id}", "delete", "delete[[.Title]]", "[[.Plural]]:write"},
 [[- range .References]]
 		{"/v1/[[.Plural]]/{[[.Field.Name]]}/[[$.Plural]]", "get", "list[[.Title]][[$.PluralTitle]]", "[[$.Plural]]:read"},
@@ -304,6 +305,43 @@ func [[.Name]]Version(t *testing.T, entity map[string]any) int {
 		t.Fatalf("version missing in %v", entity)
 	}
 	return int(version)
+}
+
+// PUT /v1/[[.Plural]]/{id} is the same handler as PATCH (Rails' `resources` maps
+// both to update), so clients and generators that use PUT work.
+func Test[[.Title]]PutUpdatesLikePatch(t *testing.T) {
+	t.Parallel()
+	handler := new[[.Title]]Handler(t)
+	request := [[.Name]]Body{
+		[[.SampleBody 1 true]]
+	}
+	recorder := [[.Name]]Send(t, handler, http.MethodPost, "/v1/[[.Plural]]", request)
+	[[.Name]]Expect(t, recorder, http.StatusCreated)
+	created := [[.Name]]Decode(t, recorder)
+	location := recorder.Header().Get("Location")
+	put := [[.Name]]Body{
+		"version": 1,
+[[- with index .Fields 0]]
+		"[[.Name]]": [[.SampleExpr 2]],
+[[- end]]
+	}
+	recorder = [[.Name]]Send(t, handler, http.MethodPut, location, put)
+	[[.Name]]Expect(t, recorder, http.StatusOK)
+	updated := [[.Name]]Decode(t, recorder)
+	want := maps.Clone(created)
+	maps.Copy(want, [[.Name]]RoundTrip(t, put))
+	want["version"] = float64(2)
+	for key, value := range want {
+		if key != "updated_at" && !reflect.DeepEqual(updated[key], value) {
+			t.Errorf("after PUT %s = %v, want %v", key, updated[key], value)
+		}
+	}
+	// A stale PUT is refused like a stale PATCH.
+	recorder = [[.Name]]Send(t, handler, http.MethodPut, location, put)
+	[[.Name]]Expect(t, recorder, http.StatusConflict)
+	if body := [[.Name]]Decode(t, recorder); body["error"].(map[string]any)["code"] != "stale_version" {
+		t.Fatalf("error = %v", body)
+	}
 }
 
 func Test[[.Title]]Lifecycle(t *testing.T) {
@@ -629,6 +667,7 @@ func Test[[.Title]]RoutesRequireTheirPermission(t *testing.T) {
 	}{
 		{http.MethodPost, "/v1/[[.Plural]]", create},
 		{http.MethodPatch, path, body},
+		{http.MethodPut, path, body},
 		{http.MethodDelete, path + "?version=1", nil},
 	}
 
@@ -689,7 +728,7 @@ func Test[[.Title]]ProtectIsAskedForEveryRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	slices.Sort(asked)
-	want := []string{"[[.Plural]]:read", "[[.Plural]]:read",[[range .References]] "[[$.Plural]]:read",[[end]] "[[.Plural]]:write", "[[.Plural]]:write", "[[.Plural]]:write"}
+	want := []string{"[[.Plural]]:read", "[[.Plural]]:read",[[range .References]] "[[$.Plural]]:read",[[end]] "[[.Plural]]:write", "[[.Plural]]:write", "[[.Plural]]:write", "[[.Plural]]:write"}
 	if !slices.Equal(asked, want) {
 		t.Fatalf("protect asked for %v, want %v", asked, want)
 	}

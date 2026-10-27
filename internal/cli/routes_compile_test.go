@@ -59,6 +59,7 @@ func TestRoutesListsTheJSONRoutesOfGeneratedScaffolds(t *testing.T) {
 				"POST /v1/products - app/adapters/httpapi/product.go:",
 				"GET /v1/products/{id} - app/adapters/httpapi/product.go:",
 				"PATCH /v1/products/{id} - app/adapters/httpapi/product.go:",
+				"PUT /v1/products/{id} - app/adapters/httpapi/product.go:",
 				"DELETE /v1/products/{id} - app/adapters/httpapi/product.go:",
 				"GET /v1/categories - app/adapters/httpapi/category.go:",
 				"DELETE /v1/categories/{id} - app/adapters/httpapi/category.go:",

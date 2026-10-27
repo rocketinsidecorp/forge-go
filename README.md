@@ -1284,7 +1284,13 @@ the context, bind `org_id` in every statement and, on PostgreSQL, run behind
 forced row-level security; MySQL, MariaDB and SQLite rely on the statement
 predicates alone. Updates and deletes need the version the client read (`409`
 when stale), lists are newest-first keyset pages, and `PATCH` changes only the
-fields it names (`null` clears an optional one).
+fields it names (`null` clears an optional one). `PUT /v1/NAME/{id}` is the
+same handler under Rails' other name for update, and the OpenAPI document
+describes both (`updateNAME` and `replaceNAME`):
+
+```sh
+curl -s -X PUT -H 'Content-Type: application/json' -d '{"version":1,"price":5900}' http://localhost:8080/v1/products/ID   # as PATCH (add the CSRF header with sign-in)
+```
 
 The generator refuses to overwrite any file (running it again with the same
 arguments is a no-op) and never edits `app/bootstrap/bootstrap.go`: it mounts

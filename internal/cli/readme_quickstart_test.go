@@ -444,6 +444,15 @@ func quickstartCRUD(t *testing.T, browser *quickstartBrowser) string {
 		t.Fatalf("GET /v1/products = %+v (%v)", list, err)
 	}
 	browser.expectJSON(http.MethodPatch, "/v1/products/"+chair.ID, `{"version":1,"price":5900}`, csrfHeader, http.StatusOK)
+	// PUT is the same update under Rails' other name (N3-02).
+	browser.expectJSON(http.MethodPut, "/v1/products/"+chair.ID, `{"version":2,"price":6100}`, csrfHeader, http.StatusOK)
+	var changed struct {
+		Price   int `json:"price"`
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(browser.expectJSON(http.MethodGet, "/v1/products/"+chair.ID, "", "", http.StatusOK), &changed); err != nil || changed.Price != 6100 || changed.Version != 3 {
+		t.Fatalf("after PATCH and PUT the product is %+v (%v), want price 6100, version 3", changed, err)
+	}
 	browser.expect(http.MethodGet, "/products", nil, http.StatusOK, "Chair")
 	return chair.ID
 }

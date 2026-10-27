@@ -56,7 +56,8 @@ in{{if .Tenants}} with organization `acme`{{end}}, and manage products at
 `/v1/products` need sign-in and the `products:read` and `products:write`
 permissions, which the scaffold's migration grants to the owner role. The JSON
 API authenticates the same session cookie{{if .APIAuth}} or a bearer token from `POST /auth/login`{{end}};
-changes send the CSRF token in the `X-CSRF-Token` header:
+changes send the CSRF token in the `X-CSRF-Token` header (an update is `PATCH` or
+`PUT` on `/v1/products/{id}`, the same handler):
 
 ```bash
 jar=$(mktemp)
