@@ -653,3 +653,39 @@ func TestWriteAtomicReportsFailuresAndLeavesNoTemporaryFile(t *testing.T) {
 		t.Errorf("stale temporary file: %v", err)
 	}
 }
+
+// TestRequireRealDirsReportsFilesystemErrorsOtherThanAMissingDirectory: a path
+// component the filesystem refuses to look up (too long) is an error, not "does
+// not exist yet".
+func TestRequireRealDirsReportsFilesystemErrorsOtherThanAMissingDirectory(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "app"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	project, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = project.Close() }()
+	if err := requireRealDirs(project, "app/"+strings.Repeat("a", 300)); err == nil || strings.Contains(err.Error(), "not a plain directory") {
+		t.Errorf("err = %v, want the lookup error", err)
+	}
+	if err := requireRealDirs(project, "app/javascript/dist"); err != nil {
+		t.Errorf("directories that do not exist yet: %v", err)
+	}
+}
+
+// TestOverlayReportsAMissingWorkingDirectory: a relative application path
+// cannot be made absolute when the working directory is gone. Not parallel: it
+// changes the process's working directory.
+func TestOverlayReportsAMissingWorkingDirectory(t *testing.T) {
+	gone := t.TempDir()
+	t.Chdir(gone)
+	if err := os.Remove(gone); err != nil {
+		t.Skipf("cannot remove the working directory: %v", err)
+	}
+	if _, err := Overlay("app", t.TempDir()); err == nil {
+		t.Error("Overlay accepted a relative path without a working directory")
+	}
+}

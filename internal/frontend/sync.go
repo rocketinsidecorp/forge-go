@@ -198,10 +198,8 @@ func Overlay(dir, outDir string) (string, error) {
 			replace[filepath.Join(absolute, filepath.FromSlash(compiledPath(name)))] = ""
 		}
 	}
-	encoded, err := json.Marshal(map[string]map[string]string{"Replace": replace})
-	if err != nil {
-		return "", fmt.Errorf("encode overlay: %w", err)
-	}
+	// Marshalling a map of strings cannot fail.
+	encoded, _ := json.Marshal(map[string]map[string]string{"Replace": replace})
 	overlay := filepath.Join(outDir, overlayFile)
 	if err := os.WriteFile(overlay, encoded, 0o600); err != nil {
 		return "", err
