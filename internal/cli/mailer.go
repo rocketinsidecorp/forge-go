@@ -274,7 +274,7 @@ func buildMailerWiring(request mailerRequest, module string) resourceWiringParts
 	camel := lowerCamel(request.Name)
 	parts := resourceWiringParts{
 		Imports: []string{"context", "errors", "github.com/rocketinsidecorp/forge-go/mail", module + "/app/mailers"},
-		Where:   "inside Configure, after the `routes(ctx, app)` call and its error check (in a full-stack PostgreSQL application from `forge new`, inside identityRoutes after `middleware, err := auth.NewMiddleware(repository)`; without a database, inside routes before its final `return nil`)",
+		Where:   "inside Configure, after the `routes(ctx, app)` call and its error check (in a full-stack PostgreSQL application from `forge new`, inside identityRoutes after `middleware, err := authhttp.NewMiddleware(repository)`; without a database, inside routes before its final `return nil`)",
 		Guard: `	mailSender, err := mail.FromConfig(app.Config(), mail.WithLogger(app.Logger()))
 	var mailFrom mail.Address
 	switch {

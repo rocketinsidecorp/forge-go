@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/telemetry"
 )
@@ -28,34 +29,18 @@ import (
 type Configure func(ctx context.Context, app *App) error
 
 // Command is an additional subcommand of the application binary, such as the
-// migration commands contributed by the postgres package. Commands ship inside
-// the production image, so operational tasks need no extra tooling.
-type Command struct {
-	Name    string
-	Summary string
-	Run     func(ctx context.Context, env CommandEnv, args []string) error
-}
+// migration commands contributed by the postgres package. It is
+// command.Command: packages that contribute commands import the leaf package
+// command, never this one (ADR 0052).
+type Command = command.Command
 
 // ErrUsage marks a Command error caused by invalid arguments; Execute exits
 // with status 2 for it instead of 1. Wrap it: fmt.Errorf("%w: ...", ErrUsage).
-var ErrUsage = errors.New("usage")
+// It is command.ErrUsage, the same error value.
+var ErrUsage = command.ErrUsage
 
-// CommandEnv is what a Command receives from the runtime.
-type CommandEnv struct {
-	Config config.Config
-	Logger *slog.Logger
-	Stdout io.Writer
-	Stderr io.Writer
-	// Stdin is the process's standard input (os.Stdin under Main), for
-	// commands that read a secret piped to them or typed at a terminal.
-	// Secrets never belong in arguments, which other local users can list.
-	// It is nil when the caller of Execute provides none.
-	Stdin io.Reader
-	// LookupEnv reads the process environment, like os.LookupEnv, for
-	// command-specific variables that are not part of Config. It is never
-	// nil.
-	LookupEnv func(string) (string, bool)
-}
+// CommandEnv is what a Command receives from the runtime. It is command.Env.
+type CommandEnv = command.Env
 
 const healthcheckTimeout = 2 * time.Second
 

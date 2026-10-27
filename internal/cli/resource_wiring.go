@@ -41,7 +41,7 @@ const identityJSONGuard = `	protect := func(permission string, next http.Handler
 		if err != nil {
 			return nil, err
 		}
-		guarded, err := auth.RequireAudited(required, next, repository)
+		guarded, err := authhttp.RequireAudited(required, next, repository)
 		if err != nil {
 			return nil, err
 		}
@@ -54,7 +54,7 @@ const identityJSONGuard = `	protect := func(permission string, next http.Handler
 // session cookie the sign-in page sets, the CSRF token in the X-CSRF-Token
 // header of every change (the CSRF middleware lets JSON bodies through, so
 // cookie-authenticated JSON routes check it themselves with
-// auth.RequireCSRF), and the permission.
+// authhttp.RequireCSRF), and the permission.
 const cookieJSONGuard = `	// The JSON routes authenticate the session cookie the sign-in page sets:
 	// this application issues no bearer tokens (forge new --api-auth adds
 	// them). Changes must send the CSRF token in the X-CSRF-Token header
@@ -64,11 +64,11 @@ const cookieJSONGuard = `	// The JSON routes authenticate the session cookie the
 		if err != nil {
 			return nil, err
 		}
-		guarded, err := auth.RequireAudited(required, next, repository)
+		guarded, err := authhttp.RequireAudited(required, next, repository)
 		if err != nil {
 			return nil, err
 		}
-		checked, err := auth.RequireCSRF(guarded)
+		checked, err := authhttp.RequireCSRF(guarded)
 		if err != nil {
 			return nil, err
 		}
@@ -93,7 +93,7 @@ const identityPagesGuard = `	protectCookie := func(permission string, next http.
 		if err != nil {
 			return nil, err
 		}
-		guarded, err := auth.RequireAudited(required, next, repository)
+		guarded, err := authhttp.RequireAudited(required, next, repository)
 		if err != nil {
 			return nil, err
 		}
@@ -158,17 +158,17 @@ const seamCookieJSONGuard = `// protect guards the JSON routes with the session 
 // them), the CSRF token in the X-CSRF-Token header of every change (the
 // csrf-token meta tag of a page, or the __Host-forge_csrf cookie), and the
 // permission.
-func protect(repository auth.SecurityAuditor, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
+func protect(repository auth.SecurityAuditor, middleware *authhttp.Middleware) func(string, http.Handler) (http.Handler, error) {
 	return func(permission string, next http.Handler) (http.Handler, error) {
 		required, err := auth.NewPermission(permission)
 		if err != nil {
 			return nil, err
 		}
-		guarded, err := auth.RequireAudited(required, next, repository)
+		guarded, err := authhttp.RequireAudited(required, next, repository)
 		if err != nil {
 			return nil, err
 		}
-		checked, err := auth.RequireCSRF(guarded)
+		checked, err := authhttp.RequireCSRF(guarded)
 		if err != nil {
 			return nil, err
 		}
@@ -180,13 +180,13 @@ func protect(repository auth.SecurityAuditor, middleware *auth.Middleware) func(
 // seamBearerJSONGuard is identityJSONGuard as the seam declares it.
 const seamBearerJSONGuard = `// protect guards the JSON routes with the bearer token of POST /auth/login
 // and the permission.
-func protect(repository auth.SecurityAuditor, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
+func protect(repository auth.SecurityAuditor, middleware *authhttp.Middleware) func(string, http.Handler) (http.Handler, error) {
 	return func(permission string, next http.Handler) (http.Handler, error) {
 		required, err := auth.NewPermission(permission)
 		if err != nil {
 			return nil, err
 		}
-		guarded, err := auth.RequireAudited(required, next, repository)
+		guarded, err := authhttp.RequireAudited(required, next, repository)
 		if err != nil {
 			return nil, err
 		}
@@ -199,13 +199,13 @@ func protect(repository auth.SecurityAuditor, middleware *auth.Middleware) func(
 const seamPagesGuard = `// protectCookie guards the HTML pages with the session cookie and the
 // permission. Signed-out browsers go to the sign-in page and come back; API
 // clients get the 401 JSON error.
-func protectCookie(repository auth.SecurityAuditor, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {
+func protectCookie(repository auth.SecurityAuditor, middleware *authhttp.Middleware) func(string, http.Handler) (http.Handler, error) {
 	return func(permission string, next http.Handler) (http.Handler, error) {
 		required, err := auth.NewPermission(permission)
 		if err != nil {
 			return nil, err
 		}
-		guarded, err := auth.RequireAudited(required, next, repository)
+		guarded, err := authhttp.RequireAudited(required, next, repository)
 		if err != nil {
 			return nil, err
 		}
@@ -324,7 +324,7 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 `, lowerCamel(spec.Name), title, plural, spec.guard("protect"), serviceConstructor(spec)),
 	}
 	if spec.Identity {
-		parts.Where = "inside identityRoutes, after the `middleware, err := auth.NewMiddleware(repository)` statement and its error check"
+		parts.Where = "inside identityRoutes, after the `middleware, err := authhttp.NewMiddleware(repository)` statement and its error check"
 		parts.Guard = identityJSONGuard
 		parts.Notes = []string{
 			fmt.Sprintf("The migration registers the permissions %s:read and %s:write and grants them to the owner role (`forge setup` creates it); grant them to other roles before their users can use the routes.", spec.Plural, spec.Plural),
@@ -571,7 +571,7 @@ func addBroadcastWiring(spec resourceSpec, parts *resourceWiringParts) {
 	}
 `
 		if !spec.Seam {
-			parts.Notes = append(parts.Notes, "Live updates: ctx must be in scope in identityRoutes (forge new passes it: identityRoutes(ctx, app, database)). Define streamSigner and streams once, in this order: streamSigner before the view renderer, streams after `middleware, err := auth.NewMiddleware(repository)`.")
+			parts.Notes = append(parts.Notes, "Live updates: ctx must be in scope in identityRoutes (forge new passes it: identityRoutes(ctx, app, database)). Define streamSigner and streams once, in this order: streamSigner before the view renderer, streams after `middleware, err := authhttp.NewMiddleware(repository)`.")
 		}
 	} else {
 		parts.Imports = append(parts.Imports, "github.com/rocketinsidecorp/forge-go/fault", "github.com/rocketinsidecorp/forge-go/web")

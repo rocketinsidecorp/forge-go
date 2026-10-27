@@ -241,7 +241,7 @@ func TestGenerateResourceDryRunWritesNothing(t *testing.T) {
 		"would create  " + filepath.Join("app", "application", "product.go"),
 		"would create  " + filepath.Join("app", "adapters", "persistence", "product_test.go"),
 		"would create  " + filepath.Join("app", "adapters", "httpapi", "product.go"),
-		"auth.RequireAudited(required, next, repository)",
+		"authhttp.RequireAudited(required, next, repository)",
 		"httpapi.RegisterProducts(app, productService, protect)",
 	} {
 		if !strings.Contains(output, want) {
@@ -281,7 +281,7 @@ func TestGenerateResourceWritesFiles(t *testing.T) {
 		}
 	}
 	// Forge identity on MySQL (decision D30): the guard is the session's.
-	if !strings.Contains(output, "auth.RequireAudited(required, next, repository)") || strings.Contains(output, "return next, nil") {
+	if !strings.Contains(output, "authhttp.RequireAudited(required, next, repository)") || strings.Contains(output, "return next, nil") {
 		t.Errorf("identity wiring must print the session guard:\n%s", output)
 	}
 
@@ -446,7 +446,7 @@ func TestResourcePermissionsAreOnlySeededWithForgeIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(readFile(t, firstMatch(t, bare, "*_create_products.up.sql")), "forge_permissions") || strings.Contains(output, "auth.Require") {
+	if strings.Contains(readFile(t, firstMatch(t, bare, "*_create_products.up.sql")), "forge_permissions") || strings.Contains(output, "authhttp.Require") {
 		t.Errorf("identity wiring generated for an application without identity:\n%s", output)
 	}
 }
@@ -636,10 +636,10 @@ func TestResourceWiringNeverOpensTheRoutes(t *testing.T) {
 			// the bearer token where the application issues them
 			// (--api-auth), else behind the session cookie plus the CSRF
 			// token of every change. Without identity it refuses everyone.
-			if authenticates := strings.Contains(parts.Guard, "auth.RequireAudited(required, next, repository)"); authenticates != test.identity {
+			if authenticates := strings.Contains(parts.Guard, "authhttp.RequireAudited(required, next, repository)"); authenticates != test.identity {
 				t.Errorf("%+v: the JSON guard authenticates = %v:\n%s", test, authenticates, parts.Guard)
 			}
-			if test.identity && !test.bearer && (!strings.Contains(parts.Guard, "auth.RequireCSRF(guarded)") || !strings.Contains(parts.Guard, "middleware.AuthenticateCookie(checked)") ||
+			if test.identity && !test.bearer && (!strings.Contains(parts.Guard, "authhttp.RequireCSRF(guarded)") || !strings.Contains(parts.Guard, "middleware.AuthenticateCookie(checked)") ||
 				!strings.Contains(wiring, "forge generate authentication --api-auth")) {
 				t.Errorf("%+v: the JSON routes of an application without bearer sign-in do not use the session cookie and CSRF token, or bearer tokens are not explained:\n%s", test, wiring)
 			}

@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"time"
 
-	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/config"
 )
 
@@ -30,7 +30,7 @@ type Opener func(ctx context.Context, cfg config.Database, migrations []Migratio
 // is set, to the database of FORGE_DATABASE_URL (see
 // config.Config.MigrationDatabase), so the role the application serves with
 // needs no DDL privileges.
-func Commands(migrations fs.FS, open Opener) []forge.Command {
+func Commands(migrations fs.FS, open Opener) []command.Command {
 	return CommandsFromSets([]fs.FS{migrations}, open)
 }
 
@@ -39,9 +39,9 @@ func Commands(migrations fs.FS, open Opener) []forge.Command {
 // rollback reverts application migrations only (Migrator.Down): framework
 // migrations composed here (FrameworkMigrations) stay applied, and a rollback
 // with only framework migrations left fails without reverting anything.
-func CommandsFromSets(migrationSets []fs.FS, open Opener) []forge.Command {
-	return []forge.Command{
-		{Name: "migrate", Summary: "apply pending database migrations; \"migrate status\" lists them", Run: func(ctx context.Context, env forge.CommandEnv, args []string) error {
+func CommandsFromSets(migrationSets []fs.FS, open Opener) []command.Command {
+	return []command.Command{
+		{Name: "migrate", Summary: "apply pending database migrations; \"migrate status\" lists them", Run: func(ctx context.Context, env command.Env, args []string) error {
 			switch {
 			case len(args) == 0:
 				return withMigrator(ctx, env, migrationSets, open, func(m *Migrator) error {
@@ -70,18 +70,18 @@ func CommandsFromSets(migrationSets []fs.FS, open Opener) []forge.Command {
 					return nil
 				})
 			default:
-				return fmt.Errorf("%w: migrate [status]", forge.ErrUsage)
+				return fmt.Errorf("%w: migrate [status]", command.ErrUsage)
 			}
 		}},
-		{Name: "rollback", Summary: "revert the most recent application migrations (-steps N, default 1); Forge framework migrations are never reverted", Run: func(ctx context.Context, env forge.CommandEnv, args []string) error {
+		{Name: "rollback", Summary: "revert the most recent application migrations (-steps N, default 1); Forge framework migrations are never reverted", Run: func(ctx context.Context, env command.Env, args []string) error {
 			flags := flag.NewFlagSet("rollback", flag.ContinueOnError)
 			flags.SetOutput(env.Stderr)
 			steps := flags.Int("steps", 1, "number of application migrations to revert")
 			if err := flags.Parse(args); err != nil {
-				return fmt.Errorf("%w: %w", forge.ErrUsage, err)
+				return fmt.Errorf("%w: %w", command.ErrUsage, err)
 			}
 			if flags.NArg() != 0 || *steps < 1 {
-				return fmt.Errorf("%w: rollback [-steps N] with N >= 1", forge.ErrUsage)
+				return fmt.Errorf("%w: rollback [-steps N] with N >= 1", command.ErrUsage)
 			}
 			return withMigrator(ctx, env, migrationSets, open, func(m *Migrator) error {
 				reverted, err := m.Down(ctx, *steps)
@@ -94,7 +94,7 @@ func CommandsFromSets(migrationSets []fs.FS, open Opener) []forge.Command {
 	}
 }
 
-func withMigrator(ctx context.Context, env forge.CommandEnv, migrationSets []fs.FS, open Opener, fn func(*Migrator) error) (err error) {
+func withMigrator(ctx context.Context, env command.Env, migrationSets []fs.FS, open Opener, fn func(*Migrator) error) (err error) {
 	// Validate every set and global version uniqueness before touching the database.
 	migrations, err := LoadMigrationSets(migrationSets...)
 	if err != nil {

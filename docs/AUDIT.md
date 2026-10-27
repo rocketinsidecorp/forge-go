@@ -116,7 +116,7 @@ emit `auth.mfa.challenge_failed`; successful backup-code use emits
 (`VerifyMFACode`, or a change given a `VerifyMFAStepUp` proof once it
 commits) emits `auth.mfa.backup_code_used`.
 
-The two-factor settings (`auth.Browser`, the generated `/mfa` pages) record a
+The two-factor settings (`authhttp.Browser`, the generated `/mfa` pages) record a
 refused, throttled or wrong-code change as its target action with outcome
 `denied`: `auth.mfa.enrollment_started`, `auth.mfa.enabled`,
 `auth.mfa.rotation_started`, `auth.mfa.rotated`,

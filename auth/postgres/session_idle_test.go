@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/migrate"
@@ -111,7 +112,7 @@ func TestSessionsEndAfterTheIdleTimeout(t *testing.T) {
 	}
 
 	// Through the middleware the idle session is the same 401 as a revoked one.
-	middleware, err := auth.NewMiddleware(repo)
+	middleware, err := authhttp.NewMiddleware(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +317,7 @@ func TestSessionIdleMigrationKeepsExistingSessions(t *testing.T) {
 
 // bearerStatus is the status a bearer request with token gets through
 // middleware.Authenticate.
-func bearerStatus(t *testing.T, middleware *auth.Middleware, token auth.Token) int {
+func bearerStatus(t *testing.T, middleware *authhttp.Middleware, token auth.Token) int {
 	t.Helper()
 	handler := middleware.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

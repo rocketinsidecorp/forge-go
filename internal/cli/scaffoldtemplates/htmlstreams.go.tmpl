@@ -78,7 +78,7 @@ func NewSigner(environment config.Environment, key, previousKeys string, logger 
 type Options struct {
 	// Authenticate wraps the stream handler so that only signed-in callers
 	// reach it, and attaches the caller's principal and tenant to the request
-	// context (with Forge identity: auth.Middleware.AuthenticateCookie).
+	// context (with Forge identity: authhttp.Middleware.AuthenticateCookie).
 	Authenticate func(http.Handler) http.Handler
 	// Authorize decides whether the caller may read a channel, for example by
 	// requiring the "NAME:read" permission of a resource whose pages publish

@@ -203,7 +203,7 @@ Implemented foundation:
   ([ADR 0026](adr/0026-authentication-pages-and-setup.md)): generated
   PostgreSQL applications ship Rails-style sign-in, sign-out, two-factor and
   password-reset pages (`app/adapters/htmlauth`, `app/views/sessions`,
-  `app/views/passwords`) on top of `auth.Browser`, which keeps CSRF
+  `app/views/passwords`) on top of `authhttp.Browser`, which keeps CSRF
   verification (`csrf.Verified`, fail closed), uniform failures, throttling,
   cookies and return-path validation in the framework;
   `Middleware.AuthenticateBrowser` redirects signed-out browsers to the

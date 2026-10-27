@@ -16,9 +16,12 @@ var corePackages = []string{
 	modulePath,
 	modulePath + "/assets",
 	modulePath + "/auth",
+	modulePath + "/auth/authhttp",
+	modulePath + "/auth/internal/backupcode",
 	modulePath + "/auth/recoverymail",
 	modulePath + "/auth/recoveryqueue",
 	modulePath + "/cache",
+	modulePath + "/command",
 	modulePath + "/cache/cachetest",
 	modulePath + "/broadcast",
 	modulePath + "/agent",
@@ -32,6 +35,10 @@ var corePackages = []string{
 	modulePath + "/health",
 	modulePath + "/hotwire",
 	modulePath + "/i18n",
+	modulePath + "/internal/langtag",
+	modulePath + "/internal/principalctx",
+	modulePath + "/internal/principalctx/internal/key",
+	modulePath + "/internal/principalctx/principalwrite",
 	modulePath + "/mail",
 	modulePath + "/mail/mailtest",
 	modulePath + "/jobs",
@@ -42,6 +49,7 @@ var corePackages = []string{
 	modulePath + "/httpserver",
 	modulePath + "/pagination",
 	modulePath + "/queue",
+	modulePath + "/queue/internal/jobscmd",
 	modulePath + "/queue/queuecmd",
 	modulePath + "/queue/storetest",
 	modulePath + "/ratelimit",
@@ -213,5 +221,202 @@ func TestEsbuildReachingPackagesFollowsImportsAndSortsThem(t *testing.T) {
 	}
 	if got := esbuildReachingPackages(modulePath + "/web net/http\n"); len(got) != 0 {
 		t.Errorf("a package that imports no esbuild was reported: %v", got)
+	}
+}
+
+// importRule forbids packages from depending on others (ADR 0052). From
+// lists import paths, or prefixes ending in "/..." for a path and everything
+// under it; Forbidden likewise. Direct rules look only at the imports of
+// From; the others follow imports through the module's packages.
+type importRule struct {
+	Name      string
+	From      []string
+	Forbidden []string
+	Except    []string // packages of From the rule does not apply to
+	Allowed   []string // packages of Forbidden that stay allowed
+	Stop      []string // packages whose imports are not followed
+	Direct    bool
+}
+
+// importRules are the dependency directions the framework keeps (ADR 0052).
+var importRules = []importRule{
+	{
+		Name:      "auth is the domain: its HTTP adapter is auth/authhttp",
+		From:      []string{modulePath + "/auth"},
+		Forbidden: []string{modulePath + "/csrf", modulePath + "/i18n", modulePath + "/openapi", modulePath + "/web", modulePath + "/auth/authhttp"},
+	},
+	{
+		// fault, which auth uses for its errors, maps them to HTTP statuses
+		// and so links net/http; neither auth nor another framework package
+		// it reaches may use net/http.
+		Name:      "auth does not use net/http, directly or through the framework's packages (fault excepted)",
+		From:      []string{modulePath + "/auth"},
+		Forbidden: []string{"net/http", "net/http/..."},
+		Stop:      []string{modulePath + "/fault"},
+	},
+	{
+		// Writing the principal is how a request becomes authenticated, and
+		// auth.AuthorizeMFAChange trusts it: only the middleware that
+		// resolved the session may (an import rule, which no alias or
+		// function value can dodge).
+		Name:      "only auth/authhttp writes the principal (principalctx/principalwrite)",
+		From:      []string{modulePath + "/..."},
+		Forbidden: []string{modulePath + "/internal/principalctx/principalwrite"},
+		Except:    []string{modulePath + "/auth/authhttp"},
+		Direct:    true,
+	},
+	{
+		Name:      "only auth, auth/authhttp and broadcast read the principal's context key",
+		From:      []string{modulePath + "/..."},
+		Forbidden: []string{modulePath + "/internal/principalctx"},
+		Except:    []string{modulePath + "/auth", modulePath + "/auth/authhttp", modulePath + "/broadcast", modulePath + "/internal/principalctx/..."},
+		Direct:    true,
+	},
+	{
+		Name:      "only the programs under cmd/ and the example applications import the root package; framework packages import command",
+		From:      []string{modulePath + "/..."},
+		Forbidden: []string{modulePath},
+		Except:    []string{modulePath, modulePath + "/cmd/...", modulePath + "/examples/..."},
+		Direct:    true,
+	},
+	{
+		Name:      "command is a leaf: the standard library and config only",
+		From:      []string{modulePath + "/command"},
+		Forbidden: []string{modulePath + "/..."},
+		Allowed:   []string{modulePath + "/config"},
+		Direct:    true,
+	},
+	{
+		Name:      "config does not depend on i18n",
+		From:      []string{modulePath + "/config"},
+		Forbidden: []string{modulePath + "/i18n"},
+	},
+	{
+		Name:      "broadcast does not depend on auth",
+		From:      []string{modulePath + "/broadcast"},
+		Forbidden: []string{modulePath + "/auth", modulePath + "/auth/..."},
+	},
+	{
+		Name:      "the queue stores do not depend on queuecmd",
+		From:      []string{modulePath + "/queue/postgres", modulePath + "/queue/mysql", modulePath + "/queue/sqlite"},
+		Forbidden: []string{modulePath + "/queue/queuecmd"},
+	},
+}
+
+// matchesPath reports whether path is one of patterns, where "x/..." matches
+// x and everything under it.
+func matchesPath(path string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if base, ok := strings.CutSuffix(pattern, "/..."); ok {
+			if path == base || strings.HasPrefix(path, base+"/") {
+				return true
+			}
+		} else if path == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+// importRuleViolations checks rules against listing, the output of
+// go list -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}' ./...
+func importRuleViolations(listing string, rules []importRule) []string {
+	imports := map[string][]string{}
+	var packages []string
+	for line := range strings.Lines(listing) {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			if _, listed := imports[fields[0]]; !listed {
+				packages = append(packages, fields[0])
+			}
+			imports[fields[0]] = append(imports[fields[0]], fields[1:]...)
+		}
+	}
+	slices.Sort(packages)
+	var problems []string
+	for _, rule := range rules {
+		for _, from := range packages {
+			if !matchesPath(from, rule.From) || matchesPath(from, rule.Except) {
+				continue
+			}
+			// Breadth-first through the module's packages, remembering how
+			// each was reached for the message.
+			via := map[string]string{from: ""}
+			queue := []string{from}
+			for len(queue) > 0 {
+				current := queue[0]
+				queue = queue[1:]
+				for _, dep := range imports[current] {
+					if _, seen := via[dep]; seen {
+						continue
+					}
+					via[dep] = current
+					if matchesPath(dep, rule.Forbidden) && !matchesPath(dep, rule.Allowed) {
+						chain := []string{dep}
+						for at := current; at != ""; at = via[at] {
+							chain = append([]string{at}, chain...)
+						}
+						problems = append(problems, rule.Name+": "+strings.Join(chain, " -> "))
+						continue
+					}
+					if !rule.Direct && !matchesPath(dep, rule.Stop) {
+						queue = append(queue, dep)
+					}
+				}
+			}
+		}
+	}
+	return problems
+}
+
+func TestImportRules(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go list")
+	}
+	t.Parallel()
+	output, err := exec.Command("go", "list", "-f", "{{.ImportPath}}{{range .Imports}} {{.}}{{end}}", "./...").CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list: %v\n%s", err, output)
+	}
+	for _, problem := range importRuleViolations(string(output), importRules) {
+		t.Error(problem)
+	}
+}
+
+func TestImportRuleViolationsFollowsImportsAndHonoursExceptions(t *testing.T) {
+	t.Parallel()
+	clean := strings.Join([]string{
+		modulePath + " " + modulePath + "/command net/http",
+		modulePath + "/cmd/forge " + modulePath,
+		modulePath + "/examples/basic-api " + modulePath,
+		modulePath + "/command " + modulePath + "/config io",
+		modulePath + "/config " + modulePath + "/internal/langtag",
+		modulePath + "/auth " + modulePath + "/fault " + modulePath + "/tenancy",
+		modulePath + "/fault net/http",
+		modulePath + "/auth/authhttp " + modulePath + "/auth " + modulePath + "/web net/http",
+		modulePath + "/broadcast " + modulePath + "/internal/principalctx " + modulePath + "/web",
+		modulePath + "/queue/postgres " + modulePath + "/queue/internal/jobscmd " + modulePath + "/command",
+		modulePath + "/queue/queuecmd " + modulePath + "/queue/internal/jobscmd",
+		"",
+	}, "\n")
+	if problems := importRuleViolations(clean, importRules); len(problems) != 0 {
+		t.Fatalf("the allowed graph was refused: %v", problems)
+	}
+	for name, extra := range map[string]string{
+		"auth imports web":               modulePath + "/auth " + modulePath + "/web",
+		"auth reaches i18n":              modulePath + "/auth " + modulePath + "/tenancy2\n" + modulePath + "/tenancy2 " + modulePath + "/i18n",
+		"auth imports net/http":          modulePath + "/auth net/http",
+		"auth imports net/http/cookie":   modulePath + "/auth net/http/cookiejar",
+		"auth reaches net/http":          modulePath + "/auth " + modulePath + "/auth/internal/x\n" + modulePath + "/auth/internal/x net/http",
+		"views reads the principal key":  modulePath + "/views " + modulePath + "/internal/principalctx",
+		"broadcast writes the principal": modulePath + "/broadcast " + modulePath + "/internal/principalctx/principalwrite",
+		"a framework package uses root":  modulePath + "/migrate " + modulePath,
+		"command imports uuid":           modulePath + "/command " + modulePath + "/uuid",
+		"config reaches i18n":            modulePath + "/config " + modulePath + "/x\n" + modulePath + "/x " + modulePath + "/i18n",
+		"broadcast reaches auth":         modulePath + "/broadcast " + modulePath + "/views2\n" + modulePath + "/views2 " + modulePath + "/auth/authhttp",
+		"a queue store uses queuecmd":    modulePath + "/queue/sqlite " + modulePath + "/queue/queuecmd",
+	} {
+		if problems := importRuleViolations(clean+extra+"\n", importRules); len(problems) != 1 {
+			t.Errorf("%s: problems %v, want exactly one", name, problems)
+		}
 	}
 }

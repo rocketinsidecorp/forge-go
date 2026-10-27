@@ -16,6 +16,7 @@ import (
 	"{{.Module}}/config/locales"
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	auth{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/auth/{{.DB.Adapter}}"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/csrf"
@@ -95,7 +96,7 @@ func (m *memoryIdentity) CreateSessionAtVersion(context.Context, uuid.UUID, int6
 	return token, nil
 }
 
-// ResolveSession lets auth.Middleware authenticate the session cookie.
+// ResolveSession lets authhttp.Middleware authenticate the session cookie.
 func (m *memoryIdentity) ResolveSession(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -241,9 +242,9 @@ func (b *mailbox) none(t *testing.T) {
 // serve mounts the pages behind the middleware app/bootstrap installs, with
 // sessions resolving the session cookie. The pages are in English (en.json),
 // whatever the application's default locale.
-func serve(t *testing.T, browser *auth.Browser, sessions auth.Resolver, options ...htmlauth.Option) http.Handler {
+func serve(t *testing.T, browser *authhttp.Browser, sessions auth.Resolver, options ...htmlauth.Option) http.Handler {
 	t.Helper()
-	middleware, err := auth.NewMiddleware(sessions)
+	middleware, err := authhttp.NewMiddleware(sessions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +307,7 @@ func memoryPages(t *testing.T, loginOptions ...auth.LoginOption) (http.Handler, 
 		defer cancel()
 		_ = queue.Shutdown(ctx)
 	})
-	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: identity, Recovery: recovery})
+	browser, err := authhttp.NewBrowser(authhttp.BrowserOptions{Login: login, Sessions: identity, Recovery: recovery})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +406,7 @@ func TestNoResetPagesWithoutRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: identity})
+	browser, err := authhttp.NewBrowser(authhttp.BrowserOptions{Login: login, Sessions: identity})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +438,7 @@ func TestSignInRedirectsOnlyToLocalPaths(t *testing.T) {
 		if signedIn.Code != http.StatusSeeOther || signedIn.Header().Get("Location") != location {
 			t.Fatalf("return_to %q: status=%d Location=%q", returnTo, signedIn.Code, signedIn.Header().Get("Location"))
 		}
-		session, ok := browser.cookies[auth.SessionCookieName]
+		session, ok := browser.cookies[authhttp.SessionCookieName]
 		if !ok || !session.HttpOnly || !session.Secure {
 			t.Fatalf("session cookie=%+v", session)
 		}
@@ -468,7 +469,7 @@ func TestFailedSignInIsUniform(t *testing.T) {
 		if strings.Contains(body, password) {
 			t.Fatalf("%s: the password was echoed", name)
 		}
-		if _, ok := browser.cookies[auth.SessionCookieName]; ok {
+		if _, ok := browser.cookies[authhttp.SessionCookieName]; ok {
 			t.Fatalf("%s: a failed sign-in set a session cookie", name)
 		}
 	}
@@ -524,7 +525,7 @@ func TestSignOutEndsTheSession(t *testing.T) {
 	if signedOut.Code != http.StatusSeeOther || signedOut.Header().Get("Location") != htmlauth.SignInPath {
 		t.Fatalf("status=%d Location=%q", signedOut.Code, signedOut.Header().Get("Location"))
 	}
-	if _, ok := browser.cookies[auth.SessionCookieName]; ok || identity.sessionCount() != 0 {
+	if _, ok := browser.cookies[authhttp.SessionCookieName]; ok || identity.sessionCount() != 0 {
 		t.Fatalf("session still present: cookie=%v stored=%d", ok, identity.sessionCount())
 	}
 	if page := browser.do(http.MethodGet, htmlauth.SignInPath, nil); !strings.Contains(page.Body.String(), "Signed out.") {
@@ -659,7 +660,7 @@ func TestSignInLooksTheStoreUpWhateverIsTyped(t *testing.T) {
 		if failed.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("%s: status=%d, want the uniform failure", name, failed.Code)
 		}
-		if _, ok := browser.cookies[auth.SessionCookieName]; ok {
+		if _, ok := browser.cookies[authhttp.SessionCookieName]; ok {
 			t.Fatalf("%s: a session was created", name)
 		}
 		identity.mu.Lock()
@@ -754,7 +755,7 @@ func TestPagesAgainstTheIdentityStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: repository, Auditor: repository})
+	browser, err := authhttp.NewBrowser(authhttp.BrowserOptions{Login: login, Sessions: repository, Auditor: repository})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +766,7 @@ func TestPagesAgainstTheIdentityStore(t *testing.T) {
 	if signedIn := visitor.signIn(testPassword, "/products"); signedIn.Code != http.StatusSeeOther || signedIn.Header().Get("Location") != "/products" {
 		t.Fatalf("sign in status=%d Location=%q", signedIn.Code, signedIn.Header().Get("Location"))
 	}
-	token, err := auth.ParseToken(visitor.cookies[auth.SessionCookieName].Value)
+	token, err := auth.ParseToken(visitor.cookies[authhttp.SessionCookieName].Value)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -790,7 +791,7 @@ func TestSingleOrganizationFormsAskForTheEmailOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: identity})
+	browser, err := authhttp.NewBrowser(authhttp.BrowserOptions{Login: login, Sessions: identity})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -807,7 +808,7 @@ func TestSingleOrganizationFormsAskForTheEmailOnly(t *testing.T) {
 	if signedIn.Code != http.StatusSeeOther {
 		t.Fatalf("sign in status=%d:\n%s", signedIn.Code, signedIn.Body.String())
 	}
-	if _, err := auth.ParseToken(visitor.cookies[auth.SessionCookieName].Value); err != nil {
+	if _, err := auth.ParseToken(visitor.cookies[authhttp.SessionCookieName].Value); err != nil {
 		t.Fatalf("no session cookie: %v", err)
 	}
 	// A posted organization is ignored: the sign-in still goes to the one

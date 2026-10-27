@@ -254,7 +254,7 @@ func TestGenerateAuthenticationAPIAuthOnAnApplicationWithIdentity(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"nothing was written", "Mount the JSON authentication APIs there", "auth.NewLoginHandler(login)", `app.Handle("POST /auth/cookie/login", cookieLoginHandler)`} {
+	for _, want := range []string{"nothing was written", "Mount the JSON authentication APIs there", "authhttp.NewLoginHandler(login)", `app.Handle("POST /auth/cookie/login", cookieLoginHandler)`} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output is missing %q:\n%s", want, output)
 		}
@@ -264,7 +264,7 @@ func TestGenerateAuthenticationAPIAuthOnAnApplicationWithIdentity(t *testing.T) 
 	}
 	mounted := newApp(t, scaffold.Options{Database: "sqlite", APIAuth: true})
 	output, err = runAuthentication(mounted, "--api-auth")
-	if err != nil || !strings.Contains(output, "already mounts them; keep them") || strings.Contains(output, "auth.NewLoginHandler(login)") {
+	if err != nil || !strings.Contains(output, "already mounts them; keep them") || strings.Contains(output, "authhttp.NewLoginHandler(login)") {
 		t.Fatalf("--api-auth with the routes mounted: err=%v\n%s", err, output)
 	}
 	// Some routes mounted: only the others are asked for.

@@ -346,7 +346,7 @@ func TestGenerateControllerInIdentityApplicationsRegistersItsPermission(t *testi
 	// This application mounts no bearer login (POST /auth/login), so the
 	// JSON controller authenticates the session cookie and the CSRF token.
 	api := mustGenerate(t, root, "controller", "feeds", "latest", "--api")
-	if !strings.Contains(api, "middleware.AuthenticateCookie(checked)") || !strings.Contains(api, "auth.RequireCSRF(guarded)") || !strings.Contains(api, "httpapi.RegisterFeedsController(app, protect)") ||
+	if !strings.Contains(api, "middleware.AuthenticateCookie(checked)") || !strings.Contains(api, "authhttp.RequireCSRF(guarded)") || !strings.Contains(api, "httpapi.RegisterFeedsController(app, protect)") ||
 		!strings.Contains(api, "forge generate authentication --api-auth") {
 		t.Errorf("a JSON controller without bearer sign-in does not authenticate the session cookie:\n%s", api)
 	}

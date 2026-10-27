@@ -15,8 +15,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/internal/terminal"
 )
 
@@ -58,19 +58,19 @@ type Config struct {
 	// --org.
 	Organizations bool
 	// Provision creates the account, once, in the database env configures.
-	Provision func(ctx context.Context, env forge.CommandEnv, account Account) (Provisioned, error)
+	Provision func(ctx context.Context, env command.Env, account Account) (Provisioned, error)
 }
 
 // Command returns the "setup" subcommand.
-func Command(config Config) forge.Command {
+func Command(config Config) command.Command {
 	summary := "create the owner account (refuses once one exists)"
 	if config.Organizations {
 		summary = "create the first organization and its owner account (refuses once one exists)"
 	}
-	return forge.Command{
+	return command.Command{
 		Name:    "setup",
 		Summary: summary,
-		Run: func(ctx context.Context, env forge.CommandEnv, args []string) error {
+		Run: func(ctx context.Context, env command.Env, args []string) error {
 			return run(ctx, config, env, args)
 		},
 	}
@@ -84,7 +84,7 @@ func Usage(organizations bool) string {
 	return "usage: setup --email EMAIL [--password-stdin]"
 }
 
-func run(ctx context.Context, config Config, env forge.CommandEnv, args []string) error {
+func run(ctx context.Context, config Config, env command.Env, args []string) error {
 	if config.Provision == nil {
 		return errors.New("setup has no identity store")
 	}
@@ -98,26 +98,26 @@ func run(ctx context.Context, config Config, env forge.CommandEnv, args []string
 	passwordStdin := flags.Bool("password-stdin", false, "read the password from the first line of standard input")
 	usage := Usage(config.Organizations)
 	if err := flags.Parse(args); err != nil {
-		return fmt.Errorf("%w: %w; %s", forge.ErrUsage, err, usage)
+		return fmt.Errorf("%w: %w; %s", command.ErrUsage, err, usage)
 	}
 	if flags.NArg() != 0 || *email == "" {
-		return fmt.Errorf("%w: %s", forge.ErrUsage, usage)
+		return fmt.Errorf("%w: %s", command.ErrUsage, usage)
 	}
 	account := Account{Email: *email}
 	if config.Organizations {
 		if *org == "" {
-			return fmt.Errorf("%w: --org is required in an application with organizations; %s", forge.ErrUsage, usage)
+			return fmt.Errorf("%w: --org is required in an application with organizations; %s", command.ErrUsage, usage)
 		}
 		account.OrgSlug, account.OrganizationName = *org, *name
 	} else {
 		if *org != "" || *name != "" {
-			return fmt.Errorf("%w: this application has a single organization (it was created without --tenants), so setup takes no --org: run it with --email only, or convert the application with `forge generate tenancy`", forge.ErrUsage)
+			return fmt.Errorf("%w: this application has a single organization (it was created without --tenants), so setup takes no --org: run it with --email only, or convert the application with `forge generate tenancy`", command.ErrUsage)
 		}
 		account.OrgSlug, account.OrganizationName = auth.DefaultTenantSlug, DefaultOrganizationName
 	}
 	normalizedEmail, normalizedOrg, ok := auth.NormalizeIdentity(account.Email, account.OrgSlug)
 	if !ok {
-		return fmt.Errorf("%w: --email must be an ASCII email address and --org a slug (lowercase letter, then 1-62 lowercase letters, digits or hyphens)", forge.ErrUsage)
+		return fmt.Errorf("%w: --email must be an ASCII email address and --org a slug (lowercase letter, then 1-62 lowercase letters, digits or hyphens)", command.ErrUsage)
 	}
 	account.OrgSlug = normalizedOrg
 	if account.OrganizationName == "" {
@@ -125,7 +125,7 @@ func run(ctx context.Context, config Config, env forge.CommandEnv, args []string
 	}
 	account.OrganizationName = strings.TrimSpace(account.OrganizationName)
 	if err := ValidOrganizationName(account.OrganizationName); err != nil {
-		return fmt.Errorf("%w: --org-name (--organization): %w", forge.ErrUsage, err)
+		return fmt.Errorf("%w: --org-name (--organization): %w", command.ErrUsage, err)
 	}
 	password, err := Password(env, *passwordStdin, normalizedEmail)
 	if err != nil {
@@ -160,7 +160,7 @@ func ValidOrganizationName(name string) error {
 // Password returns the owner password from the environment variable, piped
 // standard input or an interactive prompt (twice, without echo), and checks
 // its length. It is never accepted as an argument, printed or logged.
-func Password(env forge.CommandEnv, fromStdin bool, email string) (string, error) {
+func Password(env command.Env, fromStdin bool, email string) (string, error) {
 	var password []byte
 	value, fromEnv := "", false
 	if env.LookupEnv != nil {
@@ -169,7 +169,7 @@ func Password(env forge.CommandEnv, fromStdin bool, email string) (string, error
 	}
 	switch {
 	case fromEnv && fromStdin:
-		return "", fmt.Errorf("%w: use either %s or --password-stdin, not both", forge.ErrUsage, PasswordVariable)
+		return "", fmt.Errorf("%w: use either %s or --password-stdin, not both", command.ErrUsage, PasswordVariable)
 	case fromEnv:
 		password = []byte(value)
 	case fromStdin:
@@ -184,7 +184,7 @@ func Password(env forge.CommandEnv, fromStdin bool, email string) (string, error
 	default:
 		input, ok := env.Stdin.(*os.File)
 		if !ok || !terminal.IsTerminal(input) {
-			return "", fmt.Errorf("%w: no password: type it at a terminal, pipe it with --password-stdin, or set %s", forge.ErrUsage, PasswordVariable)
+			return "", fmt.Errorf("%w: no password: type it at a terminal, pipe it with --password-stdin, or set %s", command.ErrUsage, PasswordVariable)
 		}
 		fmt.Fprintf(env.Stderr, "Password for %s: ", email)
 		first, err := terminal.ReadSecret(input)

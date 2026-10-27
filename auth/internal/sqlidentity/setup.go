@@ -8,9 +8,9 @@ import (
 	"io/fs"
 	"strings"
 
-	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/auth/internal/setupcmd"
+	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/sqldb"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -142,8 +142,8 @@ func (r *Repository) ProvisionOwner(ctx context.Context, account OwnerAccount) (
 // Provision is setup's Provision for dialect: it opens the database env
 // configures with open, creates the first organization and owner with
 // ProvisionOwner and closes the database.
-func Provision(open func(context.Context, config.Database) (*sqldb.DB, error), dialect *Dialect) func(context.Context, forge.CommandEnv, setupcmd.Account) (setupcmd.Provisioned, error) {
-	return func(ctx context.Context, env forge.CommandEnv, account setupcmd.Account) (_ setupcmd.Provisioned, err error) {
+func Provision(open func(context.Context, config.Database) (*sqldb.DB, error), dialect *Dialect) func(context.Context, command.Env, setupcmd.Account) (setupcmd.Provisioned, error) {
+	return func(ctx context.Context, env command.Env, account setupcmd.Account) (_ setupcmd.Provisioned, err error) {
 		database, err := open(ctx, env.Config.Database)
 		if err != nil {
 			return setupcmd.Provisioned{}, err

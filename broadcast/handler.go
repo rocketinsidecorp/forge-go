@@ -10,9 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/internal/principalctx"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
@@ -74,6 +75,14 @@ type HandlerOptions struct {
 	MaxPerTenant int
 	// Logger receives debug and error events. Nil means slog.Default.
 	Logger *slog.Logger
+}
+
+// subject is what the handler needs from the request's authenticated
+// principal: a stable identity for MaxPerPrincipal. auth.Principal, which
+// auth's middleware stores in the request context, satisfies it; broadcast
+// depends on this interface, not on auth (ADR 0052).
+type subject interface {
+	SubjectID() uuid.UUID
 }
 
 type handler struct {
@@ -198,7 +207,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// Per-principal and per-tenant caps, before anything is allocated.
 	principalKey := "ip:" + clientAddress(r)
-	if principal, ok := auth.FromContext(r.Context()); ok {
+	if principal, ok := principalctx.Value(r.Context()).(subject); ok {
 		principalKey = "principal:" + principal.SubjectID().String()
 	}
 	if !h.open.acquire(principalKey, h.opts.MaxPerPrincipal) {

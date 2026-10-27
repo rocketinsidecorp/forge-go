@@ -152,7 +152,7 @@ func WithSecurityAuditor(auditor SecurityAuditor) LoginOption {
 
 // WithLoginPasswordHasher sets the hasher that verifies passwords, rehashes
 // outdated ones and does the equal work of unknown accounts; the default is
-// DefaultPasswordHasher. The step-up of auth.Browser uses it too.
+// DefaultPasswordHasher. The step-up of authhttp.Browser uses it too.
 func WithLoginPasswordHasher(hasher *PasswordHasher) LoginOption {
 	return func(service *LoginService) error {
 		if hasher == nil {

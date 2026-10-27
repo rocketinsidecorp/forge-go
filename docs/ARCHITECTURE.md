@@ -279,7 +279,7 @@ header or `authenticity_token` form field does not match the
 ([ADR 0012](adr/0012-cookie-sessions-and-csrf.md)). Requests with a bearer
 token or a JSON body skip the token check. `csrf.Token` issues the cookie
 when a page first embeds a token. `csrf.Verified` reports that a request's
-token was actually checked; `auth.Browser` (the HTML sign-in, sign-out and
+token was actually checked; `authhttp.Browser` (the HTML sign-in, sign-out and
 password-reset flows, [ADR 0026](adr/0026-authentication-pages-and-setup.md))
 refuses any request for which it is false.
 
@@ -611,7 +611,7 @@ already declared there. Rules the generated code follows:
 - **No public routes.** `Register<Plural>` returns an error without a
   `protect` function and asks it for `<plural>:read` or `<plural>:write` per
   route. With Forge identity (PostgreSQL) the migration seeds those
-  permissions and the printed wiring uses `auth.RequireAudited` behind the
+  permissions and the printed wiring uses `authhttp.RequireAudited` behind the
   authentication middleware (writes to a global resource additionally stay
   behind a deny-all `protectPlatformWrite`, since tenant roles cannot
   authorize changes to rows every tenant reads); elsewhere the printed guard denies every request
@@ -671,6 +671,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0048](adr/0048-argon2id-password-hashing.md) | Argon2id password hashing with Forge-Rust's parameters, PBKDF2 hashes upgraded at sign-in, a bound on concurrent hashing, `forge_pbkdf2` for FIPS builds; admits `x/crypto/argon2` to the core |
 | [0049](adr/0049-typescript-by-default.md) | TypeScript front end by default, compiled by `forge` with esbuild (no Node), `--js` to opt out; esbuild linked only by the CLI |
 | [0050](adr/0050-opt-in-authentication-and-organizations.md) | SQLite by default; authentication (`--auth`) and organizations (`--tenants`, PostgreSQL by default) opt-in; Forge identity on MySQL, MariaDB and SQLite; `forge generate authentication` and `tenancy` |
+| [0052](adr/0052-import-boundaries.md) | Import boundaries: `auth` without HTTP (`auth/authhttp`), a leaf `command` package, `config`, `broadcast` and the queue stores decoupled; enforced by `architecture_test.go` |
 
 ADR numbers 0027 and 0028 are unassigned: the rate limiting, cache and file
 storage ADRs were drafted as 0026-0028, 0026 turned out to be taken by other

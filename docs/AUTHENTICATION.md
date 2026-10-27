@@ -3,6 +3,23 @@
 Phase 3 now includes an API-oriented security core plus an opinionated
 PostgreSQL identity/session adapter. The core remains database-independent.
 
+Two packages make it up ([ADR 0052](adr/0052-import-boundaries.md)):
+`github.com/rocketinsidecorp/forge-go/auth` is the domain (tokens,
+principals, permissions, passwords, sign-in, MFA, recovery, throttling,
+audit and the store ports) and imports no HTTP package;
+`github.com/rocketinsidecorp/forge-go/auth/authhttp` is its HTTP adapter (the
+middleware, `Require*`, the JSON handlers, `Browser`, cookies and OpenAPI).
+Code written before the split replaces `auth.NewMiddleware`, `auth.Require`,
+`auth.NewBrowser`, `auth.New*Handler` and the other HTTP names with the same
+names in `authhttp`:
+
+```go
+import (
+	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
+)
+```
+
 ## Opaque bearer sessions
 
 `auth.NewToken` creates 32 random bytes with `crypto/rand` and encodes them as
@@ -11,7 +28,7 @@ only `Token.Digest()` (SHA-256). A database disclosure therefore does not
 directly disclose the active bearer credential. UUIDv7 values are identifiers,
 not session tokens.
 
-`auth.Middleware` accepts exactly one `Authorization: Bearer <token>` header.
+`authhttp.Middleware` accepts exactly one `Authorization: Bearer <token>` header.
 It rejects missing, duplicate, combined, malformed, unknown, and expired
 credentials with a stable JSON `401` and `WWW-Authenticate`. Cookies, query
 parameters, `X-User-*`, and `X-Tenant-*` headers are never authentication
@@ -24,13 +41,13 @@ permissions into a long-lived token. A resolver infrastructure failure is a
 generic `500`; an unknown credential is a `401`.
 
 ```go
-middleware, err := auth.NewMiddleware(sessionRepository)
+middleware, err := authhttp.NewMiddleware(sessionRepository)
 if err != nil {
     return err
 }
 
 permission, _ := auth.NewPermission("tasks:read")
-handler, err := auth.Require(permission, listTasks)
+handler, err := authhttp.Require(permission, listTasks)
 if err != nil {
     return err
 }
@@ -38,7 +55,7 @@ if err != nil {
 app.Handle("GET /v1/tasks", middleware.Authenticate(handler))
 ```
 
-Applications may configure `auth.WithAuthenticationAuditor(auditor)` to record
+Applications may configure `authhttp.WithAuthenticationAuditor(auditor)` to record
 syntactically valid bearer or cookie tokens rejected as unknown, revoked, or
 expired. The event stores only the token digest; missing or malformed
 credentials are not persisted. Audit failures are logged without changing the
@@ -46,13 +63,13 @@ existing `401` response. Because each rejected valid token can produce a
 database write, deployments should apply request limits and plan audit
 retention/capacity before enabling this option.
 
-Use `auth.RequireAudited(permission, handler, auditor)` when permission
+Use `authhttp.RequireAudited(permission, handler, auditor)` when permission
 denials should be recorded. The event contains only the authenticated actor
 ID; the permission and tenant are deliberately omitted from the audit payload.
-`auth.Require` remains unchanged and does not persist denial events.
+`authhttp.Require` remains unchanged and does not persist denial events.
 
 Permissions use explicit lowercase `resource:action` names and have no
-wildcards. `auth.Require` denies by default: no principal is `401`; a current
+wildcards. `authhttp.Require` denies by default: no principal is `401`; a current
 principal without the permission is `403`. Authentication installs both the
 principal and its validated tenant in the request context.
 
@@ -93,7 +110,7 @@ skipped, the sign-in still succeeds, and the next one tries again.
 more, the difference would tell accounts that still have a PBKDF2 hash (that
 exist and have not signed in since the upgrade) from unknown ones. So while a
 hasher writes Argon2id, every failed check of `LoginService` and of the
-`auth.Browser` step-up (unknown account or tenant, malformed login, wrong
+`authhttp.Browser` step-up (unknown account or tenant, malformed login, wrong
 password against any hash) is padded, from the credential lookup on, up to the
 cost of one PBKDF2-600k verification plus 25% (one verification varies from
 call to call by some 10-20%). The floor is calibrated once per hasher, on the
@@ -148,7 +165,7 @@ verification (unknown accounts included) runs through one process-wide
 CPU (`GOMAXPROCS`), at most `auth.MaxDefaultPasswordWork` (16), and an attempt
 that waits `auth.DefaultPasswordWorkWait` (2 s) for a slot fails with
 `auth.ErrPasswordHashingUnavailable`: `503 authentication_unavailable` with
-`Retry-After: 5` from the JSON handlers and `auth.Browser` (the generated
+`Retry-After: 5` from the JSON handlers and `authhttp.Browser` (the generated
 pages answer it through `web.Error`). The slot is held by the hashing
 itself. Applications that need another bound build their own:
 
@@ -159,7 +176,7 @@ login, err := auth.NewLoginService(repository, repository, auth.WithLoginPasswor
 recovery, err := auth.NewRecoveryService(repository, delivery, auth.WithRecoveryPasswordHasher(hasher))
 ```
 
-`auth.Browser` checks step-up passwords with its login service's hasher.
+`authhttp.Browser` checks step-up passwords with its login service's hasher.
 
 **FIPS 140.** Argon2id is not a FIPS-approved algorithm. Build the
 application with the `forge_pbkdf2` tag to write PBKDF2-HMAC-SHA256 (600,000
@@ -324,7 +341,7 @@ minutes and 30 days. A successful login can upgrade an old password work factor
 with a compare-and-swap update. If the password changed concurrently, Forge
 does not issue a session from the stale credential.
 
-`auth.NewLoginHandler` and `auth.NewLogoutHandler` are thin HTTP adapters.
+`authhttp.NewLoginHandler` and `authhttp.NewLogoutHandler` are thin HTTP adapters.
 The login response returns `access_token`, `token_type: "Bearer"`, and
 `expires_at`. Logout accepts exactly one bearer credential and is idempotent;
 a syntactically valid token that is unknown or already revoked still returns
@@ -401,9 +418,9 @@ See [ADR 0011](adr/0011-login-throttling.md) and
 
 ## Browser cookie sessions and CSRF
 
-Browser applications can use `auth.NewCookieLoginHandler`,
-`Middleware.AuthenticateCookie`, `auth.RequireCSRF`, and
-`auth.NewCookieLogoutHandler`. Cookie authentication is an explicit transport
+Browser applications can use `authhttp.NewCookieLoginHandler`,
+`Middleware.AuthenticateCookie`, `authhttp.RequireCSRF`, and
+`authhttp.NewCookieLogoutHandler`. Cookie authentication is an explicit transport
 and never falls back to bearer authentication.
 
 A successful cookie login sets two host-only cookies:
@@ -446,10 +463,10 @@ and password-reset pages, the equivalent of `rails generate authentication`
 ([ADR 0026](adr/0026-authentication-pages-and-setup.md)). The pages are
 application code in `app/adapters/htmlauth` and `app/views/sessions`,
 `app/views/passwords`, `app/views/mfa`; every security decision is made by
-`auth.Browser`:
+`authhttp.Browser`:
 
 ```go
-browser, err := auth.NewBrowser(auth.BrowserOptions{
+browser, err := authhttp.NewBrowser(authhttp.BrowserOptions{
 	Login:     login,           // *auth.LoginService (required)
 	Sessions:  repository,      // auth.SessionRevoker (required)
 	MFA:       mfaService,      // optional: accounts with TOTP
@@ -545,7 +562,7 @@ and cookie routes are tracked in
 
 ### Password-reset emails
 
-Generated applications pass a recovery service to `auth.Browser` only when
+Generated applications pass a recovery service to `authhttp.Browser` only when
 outgoing mail is configured, so the reset pages and the "Forgot your
 password?" link never promise an email that cannot be sent.
 `bootstrap.passwordRecoveryDelivery` builds `auth/recoverymail` from
@@ -560,7 +577,7 @@ Guard HTML pages with `Middleware.AuthenticateBrowser` instead of
 `AuthenticateCookie`:
 
 ```go
-page, err := auth.RequireAudited("reports:read", reportsPage, repository)
+page, err := authhttp.RequireAudited("reports:read", reportsPage, repository)
 // ...
 guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
 ```
@@ -571,7 +588,7 @@ still set its own value). A request without a valid session that prefers HTML
 path; other methods go to the sign-in page without one; with the i18n
 middleware's `PathPrefix`, wherever it is registered, the locale prefix is kept:
 `return_to=%2Fpt-BR%2Freports`). JSON and API
-clients keep the `401`. `auth.ReturnPath(candidate, fallback)` accepts only
+clients keep the `401`. `authhttp.ReturnPath(candidate, fallback)` accepts only
 local paths (`web.IsLocalPath`: no scheme, host, `//` or `/\` prefix,
 backslash, control, space or non-ASCII byte), so `return_to` cannot redirect
 off the site. The wiring `forge generate scaffold` prints uses this guard.
@@ -619,6 +636,65 @@ permissions, and migrations from `forge generate resource` and
 
 `forge seed` runs the application's idempotent `db.Seed`
 (`postgres.SeedCommand`) in one transaction; it is not for accounts.
+
+## Upgrading
+
+Release note ([ADR 0052](adr/0052-import-boundaries.md)): the HTTP side of
+`auth` (the middleware, `Require*`, the JSON handlers, `Browser`, the cookie
+names, `ReturnPath`, `ErrCSRFInvalid`) moved to
+`github.com/rocketinsidecorp/forge-go/auth/authhttp`, with the same names. No
+aliases are left in `auth` (they would be an import cycle), so an application
+created with `--auth`, `--tenants` or `forge generate authentication` before
+the move stops compiling in `app/bootstrap/identity.go`,
+`app/bootstrap/routes_gen.go`, `app/adapters/htmlauth` and their tests until
+the qualifier changes. `auth.AuthorizeMFAChange` now takes the principal from
+the request context only: `AuthorizeMFAChange(ctx, authorizer)`.
+
+From the application's root, after updating Forge-Go (`go get
+github.com/rocketinsidecorp/forge-go@<version>`), run the rewrite below. It
+first checks the `forge:checksum` of the routes seam
+(`app/bootstrap/routes_gen.go`, when the application has one) exactly as the
+generators do, and stops without changing anything if the seam was edited by
+hand; otherwise it rewrites the names, adds the import and re-seals the seam,
+whose only change is then this rewrite. It runs in a subshell, so a stop does
+not close your terminal, and running it again prints `nothing to rewrite`:
+
+```sh
+(
+set -eu
+seam=app/bootstrap/routes_gen.go
+zero=0000000000000000000000000000000000000000000000000000000000000000
+sealed() { sed -E "s#^// forge:checksum [0-9a-f]{64}\$#// forge:checksum $zero#" "$1" | sha256sum | cut -d' ' -f1; }
+if [ -f "$seam" ] && [ "$(sed -nE 's#^// forge:checksum ([0-9a-f]{64})$#\1#p' "$seam")" != "$(sealed "$seam")" ]; then
+  echo "$seam was edited by hand since a generator last wrote it (its forge:checksum no longer matches), so nothing was rewritten. Move your change into bootstrap.go (or copy a guard such as protect into another file of package bootstrap), restore the file with git checkout $seam, and run this again." >&2
+  exit 1
+fi
+names='NewMiddleware|Middleware|Option|WithClock|WithAuthenticationAuditor|Require|RequireAudited|RequireCSRF|NewBrowser|BrowserOptions|Browser|SignInStep|SignInComplete|SignInNeedsMFA|SignInCredentials|ReturnPath|ReturnToParameter|SessionCookieName|CSRFCookieName|CSRFHeaderName|MFAChallengeCookieName|ErrCSRFInvalid|ErrMFAChallengeMissing|New\w*Handler'
+files=$(grep -rlP --include='*.go' "\bauth\.($names)\b" app cmd 2>/dev/null || true)
+if [ -z "$files" ]; then echo "nothing to rewrite"; exit 0; fi
+perl -pi -e "s/\bauth\.($names)\b/authhttp.\$1/g" $files
+perl -0pi -e 's#\n(\s*)"github.com/rocketinsidecorp/forge-go/auth"\n(?!\s*"github.com/rocketinsidecorp/forge-go/auth/authhttp")#\n$1"github.com/rocketinsidecorp/forge-go/auth"\n$1"github.com/rocketinsidecorp/forge-go/auth/authhttp"\n#' $files
+if [ -f "$seam" ]; then
+  sum=$(sealed "$seam")
+  sed -i -E "s#^// forge:checksum [0-9a-f]{64}\$#// forge:checksum $sum#" "$seam"
+fi
+echo "rewrote: $(echo $files)"
+)
+```
+
+Then check, re-vendoring first if the application vendors:
+
+```sh
+if [ -d vendor ]; then go mod vendor; fi
+gofmt -l app cmd; go vet ./... && go test ./...
+```
+
+The commands use GNU `sed -i`, `grep -P` and `sha256sum`; on macOS install
+GNU sed, grep and coreutils first. A file that no longer uses `auth` after the
+rewrite fails to compile with `"…/auth" imported and not used`: delete that
+import line. Code the application wrote itself, outside `app` and `cmd`,
+changes the same way; the compiler lists every place.
+`internal/scaffold/upgrade_doc_test.go` runs the rewrite as written here.
 
 ## Remaining Phase 3 work
 

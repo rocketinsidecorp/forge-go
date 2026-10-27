@@ -381,7 +381,7 @@ func buildControllerWiring(spec controllerSpec) resourceWiringParts {
 		parts.Where = "inside routes, before its final `return nil`"
 	}
 	if spec.Identity {
-		parts.Where = "inside identityRoutes, after the `middleware, err := auth.NewMiddleware(repository)` statement and its error check"
+		parts.Where = "inside identityRoutes, after the `middleware, err := authhttp.NewMiddleware(repository)` statement and its error check"
 	}
 	arguments := "app"
 	if !spec.API {

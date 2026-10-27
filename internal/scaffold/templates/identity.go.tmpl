@@ -17,6 +17,7 @@ import (
 
 	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	auth{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/auth/{{.DB.Adapter}}"
 	"github.com/rocketinsidecorp/forge-go/auth/recoverymail"
 	"github.com/rocketinsidecorp/forge-go/i18n"
@@ -37,7 +38,7 @@ import (
 	"{{.Module}}/app/views"
 )
 
-func identityRoutes(ctx context.Context, app *forge.App, database {{if eq .DB.Adapter "postgres"}}*postgres.DB{{else}}*sqldb.DB{{end}}, translator *i18n.Translator) (*auth{{.DB.Adapter}}.Repository, *auth.Middleware, error) {
+func identityRoutes(ctx context.Context, app *forge.App, database {{if eq .DB.Adapter "postgres"}}*postgres.DB{{else}}*sqldb.DB{{end}}, translator *i18n.Translator) (*auth{{.DB.Adapter}}.Repository, *authhttp.Middleware, error) {
 	// Sessions end after FORGE_AUTH_SESSION_IDLE_TIMEOUT (default 2h) without
 	// a request, before their absolute expiry.
 	repository, err := auth{{.DB.Adapter}}.New(database, auth{{.DB.Adapter}}.WithSessionIdleTimeout(app.Config().Auth.SessionIdleTimeout))
@@ -93,7 +94,7 @@ func identityRoutes(ctx context.Context, app *forge.App, database {{if eq .DB.Ad
 	if err != nil {
 		return nil, nil, err
 	}
-	middleware, err := auth.NewMiddleware(repository)
+	middleware, err := authhttp.NewMiddleware(repository)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -147,17 +148,17 @@ func identityRoutes(ctx context.Context, app *forge.App, database {{if eq .DB.Ad
 {{- if .APIAuth}}
 	// HTML sign-in, sign-out, two-factor and password-reset pages
 	// (app/adapters/htmlauth); apiAuthRoutes below adds the JSON
-	// authentication APIs (--api-auth). auth.Browser verifies the CSRF token
+	// authentication APIs (--api-auth). authhttp.Browser verifies the CSRF token
 	// of every form. The reset pages and the "Forgot your password?" link
 	// exist only when reset emails can actually be sent.
 {{- else}}
 	// HTML sign-in, sign-out, two-factor and password-reset pages
 	// (app/adapters/htmlauth), the only way to enter a password: the JSON
-	// authentication APIs are opt-in (forge new --api-auth). auth.Browser
+	// authentication APIs are opt-in (forge new --api-auth). authhttp.Browser
 	// verifies the CSRF token of every form. The reset pages and the "Forgot
 	// your password?" link exist only when reset emails can actually be sent.
 {{- end}}
-	browserOptions := auth.BrowserOptions{
+	browserOptions := authhttp.BrowserOptions{
 		Login:     login,
 		Sessions:  repository,
 		MFA:       mfaService,
@@ -167,7 +168,7 @@ func identityRoutes(ctx context.Context, app *forge.App, database {{if eq .DB.Ad
 	if mailConfigured {
 		browserOptions.Recovery = recoveryService
 	}
-	browser, err := auth.NewBrowser(browserOptions)
+	browser, err := authhttp.NewBrowser(browserOptions)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -187,7 +188,7 @@ func identityRoutes(ctx context.Context, app *forge.App, database {{if eq .DB.Ad
 	// Pages behind a permission authenticate the session cookie and send
 	// signed-out browsers to the sign-in page, for example:
 	//
-	//	page, err := auth.RequireAudited("reports:read", reportsPage, repository)
+	//	page, err := authhttp.RequireAudited("reports:read", reportsPage, repository)
 	//	...
 	//	guarded, err := middleware.AuthenticateBrowser(htmlauth.SignInPath, page)
 
@@ -203,13 +204,13 @@ func identityRoutes(ctx context.Context, app *forge.App, database {{if eq .DB.Ad
 // login for browser scripts, MFA completion for both, JSON password
 // recovery and GET /v1/auth/session. Each is another place a password or a
 // one-time code is entered; remove the ones the application does not use.
-func apiAuthRoutes(app *forge.App, login *auth.LoginService, mfaService *auth.MFAService, recoveryService *auth.RecoveryService, repository *auth{{.DB.Adapter}}.Repository, middleware *auth.Middleware) error {
+func apiAuthRoutes(app *forge.App, login *auth.LoginService, mfaService *auth.MFAService, recoveryService *auth.RecoveryService, repository *auth{{.DB.Adapter}}.Repository, middleware *authhttp.Middleware) error {
 	// Bearer sessions (API clients)
-	loginHandler, err := auth.NewLoginHandler(login)
+	loginHandler, err := authhttp.NewLoginHandler(login)
 	if err != nil {
 		return err
 	}
-	logoutHandler, err := auth.NewAuditedLogoutHandler(repository, repository)
+	logoutHandler, err := authhttp.NewAuditedLogoutHandler(repository, repository)
 	if err != nil {
 		return err
 	}
@@ -220,7 +221,7 @@ func apiAuthRoutes(app *forge.App, login *auth.LoginService, mfaService *auth.MF
 		return err
 	}
 	if mfaService != nil {
-		mfaCompletion, err := auth.NewMFACompletionHandler(mfaService)
+		mfaCompletion, err := authhttp.NewMFACompletionHandler(mfaService)
 		if err != nil {
 			return err
 		}
@@ -230,11 +231,11 @@ func apiAuthRoutes(app *forge.App, login *auth.LoginService, mfaService *auth.MF
 	}
 
 	// Password recovery (public, non-enumerating; fail closed without mail)
-	recoveryRequestHandler, err := auth.NewAuditedPasswordRecoveryRequestHandler(recoveryService, repository)
+	recoveryRequestHandler, err := authhttp.NewAuditedPasswordRecoveryRequestHandler(recoveryService, repository)
 	if err != nil {
 		return err
 	}
-	recoveryResetHandler, err := auth.NewAuditedPasswordResetHandler(recoveryService, repository)
+	recoveryResetHandler, err := authhttp.NewAuditedPasswordResetHandler(recoveryService, repository)
 	if err != nil {
 		return err
 	}
@@ -246,7 +247,7 @@ func apiAuthRoutes(app *forge.App, login *auth.LoginService, mfaService *auth.MF
 	}
 
 	// Cookie sessions for browser scripts: the same cookies as the HTML pages
-	cookieLoginHandler, err := auth.NewCookieLoginHandler(login)
+	cookieLoginHandler, err := authhttp.NewCookieLoginHandler(login)
 	if err != nil {
 		return err
 	}
@@ -254,7 +255,7 @@ func apiAuthRoutes(app *forge.App, login *auth.LoginService, mfaService *auth.MF
 		return err
 	}
 	if mfaService != nil {
-		cookieMFACompletionHandler, err := auth.NewCookieMFACompletionHandler(mfaService)
+		cookieMFACompletionHandler, err := authhttp.NewCookieMFACompletionHandler(mfaService)
 		if err != nil {
 			return err
 		}
@@ -262,7 +263,7 @@ func apiAuthRoutes(app *forge.App, login *auth.LoginService, mfaService *auth.MF
 			return err
 		}
 	}
-	cookieLogoutHandler, err := auth.NewAuditedCookieLogoutHandler(repository, repository)
+	cookieLogoutHandler, err := authhttp.NewAuditedCookieLogoutHandler(repository, repository)
 	if err != nil {
 		return err
 	}

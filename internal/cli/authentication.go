@@ -354,7 +354,7 @@ func writeAuthenticationWiring(root string, plan authenticationPlan) error {
 func authenticationNotes(plan authenticationPlan) string {
 	var out strings.Builder
 	if !plan.browserPipeline {
-		out.WriteString("\n  WARNING: app/bootstrap/bootstrap.go does not appear to install csrf.Protection, web.MethodOverride and web.Flash (forge new generates useBrowserPipeline for them). auth.Browser refuses every form without a verified CSRF token, so sign-in cannot work until they are installed (docs/VIEWS.md).\n")
+		out.WriteString("\n  WARNING: app/bootstrap/bootstrap.go does not appear to install csrf.Protection, web.MethodOverride and web.Flash (forge new generates useBrowserPipeline for them). authhttp.Browser refuses every form without a verified CSRF token, so sign-in cannot work until they are installed (docs/VIEWS.md).\n")
 	}
 	if !plan.i18nMiddleware {
 		out.WriteString("\n  WARNING: app/bootstrap/bootstrap.go does not appear to build the translator and install its middleware (forge new does: `translator, err := locales.New(app.Config(), app.Logger())` in Configure, passed to generatedRoutes, and `translator.Middleware(i18n.NegotiationOptions{})` first in useBrowserPipeline). The pages' text comes from config/locales and needs them (docs/I18N.md).\n")
@@ -420,11 +420,11 @@ const apiAuthWiring = `
   a password or a one-time code is entered, so mount only those API clients
   or browser scripts use. Inside identityRoutes, after htmlauth.Register:
 
-	loginHandler, err := auth.NewLoginHandler(login) // bearer sessions
+	loginHandler, err := authhttp.NewLoginHandler(login) // bearer sessions
 	if err != nil {
 		return nil, nil, err
 	}
-	logoutHandler, err := auth.NewAuditedLogoutHandler(repository, repository)
+	logoutHandler, err := authhttp.NewAuditedLogoutHandler(repository, repository)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -434,11 +434,11 @@ const apiAuthWiring = `
 	if err := app.Handle("POST /auth/logout", logoutHandler); err != nil {
 		return nil, nil, err
 	}
-	cookieLoginHandler, err := auth.NewCookieLoginHandler(login) // browser scripts
+	cookieLoginHandler, err := authhttp.NewCookieLoginHandler(login) // browser scripts
 	if err != nil {
 		return nil, nil, err
 	}
-	cookieLogoutHandler, err := auth.NewAuditedCookieLogoutHandler(repository, repository)
+	cookieLogoutHandler, err := authhttp.NewAuditedCookieLogoutHandler(repository, repository)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -449,11 +449,11 @@ const apiAuthWiring = `
 		return nil, nil, err
 	}
 
-     With MFA, also mount auth.NewMFACompletionHandler(mfaService) at
-     POST /auth/mfa/complete and auth.NewCookieMFACompletionHandler(mfaService)
+     With MFA, also mount authhttp.NewMFACompletionHandler(mfaService) at
+     POST /auth/mfa/complete and authhttp.NewCookieMFACompletionHandler(mfaService)
      at POST /auth/cookie/mfa/complete; for JSON password recovery,
-     auth.NewAuditedPasswordRecoveryRequestHandler(recoveryService, repository)
-     and auth.NewAuditedPasswordResetHandler(recoveryService, repository) at
+     authhttp.NewAuditedPasswordRecoveryRequestHandler(recoveryService, repository)
+     and authhttp.NewAuditedPasswordResetHandler(recoveryService, repository) at
      POST /auth/recovery/request and /auth/recovery/reset. A new application
      shows the complete function: forge new NAME --api-auth (apiAuthRoutes in
      app/bootstrap/identity.go).

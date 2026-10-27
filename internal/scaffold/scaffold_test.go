@@ -633,7 +633,7 @@ func TestGenerateAuthenticationPagesWithAuth(t *testing.T) {
 			case "postgresql":
 				assertContains(t, dir, map[string][]string{
 					"app/bootstrap/identity.go": {
-						`"example.com/shop/app/adapters/htmlauth"`, "auth.NewBrowser(browserOptions)", "htmlauth.Register(app, browser, renderer, middleware, htmlauth.WithOrganizations(Organizations))",
+						`"example.com/shop/app/adapters/htmlauth"`, "authhttp.NewBrowser(browserOptions)", "htmlauth.Register(app, browser, renderer, middleware, htmlauth.WithOrganizations(Organizations))",
 						"if mailConfigured {\n\t\tbrowserOptions.Recovery = recoveryService", "recoverymail.New(sender, recoverymail.Config{", "FORGE_AUTH_PASSWORD_RESET_URL",
 						"middleware.AuthenticateBrowser(htmlauth.SignInPath, page)",
 					},

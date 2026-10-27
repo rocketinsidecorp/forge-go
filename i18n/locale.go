@@ -1,13 +1,14 @@
 package i18n
 
 import (
-	"fmt"
 	"strings"
+
+	"github.com/rocketinsidecorp/forge-go/internal/langtag"
 )
 
 // maxLocaleLength bounds a locale name: a 3-letter language, a script and a
 // 3-digit region ("zzz-Zzzz-999") is the longest name the grammar accepts.
-const maxLocaleLength = 12
+const maxLocaleLength = langtag.MaxLength
 
 // CanonicalLocale validates name against the subset of BCP 47 Forge
 // supports and returns its canonical spelling: a 2 or 3 letter language
@@ -18,35 +19,7 @@ const maxLocaleLength = 12
 // never contains a path separator, a dot or anything else a file name could
 // misuse.
 func CanonicalLocale(name string) (string, error) {
-	if name == "" || len(name) > maxLocaleLength {
-		return "", fmt.Errorf("i18n: invalid locale %q: expected a language such as en or pt-BR", truncate(name))
-	}
-	parts := strings.Split(name, "-")
-	if len(parts) > 3 || !isLetters(parts[0]) || len(parts[0]) < 2 || len(parts[0]) > 3 {
-		return "", fmt.Errorf("i18n: invalid locale %q: expected a language such as en or pt-BR", truncate(name))
-	}
-	canonical := []string{strings.ToLower(parts[0])}
-	rest := parts[1:]
-	if len(rest) > 0 && len(rest[0]) == 4 && isLetters(rest[0]) {
-		canonical = append(canonical, strings.ToUpper(rest[0][:1])+strings.ToLower(rest[0][1:]))
-		rest = rest[1:]
-	}
-	if len(rest) > 0 {
-		region := rest[0]
-		switch {
-		case len(region) == 2 && isLetters(region):
-			canonical = append(canonical, strings.ToUpper(region))
-		case len(region) == 3 && isDigits(region):
-			canonical = append(canonical, region)
-		default:
-			return "", fmt.Errorf("i18n: invalid locale %q: the region must be 2 letters or 3 digits", truncate(name))
-		}
-		rest = rest[1:]
-	}
-	if len(rest) > 0 {
-		return "", fmt.Errorf("i18n: invalid locale %q: expected language[-Script][-REGION]", truncate(name))
-	}
-	return strings.Join(canonical, "-"), nil
+	return langtag.Canonical(name)
 }
 
 // parents returns the fallback chain of a canonical locale, most specific
@@ -69,16 +42,6 @@ func language(locale string) string {
 		return locale[:cut]
 	}
 	return locale
-}
-
-func isLetters(s string) bool {
-	for i := range len(s) {
-		c := s[i] | 0x20
-		if c < 'a' || c > 'z' {
-			return false
-		}
-	}
-	return s != ""
 }
 
 func isDigits(s string) bool {
