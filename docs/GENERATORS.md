@@ -322,19 +322,32 @@ forge migrate && forge setup --email you@example.com
 `forge generate tenancy [--org SLUG] [--dry-run]` turns an `--auth`
 application into one with organizations. It writes one migration,
 `db/migrations/<timestamp>_add_organizations.{up,down}.sql`, that for every
-table a generator created with `--org-scoped` semantics (every table except
-`--public` ones) adds `org_id`, fills it with the organization `forge setup`
-created, adds the `(org_id, id)` index and `NOT NULL` (SQLite: triggers that
-refuse an empty `org_id`, since SQLite cannot add `NOT NULL` to a column) and,
-on PostgreSQL, enables and forces row-level security with the same policy
-`--org-scoped` generates; with `--org` it renames the hidden `default`
-organization to `SLUG`. It then rewrites every generated file as
+table a generator created (every table except `--public` ones) adds
+`org_id`, fills it with the organization `forge setup` created, requires it
+and makes it name an organization (`NOT NULL` and a foreign key to
+`forge_tenants` on MySQL/MariaDB; on SQLite, which adds neither to an
+existing column, triggers that refuse a NULL, empty or unknown `org_id`),
+adds the `(org_id, id)` index and, on PostgreSQL, enables and forces
+row-level security with the policy `--org-scoped` generates; with `--org` it
+renames the organization to `SLUG`. It then rewrites every generated file as
 `--org-scoped` writes it (create migrations record their generator command on
 their first line, so it re-renders them and refuses any you edited), flips
 `const Organizations` in `app_gen.go`, and from then on sign-in asks for the
-organization and `forge setup` for `--org`. The down migration reverses the
-schema and the slug, and refuses while any row belongs to another
-organization than the first; restore the code with version control.
+organization and `forge setup` for `--org`. Tables a migration without a
+generator header creates (hand-written, or in a `forge generate migration`
+file) are listed and left as they are; a header edited to say
+`--org-scoped` is refused.
+
+Each direction of the migration checks its preconditions before it changes
+anything, so a refusal leaves the schema, the data and the migration record
+as they were, on every database. Up refuses when more than one organization
+exists, or when tables hold rows and no organization exists (run `forge
+setup` first). Down refuses while more than one organization exists, even
+one without rows (once single-organization again, every organization's
+users would sign in to the first one's data), or while a row's `org_id` is
+another organization's or missing; it then reverts the schema and gives the
+organization back the hidden slug `default`. Restore the code with version
+control.
 
 ```sh
 forge new shop --auth && cd shop
@@ -350,7 +363,8 @@ forge generate scaffold invoice total:integer --org-scoped       # new tables ta
 It refuses an application without Forge identity (`forge generate
 authentication` first), one that already has organizations, and generated
 files edited by hand (nothing is written). On MySQL and MariaDB DDL is not
-transactional: a migration that fails half-way needs a manual fix.
+transactional: a migration that passes its checks and then fails half-way
+for another reason (a full disk, a lock timeout) needs a manual fix.
 
 ## Permission ownership
 

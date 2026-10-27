@@ -77,7 +77,7 @@ func TestGenerateTenancyConvertsASingleOrganizationApplication(t *testing.T) {
 		}
 	}
 	up := readFile(t, filepath.Join(dir, "db", "migrations", "20261027120000_add_organizations.up.sql"))
-	for _, want := range []string{`ALTER TABLE "products" ADD COLUMN "org_id" TEXT NOT NULL DEFAULT '';`, `UPDATE "products" SET "org_id" = (SELECT id FROM forge_tenants WHERE slug = 'default');`, `CREATE INDEX "tags_org_id_idx"`, "UPDATE forge_tenants SET slug = 'acme' WHERE slug = 'default';"} {
+	for _, want := range []string{`ALTER TABLE "products" ADD COLUMN "org_id" TEXT;`, `UPDATE "products" SET "org_id" = (SELECT id FROM forge_tenants ORDER BY id LIMIT 1);`, `CREATE INDEX "tags_org_id_idx"`, "UPDATE forge_tenants SET slug = 'acme';", "CONSTRAINT forge_tenancy_rows_need_forge_setup_first CHECK"} {
 		if !strings.Contains(up, want) {
 			t.Errorf("the migration lacks %q:\n%s", want, up)
 		}
@@ -131,6 +131,17 @@ func TestGenerateTenancyRefuses(t *testing.T) {
 			writeFile(t, path, readFile(t, path)+"\n// mine\n")
 			return dir
 		}, nil, "edited by hand"},
+		"an edited header": {func(t *testing.T) string {
+			dir := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+			generateIn(t, dir, "scaffold", "product", "name:string")
+			paths, err := filepath.Glob(filepath.Join(dir, "db", "migrations", "*_create_products.up.sql"))
+			if err != nil || len(paths) != 1 {
+				t.Fatal(paths, err)
+			}
+			source := readFile(t, paths[0])
+			writeFile(t, paths[0], strings.Replace(source, "product name:string", "product name:string --org-scoped", 1))
+			return dir
+		}, nil, "its header was edited"},
 		"a converted migration exists": {func(t *testing.T) string {
 			dir := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
 			writeFile(t, filepath.Join(dir, "db", "migrations", "20260101000000_add_organizations.up.sql"), "SELECT 1;")
@@ -155,22 +166,23 @@ func TestGenerateTenancyRefuses(t *testing.T) {
 }
 
 // TestTenancyMigrationOnEveryDatabase pins the SQL of each dialect: the
-// backfill, the required column and its index, PostgreSQL's row-level
-// security, and a down that refuses while another organization has rows.
+// guards before any change, the backfill with the one organization, the
+// required column, its index and foreign key (SQLite: triggers), PostgreSQL's
+// row-level security, and a down that refuses another organization first.
 func TestTenancyMigrationOnEveryDatabase(t *testing.T) {
 	t.Parallel()
 	for adapter, wants := range map[string][2][]string{
 		"postgres": {
-			{`ALTER TABLE "posts" ADD COLUMN "org_id" uuid;`, `ALTER TABLE "posts" ALTER COLUMN "org_id" SET NOT NULL;`, `ALTER TABLE "posts" FORCE ROW LEVEL SECURITY;`, `CREATE POLICY "posts_org" ON "posts"`},
-			{`DROP POLICY "posts_org" ON "posts";`, `ALTER TABLE "posts" DISABLE ROW LEVEL SECURITY;`, `DROP INDEX "posts_org_id_idx";`, `ALTER TABLE "posts" DROP COLUMN "org_id";`, "CHECK (rows_of_other_organizations = 0)"},
+			{"DO $forge_tenancy$", "IF (SELECT COUNT(*) FROM forge_tenants) > 1 THEN", `ALTER TABLE "posts" ADD COLUMN "org_id" uuid;`, `ALTER TABLE "posts" ALTER COLUMN "org_id" SET NOT NULL;`, `ALTER TABLE "posts" FORCE ROW LEVEL SECURITY;`, `CREATE POLICY "posts_org" ON "posts"`},
+			{`"org_id" IS DISTINCT FROM (SELECT id FROM forge_tenants ORDER BY id LIMIT 1)`, `DROP POLICY "posts_org" ON "posts";`, `ALTER TABLE "posts" DISABLE ROW LEVEL SECURITY;`, `DROP INDEX "posts_org_id_idx";`, `ALTER TABLE "posts" DROP COLUMN "org_id";`},
 		},
 		"mysql": {
-			{"ALTER TABLE `posts` ADD COLUMN `org_id` CHAR(36) NULL AFTER `id`;", "ALTER TABLE `posts` MODIFY `org_id` CHAR(36) NOT NULL;", "CREATE INDEX `posts_org_id_idx` ON `posts` (`org_id`, `id`);"},
-			{"DROP INDEX `posts_org_id_idx` ON `posts`;", "ALTER TABLE `posts` DROP COLUMN `org_id`;", "INSERT INTO forge_tenancy_rollback_guard"},
+			{"CREATE TEMPORARY TABLE forge_tenancy_guard", "ALTER TABLE `posts` ADD COLUMN `org_id` CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL AFTER `id`;", "ALTER TABLE `posts` MODIFY `org_id` CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL;", "CREATE INDEX `posts_org_id_idx` ON `posts` (`org_id`, `id`);", "ADD CONSTRAINT `posts_org_id_fk` FOREIGN KEY (`org_id`) REFERENCES forge_tenants (id);"},
+			{"CONSTRAINT forge_tenancy_rollback_needs_one_organization CHECK", "NOT (`org_id` <=> (SELECT id FROM forge_tenants ORDER BY id LIMIT 1))", "ALTER TABLE `posts` DROP FOREIGN KEY `posts_org_id_fk`;", "DROP INDEX `posts_org_id_idx` ON `posts`;", "ALTER TABLE `posts` DROP COLUMN `org_id`;"},
 		},
 		"sqlite": {
-			{`CREATE TRIGGER "posts_org_id_required_insert" BEFORE INSERT ON "posts"`, `CREATE TRIGGER "posts_org_id_required_update" BEFORE UPDATE OF "org_id" ON "posts"`},
-			{`DROP TRIGGER "posts_org_id_required_insert";`, `DROP INDEX "posts_org_id_idx";`, `ALTER TABLE "posts" DROP COLUMN "org_id";`},
+			{"CREATE TEMP TABLE forge_tenancy_guard", `CREATE TRIGGER "posts_org_id_required_insert" BEFORE INSERT ON "posts" WHEN NEW."org_id" IS NULL OR NOT EXISTS (SELECT 1 FROM forge_tenants WHERE id = NEW."org_id")`, `CREATE TRIGGER "posts_org_id_required_update" BEFORE UPDATE OF "org_id" ON "posts"`},
+			{`"org_id" IS NOT (SELECT id FROM forge_tenants ORDER BY id LIMIT 1)`, `DROP TRIGGER "posts_org_id_required_insert";`, `DROP INDEX "posts_org_id_idx";`, `ALTER TABLE "posts" DROP COLUMN "org_id";`},
 		},
 	} {
 		up, down := tenancyMigration(adapter, []string{"posts"}, "")
@@ -184,12 +196,37 @@ func TestTenancyMigrationOnEveryDatabase(t *testing.T) {
 				t.Errorf("%s down lacks %q:\n%s", adapter, want, down)
 			}
 		}
+		// The guards come before the first change.
+		for direction, script := range map[string]string{"up": up, "down": down} {
+			guard := strings.Index(script, "Preconditions, checked before anything changes")
+			change := strings.Index(script, "ALTER TABLE")
+			if guard < 0 || change < guard {
+				t.Errorf("%s %s changes the schema before its guards:\n%s", adapter, direction, script)
+			}
+		}
 		if adapter != "postgres" && strings.Contains(up, "ROW LEVEL SECURITY") {
 			t.Errorf("%s has no row-level security:\n%s", adapter, up)
 		}
 	}
 	up, down := tenancyMigration("sqlite", nil, "acme")
-	if !strings.Contains(up, "No generated table needs") || !strings.Contains(up, "SET slug = 'acme'") || strings.Contains(down, "guard") || !strings.Contains(down, "SET slug = 'default' WHERE slug = 'acme'") {
+	if !strings.Contains(up, "SET slug = 'acme'") || strings.Contains(up, "rows_need_forge_setup") || strings.Contains(down, "rows_of_other_organizations") || !strings.Contains(down, "forge_tenancy_rollback_needs_one_organization") || !strings.Contains(down, "SET slug = 'default';") {
 		t.Fatalf("no tables:\n%s\n%s", up, down)
+	}
+}
+
+// Tables a migration without a generator header creates are listed and
+// left as they are.
+func TestGenerateTenancyListsTablesItLeavesAlone(t *testing.T) {
+	t.Parallel()
+	dir := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	generateIn(t, dir, "scaffold", "product", "name:string")
+	writeFile(t, filepath.Join(dir, "db", "migrations", "20260101000000_create_audit_notes.up.sql"), "CREATE TABLE IF NOT EXISTS \"audit_notes\" (id TEXT PRIMARY KEY) STRICT;\n")
+	writeFile(t, filepath.Join(dir, "db", "migrations", "20260101000000_create_audit_notes.down.sql"), "DROP TABLE audit_notes;\n")
+	output, err := runTenancy(dir, "--dry-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "audit_notes stays as it is: db/migrations/20260101000000_create_audit_notes.up.sql creates it without a generator header") || !strings.Contains(output, "Org-scoped now: products") {
+		t.Fatalf("output:\n%s", output)
 	}
 }

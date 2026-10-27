@@ -72,6 +72,9 @@ func runGenerateTenancy(args []string, stdout io.Writer, root string, env []stri
 	for _, table := range plan.kept {
 		fmt.Fprintf(&out, "\n  %s stays global: it was generated with --public, which an org-scoped table cannot be (an anonymous request names no organization). Destroy it and generate it again with --org-scoped to scope it.\n", table)
 	}
+	for _, table := range plan.unrecorded {
+		fmt.Fprintf(&out, "\n  %s stays as it is: %s creates it without a generator header (hand-written, or in a forge generate migration file), so tenancy cannot tell how your code reads it. If its rows belong to an organization, add org_id to it and its queries by hand.\n", table.table, table.file)
+	}
 	organization := auth.DefaultTenantSlug
 	if slug != "" {
 		organization = slug
@@ -89,6 +92,7 @@ type tenancyPlan struct {
 	app        []byte
 	tables     []string
 	kept       []string
+	unrecorded []unrecordedTable
 }
 
 // recordedCommand finds the generator command a create migration records.
@@ -129,11 +133,13 @@ func planTenancy(root string, env []string, now time.Time, slug string) (tenancy
 		return tenancyPlan{}, err
 	}
 
-	commands, err := recordedCommands(projectRoot)
+	recorded, unrecorded, err := recordedCommands(projectRoot)
 	if err != nil {
 		return tenancyPlan{}, err
 	}
-	for _, command := range commands {
+	plan.unrecorded = unrecorded
+	for _, migration := range recorded {
+		command := migration.command
 		request, extend, err := parseRecordedCommand(command)
 		if err != nil {
 			return tenancyPlan{}, err
@@ -143,7 +149,11 @@ func planTenancy(root string, env []string, now time.Time, slug string) (tenancy
 			continue
 		}
 		if request.TenantScoped {
-			continue
+			// No generator writes --org-scoped into an application without
+			// organizations, so the header was edited: converting would
+			// trust it blindly, and skipping it would leave a table global
+			// unannounced.
+			return tenancyPlan{}, fmt.Errorf("refusing to convert: %s records `forge generate %s`, which an application without organizations cannot have generated (its header was edited), so the scope of %s is unknown; nothing was written. Restore the header the generator wrote, or remove the line if %s is hand-written", migration.file, command, request.Plural, request.Plural)
 		}
 		before, err := renderedSources(root, request, env, now, extend)
 		if err != nil {
@@ -187,31 +197,58 @@ func planTenancy(root string, env []string, now time.Time, slug string) (tenancy
 	return plan, nil
 }
 
+// recordedMigration is a create migration's file and the generator command
+// it records.
+type recordedMigration struct {
+	file    string
+	command string
+}
+
+// unrecordedTable is a table a migration without a generator header creates.
+type unrecordedTable struct {
+	table string
+	file  string
+}
+
+// createTable finds the tables a migration creates.
+var createTable = regexp.MustCompile("(?im)^\\s*CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?[`\"]?([A-Za-z_][A-Za-z0-9_]*)")
+
 // recordedCommands are the generator commands the create migrations of
-// db/migrations record, in migration order.
-func recordedCommands(projectRoot *os.Root) ([]string, error) {
+// db/migrations record, in migration order, and the tables migrations
+// without a generator header create (hand-written ones, or written into a
+// `forge generate migration` file): tenancy cannot know how their code reads
+// them, so it leaves them as they are and says so.
+func recordedCommands(projectRoot *os.Root) ([]recordedMigration, []unrecordedTable, error) {
 	dir := filepath.Join("db", "migrations")
 	entries, err := fs.ReadDir(projectRoot.FS(), dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var commands []string
+	var (
+		commands   []recordedMigration
+		unrecorded []unrecordedTable
+	)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".up.sql") {
 			continue
 		}
+		file := filepath.ToSlash(filepath.Join(dir, entry.Name()))
 		source, err := projectRoot.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if match := recordedCommand.FindSubmatch(source); match != nil {
-			commands = append(commands, string(match[1]))
+			commands = append(commands, recordedMigration{file: file, command: string(match[1])})
+			continue
+		}
+		for _, match := range createTable.FindAllSubmatch(source, -1) {
+			unrecorded = append(unrecorded, unrecordedTable{table: string(match[1]), file: file})
 		}
 	}
-	return commands, nil
+	return commands, unrecorded, nil
 }
 
 // parseRecordedCommand is the request a recorded command line makes.
@@ -272,80 +309,178 @@ func applyTenancy(root string, plan tenancyPlan) error {
 	return writeRootFileAtomic(projectRoot, scaffold.AppFile, plan.app)
 }
 
-// tenancyMigration adds org_id to tables in adapter's dialect: added
-// nullable (SQLite: empty), filled with the default organization's ID,
-// required, indexed with id, and on PostgreSQL behind the row-level security
-// policy of an org-scoped table. A database whose tables hold rows but has no
-// default organization (setup never ran) fails the migration rather than
-// leaving rows without one. The down reverts it and refuses, through a
-// guard table's CHECK constraint, while any row belongs to another
-// organization: dropping org_id would merge them into one.
+// tenancyMigration adds org_id to tables in adapter's dialect. Each
+// direction checks its preconditions first and changes nothing when one
+// fails (MySQL commits every DDL statement at once, so a refusal half-way
+// would leave a half-converted schema behind):
+//
+//   - up: at most one organization exists (the application's one, whatever
+//     its slug), and one exists when any table holds rows (setup ran);
+//   - down: at most one organization exists, and no row names another one
+//     (compared NULL-safely): dropping org_id would merge organizations.
+//
+// Then up adds org_id (nullable), fills it with that organization's ID,
+// requires it (SQLite: triggers, since SQLite cannot add NOT NULL to a
+// column), makes it name a tenant (MySQL: a foreign key; SQLite: the same
+// triggers), indexes it with id, and on PostgreSQL adds the row-level
+// security policy of an org-scoped table; with slug it renames the
+// organization. Down reverts the schema and gives the organization back the
+// hidden slug of a single-organization application.
 func tenancyMigration(adapter string, tables []string, slug string) (up, down string) {
 	q := func(name string) string { return quoteIdentifier(adapter, name) }
-	defaultOrg := "(SELECT id FROM forge_tenants WHERE slug = '" + auth.DefaultTenantSlug + "')"
+	tenants := "(SELECT COUNT(*) FROM forge_tenants)"
+	organization := "(SELECT id FROM forge_tenants ORDER BY id LIMIT 1)"
+	var anyRows []string
+	var foreignRows []string
+	for _, table := range tables {
+		anyRows = append(anyRows, fmt.Sprintf("EXISTS (SELECT 1 FROM %s)", q(table)))
+		var distinct string
+		switch adapter {
+		case "postgres":
+			distinct = q("org_id") + " IS DISTINCT FROM " + organization
+		case "mysql":
+			distinct = "NOT (" + q("org_id") + " <=> " + organization + ")"
+		default:
+			distinct = q("org_id") + " IS NOT " + organization
+		}
+		foreignRows = append(foreignRows, fmt.Sprintf("(SELECT COUNT(*) FROM %s WHERE %s)", q(table), distinct))
+	}
+
 	var u, d strings.Builder
 	u.WriteString("-- forge generate tenancy: the application's tables belong to organizations.\n")
-	u.WriteString("-- Every row so far belongs to the one organization setup created.\n")
-	if len(tables) == 0 {
-		u.WriteString("-- No generated table needs an org_id column.\n")
-	}
+	u.WriteString("-- Every row so far belongs to the application's one organization.\n")
 	d.WriteString("-- Reverts forge generate tenancy's schema. The generated code that filters by\n-- org_id is restored with version control.\n")
-	if slug != "" {
-		fmt.Fprintf(&d, "UPDATE forge_tenants SET slug = '%s' WHERE slug = '%s';\n", auth.DefaultTenantSlug, slug)
+	upChecks := []tenancyCheck{{
+		name:    "forge_tenancy_needs_at_most_one_organization",
+		message: "forge generate tenancy converts an application with one organization, and this database has several",
+		failed:  tenants + " > 1",
+	}}
+	if len(anyRows) > 0 {
+		upChecks = append(upChecks, tenancyCheck{
+			name:    "forge_tenancy_rows_need_forge_setup_first",
+			message: "the tables hold rows but no organization exists: run forge setup first, so the rows have an organization to belong to",
+			failed:  tenants + " = 0 AND (" + strings.Join(anyRows, " OR ") + ")",
+		})
 	}
-	if len(tables) > 0 {
-		d.WriteString("\n-- Refused while a row belongs to another organization than the first.\n")
-		d.WriteString("DROP TABLE IF EXISTS forge_tenancy_rollback_guard;\n")
-		d.WriteString("CREATE TABLE forge_tenancy_rollback_guard (rows_of_other_organizations INTEGER NOT NULL CHECK (rows_of_other_organizations = 0));\n")
+	downChecks := []tenancyCheck{{
+		name:    "forge_tenancy_rollback_needs_one_organization",
+		message: "rollback refused: more than one organization exists, and a single-organization application would let every one of them sign in to the first one's data. Remove the other organizations (and their rows) first",
+		failed:  tenants + " > 1",
+	}}
+	if len(foreignRows) > 0 {
+		downChecks = append(downChecks, tenancyCheck{
+			name:    "forge_tenancy_rollback_rows_of_other_organizations",
+			message: "rollback refused: rows belong to another organization than the application's one (or to none), and dropping org_id would merge them into it",
+			failed:  strings.Join(foreignRows, " + ") + " > 0",
+		})
 	}
+	u.WriteString(tenancyGuard(adapter, upChecks))
+	d.WriteString(tenancyGuard(adapter, downChecks))
+
 	for _, table := range tables {
 		index := q(table + "_org_id_idx")
+		foreignKey := q(table + "_org_id_fk")
 		fmt.Fprintf(&u, "\n-- %s\n", table)
 		switch adapter {
 		case "postgres":
 			fmt.Fprintf(&u, "ALTER TABLE %s ADD COLUMN %s uuid;\n", q(table), q("org_id"))
-			fmt.Fprintf(&u, "UPDATE %s SET %s = %s;\n", q(table), q("org_id"), defaultOrg)
+			fmt.Fprintf(&u, "UPDATE %s SET %s = %s;\n", q(table), q("org_id"), organization)
 			fmt.Fprintf(&u, "ALTER TABLE %s ALTER COLUMN %s SET NOT NULL;\n", q(table), q("org_id"))
 			fmt.Fprintf(&u, "CREATE INDEX %s ON %s (%s, %s);\n", index, q(table), q("org_id"), q("id"))
 			u.WriteString(rowSecurity(table, q))
 		case "mysql":
-			fmt.Fprintf(&u, "ALTER TABLE %s ADD COLUMN %s CHAR(36) NULL AFTER %s;\n", q(table), q("org_id"), q("id"))
-			fmt.Fprintf(&u, "UPDATE %s SET %s = %s;\n", q(table), q("org_id"), defaultOrg)
-			fmt.Fprintf(&u, "ALTER TABLE %s MODIFY %s CHAR(36) NOT NULL;\n", q(table), q("org_id"))
+			fmt.Fprintf(&u, "ALTER TABLE %s ADD COLUMN %s %s NULL AFTER %s;\n", q(table), q("org_id"), mysqlOrgIDType, q("id"))
+			fmt.Fprintf(&u, "UPDATE %s SET %s = %s;\n", q(table), q("org_id"), organization)
+			fmt.Fprintf(&u, "ALTER TABLE %s MODIFY %s %s NOT NULL;\n", q(table), q("org_id"), mysqlOrgIDType)
 			fmt.Fprintf(&u, "CREATE INDEX %s ON %s (%s, %s);\n", index, q(table), q("org_id"), q("id"))
-		default: // sqlite: a column added NOT NULL needs a constant default.
-			fmt.Fprintf(&u, "ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT '';\n", q(table), q("org_id"))
-			fmt.Fprintf(&u, "UPDATE %s SET %s = %s;\n", q(table), q("org_id"), defaultOrg)
-			fmt.Fprintf(&u, "-- The empty default never names an organization: refuse it.\n")
+			fmt.Fprintf(&u, "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES forge_tenants (id);\n", q(table), foreignKey, q("org_id"))
+		default: // sqlite
+			fmt.Fprintf(&u, "ALTER TABLE %s ADD COLUMN %s TEXT;\n", q(table), q("org_id"))
+			fmt.Fprintf(&u, "UPDATE %s SET %s = %s;\n", q(table), q("org_id"), organization)
+			fmt.Fprintf(&u, "-- SQLite adds neither NOT NULL nor a foreign key to an existing column: these\n-- triggers refuse a row whose org_id is missing or names no organization.\n")
 			for _, event := range []string{"INSERT", "UPDATE OF " + q("org_id")} {
 				name := q(table + "_org_id_required_" + strings.ToLower(strings.Fields(event)[0]))
-				fmt.Fprintf(&u, "CREATE TRIGGER %s BEFORE %s ON %s WHEN NEW.%s = '' BEGIN SELECT RAISE(ABORT, '%s.org_id is required'); END;\n", name, event, q(table), q("org_id"), table)
+				fmt.Fprintf(&u, "CREATE TRIGGER %s BEFORE %s ON %s WHEN NEW.%s IS NULL OR NOT EXISTS (SELECT 1 FROM forge_tenants WHERE id = NEW.%s) BEGIN SELECT RAISE(ABORT, '%s.org_id must name an organization'); END;\n", name, event, q(table), q("org_id"), q("org_id"), table)
 			}
 			fmt.Fprintf(&u, "CREATE INDEX %s ON %s (%s, %s);\n", index, q(table), q("org_id"), q("id"))
 		}
 
 		fmt.Fprintf(&d, "\n-- %s\n", table)
-		if adapter == "postgres" {
+		switch adapter {
+		case "postgres":
 			fmt.Fprintf(&d, "DROP POLICY %s ON %s;\n", q(table+"_org"), q(table))
 			fmt.Fprintf(&d, "ALTER TABLE %s NO FORCE ROW LEVEL SECURITY;\nALTER TABLE %s DISABLE ROW LEVEL SECURITY;\n", q(table), q(table))
-		}
-		fmt.Fprintf(&d, "INSERT INTO forge_tenancy_rollback_guard SELECT COUNT(*) FROM %s WHERE %s <> %s;\n", q(table), q("org_id"), defaultOrg)
-		switch adapter {
-		case "mysql":
-			fmt.Fprintf(&d, "DROP INDEX %s ON %s;\n", index, q(table))
-		case "sqlite":
-			fmt.Fprintf(&d, "DROP TRIGGER %s;\nDROP TRIGGER %s;\n", q(table+"_org_id_required_insert"), q(table+"_org_id_required_update"))
 			fmt.Fprintf(&d, "DROP INDEX %s;\n", index)
+		case "mysql":
+			fmt.Fprintf(&d, "ALTER TABLE %s DROP FOREIGN KEY %s;\n", q(table), foreignKey)
+			fmt.Fprintf(&d, "DROP INDEX %s ON %s;\n", index, q(table))
 		default:
+			fmt.Fprintf(&d, "DROP TRIGGER %s;\nDROP TRIGGER %s;\n", q(table+"_org_id_required_insert"), q(table+"_org_id_required_update"))
 			fmt.Fprintf(&d, "DROP INDEX %s;\n", index)
 		}
 		fmt.Fprintf(&d, "ALTER TABLE %s DROP COLUMN %s;\n", q(table), q("org_id"))
 	}
-	if len(tables) > 0 {
-		d.WriteString("\nDROP TABLE forge_tenancy_rollback_guard;\n")
-	}
 	if slug != "" {
-		fmt.Fprintf(&u, "\n-- The first organization's sign-in slug.\nUPDATE forge_tenants SET slug = '%s' WHERE slug = '%s';\n", slug, auth.DefaultTenantSlug)
+		fmt.Fprintf(&u, "\n-- The organization's sign-in slug (at most one organization exists).\nUPDATE forge_tenants SET slug = '%s';\n", slug)
 	}
+	fmt.Fprintf(&d, "\n-- The one organization signs in under the hidden slug of a single-organization\n-- application again.\nUPDATE forge_tenants SET slug = '%s';\n", auth.DefaultTenantSlug)
 	return u.String(), d.String()
+}
+
+// mysqlOrgIDType is org_id on MySQL and MariaDB: the type and collation of
+// forge_tenants.id, which a foreign key needs.
+const mysqlOrgIDType = "CHAR(36) CHARACTER SET ascii COLLATE ascii_bin"
+
+// tenancyCheck is a precondition of a tenancy migration: failed is a
+// boolean SQL expression that is true when it does not hold.
+type tenancyCheck struct {
+	name    string
+	message string
+	failed  string
+}
+
+// tenancyGuard runs checks before anything changes and stops the migration
+// at the first one that fails. PostgreSQL raises the message from a DO
+// block. MySQL and SQLite have no such statement in a script, so a row goes
+// into a temporary table (it changes no schema and disappears with the
+// session) whose CHECK constraints, named after the checks, refuse it.
+func tenancyGuard(adapter string, checks []tenancyCheck) string {
+	var b strings.Builder
+	b.WriteString("\n-- Preconditions, checked before anything changes: a refusal leaves the\n-- database exactly as it was.\n")
+	if adapter == "postgres" {
+		b.WriteString("DO $forge_tenancy$\nBEGIN\n")
+		for _, check := range checks {
+			fmt.Fprintf(&b, "    IF %s THEN\n        RAISE EXCEPTION '%%', '%s';\n    END IF;\n", check.failed, strings.ReplaceAll(check.message, "'", "''"))
+		}
+		b.WriteString("END\n$forge_tenancy$;\n")
+		return b.String()
+	}
+	table, drop := "temp.forge_tenancy_guard", "DROP TABLE IF EXISTS temp.forge_tenancy_guard;\n"
+	create := "CREATE TEMP TABLE forge_tenancy_guard ("
+	if adapter == "mysql" {
+		table, drop = "forge_tenancy_guard", "DROP TEMPORARY TABLE IF EXISTS forge_tenancy_guard;\n"
+		create = "CREATE TEMPORARY TABLE forge_tenancy_guard ("
+	}
+	for _, check := range checks {
+		fmt.Fprintf(&b, "-- %s: %s.\n", check.name, check.message)
+	}
+	b.WriteString(drop + create + "\n")
+	var columns, values []string
+	for i, check := range checks {
+		column := fmt.Sprintf("check_%d", i+1)
+		columns = append(columns, column)
+		values = append(values, fmt.Sprintf("CASE WHEN %s THEN 1 ELSE 0 END", check.failed))
+		fmt.Fprintf(&b, "    %s INTEGER NOT NULL,\n", column)
+	}
+	for i, check := range checks {
+		separator := ","
+		if i == len(checks)-1 {
+			separator = ""
+		}
+		fmt.Fprintf(&b, "    CONSTRAINT %s CHECK (check_%d = 0)%s\n", check.name, i+1, separator)
+	}
+	b.WriteString(");\n")
+	fmt.Fprintf(&b, "INSERT INTO %s (%s) SELECT %s;\n", table, strings.Join(columns, ", "), strings.Join(values, ", "))
+	b.WriteString(drop)
+	return b.String()
 }

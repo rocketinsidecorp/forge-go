@@ -255,7 +255,8 @@ organization `forge setup` created, then indexed and `NOT NULL`; on
 PostgreSQL with row-level security forced), the generated code is rewritten
 as `--org-scoped` would write it, and sign-in starts asking for the
 organization. It refuses files you edited and runs backwards with
-`forge rollback`:
+`forge rollback`, which refuses (changing nothing) while a second
+organization exists:
 
 ```sh
 forge generate tenancy --org acme --dry-run   # the migration and every file it rewrites

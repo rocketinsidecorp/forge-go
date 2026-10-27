@@ -7,8 +7,9 @@
   MySQL, MariaDB and SQLite), [ADR 0026](0026-authentication-pages-and-setup.md)
   (pages and `setup` only with `--auth`; `setup --org`)
 - **Parity with:** Forge-Rust's `forge new --auth`, `--tenants`,
-  `forge generate authentication` and `forge generate tenancy` (tracked as a
-  Forge-Rust follow-up, after Forge-Go reaches 100%)
+  `forge generate authentication` and `forge generate tenancy`, tracked in
+  [forge-rust#95](https://github.com/rocketinsidecorp/forge-rust/issues/95)
+  (after Forge-Go reaches 100%, decision D37)
 
 ## Context
 
@@ -64,25 +65,44 @@ The owner decided on 2026-10-26:
   refused with "create the app with --tenants", sign-in asks for email and
   password only, and `forge setup --email` creates one hidden default
   organization (`auth.DefaultTenantSlug`, `default`) that every user belongs
-  to, so identity keeps one code path (`auth.WithDefaultTenant`). With
+  to, so identity keeps one code path. Login and recovery are built with
+  `auth.WithSingleTenant` and `auth.WithRecoverySingleTenant`, which always
+  use that tenant and ignore any tenant a client posts, and the pages drop a
+  posted one too. With
   `--tenants` the user-facing tenant is an organization: `org_id` columns,
   `--org-scoped`, `forge setup --org SLUG`, an "Organization" sign-in field,
-  `Org`/`OrgID` names in generated code. Framework internals keep their names
+  `Org`/`OrgID` names in generated code. On SQLite and MySQL/MariaDB a
+  generated `org_id` is a foreign key to `forge_tenants (id)` (PostgreSQL
+  isolates it with row-level security), so a row cannot name an organization
+  that does not exist. Framework internals keep their names
   (`TenantContext`, `forge_tenants`, `forge.tenant_id`). There is no
   `--tenant-name`.
 - **Converting (D36).** `forge generate tenancy [--org SLUG]` turns an
   `--auth` application into one with organizations: one migration adds
-  `org_id` to every generated table, backfills it with the default
-  organization, adds the index and `NOT NULL` (on SQLite a non-empty check
-  through triggers, since SQLite cannot add `NOT NULL` to a column), and on
-  PostgreSQL enables and forces row-level security; it renames the default
-  organization to `SLUG`, rewrites every generated file as `--org-scoped`
+  `org_id` to every generated table, backfills it with the application's one
+  organization, makes it required and an organization (`NOT NULL` and a
+  foreign key on MySQL/MariaDB; on SQLite, which adds neither to an existing
+  column, triggers that refuse a NULL, empty or unknown `org_id`), indexes
+  it, and on PostgreSQL enables and forces row-level security; it renames
+  the organization to `SLUG`, rewrites every generated file as `--org-scoped`
   would write it (create migrations record their generator command, so the
-  generator re-renders them) and flips `Organizations` in `app_gen.go`. The
-  down migration reverses the schema and the slug, and refuses (a `CHECK`
-  on a guard table) while any row belongs to another organization than the
-  first; the generated code is restored with version control. It refuses applications without identity, applications that already
-  have organizations and generated files edited by hand.
+  generator re-renders them) and flips `Organizations` in `app_gen.go`. It
+  refuses applications without identity, applications that already have
+  organizations, generated files edited by hand and a recorded header that
+  says `--org-scoped`; tables a migration without a generator header creates
+  are listed and left as they are.
+- **Guards before changes.** Both directions of the tenancy migration check
+  their preconditions before any DDL or data change, on every backend
+  (PostgreSQL: a `DO` block that raises; MySQL/MariaDB and SQLite: a row in a
+  temporary table whose named `CHECK` constraints fail), so a refusal leaves
+  the schema, the data and the migration record exactly as they were. Up
+  needs at most one organization, and one when any table holds rows (setup
+  ran). Down needs at most one organization (another organization, even
+  without rows, could otherwise sign in to the first one's data once the
+  application is single-organization again) and no row whose `org_id`
+  differs, NULL-safely, from it; it then reverts the schema and renames the
+  organization back to `default`. The generated code is restored with
+  version control.
 
 ## Consequences
 
@@ -93,8 +113,10 @@ The owner decided on 2026-10-26:
   generate authentication` and `tenancy` refuse them with the reason.
 - `--public` no longer needs `--global` in an application without
   organizations; with organizations it still refuses `--org-scoped`.
-- On MySQL and MariaDB DDL is not transactional, so a tenancy migration that
-  fails half-way (a full disk, a lock timeout) leaves the tables it already
-  changed, as any MySQL migration with DDL does, and needs a manual fix.
+- A refused tenancy migration changes nothing on any backend. On MySQL and
+  MariaDB DDL is not transactional, so a migration that passes its guards and
+  then fails half-way for another reason (a full disk, a lock timeout) leaves
+  the tables it already changed, as any MySQL migration with DDL does, and
+  needs a manual fix.
 - `forge destroy` of a resource converted by `forge generate tenancy` takes
   `--org-scoped`, as the converted files are what that flag generates.

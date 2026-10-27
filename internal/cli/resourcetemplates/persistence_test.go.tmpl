@@ -63,13 +63,38 @@ func new[[.Title]]Repository(t *testing.T) (*persistence.[[.Title]]Repository, [
 }
 [[- if .Tenant]]
 
-// new[[.Title]]Tenant returns a fresh tenant and a context carrying it.
-func new[[.Title]]Tenant(t *testing.T) (tenancy.Tenant, context.Context) {
+[[- if .Postgres]]
+// new[[.Title]]Tenant returns a fresh tenant and a context carrying it. Row-level
+// security isolates the table on PostgreSQL, so the tenant needs no
+// forge_tenants row.
+func new[[.Title]]Tenant(t *testing.T, _ *postgrestest.RLS) (tenancy.Tenant, context.Context) {
 	t.Helper()
 	tenant, err := tenancy.New(uuid.MustNew())
 	if err != nil {
 		t.Fatal(err)
 	}
+[[- else]]
+// new[[.Title]]Tenant creates an organization in database (org_id references
+// forge_tenants) and returns it and a context carrying it.
+func new[[.Title]]Tenant(t *testing.T, database *sqldb.DB) (tenancy.Tenant, context.Context) {
+	t.Helper()
+	organization, id := uuid.MustNew(), uuid.MustNew()
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{"INSERT INTO forge_organizations (id, name) VALUES (?, ?)", []any{organization, "Test organization"}},
+		{"INSERT INTO forge_tenants (id, organization_id, slug) VALUES (?, ?, ?)", []any{id, organization, "org-" + id.String()}},
+	} {
+		if _, err := database.SQL().ExecContext(context.Background(), statement.sql, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tenant, err := tenancy.New(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+[[- end]]
 	ctx, err := tenancy.WithContext(context.Background(), tenant)
 	if err != nil {
 		t.Fatal(err)
@@ -131,9 +156,9 @@ func [[.Name]]IDs(t *testing.T, ctx context.Context, repo *persistence.[[.Title]
 [[- end]]
 
 func Test[[.Title]]RepositoryCreateAndGet(t *testing.T) {
-	repo, _ := new[[.Title]]Repository(t)
+	repo, [[if .Tenant]]database[[else]]_[[end]] := new[[.Title]]Repository(t)
 [[- if .Tenant]]
-	_, ctx := new[[.Title]]Tenant(t)
+	_, ctx := new[[.Title]]Tenant(t, database)
 [[- else]]
 	ctx := context.Background()
 [[- end]]
@@ -160,9 +185,9 @@ func Test[[.Title]]RepositoryCreateAndGet(t *testing.T) {
 }
 
 func Test[[.Title]]RepositoryGetMissing(t *testing.T) {
-	repo, _ := new[[.Title]]Repository(t)
+	repo, [[if .Tenant]]database[[else]]_[[end]] := new[[.Title]]Repository(t)
 [[- if .Tenant]]
-	_, ctx := new[[.Title]]Tenant(t)
+	_, ctx := new[[.Title]]Tenant(t, database)
 [[- else]]
 	ctx := context.Background()
 [[- end]]
@@ -172,9 +197,9 @@ func Test[[.Title]]RepositoryGetMissing(t *testing.T) {
 }
 
 func Test[[.Title]]RepositoryTranslatesDatabaseErrors(t *testing.T) {
-	repo, _ := new[[.Title]]Repository(t)
+	repo, [[if .Tenant]]database[[else]]_[[end]] := new[[.Title]]Repository(t)
 [[- if .Tenant]]
-	_, ctx := new[[.Title]]Tenant(t)
+	_, ctx := new[[.Title]]Tenant(t, database)
 [[- else]]
 	ctx := context.Background()
 [[- end]]
@@ -196,9 +221,9 @@ func Test[[.Title]]RepositoryTranslatesDatabaseErrors(t *testing.T) {
 }
 
 func Test[[.Title]]RepositoryListWalksEveryRowOnceNewestFirst(t *testing.T) {
-	repo, _ := new[[.Title]]Repository(t)
+	repo, [[if .Tenant]]database[[else]]_[[end]] := new[[.Title]]Repository(t)
 [[- if .Tenant]]
-	_, ctx := new[[.Title]]Tenant(t)
+	_, ctx := new[[.Title]]Tenant(t, database)
 [[- else]]
 	ctx := context.Background()
 [[- end]]
@@ -243,9 +268,9 @@ func Test[[.Title]]RepositoryListWalksEveryRowOnceNewestFirst(t *testing.T) {
 }
 
 func Test[[.Title]]RepositoryListEmpty(t *testing.T) {
-	repo, _ := new[[.Title]]Repository(t)
+	repo, [[if .Tenant]]database[[else]]_[[end]] := new[[.Title]]Repository(t)
 [[- if .Tenant]]
-	_, ctx := new[[.Title]]Tenant(t)
+	_, ctx := new[[.Title]]Tenant(t, database)
 [[- else]]
 	ctx := context.Background()
 [[- end]]
@@ -256,9 +281,9 @@ func Test[[.Title]]RepositoryListEmpty(t *testing.T) {
 }
 
 func Test[[.Title]]RepositoryUpdate(t *testing.T) {
-	repo, _ := new[[.Title]]Repository(t)
+	repo, [[if .Tenant]]database[[else]]_[[end]] := new[[.Title]]Repository(t)
 [[- if .Tenant]]
-	_, ctx := new[[.Title]]Tenant(t)
+	_, ctx := new[[.Title]]Tenant(t, database)
 [[- else]]
 	ctx := context.Background()
 [[- end]]
@@ -299,9 +324,9 @@ func Test[[.Title]]RepositoryUpdate(t *testing.T) {
 [[- if .HasOptional]]
 
 func Test[[.Title]]RepositoryUpdateClearsOptionalFields(t *testing.T) {
-	repo, _ := new[[.Title]]Repository(t)
+	repo, [[if .Tenant]]database[[else]]_[[end]] := new[[.Title]]Repository(t)
 [[- if .Tenant]]
-	_, ctx := new[[.Title]]Tenant(t)
+	_, ctx := new[[.Title]]Tenant(t, database)
 [[- else]]
 	ctx := context.Background()
 [[- end]]
@@ -332,12 +357,12 @@ func Test[[.Title]]RepositoryUpdateClearsOptionalFields(t *testing.T) {
 // Versions are 64-bit: a client-supplied version beyond 32 bits must be a stale
 // version, not a database error.
 func Test[[.Title]]RepositoryHugeVersionsAreStale(t *testing.T) {
+	repo, [[if .Tenant]]database[[else]]_[[end]] := new[[.Title]]Repository(t)
 	[[- if .Tenant]]
-	_, ctx := new[[.Title]]Tenant(t)
+	_, ctx := new[[.Title]]Tenant(t, database)
 	[[- else]]
 	ctx := context.Background()
 	[[- end]]
-	repo, _ := new[[.Title]]Repository(t)
 	entity := mustCreate[[.Title]](t, ctx, repo, true)
 	huge := int(int64(math.MaxInt32) + 1)
 
@@ -351,9 +376,9 @@ func Test[[.Title]]RepositoryHugeVersionsAreStale(t *testing.T) {
 }
 
 func Test[[.Title]]RepositoryDelete(t *testing.T) {
-	repo, _ := new[[.Title]]Repository(t)
+	repo, [[if .Tenant]]database[[else]]_[[end]] := new[[.Title]]Repository(t)
 [[- if .Tenant]]
-	_, ctx := new[[.Title]]Tenant(t)
+	_, ctx := new[[.Title]]Tenant(t, database)
 [[- else]]
 	ctx := context.Background()
 [[- end]]
@@ -381,9 +406,9 @@ func Test[[.Title]]RepositoryDelete(t *testing.T) {
 // for, it never reads, changes or removes tenant B's rows, and each tenant's
 // list holds only its own.
 func Test[[.Title]]RepositoryIsolatesTenants(t *testing.T) {
-	repo, _ := new[[.Title]]Repository(t)
-	_, ctxA := new[[.Title]]Tenant(t)
-	_, ctxB := new[[.Title]]Tenant(t)
+	repo, database := new[[.Title]]Repository(t)
+	_, ctxA := new[[.Title]]Tenant(t, database)
+	_, ctxB := new[[.Title]]Tenant(t, database)
 
 	var rowsA, rowsB []domain.[[.Title]]
 	for range 3 {
@@ -495,8 +520,8 @@ func Test[[.Title]]RuntimeRoleCannotChangeTheSchema(t *testing.T) {
 // tenant predicate, and a session without a tenant sees nothing.
 func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 	repo, database := new[[.Title]]Repository(t)
-	_, ctxA := new[[.Title]]Tenant(t)
-	tenantB, ctxB := new[[.Title]]Tenant(t)
+	_, ctxA := new[[.Title]]Tenant(t, database)
+	tenantB, ctxB := new[[.Title]]Tenant(t, database)
 	own := mustCreate[[.Title]](t, ctxA, repo, true)
 	foreign := mustCreate[[.Title]](t, ctxB, repo, true)
 
@@ -565,8 +590,8 @@ func Test[[.Title]]RowLevelSecurity(t *testing.T) {
 // that connects as the owner would see every tenant's rows.
 func Test[[.Title]]RowLevelSecurityAppliesToTheOwner(t *testing.T) {
 	repo, database := new[[.Title]]Repository(t)
-	_, ctxA := new[[.Title]]Tenant(t)
-	_, ctxB := new[[.Title]]Tenant(t)
+	_, ctxA := new[[.Title]]Tenant(t, database)
+	_, ctxB := new[[.Title]]Tenant(t, database)
 	mustCreate[[.Title]](t, ctxA, repo, true)
 	mustCreate[[.Title]](t, ctxB, repo, true)
 

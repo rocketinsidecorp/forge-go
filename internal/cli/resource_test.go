@@ -487,8 +487,16 @@ func TestResourceIdentifiersAreUUIDv7AndTypesAreExact(t *testing.T) {
 	}
 	tenantColumn := map[string]*regexp.Regexp{
 		"postgres": regexp.MustCompile(`(?m)^\s+"org_id"\s+uuid NOT NULL,?$`),
-		"mysql":    regexp.MustCompile("(?m)^\\s+`org_id`\\s+CHAR\\(36\\) NOT NULL,?$"),
-		"sqlite":   regexp.MustCompile(`(?m)^\s+"org_id"\s+TEXT NOT NULL,?$`),
+		// The type and collation of forge_tenants.id, which the foreign key
+		// below needs.
+		"mysql":  regexp.MustCompile("(?m)^\\s+`org_id`\\s+CHAR\\(36\\) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,?$"),
+		"sqlite": regexp.MustCompile(`(?m)^\s+"org_id"\s+TEXT NOT NULL REFERENCES forge_tenants \(id\),?$`),
+	}
+	// org_id names an organization: a foreign key on the databases without
+	// row-level security.
+	tenantForeignKey := map[string]string{
+		"mysql":  "CONSTRAINT `products_org_id_fk` FOREIGN KEY (`org_id`) REFERENCES forge_tenants (id)",
+		"sqlite": `REFERENCES forge_tenants (id)`,
 	}
 	for _, database := range resourceDatabases {
 		for _, tenant := range []bool{true, false} {
@@ -509,6 +517,9 @@ func TestResourceIdentifiersAreUUIDv7AndTypesAreExact(t *testing.T) {
 					}
 					if tenant && !tenantColumn[database.name].MatchString(up) {
 						t.Errorf("org_id is not the %s UUID storage:\n%s", database.name, up)
+					}
+					if want := tenantForeignKey[database.name]; tenant && want != "" && !strings.Contains(up, want) {
+						t.Errorf("org_id is not a foreign key to forge_tenants on %s:\n%s", database.name, up)
 					}
 					if !tenant && strings.Contains(up, "org_id") {
 						t.Errorf("a global table has an org_id column:\n%s", up)

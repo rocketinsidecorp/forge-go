@@ -239,9 +239,11 @@ func renderMigration(v resourceView) (up, down string) {
 		case v.Postgres:
 			columns = append(columns, column{q("org_id"), "uuid NOT NULL"})
 		case v.MySQL:
-			columns = append(columns, column{q("org_id"), "CHAR(36) NOT NULL"})
+			// forge_tenants.id's type and collation: the foreign key below
+			// needs them.
+			columns = append(columns, column{q("org_id"), mysqlOrgIDType + " NOT NULL"})
 		default:
-			columns = append(columns, column{q("org_id"), "TEXT NOT NULL"})
+			columns = append(columns, column{q("org_id"), "TEXT NOT NULL REFERENCES forge_tenants (id)"})
 		}
 	}
 	for _, f := range v.Fields {
@@ -278,7 +280,8 @@ func renderMigration(v resourceView) (up, down string) {
 	if v.MySQL {
 		lines = append(lines, fmt.Sprintf("    CONSTRAINT %s CHECK (%s >= 1)", versionConstraint, q("version")))
 		if v.Tenant {
-			lines = append(lines, fmt.Sprintf("    INDEX %s (%s, %s)", indexName, q("org_id"), q("id")))
+			lines = append(lines, fmt.Sprintf("    INDEX %s (%s, %s)", indexName, q("org_id"), q("id")),
+				fmt.Sprintf("    CONSTRAINT %s FOREIGN KEY (%s) REFERENCES forge_tenants (id)", q(table+"_org_id_fk"), q("org_id")))
 		}
 	}
 
