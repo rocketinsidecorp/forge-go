@@ -226,7 +226,7 @@ func TestLayoutShowsSignOutOnlyToSignedInUsers(t *testing.T) {
 		return recorder.Body.String()
 	}
 	signedIn := render(middleware.Authenticate(page), "Bearer "+token.Reveal())
-	for _, want := range []string{`<header class="session">`, `<form method="post" action="/session" class="sign-out">`, `name="_method" value="DELETE"`, `Sign out`} {
+	for _, want := range []string{`<header class="session">`, `<form method="post" action="/session" class="sign-out">`, `name="_method" value="DELETE"`, `<input type="hidden" name="authenticity_token" value="`, `Sign out`} {
 		if !strings.Contains(signedIn, want) {
 			t.Errorf("a signed-in page lacks %q:\n%s", want, signedIn)
 		}

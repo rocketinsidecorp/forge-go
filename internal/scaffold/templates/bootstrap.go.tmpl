@@ -153,7 +153,7 @@ func Configure(ctx context.Context, app *forge.App) error {
 // the tables are a migration set of this application (db.MigrationSets), so
 // `{{.Name}} migrate` creates them, and `{{.Name}} jobs status` inspects the queue.
 // Register handlers on registry (`forge generate job NAME --queue` writes
-// the typed handler and prints how); a worker for them starts only while the
+// the typed handler and registers it in routes_gen.go); a worker for them starts only while the
 // application serves (app.Serving()), so `routes` and `openapi` claim no job,
 // and only once a handler exists: a worker without handlers refuses to start.
 // FORGE_JOBS_NOTIFY=true wakes idle workers on enqueue (PostgreSQL only);
@@ -182,10 +182,12 @@ func QueueConfigure(ctx context.Context, app *forge.App, database {{if eq .DB.Ad
 	if !app.Serving() || len(registry.Kinds()) == 0 {
 		return nil
 	}
-	if err := worker.Start(ctx); err != nil {
+	// The shutdown hook first, as JobsConfigure does: if registering it fails
+	// no worker has started, and one that did start is always stopped.
+	if err := app.OnShutdown(worker.Shutdown); err != nil {
 		return err
 	}
-	return app.OnShutdown(worker.Shutdown)
+	return worker.Start(ctx)
 }
 {{- end}}
 

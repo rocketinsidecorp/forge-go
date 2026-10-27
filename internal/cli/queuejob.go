@@ -125,7 +125,7 @@ func planQueueJobSeam(root string, request queueJobRequest, env []string, remove
 		remove: remove,
 	})
 	notes := []string{
-		fmt.Sprintf("Enqueue it, atomically with your data when you can:\n\n\t_, err := jobs.Enqueue%s(ctx, store.In(tx), registry, jobs.%sPayload{%s})", title, title, queueJobPayloadExample(request)),
+		fmt.Sprintf("Enqueue it, atomically with your data when you can, from the code that owns your database handle: build the store with queue%s.NewStore(database) (QueueConfigure does the same) and pass it, with the registry Configure creates, to that code:\n\n\t_, err := jobs.Enqueue%s(ctx, store.In(tx), registry, jobs.%sPayload{%s})", adapter, title, title, queueJobPayloadExample(request)),
 		"Replace Perform" + title + ", which reports ErrNotImplemented (a permanent failure, so the job is dead and visible in `jobs dead`) until you do. The worker (QueueConfigure in app/bootstrap/bootstrap.go) starts with the first registered handler, while the application serves.",
 	}
 	return seamWiring{content: content, verb: verb, notes: notes}, true, err
