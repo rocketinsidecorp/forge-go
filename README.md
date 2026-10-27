@@ -102,9 +102,64 @@ An application links only the adapter it imports. The `forge` CLI lives in
 `go.yaml.in/yaml/v3` and `golang.org/x/crypto` dependencies are not linked
 into applications, [ADR 0030](docs/adr/0030-forge-deploy.md)).
 
+## Install
+
+Forge-Go ships as a Go module and, from a `v*` tag, as signed binaries. There is
+no installer script to pipe into a shell: you either build a pinned version
+with Go or download an archive and verify it first.
+
+With Go 1.27.3+; the Go checksum database verifies the module:
+
+```sh
+go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest
+forge version                   # forge v0.1.0 (unknown, unknown, go1.27.3 linux/amd64)
+```
+
+To pin a release, `go install github.com/rocketinsidecorp/forge-go/cmd/forge@vX.Y.Z`
+with a version from the [releases](https://github.com/rocketinsidecorp/forge-go/releases).
+A build from the module proxy reports `unknown` for the commit and the date;
+they are stamped into the release archives below, which is why `forge version`
+there shows both.
+
+Without Go, from a release archive: `forge` and `forge-proxy` for `linux`,
+`darwin` and `windows` on `amd64` and `arm64` (`.tar.gz`, `.zip` on Windows),
+named `forge_<version>_<os>_<arch>`. Each release carries `checksums.txt`
+(SHA-256 of every archive and SBOM), `checksums.txt.sigstore.json` (its keyless
+cosign signature) and a GitHub build provenance attestation that covers every archive and SBOM. Download,
+verify (cosign v3+, [gh](https://cli.github.com) 2.68+), then install:
+
+```sh
+VERSION=vX.Y.Z OS=linux ARCH=amd64        # a release tag; OS: linux, darwin, windows; ARCH: amd64, arm64
+BASE=https://github.com/rocketinsidecorp/forge-go/releases/download/$VERSION
+curl -sSLO "$BASE/forge_${VERSION}_${OS}_${ARCH}.tar.gz"
+curl -sSLO "$BASE/checksums.txt"
+curl -sSLO "$BASE/checksums.txt.sigstore.json"
+
+# 1. checksums.txt was signed by this repository's release workflow, for a v* tag
+cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/rocketinsidecorp/forge-go/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+# 2. the archive is the one checksums.txt lists (macOS: grep " forge_${VERSION}_${OS}_${ARCH}" checksums.txt | shasum -a 256 -c)
+sha256sum -c --ignore-missing checksums.txt
+# 3. GitHub attests this repository's release.yml built it, from the tag $VERSION
+gh attestation verify "forge_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go \
+  --signer-workflow rocketinsidecorp/forge-go/.github/workflows/release.yml --source-ref "refs/tags/$VERSION"
+
+tar -xzf "forge_${VERSION}_${OS}_${ARCH}.tar.gz"        # Windows: Expand-Archive forge_..._windows_amd64.zip
+sudo install -m 0755 "forge_${VERSION}_${OS}_${ARCH}/forge" /usr/local/bin/forge
+forge version
+```
+
+`forge-proxy_<version>_<os>_<arch>` verifies the same way. Verifying a
+single-release identity, an offline attestation bundle, the SBOMs and the
+signed container images: [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md#verify-a-release).
+Maintainers cut a release with [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Quickstart
 
-Requires Go 1.27.3+ and Docker with BuildKit and Compose.
+Requires Go 1.27.3+ and Docker with BuildKit and Compose, and the `forge`
+command ([Install](#install)).
 
 ```sh
 go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest
@@ -955,7 +1010,7 @@ response against the document. Details, type mapping and tags:
 | `forge help COMMAND`, `forge COMMAND --help` (or `-h`) | Print one command's usage, flags, examples and notes, and exit 0; for example `forge help new` or `forge generate --help` |
 | `forge help --json` | Emit the versioned command catalog with per-command flags, examples, environment inputs, exit codes and side effects |
 | `forge uuid [--count N]` | Print N UUIDv7 values (1-1000) |
-| `forge version` | Print CLI version, commit, and build date |
+| `forge version` | Print the CLI version, commit, commit time and Go toolchain, e.g. `forge v0.1.0 (3f2a9c1d07be, 2026-10-27T12:00:00Z, go1.27.3 linux/amd64)`; `forge-proxy version` does the same |
 
 Check, format and lint an application, from its directory (the counterparts of
 Forge-Rust's `forge check`, `forge format` and `forge lint`):
@@ -1697,12 +1752,13 @@ The default `docker compose up` does not start it. See
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md#local-stack-grafana-prometheus-tempo-and-loki)
 for how logs reach Loki and what the dashboard shows.
 
-## Supply chain: fuzzing, SBOM, signed images
+## Supply chain: fuzzing, SBOM, signed images and binaries
 
 Every fuzz target runs on each pull request and nightly for longer; SBOMs
-describe the binaries and images; release images are signed keyless with
-Sigstore cosign from `v*` tags only; actions and images are pinned by SHA and
-digest ([docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md),
+describe the binaries and images; release images and the release checksums
+are signed keyless with Sigstore cosign from `v*` tags only, and every release
+archive has a GitHub build provenance attestation ([Install](#install) shows
+the commands); actions and images are pinned by SHA and digest ([docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md),
 [ADR 0044](docs/adr/0044-continuous-fuzzing-sbom-signed-images.md)).
 
 ```sh
@@ -1856,7 +1912,8 @@ signed images for `v*` tags only.
 - [Roadmap](docs/ROADMAP.md)
 - [Rails parity (Forge-Go and Forge-Rust)](docs/RAILS_PARITY.md)
 - [Threat model](docs/THREAT_MODEL.md)
-- [Supply chain: fuzzing, SBOM, signed images](docs/SUPPLY_CHAIN.md)
+- [Supply chain: fuzzing, SBOM, signed images and binaries](docs/SUPPLY_CHAIN.md)
+- [Releasing (maintainers)](docs/RELEASING.md)
 - [Testing and coverage](docs/TESTING.md)
 - [Benchmarks](docs/BENCHMARKS.md)
 - [Multi-tenancy](docs/MULTI_TENANCY.md)

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/internal/version"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 )
@@ -35,7 +36,7 @@ const (
 
 // Main runs the forge-proxy command line: `run` (the default) serves
 // traffic; deploy, remove, maintenance, status and healthcheck talk to a
-// running proxy over its control socket.
+// running proxy over its control socket; version prints the build.
 func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	command := "run"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -48,10 +49,17 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return ExitFailed
 		}
 		return ExitOK
+	case "version":
+		if len(args) != 0 {
+			fmt.Fprintln(stderr, "forge-proxy: version accepts no arguments")
+			return ExitUsage
+		}
+		fmt.Fprintln(stdout, version.Describe("forge-proxy", version.Version))
+		return ExitOK
 	case "deploy", "remove", "maintenance", "status", "healthcheck":
 		return client(ctx, command, args, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "forge-proxy: unknown command %q (run, deploy, remove, maintenance, status, healthcheck)\n", command)
+		fmt.Fprintf(stderr, "forge-proxy: unknown command %q (run, deploy, remove, maintenance, status, healthcheck, version)\n", command)
 		return ExitUsage
 	}
 }

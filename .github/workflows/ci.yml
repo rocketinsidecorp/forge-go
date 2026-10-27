@@ -350,7 +350,9 @@ jobs:
         if: matrix.database == 'postgresql'
         run: docker build -t forge-example:ci .
       - name: Generate an application
-        run: go run ./cmd/forge new ciapp --database "${{ matrix.database }}" --dir "$RUNNER_TEMP/ciapp" --forge-path "$GITHUB_WORKSPACE"
+        env:
+          DATABASE: ${{ matrix.database }}
+        run: go run ./cmd/forge new ciapp --database "$DATABASE" --dir "$RUNNER_TEMP/ciapp" --forge-path "$GITHUB_WORKSPACE"
       - name: Build the generated production image
         run: docker build -t ciapp:ci "$RUNNER_TEMP/ciapp"
       - name: SBOM of the generated image
