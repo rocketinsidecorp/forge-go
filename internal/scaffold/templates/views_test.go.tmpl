@@ -1,16 +1,29 @@
 package views
 
 import (
+{{- if and .DB .DB.Identity}}
+	"context"
+{{- end}}
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
+{{- if and .DB .DB.Identity}}
+	"time"
+{{- end}}
 
+{{- if and .DB .DB.Identity}}
+	"github.com/rocketinsidecorp/forge-go/auth"
+{{- end}}
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/i18n"
+{{- if and .DB .DB.Identity}}
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+{{- end}}
 	forgeviews "github.com/rocketinsidecorp/forge-go/views"
 	"github.com/rocketinsidecorp/forge-go/web"
 
@@ -137,3 +150,89 @@ func embeddedValue(body, prefix string) string {
 	value, _, _ := strings.Cut(rest, `"`)
 	return value
 }
+{{- if and .DB .DB.Identity}}
+
+// TestLayoutShowsSignOutOnlyToSignedInUsers renders a page inside the layout
+// with and without a signed-in principal: the sign-out form (the
+// sessions/_sign_out partial) is there for the first and absent for the second.
+func TestLayoutShowsSignOutOnlyToSignedInUsers(t *testing.T) {
+	t.Parallel()
+	tree := fstest.MapFS{
+		"pages/example.gohtml": {Data: []byte(`{{"{{"}}define "title"{{"}}"}}Example{{"{{"}}end{{"}}"}}{{"{{"}}define "content"{{"}}"}}<p>hello</p>{{"{{"}}end{{"}}"}}`)},
+	}
+	err := fs.WalkDir(Files(), ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		data, err := fs.ReadFile(Files(), name)
+		tree[name] = &fstest.MapFile{Data: data}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := Options()
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := forgeviews.Load(tree, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	protection, err := csrf.New(csrf.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.I18n.DefaultLocale = "en"
+	translator, err := locales.New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	translations, err := translator.Middleware(i18n.NegotiationOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant, err := tenancy.New(uuid.MustNew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := auth.NewPrincipal(uuid.MustNew(), tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := auth.NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+		return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := renderer.RenderRequest(w, r, "pages/example", http.StatusOK, nil); err != nil {
+			t.Error(err)
+		}
+	})
+	render := func(handler http.Handler, header string) string {
+		request := httptest.NewRequest(http.MethodGet, "/example", nil)
+		if header != "" {
+			request.Header.Set("Authorization", header)
+		}
+		recorder := httptest.NewRecorder()
+		translations(web.Flash(protection.Handler(handler))).ServeHTTP(recorder, request)
+		return recorder.Body.String()
+	}
+	signedIn := render(middleware.Authenticate(page), "Bearer "+token.Reveal())
+	for _, want := range []string{`<header class="session">`, `<form method="post" action="/session" class="sign-out">`, `name="_method" value="DELETE"`, `Sign out`} {
+		if !strings.Contains(signedIn, want) {
+			t.Errorf("a signed-in page lacks %q:\n%s", want, signedIn)
+		}
+	}
+	if signedOut := render(page, ""); strings.Contains(signedOut, "sign-out") || strings.Contains(signedOut, `action="/session"`) {
+		t.Errorf("a signed-out page shows the sign-out form:\n%s", signedOut)
+	}
+}
+{{- end}}

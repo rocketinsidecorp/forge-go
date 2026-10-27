@@ -10,6 +10,9 @@
 </head>
 <body>
 	<a class="skip-link" href="#main">{{t "layout.skip_to_content"}}</a>
+[[- if .DB]][[- if .DB.Identity]]
+	{{if signedIn}}<header class="session">{{template "sessions/_sign_out" .}}</header>{{end}}
+[[- end]][[- end]]
 	<main id="main">
 		{{template "shared/_flash" .}}
 		{{block "content" .}}{{end}}

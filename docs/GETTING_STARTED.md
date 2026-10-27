@@ -562,9 +562,10 @@ an API client gets a `401` JSON error instead. A page asks for one permission
 (success, failure, throttling) and permission denials of signed-in users are
 audited; a request with no or an invalid session is refused with a `401` or a
 redirect but not recorded unless you add `auth.WithAuthenticationAuditor`
-([AUTHENTICATION.md](AUTHENTICATION.md), [AUDIT.md](AUDIT.md)). To let a signed-in user sign out, put
-`{{template "sessions/_sign_out" .}}` in a page: it renders a `DELETE /session`
-form.
+([AUTHENTICATION.md](AUTHENTICATION.md), [AUDIT.md](AUDIT.md)). The layout of an `--auth` application shows a sign-out button (the
+`sessions/_sign_out` partial, a `DELETE /session` form) to signed-in users; in
+an application that added sign-in with `forge generate authentication`, put
+`{{if signedIn}}{{template "sessions/_sign_out" .}}{{end}}` in your layout.
 
 Turn on two-factor authentication for the owner: signed in, open
 <http://localhost:8080/mfa>, enter the password, add the key to an

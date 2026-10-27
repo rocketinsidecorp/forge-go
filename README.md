@@ -552,8 +552,10 @@ In production set `FORGE_MAIL_URL=smtps://user:password@smtp.example.com:465`
 `FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit`; see
 [docs/MAIL.md](docs/MAIL.md).
 
-Sign out with a `DELETE /session` form: include
-`{{template "sessions/_sign_out" .}}` in a page. `forge setup` refuses once an
+Sign out with a `DELETE /session` form: the layout `forge new --auth` generates
+shows it (the `sessions/_sign_out` partial) to signed-in users, with
+`{{if signedIn}}...{{end}}`; in an application that added sign-in with
+`forge generate authentication`, add that line to your layout. `forge setup` refuses once an
 organization exists. The same commands exist in the application binary, for
 containers and production (the password is never an argument; `--org SLUG`
 only with organizations):

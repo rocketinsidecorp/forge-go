@@ -138,6 +138,9 @@ type source struct {
 //	                   display only (the routes still authorize), and true
 //	                   when the request carries no Principal (no Forge
 //	                   identity) or there is no request
+//	signedIn           whether the request carries a signed-in Principal
+//	                   (false without one, and without a request): show a
+//	                   sign-out button only to people who are signed in
 //
 // With i18n.Translator.Middleware in front of the page's handler (or
 // Options.I18n), see docs/I18N.md:
@@ -513,6 +516,13 @@ func helperFuncs(state *renderState, setup *setup) template.FuncMap {
 			}
 			principal, ok := auth.FromContext(state.request.Context())
 			return !ok || principal.Can(required), nil
+		},
+		"signedIn": func() bool {
+			if state == nil || state.request == nil {
+				return false
+			}
+			_, ok := auth.FromContext(state.request.Context())
+			return ok
 		},
 		"methodField": methodField,
 		"domID":       domID,

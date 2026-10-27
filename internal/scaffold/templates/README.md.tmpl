@@ -460,7 +460,7 @@ validated return paths.
 | ------ | ---- | ---- |
 | `GET` | `/session/new` | Sign-in form (organization, email, password) |
 | `POST` | `/session` | Sign in; 303 to the validated `return_to` or `/` |
-| `DELETE` | `/session` | Sign out (`_method=DELETE` form, `sessions/_sign_out` partial) |
+| `DELETE` | `/session` | Sign out (`_method=DELETE` form, the `sessions/_sign_out` partial the layout shows to signed-in users with `{{"{{"}}if signedIn{{"}}"}}`) |
 | `GET`, `POST` | `/session/mfa` | Authenticator or backup code, when `FORGE_AUTH_MFA_KEY` is set |
 | `GET` | `/mfa` | Two-factor settings of the signed-in account |
 | `POST` | `/mfa`, `/mfa/confirm` | Turn on: the password, then the key; confirm with the password and a code (backup codes shown once, signs out everywhere) |

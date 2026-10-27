@@ -267,7 +267,9 @@ func Test[[.Title]]PageHidesTheFormsWithoutTheWritePermission(t *testing.T) {
 	page := "/[[.Left.Plural]]/" + uuid.MustNew().String() + "/[[.Right.Plural]]"
 	writer := browser.handler
 	browser.handler = [[.Camel]]As(t, writer, "[[.Left.Plural]]:read", "[[.Right.Plural]]:read")
-	if body := browser.request(http.MethodGet, page, nil).Body.String(); strings.Contains(body, `<form`) {
+	// The layout's sign-out form (an application with Forge identity) is not one of the page's forms.
+	signOut := `<form method="post" action="/session" class="sign-out">`
+	if body := browser.request(http.MethodGet, page, nil).Body.String(); strings.Contains(strings.ReplaceAll(body, signOut, ""), `<form`) {
 		t.Fatalf("a reader sees the forms:\n%s", body)
 	}
 	browser.handler = [[.Camel]]As(t, writer, "[[.Left.Plural]]:read", "[[.Left.Plural]]:write", "[[.Right.Plural]]:read")
