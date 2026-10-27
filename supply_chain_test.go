@@ -127,6 +127,7 @@ var releaseScripts = []string{
 	filepath.Join("scripts", "release-build.sh"),
 	filepath.Join("scripts", "release-checksums.sh"),
 	filepath.Join("scripts", "release-draft.sh"),
+	filepath.Join("scripts", "release-require-ci.sh"),
 }
 
 // TestWorkflowsPinThirdPartyCode keeps every action pinned to a commit SHA
@@ -271,7 +272,7 @@ func TestWorkflowPermissionsAreLeastPrivilege(t *testing.T) {
 // draft job can write contents (create a draft release); the draft job signs
 // nothing and the signing jobs cannot touch the release.
 var frameworkReleasePermissions = map[string]map[string]string{
-	"verify":   {"contents": "read"},
+	"verify":   {"contents": "read", "checks": "read"},
 	"images":   {"contents": "read", "packages": "write", "id-token": "write"},
 	"sbom":     {"contents": "read"},
 	"binaries": {"contents": "read", "id-token": "write", "attestations": "write"},

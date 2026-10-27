@@ -22,8 +22,11 @@ go test -count=1 -run 'TestRelease|SupplyChain|Workflows' .
 scripts/release-build.sh v0.1.0-rc.0 /tmp/release-dry   # optional: the archives, on your machine
 ```
 
-- The commit is on `main` and its CI run is green (`release.yml` refuses a tag
-  whose commit is not on the default branch).
+- The commit is on `main` and its CI run has finished green (`release.yml`
+  refuses a tag whose commit is not on the default branch, or on which the CI
+  jobs `quality`, `coverage`, `generated`, `mariadb` and `docker (<database>)`
+  have not all succeeded: `scripts/release-require-ci.sh`). Check it yourself
+  first: `gh run list --repo rocketinsidecorp/forge-go --workflow ci.yml --commit "$(git rev-parse HEAD)"`.
 - `README.md` and the docs never name a version that does not exist: they
   use `@latest` and `vX.Y.Z` placeholders
   (`TestDocsNeverInstallAVersionThatIsNotATag` enforces it), so tagging needs
@@ -44,12 +47,19 @@ git push origin v0.1.0
 gh run watch --repo rocketinsidecorp/forge-go "$(gh run list --repo rocketinsidecorp/forge-go --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
 ```
 
-The workflow, in order: `verify` (tag shape, module path, on `main`), then in
+The workflow, in order: `verify` (tag shape, module path, on `main`, CI green on
+the commit), then in
 parallel `images` (signed container images) and `sbom` (binary SBOMs), then
 `binaries` (archives, checksums, signature, attestations), then `draft` (the
 draft release). A red job leaves no draft: fix the cause on `main`, delete the
 tag only if **nothing** from it was published (no image, no release), and tag
 the next patch otherwise.
+
+If `verify` refuses because CI has not passed on the commit (a job is missing,
+still running or failed, and the message names it), nothing was built or
+signed: wait for CI to finish, re-run a failed CI job if it was a flake, and
+then re-run the release workflow (`gh run rerun --failed`, or the run's page);
+if CI cannot go green on that commit, fix `main` and tag the next patch.
 
 ## Verify the draft
 
