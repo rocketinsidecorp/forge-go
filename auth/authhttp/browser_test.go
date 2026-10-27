@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
@@ -112,9 +113,9 @@ func responseCookie(recorder *httptest.ResponseRecorder, name string) *http.Cook
 	return nil
 }
 
-func browserLogin(t *testing.T, store *loginStoreStub, sessions *sessionStub, options ...LoginOption) *LoginService {
+func browserLogin(t *testing.T, store *loginStoreStub, sessions *sessionStub, options ...auth.LoginOption) *auth.LoginService {
 	t.Helper()
-	service, err := NewLoginService(store, sessions, options...)
+	service, err := auth.NewLoginService(store, sessions, options...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,24 +124,24 @@ func browserLogin(t *testing.T, store *loginStoreStub, sessions *sessionStub, op
 
 func knownIdentity(t *testing.T, password string, mfa bool) *loginStoreStub {
 	t.Helper()
-	hash, err := HashPassword(password)
+	hash, err := auth.HashPassword(password)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &loginStoreStub{found: true, identity: PasswordIdentity{
+	return &loginStoreStub{found: true, identity: auth.PasswordIdentity{
 		SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: hash, CredentialVersion: 1, MFARequired: mfa,
 	}}
 }
 
 func TestBrowserSignInSetsTheCookieLoginCookiesAndRotatesCSRF(t *testing.T) {
 	t.Parallel()
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
 	sessions := &sessionStub{token: token}
-	login := browserLogin(t, knownIdentity(t, "correct horse", false), sessions, WithLoginClock(func() time.Time { return now }))
+	login := browserLogin(t, knownIdentity(t, "correct horse", false), sessions, auth.WithLoginClock(func() time.Time { return now }))
 	browser, err := NewBrowser(BrowserOptions{Login: login, Sessions: &browserRevoker{}})
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +200,7 @@ func TestBrowserSignInFailuresAreUniform(t *testing.T) {
 			t.Fatal(err)
 		}
 		recorder := submit(browserApp(t, browser, csrf.Options{}), "/session", current.values, true)
-		if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("X-Error") != ErrCredentialsInvalid.Error() {
+		if recorder.Code != http.StatusUnauthorized || recorder.Header().Get("X-Error") != auth.ErrCredentialsInvalid.Error() {
 			t.Fatalf("%s: status=%d error=%q", name, recorder.Code, recorder.Header().Get("X-Error"))
 		}
 		if responseCookie(recorder, SessionCookieName) != nil || responseCookie(recorder, MFAChallengeCookieName) != nil {
@@ -216,11 +217,11 @@ func TestBrowserSignInFailuresAreUniform(t *testing.T) {
 
 func TestBrowserSignInThrottlingSetsRetryAfter(t *testing.T) {
 	t.Parallel()
-	throttler, err := NewMemoryLoginThrottler(LoginThrottleConfig{Window: time.Minute, AccountLimit: 1, SourceLimit: 100, MaxEntries: 10})
+	throttler, err := auth.NewMemoryLoginThrottler(auth.LoginThrottleConfig{Window: time.Minute, AccountLimit: 1, SourceLimit: 100, MaxEntries: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	browser, err := NewBrowser(BrowserOptions{Login: browserLogin(t, &loginStoreStub{}, &sessionStub{}, WithLoginThrottler(throttler)), Sessions: &browserRevoker{}})
+	browser, err := NewBrowser(BrowserOptions{Login: browserLogin(t, &loginStoreStub{}, &sessionStub{}, auth.WithLoginThrottler(throttler)), Sessions: &browserRevoker{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,12 +244,12 @@ func TestBrowserSignInThrottlingSetsRetryAfter(t *testing.T) {
 // out.
 func TestBrowserFailsClosedWithoutVerifiedCSRF(t *testing.T) {
 	t.Parallel()
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	revoker := &browserRevoker{}
-	recovery, err := NewRecoveryService(&recoveryStoreStub{}, &recoverySenderStub{})
+	recovery, err := auth.NewRecoveryService(&recoveryStoreStub{}, &recoverySenderStub{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +298,7 @@ func TestBrowserFailsClosedWithoutVerifiedCSRF(t *testing.T) {
 
 func TestBrowserSignOutRevokesAndClearsCredentials(t *testing.T) {
 	t.Parallel()
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +317,7 @@ func TestBrowserSignOutRevokesAndClearsCredentials(t *testing.T) {
 	if revoker.calls != 1 || revoker.token.Digest() != token.Digest() {
 		t.Fatalf("revocations=%d", revoker.calls)
 	}
-	if len(auditor.events) != 1 || auditor.events[0].Kind != SecuritySessionRevoked || auditor.events[0].CredentialDigest != token.Digest() {
+	if len(auditor.events) != 1 || auditor.events[0].Kind != auth.SecuritySessionRevoked || auditor.events[0].CredentialDigest != token.Digest() {
 		t.Fatalf("audit events=%+v", auditor.events)
 	}
 	for _, name := range []string{SessionCookieName, CSRFCookieName, MFAChallengeCookieName} {
@@ -345,11 +346,11 @@ func TestBrowserSignOutRevokesAndClearsCredentials(t *testing.T) {
 func TestBrowserMFASignInUsesAChallengeCookie(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
-	challenge, err := NewMFAChallengeToken()
+	challenge, err := auth.NewMFAChallengeToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionToken, err := NewToken()
+	sessionToken, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,20 +361,20 @@ func TestBrowserMFASignInUsesAChallengeCookie(t *testing.T) {
 	store := knownIdentity(t, "correct horse", true)
 	issuer := &mfaIssuerStub{token: challenge, expiresAt: now.Add(5 * time.Minute)}
 	loginSessions := &sessionStub{}
-	login := browserLogin(t, store, loginSessions, WithLoginClock(func() time.Time { return now }), WithMFAChallengeIssuer(issuer))
+	login := browserLogin(t, store, loginSessions, auth.WithLoginClock(func() time.Time { return now }), auth.WithMFAChallengeIssuer(issuer))
 	mfaStore := &mfaStoreStub{
 		challengeFound: true,
-		challenge: MFAChallengeRecord{
+		challenge: auth.MFAChallengeRecord{
 			MembershipID: store.identity.MembershipID, CredentialVersion: 1,
 			ExpiresAt: now.Add(5 * time.Minute), SessionExpiresAt: now.Add(time.Hour),
 		},
 		consumeResult: true, consumeMembership: store.identity.MembershipID,
 	}
-	cipher, err := NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+	cipher, err := auth.NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	mfa, err := NewMFAService(mfaStore, &sessionStub{token: sessionToken}, cipher, WithMFAClock(func() time.Time { return now }))
+	mfa, err := auth.NewMFAService(mfaStore, &sessionStub{token: sessionToken}, cipher, auth.WithMFAClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +425,7 @@ func TestBrowserMFASignInUsesAChallengeCookie(t *testing.T) {
 
 	mfaStore.consumeResult = false
 	wrong := submit(app, "/session/mfa", url.Values{"code": {backupCodes[0].Reveal()}}, true, pending)
-	if wrong.Code != http.StatusUnauthorized || wrong.Header().Get("X-Error") != ErrMFAInvalid.Error() || responseCookie(wrong, SessionCookieName) != nil {
+	if wrong.Code != http.StatusUnauthorized || wrong.Header().Get("X-Error") != auth.ErrMFAInvalid.Error() || responseCookie(wrong, SessionCookieName) != nil {
 		t.Fatalf("rejected code: status=%d error=%q", wrong.Code, wrong.Header().Get("X-Error"))
 	}
 }
@@ -434,7 +435,7 @@ func TestBrowserMFASignInUsesAChallengeCookie(t *testing.T) {
 // and a failed delivery: they must be indistinguishable.
 func TestBrowserPasswordResetRequestDoesNotEnumerate(t *testing.T) {
 	t.Parallel()
-	known := RecoveryIdentity{SubjectID: uuid.MustNew(), Email: "a@example.com"}
+	known := auth.RecoveryIdentity{SubjectID: uuid.MustNew(), Email: "a@example.com"}
 	cases := []struct {
 		name   string
 		store  *recoveryStoreStub
@@ -453,7 +454,7 @@ func TestBrowserPasswordResetRequestDoesNotEnumerate(t *testing.T) {
 	}
 	var results []observed
 	for _, current := range cases {
-		recovery, err := NewRecoveryService(current.store, current.sender)
+		recovery, err := auth.NewRecoveryService(current.store, current.sender)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -479,7 +480,7 @@ func TestBrowserPasswordResetRequestDoesNotEnumerate(t *testing.T) {
 func TestBrowserPasswordReset(t *testing.T) {
 	t.Parallel()
 	store := &recoveryStoreStub{consumeResult: true}
-	recovery, err := NewRecoveryService(store, &recoverySenderStub{})
+	recovery, err := auth.NewRecoveryService(store, &recoverySenderStub{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +489,7 @@ func TestBrowserPasswordReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := browserApp(t, browser, csrf.Options{})
-	token, err := NewRecoveryToken()
+	token, err := auth.NewRecoveryToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,11 +501,11 @@ func TestBrowserPasswordReset(t *testing.T) {
 		t.Fatalf("a reset must clear this browser's session cookie: %+v", cleared)
 	}
 	if invalid := submit(app, "/passwords", url.Values{"_method": {"PATCH"}, "token": {"forged"}, "password": {"x"}}, true); invalid.Code != http.StatusBadRequest ||
-		invalid.Header().Get("X-Error") != ErrRecoveryInvalid.Error() {
+		invalid.Header().Get("X-Error") != auth.ErrRecoveryInvalid.Error() {
 		t.Fatalf("forged token: status=%d error=%q", invalid.Code, invalid.Header().Get("X-Error"))
 	}
 	store.consumeResult = false
-	if used := submit(app, "/passwords", url.Values{"_method": {"PATCH"}, "token": {token.Reveal()}, "password": {"another password"}}, true); used.Header().Get("X-Error") != ErrRecoveryInvalid.Error() {
+	if used := submit(app, "/passwords", url.Values{"_method": {"PATCH"}, "token": {token.Reveal()}, "password": {"another password"}}, true); used.Header().Get("X-Error") != auth.ErrRecoveryInvalid.Error() {
 		t.Fatalf("used token error=%q", used.Header().Get("X-Error"))
 	}
 }
@@ -542,8 +543,8 @@ func TestAuthenticateBrowserKeepsTheLocalePrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := NewMiddleware(ResolverFunc(func(context.Context, Digest) (Session, bool, error) {
-		return Session{}, false, nil
+	middleware, err := NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+		return auth.Session{}, false, nil
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -612,7 +613,7 @@ func TestAuthenticateBrowserKeepsTheLocalePrefix(t *testing.T) {
 func TestAuthenticateBrowserRedirectsOnlyHTMLRequests(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,16 +621,16 @@ func TestAuthenticateBrowserRedirectsOnlyHTMLRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := NewPrincipal(uuid.MustNew(), tenant)
+	principal, err := auth.NewPrincipal(uuid.MustNew(), tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
 	broken := false
-	middleware, err := NewMiddleware(ResolverFunc(func(_ context.Context, digest Digest) (Session, bool, error) {
+	middleware, err := NewMiddleware(auth.ResolverFunc(func(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
 		if broken {
-			return Session{}, false, errors.New("database down")
+			return auth.Session{}, false, errors.New("database down")
 		}
-		return Session{Principal: principal, ExpiresAt: now.Add(time.Hour)}, digest == token.Digest(), nil
+		return auth.Session{Principal: principal, ExpiresAt: now.Add(time.Hour)}, digest == token.Digest(), nil
 	}), WithClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
@@ -641,7 +642,7 @@ func TestAuthenticateBrowserRedirectsOnlyHTMLRequests(t *testing.T) {
 		t.Fatal("a sign-in path with a query must be rejected")
 	}
 	handler, err := middleware.AuthenticateBrowser("/session/new", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := FromContext(r.Context()); !ok {
+		if _, ok := auth.FromContext(r.Context()); !ok {
 			t.Error("no principal in context")
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -719,12 +720,12 @@ func TestNewBrowserRequiresLoginAndSessions(t *testing.T) {
 }
 
 type browserRevoker struct {
-	token Token
+	token auth.Token
 	calls int
 	err   error
 }
 
-func (s *browserRevoker) RevokeSession(_ context.Context, token Token) error {
+func (s *browserRevoker) RevokeSession(_ context.Context, token auth.Token) error {
 	s.token = token
 	s.calls++
 	return s.err

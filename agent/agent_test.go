@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
@@ -298,7 +299,7 @@ func authenticatedContext(t *testing.T, principal auth.Principal) context.Contex
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := auth.NewMiddleware(auth.ResolverFunc(func(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
+	middleware, err := authhttp.NewMiddleware(auth.ResolverFunc(func(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
 		if digest != token.Digest() {
 			return auth.Session{}, false, nil
 		}

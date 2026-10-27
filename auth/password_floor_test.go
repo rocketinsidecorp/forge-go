@@ -4,17 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
-	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
@@ -130,14 +125,17 @@ func TestFailedChecksWaitForTheLegacyTimingFloor(t *testing.T) {
 			t.Errorf("legacy account rehashed %d times", store.replaced)
 		}
 
-		// The step-up of auth.Browser is padded the same way.
+		// The step-up of the two-factor settings (MFAStepUpGate, behind
+		// authhttp.Browser) is padded the same way.
 		f := floorStepUp(t, hasher)
 		for name, subject := range map[string]uuid.UUID{"unknown subject": uuid.MustNew(), "wrong password": f.ada} {
 			start := time.Now()
-			refused := f.post(subject, "/mfa", url.Values{"password": {"wrong"}}, true)
-			if refused.Header().Get("X-Error") != ErrMFAStepUpInvalid.Error() || time.Since(start) != testLegacyFloor {
-				t.Errorf("step-up %s: error=%q took %v", name, refused.Header().Get("X-Error"), time.Since(start))
+			if err := f.enroll(context.Background(), subject, "wrong"); !errors.Is(err, ErrMFAStepUpInvalid) || time.Since(start) != testLegacyFloor {
+				t.Errorf("step-up %s: err=%v took %v", name, err, time.Since(start))
 			}
+		}
+		if f.enroll(context.Background(), f.ada, mfaTestPassword) != nil {
+			t.Error("the right password was refused")
 		}
 		if denied := f.deniedEvents(SecurityMFAEnrollmentStarted); denied != 2 {
 			t.Errorf("%d step-up refusals audited, want 2", denied)
@@ -145,21 +143,68 @@ func TestFailedChecksWaitForTheLegacyTimingFloor(t *testing.T) {
 	})
 }
 
-// floorStepUp is the two-factor settings fixture with its Browser's login
-// service on hasher.
-func floorStepUp(t *testing.T, hasher *PasswordHasher) *mfaSettingsFixture {
+// stepUpFloor is an MFAStepUpGate whose login service hashes with hasher,
+// over one account (ada) with mfaTestPassword, recording audit events.
+type stepUpFloor struct {
+	gate   *MFAStepUpGate
+	ada    uuid.UUID
+	mu     sync.Mutex
+	events []SecurityEvent
+}
+
+func floorStepUp(t *testing.T, hasher *PasswordHasher) *stepUpFloor {
 	t.Helper()
-	f := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
+	hash, err := cheapPasswordHash(mfaTestPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &stepUpFloor{ada: uuid.MustNew()}
+	accounts := &memoryMFAAccounts{accounts: map[uuid.UUID]*mfaAccount{f.ada: {login: "ada@example.com", hash: hash}}}
+	cipher, err := NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditor := SecurityAuditorFunc(func(_ context.Context, event SecurityEvent) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.events = append(f.events, event)
+		return nil
+	})
+	throttler, err := NewMemoryLoginThrottler(DefaultMFAThrottleConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mfa, err := NewMFAService(accounts, &sessionStub{}, cipher, WithMFAAuditor(auditor), WithMFAThrottler(throttler))
+	if err != nil {
+		t.Fatal(err)
+	}
 	login, err := NewLoginService(newAccountsStore(t, nil), &sessionStub{}, WithLoginPasswordHasher(hasher))
 	if err != nil {
 		t.Fatal(err)
 	}
-	browser, err := NewBrowser(BrowserOptions{Login: login, Sessions: &browserRevoker{}, MFA: f.mfa, Passwords: f.accounts})
-	if err != nil {
+	if f.gate, err = NewMFAStepUpGate(login, mfa, accounts); err != nil {
 		t.Fatal(err)
 	}
-	f.app = mfaSettingsApp(t, browser)
 	return f
+}
+
+// enroll is the step-up of turning two-factor authentication on (no code)
+// with password.
+func (f *stepUpFloor) enroll(ctx context.Context, subject uuid.UUID, password string) error {
+	_, err := f.gate.Check(ctx, subject, "192.0.2.1", SecurityMFAEnrollmentStarted, MFAStepUp{Password: password}, false, nil)
+	return err
+}
+
+func (f *stepUpFloor) deniedEvents(kind SecurityEventKind) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, event := range f.events {
+		if event.Kind == kind && event.Outcome == SecurityOutcomeDenied {
+			count++
+		}
+	}
+	return count
 }
 
 // The padding is a timer that ends with the request: a client that hangs up
@@ -197,20 +242,9 @@ func TestLegacyTimingFloorStopsWhenTheContextEnds(t *testing.T) {
 		}
 
 		f := floorStepUp(t, hasher)
-		csrfToken, err := csrf.NewToken()
-		if err != nil {
-			t.Fatal(err)
-		}
-		values := url.Values{"password": {"wrong"}, csrf.FormField: {csrfToken}}
-		request := httptest.NewRequestWithContext(cancelAfter(10*time.Millisecond), http.MethodPost, browserSite+"/mfa", strings.NewReader(values.Encode()))
-		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		request.AddCookie(&http.Cookie{Name: csrf.CookieName, Value: csrfToken})
-		request.Header.Set("X-Subject", f.ada.String())
 		start := time.Now()
-		recorder := httptest.NewRecorder()
-		f.app.ServeHTTP(recorder, request)
-		if !strings.Contains(recorder.Header().Get("X-Error"), context.Canceled.Error()) || time.Since(start) != 10*time.Millisecond {
-			t.Errorf("cancelled step-up: status=%d error=%q after %v", recorder.Code, recorder.Header().Get("X-Error"), time.Since(start))
+		if err := f.enroll(cancelAfter(10*time.Millisecond), f.ada, "wrong"); !errors.Is(err, context.Canceled) || time.Since(start) != 10*time.Millisecond {
+			t.Errorf("cancelled step-up: err=%v after %v", err, time.Since(start))
 		}
 		if denied := f.deniedEvents(SecurityMFAEnrollmentStarted); denied != 1 {
 			t.Errorf("cancelled step-up: %d refusals audited, want 1", denied)
@@ -328,56 +362,5 @@ func TestLoginSkipsARehashRefusedBySaturatedHashing(t *testing.T) {
 	refusing.refuse = func() bool { return true }
 	if _, ok, err := verifySubjectPassword(context.Background(), cheapPasswordHasher(t, WithPasswordWorkLimiter(refusing)), accounts, uuid.MustNew(), "correct horse"); ok || !errors.Is(err, ErrPasswordHashingUnavailable) {
 		t.Fatalf("unknown subject, saturated: ok=%v err=%v", ok, err)
-	}
-}
-
-// The cookie login, the browser reset form and the browser step-up answer a
-// saturated limiter 503 with Retry-After too.
-func TestSaturatedHashingAnswers503OnCookieLoginResetAndStepUp(t *testing.T) {
-	t.Parallel()
-	limiter, err := NewPasswordWorkLimiter(1, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	saturated := cheapPasswordHasher(t, WithPasswordWorkLimiter(limiter))
-	login := browserLogin(t, knownIdentity(t, mfaTestPassword, false), &sessionStub{}, WithLoginPasswordHasher(saturated))
-	cookieLogin, err := NewCookieLoginHandler(login)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recovery, err := NewRecoveryService(&recoveryStoreStub{consumeResult: true}, &recoverySenderStub{}, WithRecoveryPasswordHasher(saturated))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resetBrowser, err := NewBrowser(BrowserOptions{Login: login, Sessions: &revokeStub{}, Recovery: recovery})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resetApp := browserApp(t, resetBrowser, csrf.Options{})
-	settings := newMFASettingsFixture(t, DefaultMFAThrottleConfig())
-	stepUpBrowser, err := NewBrowser(BrowserOptions{Login: login, Sessions: &browserRevoker{}, MFA: settings.mfa, Passwords: settings.accounts})
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.app = mfaSettingsApp(t, stepUpBrowser)
-	token, err := NewRecoveryToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	release := holdSlot(t, limiter)
-	defer release()
-	request := httptest.NewRequest(http.MethodPost, "https://app.example.com/auth/login",
-		strings.NewReader(`{"email":"ada@example.com","password":"`+mfaTestPassword+`","tenant":"acme"}`))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Origin", "https://app.example.com")
-	cookie := httptest.NewRecorder()
-	cookieLogin.ServeHTTP(cookie, request)
-	reset := submit(resetApp, "/passwords", url.Values{"_method": {"PATCH"}, "token": {token.Reveal()}, "password": {"replacement password"}}, true)
-	stepUp := settings.post(settings.ada, "/mfa", url.Values{"password": {mfaTestPassword}}, true)
-	for name, recorder := range map[string]*httptest.ResponseRecorder{"cookie login": cookie, "browser reset": reset, "browser step-up": stepUp} {
-		if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "5" {
-			t.Errorf("%s: status=%d retry-after=%q body=%s", name, recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String())
-		}
 	}
 }

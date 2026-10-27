@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/fault"
 	"github.com/rocketinsidecorp/forge-go/internal/principalctx"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
@@ -16,8 +17,8 @@ import (
 // Middleware authenticates bearer-token requests: it resolves the session behind the Authorization
 // header and puts the Principal and its tenant in the request context.
 type Middleware struct {
-	resolver Resolver
-	auditor  SecurityAuditor
+	resolver auth.Resolver
+	auditor  auth.SecurityAuditor
 	now      func() time.Time
 }
 
@@ -37,7 +38,7 @@ func WithClock(now func() time.Time) Option {
 
 // WithAuthenticationAuditor records rejected valid sessions and permission
 // denials for requests that pass through this middleware.
-func WithAuthenticationAuditor(auditor SecurityAuditor) Option {
+func WithAuthenticationAuditor(auditor auth.SecurityAuditor) Option {
 	return func(m *Middleware) error {
 		if auditor == nil {
 			return errors.New("authentication security auditor is required")
@@ -48,7 +49,7 @@ func WithAuthenticationAuditor(auditor SecurityAuditor) Option {
 }
 
 // NewMiddleware returns a Middleware that resolves sessions with resolver.
-func NewMiddleware(resolver Resolver, options ...Option) (*Middleware, error) {
+func NewMiddleware(resolver auth.Resolver, options ...Option) (*Middleware, error) {
 	if resolver == nil {
 		return nil, errors.New("session resolver is required")
 	}
@@ -78,8 +79,8 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 		}
 		ctx, err := m.authenticateContext(r, secret)
 		if err != nil {
-			if errors.Is(err, ErrCredentialsInvalid) {
-				unauthorized(w, r, ErrCredentialsInvalid)
+			if errors.Is(err, auth.ErrCredentialsInvalid) {
+				unauthorized(w, r, auth.ErrCredentialsInvalid)
 				return
 			}
 			web.Error(w, r, err)
@@ -90,9 +91,9 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 }
 
 func (m *Middleware) authenticateContext(r *http.Request, secret string) (context.Context, error) {
-	token, err := ParseToken(secret)
+	token, err := auth.ParseToken(secret)
 	if err != nil {
-		return nil, ErrCredentialsInvalid
+		return nil, auth.ErrCredentialsInvalid
 	}
 	session, found, err := m.resolver.ResolveSession(r.Context(), token.Digest())
 	if err != nil {
@@ -100,7 +101,7 @@ func (m *Middleware) authenticateContext(r *http.Request, secret string) (contex
 	}
 	if !found || session.ExpiresAt.IsZero() || !m.now().Before(session.ExpiresAt) {
 		m.recordRejectedSession(r, token.Digest())
-		return nil, ErrCredentialsInvalid
+		return nil, auth.ErrCredentialsInvalid
 	}
 	if session.Principal.SubjectID().Version() != 7 || session.Principal.SubjectID().Variant() != 2 {
 		return nil, fault.New("internal_error", "internal server error", fault.CategoryInternal, 0).
@@ -116,60 +117,60 @@ func (m *Middleware) authenticateContext(r *http.Request, secret string) (contex
 
 // Require wraps next so that only a request whose Principal holds permission reaches it: it answers
 // 401 without a Principal and 403 without the permission. Use it inside Middleware.Authenticate.
-func Require(permission Permission, next http.Handler) (http.Handler, error) {
+func Require(permission auth.Permission, next http.Handler) (http.Handler, error) {
 	return require(permission, next, nil)
 }
 
 // RequireAudited is Require with a security-audit event for an authenticated
 // principal denied the requested permission.
-func RequireAudited(permission Permission, next http.Handler, auditor SecurityAuditor) (http.Handler, error) {
+func RequireAudited(permission auth.Permission, next http.Handler, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("authorization security auditor is required")
 	}
 	return require(permission, next, auditor)
 }
 
-func require(permission Permission, next http.Handler, auditor SecurityAuditor) (http.Handler, error) {
-	if _, err := NewPermission(string(permission)); err != nil {
+func require(permission auth.Permission, next http.Handler, auditor auth.SecurityAuditor) (http.Handler, error) {
+	if _, err := auth.NewPermission(string(permission)); err != nil {
 		return nil, err
 	}
 	if next == nil {
 		return nil, errors.New("authorization handler is required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			unauthorized(w, r, ErrCredentialsRequired)
+			unauthorized(w, r, auth.ErrCredentialsRequired)
 			return
 		}
 		if !principal.Can(permission) {
 			recordAuthorizationDenial(r, principal, auditor)
-			web.Error(w, r, ErrPermissionDenied)
+			web.Error(w, r, auth.ErrPermissionDenied)
 			return
 		}
 		next.ServeHTTP(w, r)
 	}), nil
 }
 
-func (m *Middleware) recordRejectedSession(r *http.Request, credentialDigest Digest) {
+func (m *Middleware) recordRejectedSession(r *http.Request, credentialDigest auth.Digest) {
 	if m.auditor == nil {
 		return
 	}
-	err := m.auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-		Kind:             SecuritySessionRejected,
-		Outcome:          SecurityOutcomeDenied,
+	err := m.auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+		Kind:             auth.SecuritySessionRejected,
+		Outcome:          auth.SecurityOutcomeDenied,
 		CredentialDigest: credentialDigest,
 	})
 	logAuditFailure(r, err)
 }
 
-func recordAuthorizationDenial(r *http.Request, principal Principal, auditor SecurityAuditor) {
+func recordAuthorizationDenial(r *http.Request, principal auth.Principal, auditor auth.SecurityAuditor) {
 	if auditor == nil {
 		return
 	}
-	err := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-		Kind:    SecurityAuthorizationDenied,
-		Outcome: SecurityOutcomeDenied,
+	err := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+		Kind:    auth.SecurityAuthorizationDenied,
+		Outcome: auth.SecurityOutcomeDenied,
 		ActorID: principal.SubjectID(),
 	})
 	logAuditFailure(r, err)
@@ -177,14 +178,14 @@ func recordAuthorizationDenial(r *http.Request, principal Principal, auditor Sec
 
 func bearer(values []string) (string, error) {
 	if len(values) == 0 {
-		return "", ErrCredentialsRequired
+		return "", auth.ErrCredentialsRequired
 	}
 	if len(values) != 1 || strings.Contains(values[0], ",") {
-		return "", ErrCredentialsInvalid
+		return "", auth.ErrCredentialsInvalid
 	}
 	parts := strings.Fields(values[0])
 	if len(parts) != 2 || parts[0] != "Bearer" || parts[1] == "" {
-		return "", ErrCredentialsInvalid
+		return "", auth.ErrCredentialsInvalid
 	}
 	return parts[1], nil
 }
@@ -198,6 +199,6 @@ func unauthorized(w http.ResponseWriter, r *http.Request, err error) {
 // refused request, in the request log; the refusal stands.
 func logAuditFailure(r *http.Request, err error) {
 	if err != nil {
-		logSecurityAuditFailure(r, &SecurityAuditError{Cause: err})
+		logSecurityAuditFailure(r, &auth.SecurityAuditError{Cause: err})
 	}
 }

@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"bytes"
@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -22,28 +23,28 @@ import (
 // patterns the generated application uses, with in-memory stores.
 func describedAuthRoutes(t *testing.T) (*http.ServeMux, []openapi.Route) {
 	t.Helper()
-	hash, err := HashPassword("secret")
+	hash, err := auth.HashPassword("secret")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionToken, err := NewToken()
+	sessionToken, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	passwords := &loginStoreStub{found: true, identity: PasswordIdentity{
+	passwords := &loginStoreStub{found: true, identity: auth.PasswordIdentity{
 		SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: hash, CredentialVersion: 1,
 	}}
 	sessions := &sessionStub{token: sessionToken}
-	throttler, err := newMemoryLoginThrottler(LoginThrottleConfig{Window: time.Minute, AccountLimit: 2, SourceLimit: 100, MaxEntries: 100}, time.Now)
+	throttler, err := auth.NewMemoryLoginThrottler(auth.LoginThrottleConfig{Window: time.Minute, AccountLimit: 2, SourceLimit: 100, MaxEntries: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
-	login, err := NewLoginService(passwords, sessions, WithLoginThrottler(throttler))
+	login, err := auth.NewLoginService(passwords, sessions, auth.WithLoginThrottler(throttler))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	cipher, err := NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+	cipher, err := auth.NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,39 +56,39 @@ func describedAuthRoutes(t *testing.T) (*http.ServeMux, []openapi.Route) {
 	membership := uuid.MustNew()
 	mfaStore := &mfaStoreStub{
 		challengeFound: true,
-		challenge: MFAChallengeRecord{
+		challenge: auth.MFAChallengeRecord{
 			SubjectID: uuid.MustNew(), MembershipID: membership, CredentialVersion: 1,
 			SecretDigest: sha256.Sum256(secret), SecretCiphertext: sealed, LastCounter: -1,
 			ExpiresAt: time.Now().Add(5 * time.Minute), SessionExpiresAt: time.Now().Add(time.Hour),
 		},
 		consumeResult: true, consumeMembership: membership,
 	}
-	mfa, err := NewMFAService(mfaStore, sessions, cipher)
+	mfa, err := auth.NewMFAService(mfaStore, sessions, cipher)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	recoveryThrottler, err := newMemoryLoginThrottler(LoginThrottleConfig{Window: time.Minute, AccountLimit: 1, SourceLimit: 100, MaxEntries: 100}, time.Now)
+	recoveryThrottler, err := auth.NewMemoryLoginThrottler(auth.LoginThrottleConfig{Window: time.Minute, AccountLimit: 1, SourceLimit: 100, MaxEntries: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
 	recoveryStore := &recoveryStoreStub{consumeResult: true}
-	recovery, err := NewRecoveryService(recoveryStore, &recoverySenderStub{}, WithRecoveryThrottler(recoveryThrottler))
+	recovery, err := auth.NewRecoveryService(recoveryStore, &recoverySenderStub{}, auth.WithRecoveryThrottler(recoveryThrottler))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// An account that needs MFA answers 202 with a challenge.
-	challenge, err := NewMFAChallengeToken()
+	challenge, err := auth.NewMFAChallengeToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	mfaLogin, err := NewLoginService(
-		&loginStoreStub{found: true, identity: PasswordIdentity{
+	mfaLogin, err := auth.NewLoginService(
+		&loginStoreStub{found: true, identity: auth.PasswordIdentity{
 			SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: hash, CredentialVersion: 1, MFARequired: true,
 		}},
 		sessions,
-		WithMFAChallengeIssuer(&mfaIssuerStub{token: challenge, expiresAt: time.Now().Add(5 * time.Minute)}),
+		auth.WithMFAChallengeIssuer(&mfaIssuerStub{token: challenge, expiresAt: time.Now().Add(5 * time.Minute)}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +249,7 @@ func TestAuthDescriptionsMatchWhatTheHandlersAnswer(t *testing.T) {
 		t.Errorf("%s %s: %v", r.Method, r.URL.Path, err)
 	})
 
-	mfaChallenge, err := NewMFAChallengeToken()
+	mfaChallenge, err := auth.NewMFAChallengeToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +257,7 @@ func TestAuthDescriptionsMatchWhatTheHandlersAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionToken, err := NewToken()
+	sessionToken, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}

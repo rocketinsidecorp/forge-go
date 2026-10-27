@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"bytes"
@@ -11,29 +11,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestCookieLoginSetsSecureHostCookies(t *testing.T) {
-	hash, err := HashPassword("secret")
+	hash, err := auth.HashPassword("secret")
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &loginStoreStub{
 		found: true,
-		identity: PasswordIdentity{
+		identity: auth.PasswordIdentity{
 			SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: hash,
 			CredentialVersion: 1,
 		},
 	}
 	sessions := &sessionStub{token: token}
 	now := time.Date(2026, 9, 27, 14, 0, 0, 0, time.UTC)
-	service, err := NewLoginService(store, sessions, WithLoginClock(func() time.Time { return now }))
+	service, err := auth.NewLoginService(store, sessions, auth.WithLoginClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +87,7 @@ func TestCookieLoginSetsSecureHostCookies(t *testing.T) {
 }
 
 func TestCookieLoginRequiresSameOriginHTTPS(t *testing.T) {
-	service, err := NewLoginService(&loginStoreStub{}, &sessionStub{})
+	service, err := auth.NewLoginService(&loginStoreStub{}, &sessionStub{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +111,7 @@ func TestCookieLoginRequiresSameOriginHTTPS(t *testing.T) {
 }
 
 func TestAuthenticateCookieUsesOnlySessionCookie(t *testing.T) {
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,15 +119,15 @@ func TestAuthenticateCookieUsesOnlySessionCookie(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := NewPrincipal(uuid.MustNew(), tenant, Permission("tasks:read"))
+	principal, err := auth.NewPrincipal(uuid.MustNew(), tenant, auth.Permission("tasks:read"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := NewMiddleware(ResolverFunc(func(_ context.Context, digest Digest) (Session, bool, error) {
+	middleware, err := NewMiddleware(auth.ResolverFunc(func(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
 		if digest != token.Digest() {
 			t.Fatalf("digest=%x", digest)
 		}
-		return Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
+		return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +135,7 @@ func TestAuthenticateCookieUsesOnlySessionCookie(t *testing.T) {
 	nextCalled := false
 	handler := middleware.AuthenticateCookie(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled = true
-		got, ok := FromContext(r.Context())
+		got, ok := auth.FromContext(r.Context())
 		if !ok || got.SubjectID() != principal.SubjectID() || got.Tenant() != tenant {
 			t.Fatalf("principal=%+v ok=%v", got, ok)
 		}
@@ -151,9 +152,9 @@ func TestAuthenticateCookieUsesOnlySessionCookie(t *testing.T) {
 }
 
 func TestAuthenticateCookieRejectsDuplicateCredentials(t *testing.T) {
-	middleware, err := NewMiddleware(ResolverFunc(func(context.Context, Digest) (Session, bool, error) {
+	middleware, err := NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
 		t.Fatal("resolver must not run for duplicate cookies")
-		return Session{}, false, nil
+		return auth.Session{}, false, nil
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -173,17 +174,17 @@ func TestAuthenticateCookieRejectsDuplicateCredentials(t *testing.T) {
 
 func TestAuthenticateCookieAuditsRejectedSession(t *testing.T) {
 	t.Parallel()
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	auditor := &securityAuditorStub{}
 	middleware, err := NewMiddleware(
-		ResolverFunc(func(_ context.Context, digest Digest) (Session, bool, error) {
+		auth.ResolverFunc(func(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
 			if digest != token.Digest() {
 				t.Fatalf("digest=%x", digest)
 			}
-			return Session{}, false, nil
+			return auth.Session{}, false, nil
 		}),
 		WithAuthenticationAuditor(auditor),
 	)
@@ -200,7 +201,7 @@ func TestAuthenticateCookieAuditsRejectedSession(t *testing.T) {
 		t.Fatalf("status=%d events=%+v body=%s", recorder.Code, auditor.events, recorder.Body.String())
 	}
 	event := auditor.events[0]
-	if event.Kind != SecuritySessionRejected || event.Outcome != SecurityOutcomeDenied ||
+	if event.Kind != auth.SecuritySessionRejected || event.Outcome != auth.SecurityOutcomeDenied ||
 		event.CredentialDigest != token.Digest() || event.ActorID != (uuid.UUID{}) || event.SubjectID != (uuid.UUID{}) {
 		t.Fatalf("event=%+v", event)
 	}
@@ -248,7 +249,7 @@ func TestRequireCSRFProtectsUnsafeMethods(t *testing.T) {
 }
 
 func TestCookieLogoutRequiresCSRFRevokesAndClearsCookies(t *testing.T) {
-	sessionToken, err := NewToken()
+	sessionToken, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +292,7 @@ func TestCookieLogoutRequiresCSRFRevokesAndClearsCookies(t *testing.T) {
 }
 
 func TestAuditedCookieLogoutRecordsCredentialDigestAndStaysIdempotent(t *testing.T) {
-	sessionToken, err := NewToken()
+	sessionToken, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,8 +319,8 @@ func TestAuditedCookieLogoutRecordsCredentialDigestAndStaysIdempotent(t *testing
 			t.Fatalf("audit err=%v status=%d revoked=%v body=%s", auditErr, recorder.Code, revoker.token, recorder.Body.String())
 		}
 		if len(auditor.events) != 1 ||
-			auditor.events[0].Kind != SecuritySessionRevoked ||
-			auditor.events[0].Outcome != SecurityOutcomeSucceeded ||
+			auditor.events[0].Kind != auth.SecuritySessionRevoked ||
+			auditor.events[0].Outcome != auth.SecurityOutcomeSucceeded ||
 			auditor.events[0].CredentialDigest != sessionToken.Digest() {
 			t.Fatalf("audit err=%v events=%+v", auditErr, auditor.events)
 		}
@@ -327,11 +328,11 @@ func TestAuditedCookieLogoutRecordsCredentialDigestAndStaysIdempotent(t *testing
 }
 
 func TestCookieLoginReturnsMFAChallengeWithoutSessionCookies(t *testing.T) {
-	hash, err := HashPassword("secret")
+	hash, err := auth.HashPassword("secret")
 	if err != nil {
 		t.Fatal(err)
 	}
-	challenge, err := NewMFAChallengeToken()
+	challenge, err := auth.NewMFAChallengeToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +340,7 @@ func TestCookieLoginReturnsMFAChallengeWithoutSessionCookies(t *testing.T) {
 	now := time.Date(2026, 9, 27, 21, 0, 0, 0, time.UTC)
 	store := &loginStoreStub{
 		found: true,
-		identity: PasswordIdentity{
+		identity: auth.PasswordIdentity{
 			SubjectID:         uuid.MustNew(),
 			MembershipID:      membershipID,
 			PasswordHash:      hash,
@@ -349,11 +350,11 @@ func TestCookieLoginReturnsMFAChallengeWithoutSessionCookies(t *testing.T) {
 	}
 	sessions := &sessionStub{}
 	issuer := &mfaIssuerStub{token: challenge, expiresAt: now.Add(5 * time.Minute)}
-	service, err := NewLoginService(
+	service, err := auth.NewLoginService(
 		store,
 		sessions,
-		WithLoginClock(func() time.Time { return now }),
-		WithMFAChallengeIssuer(issuer),
+		auth.WithLoginClock(func() time.Time { return now }),
+		auth.WithMFAChallengeIssuer(issuer),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -393,7 +394,7 @@ func TestCookieLoginReturnsMFAChallengeWithoutSessionCookies(t *testing.T) {
 
 func TestCookieMFACompletionSetsSessionAndCSRFCookies(t *testing.T) {
 	now := time.Date(2026, 9, 27, 21, 15, 0, 0, time.UTC)
-	challenge, err := NewMFAChallengeToken()
+	challenge, err := auth.NewMFAChallengeToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,14 +402,14 @@ func TestCookieMFACompletionSetsSessionAndCSRFCookies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionToken, err := NewToken()
+	sessionToken, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	membershipID := uuid.MustNew()
 	store := &mfaStoreStub{
 		challengeFound: true,
-		challenge: MFAChallengeRecord{
+		challenge: auth.MFAChallengeRecord{
 			MembershipID:      membershipID,
 			CredentialVersion: 3,
 			ExpiresAt:         now.Add(5 * time.Minute),
@@ -417,12 +418,12 @@ func TestCookieMFACompletionSetsSessionAndCSRFCookies(t *testing.T) {
 		consumeResult:     true,
 		consumeMembership: membershipID,
 	}
-	cipher, err := NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+	cipher, err := auth.NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	sessions := &sessionStub{token: sessionToken}
-	service, err := NewMFAService(store, sessions, cipher, WithMFAClock(func() time.Time { return now }))
+	service, err := auth.NewMFAService(store, sessions, cipher, auth.WithMFAClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}

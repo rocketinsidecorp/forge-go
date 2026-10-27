@@ -1,8 +1,13 @@
-// Package auth provides opaque session authentication over explicit bearer or
-// secure-cookie transports, CSRF protection for browser sessions, and deny-by-
-// default permission checks. Session resolvers must load current account,
-// tenant membership and permissions on every request; long-lived role claims
-// are deliberately not part of the token.
+// Package auth is Forge's authentication and authorization domain: opaque
+// session tokens, principals and permissions, password hashing, sign-in,
+// two-factor authentication, password recovery, throttling and the security
+// audit, with the ports identity stores implement. Session resolvers must
+// load current account, tenant membership and permissions on every request;
+// long-lived role claims are deliberately not part of the token.
+//
+// auth speaks no HTTP: the bearer and cookie middleware, the JSON handlers,
+// the browser forms (Browser), CSRF enforcement and the OpenAPI operations
+// live in package auth/authhttp (ADR 0052).
 package auth
 
 import (
@@ -44,7 +49,7 @@ func NewPermission(value string) (Permission, error) {
 }
 
 // Principal is the authenticated subject of a request: its user ID, the tenant it acts in and the
-// permissions it currently holds. Middleware.Authenticate stores it in the request context; read it
+// permissions it currently holds. authhttp.Middleware stores it in the request context; read it
 // with FromContext.
 type Principal struct {
 	subjectID   uuid.UUID
@@ -113,11 +118,7 @@ func (fn ResolverFunc) ResolveSession(ctx context.Context, digest Digest) (Sessi
 	return fn(ctx, digest)
 }
 
-func withPrincipal(ctx context.Context, principal Principal) context.Context {
-	return principalctx.With(ctx, principal)
-}
-
-// FromContext returns the Principal that Middleware.Authenticate stored in ctx.
+// FromContext returns the Principal that authhttp.Middleware stored in ctx.
 func FromContext(ctx context.Context) (Principal, bool) {
 	principal, ok := principalctx.Value(ctx).(Principal)
 	return principal, ok

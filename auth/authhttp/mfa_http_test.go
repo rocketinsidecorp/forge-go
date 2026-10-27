@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"bytes"
@@ -11,23 +11,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestLoginHandlerReturnsMFAChallengeWithoutSession(t *testing.T) {
-	hash, err := HashPassword("correct-password")
+	hash, err := auth.HashPassword("correct-password")
 	if err != nil {
 		t.Fatal(err)
 	}
-	challenge, err := NewMFAChallengeToken()
+	challenge, err := auth.NewMFAChallengeToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	membershipID := uuid.MustNew()
 	store := &loginStoreStub{
 		found: true,
-		identity: PasswordIdentity{
+		identity: auth.PasswordIdentity{
 			SubjectID:         uuid.MustNew(),
 			MembershipID:      membershipID,
 			PasswordHash:      hash,
@@ -38,11 +39,11 @@ func TestLoginHandlerReturnsMFAChallengeWithoutSession(t *testing.T) {
 	sessions := &sessionStub{}
 	now := time.Date(2026, 9, 27, 20, 0, 0, 0, time.UTC)
 	issuer := &mfaIssuerStub{token: challenge, expiresAt: now.Add(5 * time.Minute)}
-	service, err := NewLoginService(
+	service, err := auth.NewLoginService(
 		store,
 		sessions,
-		WithLoginClock(func() time.Time { return now }),
-		WithMFAChallengeIssuer(issuer),
+		auth.WithLoginClock(func() time.Time { return now }),
+		auth.WithMFAChallengeIssuer(issuer),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +74,7 @@ func TestLoginHandlerReturnsMFAChallengeWithoutSession(t *testing.T) {
 
 func TestMFACompletionHandlerReturnsSession(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	secretCipher, err := NewAESGCMSecretCipher(key)
+	secretCipher, err := auth.NewAESGCMSecretCipher(key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,11 +83,11 @@ func TestMFACompletionHandlerReturnsSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	challenge, err := NewMFAChallengeToken()
+	challenge, err := auth.NewMFAChallengeToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionToken, err := NewToken()
+	sessionToken, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +95,7 @@ func TestMFACompletionHandlerReturnsSession(t *testing.T) {
 	membershipID := uuid.MustNew()
 	store := &mfaStoreStub{
 		challengeFound: true,
-		challenge: MFAChallengeRecord{
+		challenge: auth.MFAChallengeRecord{
 			SubjectID:         uuid.MustNew(),
 			MembershipID:      membershipID,
 			CredentialVersion: 1,
@@ -108,7 +109,7 @@ func TestMFACompletionHandlerReturnsSession(t *testing.T) {
 		consumeMembership: membershipID,
 	}
 	sessions := &sessionStub{token: sessionToken}
-	service, err := NewMFAService(store, sessions, secretCipher, WithMFAClock(func() time.Time { return now }))
+	service, err := auth.NewMFAService(store, sessions, secretCipher, auth.WithMFAClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,18 +141,18 @@ func TestMFACompletionHandlerReturnsSession(t *testing.T) {
 	if response.AccessToken != sessionToken.Reveal() || !response.ExpiresAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("response=%+v", response)
 	}
-	if len(auditor.events) != 1 || auditor.events[0].Kind != SecurityMFAChallengeSucceeded || auditor.events[0].Outcome != SecurityOutcomeSucceeded {
+	if len(auditor.events) != 1 || auditor.events[0].Kind != auth.SecurityMFAChallengeSucceeded || auditor.events[0].Outcome != auth.SecurityOutcomeSucceeded {
 		t.Fatalf("audit events=%+v", auditor.events)
 	}
 }
 
 func TestTOTPEnrollmentHandlerRequiresExplicitStepUp(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	secretCipher, err := NewAESGCMSecretCipher(key)
+	secretCipher, err := auth.NewAESGCMSecretCipher(key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewMFAService(&mfaStoreStub{}, &sessionStub{}, secretCipher)
+	service, err := auth.NewMFAService(&mfaStoreStub{}, &sessionStub{}, secretCipher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,12 +164,12 @@ func TestTOTPEnrollmentHandlerRequiresExplicitStepUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := NewPrincipal(uuid.MustNew(), tenant)
+	principal, err := auth.NewPrincipal(uuid.MustNew(), tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
 	authorized := false
-	handler, err := NewTOTPEnrollmentHandler(service, "Forge", MFAEnrollmentAuthorizerFunc(func(_ context.Context, got Principal) error {
+	handler, err := NewTOTPEnrollmentHandler(service, "Forge", auth.MFAEnrollmentAuthorizerFunc(func(_ context.Context, got auth.Principal) error {
 		authorized = true
 		if got.SubjectID() != principal.SubjectID() {
 			t.Fatalf("subject=%s", got.SubjectID())
@@ -196,7 +197,7 @@ func TestTOTPEnrollmentHandlerRequiresExplicitStepUp(t *testing.T) {
 
 func TestTOTPConfirmationHandlerReturnsBackupCodesOnce(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	secretCipher, err := NewAESGCMSecretCipher(key)
+	secretCipher, err := auth.NewAESGCMSecretCipher(key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,14 +211,14 @@ func TestTOTPConfirmationHandlerReturnsBackupCodesOnce(t *testing.T) {
 	store := &mfaStoreStub{
 		pendingFound:  true,
 		confirmResult: true,
-		pending: TOTPSecretRecord{
+		pending: auth.TOTPSecretRecord{
 			SubjectID:        subjectID,
 			SecretDigest:     sha256.Sum256(secret),
 			SecretCiphertext: sealed,
 			ExpiresAt:        now.Add(5 * time.Minute),
 		},
 	}
-	service, err := NewMFAService(store, &sessionStub{}, secretCipher, WithMFAClock(func() time.Time { return now }))
+	service, err := auth.NewMFAService(store, &sessionStub{}, secretCipher, auth.WithMFAClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +230,7 @@ func TestTOTPConfirmationHandlerReturnsBackupCodesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := NewPrincipal(subjectID, tenant)
+	principal, err := auth.NewPrincipal(subjectID, tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +254,7 @@ func TestTOTPConfirmationHandlerReturnsBackupCodesOnce(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.BackupCodes) != DefaultMFABackupCodeCount {
+	if len(response.BackupCodes) != auth.DefaultMFABackupCodeCount {
 		t.Fatalf("backup code count=%d", len(response.BackupCodes))
 	}
 	for _, backupCode := range response.BackupCodes {
@@ -265,12 +266,12 @@ func TestTOTPConfirmationHandlerReturnsBackupCodesOnce(t *testing.T) {
 
 func TestMFALifecycleHandlersRequireStepUp(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	secretCipher, err := NewAESGCMSecretCipher(key)
+	secretCipher, err := auth.NewAESGCMSecretCipher(key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &mfaStoreStub{disabledResult: true}
-	service, err := NewMFAService(store, &sessionStub{}, secretCipher)
+	service, err := auth.NewMFAService(store, &sessionStub{}, secretCipher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,12 +286,12 @@ func TestMFALifecycleHandlersRequireStepUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := NewPrincipal(uuid.MustNew(), tenant)
+	principal, err := auth.NewPrincipal(uuid.MustNew(), tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
 	authorized := 0
-	authorizer := MFAChangeAuthorizerFunc(func(_ context.Context, got Principal) error {
+	authorizer := auth.MFAChangeAuthorizerFunc(func(_ context.Context, got auth.Principal) error {
 		authorized++
 		if got.SubjectID() != principal.SubjectID() {
 			t.Fatalf("subject=%s", got.SubjectID())
@@ -328,16 +329,16 @@ func TestMFALifecycleHandlersRequireStepUp(t *testing.T) {
 
 func TestMFADisableHandlerKeepsSuccessWhenOnlyAuditFails(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	secretCipher, err := NewAESGCMSecretCipher(key)
+	secretCipher, err := auth.NewAESGCMSecretCipher(key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &mfaStoreStub{disabledResult: true}
-	service, err := NewMFAService(
+	service, err := auth.NewMFAService(
 		store,
 		&sessionStub{},
 		secretCipher,
-		WithMFAAuditor(&securityAuditorStub{err: errors.New("audit unavailable")}),
+		auth.WithMFAAuditor(&securityAuditorStub{err: errors.New("audit unavailable")}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -346,11 +347,11 @@ func TestMFADisableHandlerKeepsSuccessWhenOnlyAuditFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := NewPrincipal(uuid.MustNew(), tenant)
+	principal, err := auth.NewPrincipal(uuid.MustNew(), tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewMFADisableHandler(service, MFAChangeAuthorizerFunc(func(context.Context, Principal) error {
+	handler, err := NewMFADisableHandler(service, auth.MFAChangeAuthorizerFunc(func(context.Context, auth.Principal) error {
 		return nil
 	}))
 	if err != nil {

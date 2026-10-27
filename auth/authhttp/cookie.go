@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/openapi"
@@ -79,7 +80,7 @@ func (m *Middleware) AuthenticateBrowser(signInPath string, next http.Handler) (
 			next.ServeHTTP(w, r.WithContext(ctx)) //nolint:contextcheck // the context comes from a helper that derives it from r.Context(); the analyzer cannot see through it
 			return
 		}
-		if !web.PrefersHTML(r) || (!errors.Is(err, ErrCredentialsRequired) && !errors.Is(err, ErrCredentialsInvalid)) {
+		if !web.PrefersHTML(r) || (!errors.Is(err, auth.ErrCredentialsRequired) && !errors.Is(err, auth.ErrCredentialsInvalid)) {
 			web.Error(w, r, err)
 			return
 		}
@@ -118,10 +119,10 @@ func browserReturnTo(r *http.Request) string {
 func (m *Middleware) cookieContext(r *http.Request) (context.Context, error) {
 	cookies := r.CookiesNamed(SessionCookieName)
 	if len(cookies) == 0 {
-		return nil, ErrCredentialsRequired
+		return nil, auth.ErrCredentialsRequired
 	}
 	if len(cookies) != 1 || cookies[0].Value == "" {
-		return nil, ErrCredentialsInvalid
+		return nil, auth.ErrCredentialsInvalid
 	}
 	return m.authenticateContext(r, cookies[0].Value)
 }
@@ -130,7 +131,7 @@ func (m *Middleware) cookieContext(r *http.Request) (context.Context, error) {
 // resulting opaque credential only as an HttpOnly Secure __Host- cookie. This
 // endpoint requires a same-origin HTTPS Origin header to prevent login CSRF.
 // Non-browser/API clients should use NewLoginHandler instead.
-func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
+func NewCookieLoginHandler(service *auth.LoginService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("login service is required")
 	}
@@ -145,7 +146,7 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 			web.Error(w, r, err)
 			return
 		}
-		result, err := service.Login(r.Context(), LoginInput{
+		result, err := service.Login(r.Context(), auth.LoginInput{
 			Email:      request.Email,
 			Password:   request.Password,
 			TenantSlug: request.TenantSlug,
@@ -153,13 +154,13 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 		})
 		if err != nil {
 			_, _ = logSecurityAuditFailure(r, err)
-			var throttled *LoginThrottledError
+			var throttled *auth.LoginThrottledError
 			switch {
 			case errors.As(err, &throttled):
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 				web.Error(w, r, err)
-			case errors.Is(err, ErrCredentialsInvalid):
-				web.Error(w, r, ErrCredentialsInvalid)
+			case errors.Is(err, auth.ErrCredentialsInvalid):
+				web.Error(w, r, auth.ErrCredentialsInvalid)
 			default:
 				setPasswordWorkRetryAfter(w, err)
 				web.Error(w, r, err)
@@ -186,7 +187,7 @@ func NewCookieLoginHandler(service *LoginService) (http.Handler, error) {
 // NewCookieMFACompletionHandler exchanges a valid MFA challenge for a secure
 // browser session. Like cookie login, it requires an HTTPS same-origin Origin
 // header because it creates ambient browser credentials.
-func NewCookieMFACompletionHandler(service *MFAService) (http.Handler, error) {
+func NewCookieMFACompletionHandler(service *auth.MFAService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("MFA service is required")
 	}
@@ -201,14 +202,14 @@ func NewCookieMFACompletionHandler(service *MFAService) (http.Handler, error) {
 			web.Error(w, r, err)
 			return
 		}
-		result, err := service.CompleteLogin(r.Context(), MFACompletion{
+		result, err := service.CompleteLogin(r.Context(), auth.MFACompletion{
 			ChallengeToken: request.ChallengeToken,
 			Code:           request.Code,
 			Source:         requestSource(r),
 		})
 		if err != nil {
 			_, _ = logSecurityAuditFailure(r, err)
-			var throttled *LoginThrottledError
+			var throttled *auth.LoginThrottledError
 			if errors.As(err, &throttled) {
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 			}
@@ -247,21 +248,21 @@ func RequireCSRF(next http.Handler) (http.Handler, error) {
 // NewCookieLogoutHandler revokes the session cookie, requires CSRF, and clears
 // both browser credentials. Unknown or already-revoked syntactically valid
 // sessions remain idempotent at the repository layer.
-func NewCookieLogoutHandler(revoker SessionRevoker) (http.Handler, error) {
+func NewCookieLogoutHandler(revoker auth.SessionRevoker) (http.Handler, error) {
 	return newCookieLogoutHandler(revoker, nil)
 }
 
 // NewAuditedCookieLogoutHandler is NewCookieLogoutHandler with structured
 // security audit. Audit failures are logged without undoing a successful
 // revocation or changing the idempotent 204 response.
-func NewAuditedCookieLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Handler, error) {
+func NewAuditedCookieLogoutHandler(revoker auth.SessionRevoker, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("security auditor is required")
 	}
 	return newCookieLogoutHandler(revoker, auditor)
 }
 
-func newCookieLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Handler, error) {
+func newCookieLogoutHandler(revoker auth.SessionRevoker, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if revoker == nil {
 		return nil, errors.New("session revoker is required")
 	}
@@ -284,7 +285,7 @@ func newCookieLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (ht
 // token, which replaces any token issued before authentication. Every cookie
 // login path goes through it, so the cookies are identical whichever handler
 // signed the user in.
-func startCookieSession(w http.ResponseWriter, result LoginResult) (csrfToken string, err error) {
+func startCookieSession(w http.ResponseWriter, result auth.LoginResult) (csrfToken string, err error) {
 	if result.MFARequired {
 		return "", errors.New("auth: an MFA challenge is not a session")
 	}
@@ -301,18 +302,18 @@ func startCookieSession(w http.ResponseWriter, result LoginResult) (csrfToken st
 // clears both browser cookies. Unknown or already-revoked tokens stay
 // idempotent at the repository layer. Only a failed revocation is an error;
 // the cookies are then left in place so the user can retry.
-func endCookieSession(w http.ResponseWriter, r *http.Request, revoker SessionRevoker, auditor SecurityAuditor) error {
+func endCookieSession(w http.ResponseWriter, r *http.Request, revoker auth.SessionRevoker, auditor auth.SecurityAuditor) error {
 	cookies := r.CookiesNamed(SessionCookieName)
 	if len(cookies) == 1 && cookies[0].Value != "" {
-		token, err := ParseToken(cookies[0].Value)
+		token, err := auth.ParseToken(cookies[0].Value)
 		if err == nil {
 			if err := revoker.RevokeSession(r.Context(), token); err != nil {
 				return err
 			}
 			if auditor != nil {
-				if err := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-					Kind:             SecuritySessionRevoked,
-					Outcome:          SecurityOutcomeSucceeded,
+				if err := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+					Kind:             auth.SecuritySessionRevoked,
+					Outcome:          auth.SecurityOutcomeSucceeded,
 					CredentialDigest: token.Digest(),
 				}); err != nil {
 					web.Logger(r.Context()).Error("security audit failed",

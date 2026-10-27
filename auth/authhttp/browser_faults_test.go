@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
@@ -24,7 +25,7 @@ type faultBrowser struct {
 	auditMu  sync.Mutex
 }
 
-func newFaultBrowser(t *testing.T, options ...MFAOption) *faultBrowser {
+func newFaultBrowser(t *testing.T, options ...auth.MFAOption) *faultBrowser {
 	t.Helper()
 	hash := cachedPasswordHash(t)
 	fb := &faultBrowser{}
@@ -38,22 +39,22 @@ func newFaultBrowser(t *testing.T, options ...MFAOption) *faultBrowser {
 		f.bob: {login: "bob@example.com", hash: hash},
 	}}
 	fb.store = &faultMFAStore{memoryMFAAccounts: f.accounts, fail: map[string]error{}, deny: map[string]bool{}, before: map[string]func(){}}
-	cipher, err := NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
+	cipher, err := auth.NewAESGCMSecretCipher([]byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	auditor := SecurityAuditorFunc(func(_ context.Context, event SecurityEvent) error {
+	auditor := auth.SecurityAuditorFunc(func(_ context.Context, event auth.SecurityEvent) error {
 		fb.auditMu.Lock()
 		defer fb.auditMu.Unlock()
 		f.events = append(f.events, event)
 		return fb.auditErr
 	})
-	throttler, err := NewMemoryLoginThrottler(DefaultMFAThrottleConfig())
+	throttler, err := auth.NewMemoryLoginThrottler(auth.DefaultMFAThrottleConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	options = append([]MFAOption{WithMFAClock(f.clock), WithMFAAuditor(auditor), WithMFAThrottler(throttler)}, options...)
-	mfa, err := NewMFAService(fb.store, &sessionStub{}, cipher, options...)
+	options = append([]auth.MFAOption{auth.WithMFAClock(f.clock), auth.WithMFAAuditor(auditor), auth.WithMFAThrottler(throttler)}, options...)
+	mfa, err := auth.NewMFAService(fb.store, &sessionStub{}, cipher, options...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,18 +105,18 @@ func TestBrowserMFAStepUpFailsClosed(t *testing.T) {
 		if recorder := fb.post(uuid.UUID{}, "/mfa", enrollForm, true); recorder.Code != http.StatusUnauthorized {
 			t.Errorf("unauthenticated: status=%d", recorder.Code)
 		}
-		failing := newFaultBrowser(t, WithMFAThrottler(failingThrottler{attemptErr: errInjected}))
+		failing := newFaultBrowser(t, auth.WithMFAThrottler(failingThrottler{attemptErr: errInjected}))
 		if got := failing.errorOf(failing.post(failing.ada, "/mfa", enrollForm, true)); got != errInjected.Error() {
 			t.Errorf("throttler failure: %q", got)
 		}
 		// A throttler that denies refuses with Retry-After before any check,
 		// and the refusal is audited as denied.
-		denying := newFaultBrowser(t, WithMFAThrottler(failingThrottler{}))
+		denying := newFaultBrowser(t, auth.WithMFAThrottler(failingThrottler{}))
 		recorder := denying.post(denying.ada, "/mfa", enrollForm, true)
 		if recorder.Code != http.StatusTooManyRequests || recorder.Header().Get("Retry-After") != "7" {
 			t.Errorf("denied: status=%d Retry-After=%q", recorder.Code, recorder.Header().Get("Retry-After"))
 		}
-		if denying.deniedEvents(SecurityMFAEnrollmentStarted) != 1 {
+		if denying.deniedEvents(auth.SecurityMFAEnrollmentStarted) != 1 {
 			t.Errorf("events=%+v", denying.events)
 		}
 	})
@@ -125,17 +126,17 @@ func TestBrowserMFAStepUpFailsClosed(t *testing.T) {
 		fb := newFaultBrowser(t)
 		fb.auditErr = errors.New("audit down")
 		recorder := fb.post(fb.ada, "/mfa", url.Values{"password": {"wrong password"}}, true)
-		if fb.errorOf(recorder) != ErrMFAStepUpInvalid.Error() || fb.accounts.account(fb.ada).pending != nil {
+		if fb.errorOf(recorder) != auth.ErrMFAStepUpInvalid.Error() || fb.accounts.account(fb.ada).pending != nil {
 			t.Errorf("status=%d error=%q", recorder.Code, fb.errorOf(recorder))
 		}
-		if fb.deniedEvents(SecurityMFAEnrollmentStarted) != 1 {
+		if fb.deniedEvents(auth.SecurityMFAEnrollmentStarted) != 1 {
 			t.Errorf("the refusal was not attempted to be audited: %+v", fb.events)
 		}
 	})
 
 	t.Run("a failing throttle reset keeps the completed change", func(t *testing.T) {
 		t.Parallel()
-		fb := newFaultBrowser(t, WithMFAThrottler(failingThrottler{allowed: true, successErr: errInjected}))
+		fb := newFaultBrowser(t, auth.WithMFAThrottler(failingThrottler{allowed: true, successErr: errInjected}))
 		recorder := fb.post(fb.ada, "/mfa", enrollForm, true)
 		if recorder.Code != http.StatusOK || recorder.Header().Get("X-Key") == "" {
 			t.Errorf("status=%d error=%q", recorder.Code, fb.errorOf(recorder))
@@ -155,11 +156,11 @@ func TestBrowserMFAStepUpFailsClosed(t *testing.T) {
 		app := mfaSettingsApp(t, browser)
 		fb := &mfaSettingsFixture{t: t, app: app, ada: uuid.MustNew()}
 		recorder := fb.post(fb.ada, "/mfa", enrollForm, true)
-		if fb.errorOf(recorder) != ErrMFAUnavailable.Error() {
+		if fb.errorOf(recorder) != auth.ErrMFAUnavailable.Error() {
 			t.Errorf("status=%d error=%q", recorder.Code, fb.errorOf(recorder))
 		}
 		request := httptest.NewRequest(http.MethodGet, browserSite+"/", nil)
-		if _, err := browser.MFAStatus(request); !errors.Is(err, ErrMFAUnavailable) {
+		if _, err := browser.MFAStatus(request); !errors.Is(err, auth.ErrMFAUnavailable) {
 			t.Errorf("MFAStatus: %v", err)
 		}
 	})
@@ -174,7 +175,7 @@ func TestBrowserMFAStatusNeedsAPrincipal(t *testing.T) {
 	fb := newFaultBrowser(t)
 	browser := fb.browserForStatus(t)
 	request := httptest.NewRequest(http.MethodGet, browserSite+"/", nil)
-	if _, err := browser.MFAStatus(request); !errors.Is(err, ErrCredentialsRequired) {
+	if _, err := browser.MFAStatus(request); !errors.Is(err, auth.ErrCredentialsRequired) {
 		t.Errorf("no principal: %v", err)
 	}
 	principal := principalOf(t, fb.ada)
@@ -216,10 +217,10 @@ func TestBrowserMFAChangesFailClosedAfterTheStepUp(t *testing.T) {
 				target = "/mfa"
 			}
 			recorder := fb.post(fb.ada, target, form, true)
-			if fb.errorOf(recorder) != ErrMFAStepUpInvalid.Error() {
+			if fb.errorOf(recorder) != auth.ErrMFAStepUpInvalid.Error() {
 				t.Errorf("%s: status=%d error=%q", path, recorder.Code, fb.errorOf(recorder))
 			}
-			if fb.deniedEvents(map[string]SecurityEventKind{"ReplaceMFABackupCodes": SecurityMFABackupCodesRegenerated, "DisableMFA": SecurityMFADisabled}[method]) != 1 {
+			if fb.deniedEvents(map[string]auth.SecurityEventKind{"ReplaceMFABackupCodes": auth.SecurityMFABackupCodesRegenerated, "DisableMFA": auth.SecurityMFADisabled}[method]) != 1 {
 				t.Errorf("%s: the refusal was not audited as denied: %+v", path, fb.events)
 			}
 			if !fb.status(fb.ada).Enabled {
@@ -247,7 +248,7 @@ func TestBrowserMFAChangesFailClosedAfterTheStepUp(t *testing.T) {
 		if got := fb.errorOf(fb.post(fb.ada, "/mfa/backup_codes", url.Values{"password": {mfaTestPassword}, "code": {fb.code(key)}}, true)); got != errInjected.Error() {
 			t.Errorf("verifier failure: %q", got)
 		}
-		if !fb.status(fb.ada).Enabled || fb.status(fb.ada).BackupCodesRemaining != DefaultMFABackupCodeCount {
+		if !fb.status(fb.ada).Enabled || fb.status(fb.ada).BackupCodesRemaining != auth.DefaultMFABackupCodeCount {
 			t.Errorf("a failed change changed the account: %+v", fb.status(fb.ada))
 		}
 	})
@@ -287,7 +288,7 @@ func TestBrowserMFAChangesFailClosedAfterTheStepUp(t *testing.T) {
 		// An expired setup is ErrMFAEnrollmentInvalid, not a retry form.
 		fb.advance(11 * time.Minute)
 		recorder := confirm("000000")
-		if fb.errorOf(recorder) != ErrMFAEnrollmentInvalid.Error() || recorder.Header().Get("X-Key") != "" {
+		if fb.errorOf(recorder) != auth.ErrMFAEnrollmentInvalid.Error() || recorder.Header().Get("X-Key") != "" {
 			t.Errorf("expired: status=%d error=%q key=%q", recorder.Code, fb.errorOf(recorder), recorder.Header().Get("X-Key"))
 		}
 	})
@@ -295,9 +296,9 @@ func TestBrowserMFAChangesFailClosedAfterTheStepUp(t *testing.T) {
 
 // newBrowserWithServices is a Browser over a known account with an MFA
 // service and a recovery service, for the sign-in and recovery forms.
-func newBrowserWithServices(t *testing.T, store *loginStoreStub, mfa *MFAService, recovery *RecoveryService) (*Browser, http.Handler) {
+func newBrowserWithServices(t *testing.T, store *loginStoreStub, mfa *auth.MFAService, recovery *auth.RecoveryService) (*Browser, http.Handler) {
 	t.Helper()
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +379,7 @@ func TestBrowserFormsFailClosed(t *testing.T) {
 		delete(f.store.fail, "LoadMFAChallenge")
 
 		// A throttled completion carries Retry-After.
-		throttled := newFaultMFA(t, WithMFAThrottler(failingThrottler{}))
+		throttled := newFaultMFA(t, auth.WithMFAThrottler(failingThrottler{}))
 		throttledToken := throttled.armChallenge()
 		_, app = newBrowserWithServices(t, cachedIdentity(t, false), throttled.service, nil)
 		recorder = submit(app, "/session/mfa", url.Values{"code": {throttled.code()}}, true, &http.Cookie{Name: MFAChallengeCookieName, Value: throttledToken.Reveal()})
@@ -413,9 +414,9 @@ func TestBrowserFormsFailClosed(t *testing.T) {
 			t.Errorf("reset without CSRF: status=%d", recorder.Code)
 		}
 
-		build := func(store RecoveryStore, options ...RecoveryOption) http.Handler {
-			options = append([]RecoveryOption{WithRecoveryResponseTime(0)}, options...)
-			recovery, err := NewRecoveryService(store, &recoverySenderStub{}, options...)
+		build := func(store auth.RecoveryStore, options ...auth.RecoveryOption) http.Handler {
+			options = append([]auth.RecoveryOption{auth.WithRecoveryResponseTime(0)}, options...)
+			recovery, err := auth.NewRecoveryService(store, &recoverySenderStub{}, options...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -424,7 +425,7 @@ func TestBrowserFormsFailClosed(t *testing.T) {
 		}
 		token := mustRecoveryToken(t).Reveal()
 		// Throttled and failing requests are errors; Retry-After is set.
-		app = build(&recoveryStoreStub{}, WithRecoveryThrottler(failingThrottler{}))
+		app = build(&recoveryStoreStub{}, auth.WithRecoveryThrottler(failingThrottler{}))
 		recorder = submit(app, "/passwords", url.Values{"email": {"a@example.com"}, "tenant": {"acme"}}, true)
 		if recorder.Code != http.StatusTooManyRequests || recorder.Header().Get("Retry-After") != "7" {
 			t.Errorf("throttled request: status=%d Retry-After=%q", recorder.Code, recorder.Header().Get("Retry-After"))
@@ -433,7 +434,7 @@ func TestBrowserFormsFailClosed(t *testing.T) {
 		if recorder.Code != http.StatusTooManyRequests || recorder.Header().Get("Retry-After") != "7" {
 			t.Errorf("throttled reset: status=%d Retry-After=%q", recorder.Code, recorder.Header().Get("Retry-After"))
 		}
-		app = build(&recoveryStoreStub{}, WithRecoveryThrottler(failingThrottler{attemptErr: errInjected}))
+		app = build(&recoveryStoreStub{}, auth.WithRecoveryThrottler(failingThrottler{attemptErr: errInjected}))
 		recorder = submit(app, "/passwords", url.Values{"email": {"a@example.com"}, "tenant": {"acme"}}, true)
 		if recorder.Header().Get("X-Error") != errInjected.Error() {
 			t.Errorf("request failure: %q", recorder.Header().Get("X-Error"))
@@ -446,15 +447,15 @@ func TestBrowserFormsFailClosed(t *testing.T) {
 		// ErrRecoveryInvalid.
 		app = build(&recoveryStoreStub{})
 		recorder = submit(app, "/passwords", url.Values{"_method": {"PATCH"}, "token": {token}, "password": {""}}, true)
-		if recorder.Header().Get("X-Error") != ErrPasswordInvalid.Error() {
+		if recorder.Header().Get("X-Error") != auth.ErrPasswordInvalid.Error() {
 			t.Errorf("empty password: %q", recorder.Header().Get("X-Error"))
 		}
 		recorder = submit(app, "/passwords", url.Values{"_method": {"PATCH"}, "token": {token}, "password": {"a long enough password"}}, true)
-		if recorder.Header().Get("X-Error") != ErrRecoveryInvalid.Error() {
+		if recorder.Header().Get("X-Error") != auth.ErrRecoveryInvalid.Error() {
 			t.Errorf("unusable token: %q", recorder.Header().Get("X-Error"))
 		}
 		// A committed reset whose audit failed still clears the cookies.
-		app = build(&recoveryStoreStub{consumeResult: true}, WithRecoveryAuditor(&securityAuditorStub{err: errors.New("audit down")}))
+		app = build(&recoveryStoreStub{consumeResult: true}, auth.WithRecoveryAuditor(&securityAuditorStub{err: errors.New("audit down")}))
 		recorder = submit(app, "/passwords", url.Values{"_method": {"PATCH"}, "token": {token}, "password": {"a long enough password"}}, true)
 		if recorder.Code != http.StatusNoContent || responseCookie(recorder, SessionCookieName) == nil {
 			t.Errorf("committed reset: status=%d error=%q", recorder.Code, recorder.Header().Get("X-Error"))
@@ -469,7 +470,7 @@ func TestMFAChallengeCookieMustBeWellFormed(t *testing.T) {
 	if _, ok := mfaChallengeCookie(request); ok {
 		t.Error("a malformed challenge cookie was accepted")
 	}
-	token, err := NewMFAChallengeToken()
+	token, err := auth.NewMFAChallengeToken()
 	if err != nil {
 		t.Fatal(err)
 	}

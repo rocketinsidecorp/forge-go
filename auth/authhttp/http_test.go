@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"bytes"
@@ -13,39 +13,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
 type revokeStub struct {
-	token Token
+	token auth.Token
 	err   error
 }
 
-func (s *revokeStub) RevokeSession(_ context.Context, token Token) error {
+func (s *revokeStub) RevokeSession(_ context.Context, token auth.Token) error {
 	s.token = token
 	return s.err
 }
 
 func TestLoginHandlerReturnsBearerToken(t *testing.T) {
-	hash, err := HashPassword("secret")
+	hash, err := auth.HashPassword("secret")
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &loginStoreStub{
 		found: true,
-		identity: PasswordIdentity{
+		identity: auth.PasswordIdentity{
 			SubjectID: uuid.MustNew(), MembershipID: uuid.MustNew(), PasswordHash: hash,
 			CredentialVersion: 1,
 		},
 	}
 	sessions := &sessionStub{token: token}
 	now := time.Date(2026, 9, 27, 13, 0, 0, 0, time.UTC)
-	service, err := NewLoginService(store, sessions, WithLoginClock(func() time.Time { return now }))
+	service, err := auth.NewLoginService(store, sessions, auth.WithLoginClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func TestLoginHandlerReturnsBearerToken(t *testing.T) {
 }
 
 func TestLoginHandlerHidesAuthenticationMiss(t *testing.T) {
-	service, err := NewLoginService(&loginStoreStub{}, &sessionStub{})
+	service, err := auth.NewLoginService(&loginStoreStub{}, &sessionStub{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +94,7 @@ func TestLoginHandlerHidesAuthenticationMiss(t *testing.T) {
 }
 
 func TestLogoutHandlerIsStrictAndIdempotent(t *testing.T) {
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,16 +121,16 @@ func TestLogoutHandlerIsStrictAndIdempotent(t *testing.T) {
 }
 
 func TestLoginHandlerReturnsRetryAfterWhenThrottled(t *testing.T) {
-	limiter, err := newMemoryLoginThrottler(LoginThrottleConfig{
+	limiter, err := auth.NewMemoryLoginThrottler(auth.LoginThrottleConfig{
 		Window:       time.Minute,
 		AccountLimit: 1,
 		SourceLimit:  10,
 		MaxEntries:   100,
-	}, time.Now)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewLoginService(&loginStoreStub{}, &sessionStub{}, WithLoginThrottler(limiter))
+	service, err := auth.NewLoginService(&loginStoreStub{}, &sessionStub{}, auth.WithLoginThrottler(limiter))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +166,7 @@ func TestRequestSourceUsesPeerAddressNotForwardedHeaders(t *testing.T) {
 }
 
 func TestAuditedLogoutRecordsCredentialDigest(t *testing.T) {
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,15 +186,15 @@ func TestAuditedLogoutRecordsCredentialDigest(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	if len(auditor.events) != 1 ||
-		auditor.events[0].Kind != SecuritySessionRevoked ||
-		auditor.events[0].Outcome != SecurityOutcomeSucceeded ||
+		auditor.events[0].Kind != auth.SecuritySessionRevoked ||
+		auditor.events[0].Outcome != auth.SecurityOutcomeSucceeded ||
 		auditor.events[0].CredentialDigest != token.Digest() {
 		t.Fatalf("events=%+v", auditor.events)
 	}
 }
 
 func TestAuditedLogoutStaysIdempotentWhenAuditFails(t *testing.T) {
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,16 +227,16 @@ func TestAuditedLogoutStaysIdempotentWhenAuditFails(t *testing.T) {
 // every sign-in. With the proxy trusted (ADR 0037) each client has its own
 // counter, and a client cannot escape its counter with X-Forwarded-For.
 func TestSourceThrottleBehindTrustedProxyCountsEachClient(t *testing.T) {
-	limiter, err := newMemoryLoginThrottler(LoginThrottleConfig{
+	limiter, err := auth.NewMemoryLoginThrottler(auth.LoginThrottleConfig{
 		Window:       time.Minute,
 		AccountLimit: 100,
 		SourceLimit:  2,
 		MaxEntries:   100,
-	}, time.Now)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewLoginService(&loginStoreStub{}, &sessionStub{}, WithLoginThrottler(limiter))
+	service, err := auth.NewLoginService(&loginStoreStub{}, &sessionStub{}, auth.WithLoginThrottler(limiter))
 	if err != nil {
 		t.Fatal(err)
 	}

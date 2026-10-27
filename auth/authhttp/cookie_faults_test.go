@@ -1,8 +1,9 @@
-package auth
+package authhttp
 
 import (
 	"bytes"
 	"errors"
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,7 +38,7 @@ func TestCookieHandlersRejectMissingDependencies(t *testing.T) {
 	if _, err := NewAuditedCookieLogoutHandler(&revokingSessionStub{}, nil); err == nil {
 		t.Error("audited cookie logout accepted a nil auditor")
 	}
-	middleware, err := NewMiddleware(ResolverFunc(nil))
+	middleware, err := NewMiddleware(auth.ResolverFunc(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +63,8 @@ func TestCookieHandlersRejectMissingDependencies(t *testing.T) {
 func TestCookieLoginHandlerFailsClosed(t *testing.T) {
 	t.Parallel()
 	good := `{"email":"alice@example.com","password":"` + mfaTestPassword + `","tenant":"acme"}`
-	build := func(store PasswordStore, options ...LoginOption) http.Handler {
-		service, err := NewLoginService(store, &sessionStub{}, options...)
+	build := func(store auth.PasswordStore, options ...auth.LoginOption) http.Handler {
+		service, err := auth.NewLoginService(store, &sessionStub{}, options...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -83,7 +84,7 @@ func TestCookieLoginHandlerFailsClosed(t *testing.T) {
 		t.Errorf("refusal: status=%d cookies=%v", recorder.Code, recorder.Result().Cookies())
 	}
 	// Throttled: 429 with Retry-After, and the audit failure is only logged.
-	handler = build(&loginStoreStub{}, WithLoginThrottler(failingThrottler{}), WithSecurityAuditor(&securityAuditorStub{err: errors.New("audit down")}))
+	handler = build(&loginStoreStub{}, auth.WithLoginThrottler(failingThrottler{}), auth.WithSecurityAuditor(&securityAuditorStub{err: errors.New("audit down")}))
 	recorder = secureJSON(handler, good)
 	if recorder.Code != http.StatusTooManyRequests || recorder.Header().Get("Retry-After") != "7" {
 		t.Errorf("throttled: status=%d Retry-After=%q", recorder.Code, recorder.Header().Get("Retry-After"))
@@ -112,7 +113,7 @@ func TestCookieMFACompletionHandlerFailsClosed(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized || len(recorder.Result().Cookies()) != 0 {
 		t.Errorf("wrong code: status=%d cookies=%v", recorder.Code, recorder.Result().Cookies())
 	}
-	throttled := newFaultMFA(t, WithMFAThrottler(failingThrottler{}))
+	throttled := newFaultMFA(t, auth.WithMFAThrottler(failingThrottler{}))
 	handler, err = NewCookieMFACompletionHandler(throttled.service)
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +127,7 @@ func TestCookieMFACompletionHandlerFailsClosed(t *testing.T) {
 
 func TestCookieLogoutFailsWhenRevocationFails(t *testing.T) {
 	t.Parallel()
-	token, err := NewToken()
+	token, err := auth.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +159,7 @@ func TestCookieLogoutFailsWhenRevocationFails(t *testing.T) {
 func TestStartCookieSessionRefusesAnMFAChallenge(t *testing.T) {
 	t.Parallel()
 	recorder := httptest.NewRecorder()
-	if _, err := startCookieSession(recorder, LoginResult{MFARequired: true}); err == nil {
+	if _, err := startCookieSession(recorder, auth.LoginResult{MFARequired: true}); err == nil {
 		t.Fatal("an MFA challenge was turned into a session")
 	}
 	if len(recorder.Result().Cookies()) != 0 {

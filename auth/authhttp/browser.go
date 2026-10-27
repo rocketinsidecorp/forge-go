@@ -1,10 +1,11 @@
-package auth
+package authhttp
 
 import (
 	"errors"
 	"net/http"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/fault"
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -67,21 +68,21 @@ type SignInCredentials struct {
 // BrowserOptions configures NewBrowser.
 type BrowserOptions struct {
 	// Login verifies passwords and creates sessions (required).
-	Login *LoginService
+	Login *auth.LoginService
 	// Sessions revokes the session on sign-out (required).
-	Sessions SessionRevoker
+	Sessions auth.SessionRevoker
 	// MFA completes sign-ins for accounts with a second factor. Without it,
 	// such accounts cannot sign in (LoginService fails closed).
-	MFA *MFAService
+	MFA *auth.MFAService
 	// Passwords re-checks the password of a signed-in account before it
 	// changes its second factor (step-up). With MFA, it enables the
 	// two-factor settings (MFASettingsAvailable).
-	Passwords SubjectPasswordStore
+	Passwords auth.SubjectPasswordStore
 	// Recovery enables the password-reset forms.
-	Recovery *RecoveryService
+	Recovery *auth.RecoveryService
 	// Auditor records sign-outs. Login, MFA and recovery audit through their
 	// own services' auditors.
-	Auditor SecurityAuditor
+	Auditor auth.SecurityAuditor
 }
 
 // Browser is the security-critical half of server-rendered sign-in, sign-out,
@@ -100,14 +101,14 @@ type BrowserOptions struct {
 // method that sets cookies succeeds, redirect: the CSRF token was rotated, so
 // a page rendered in the same response would embed the old one.
 type Browser struct {
-	login    *LoginService
-	sessions SessionRevoker
-	mfa      *MFAService
-	recovery *RecoveryService
-	auditor  SecurityAuditor
+	login    *auth.LoginService
+	sessions auth.SessionRevoker
+	mfa      *auth.MFAService
+	recovery *auth.RecoveryService
+	auditor  auth.SecurityAuditor
 	// stepUpGate re-authenticates before a two-factor change; nil without
 	// MFA or Passwords.
-	stepUpGate *MFAStepUpGate
+	stepUpGate *auth.MFAStepUpGate
 }
 
 // NewBrowser validates options.
@@ -126,7 +127,7 @@ func NewBrowser(opts BrowserOptions) (*Browser, error) {
 		auditor:  opts.Auditor,
 	}
 	if opts.MFA != nil && opts.Passwords != nil {
-		gate, err := NewMFAStepUpGate(opts.Login, opts.MFA, opts.Passwords)
+		gate, err := auth.NewMFAStepUpGate(opts.Login, opts.MFA, opts.Passwords)
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +154,7 @@ func (b *Browser) SignIn(w http.ResponseWriter, r *http.Request, credentials Sig
 	if !csrf.Verified(r) {
 		return 0, ErrCSRFInvalid
 	}
-	result, err := b.login.Login(r.Context(), LoginInput{
+	result, err := b.login.Login(r.Context(), auth.LoginInput{
 		Email:      credentials.Email,
 		Password:   credentials.Password,
 		TenantSlug: credentials.Tenant,
@@ -161,13 +162,13 @@ func (b *Browser) SignIn(w http.ResponseWriter, r *http.Request, credentials Sig
 	})
 	if err != nil {
 		_, _ = logSecurityAuditFailure(r, err)
-		var throttled *LoginThrottledError
+		var throttled *auth.LoginThrottledError
 		switch {
 		case errors.As(err, &throttled):
 			w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 			return 0, throttled
-		case errors.Is(err, ErrCredentialsInvalid):
-			return 0, ErrCredentialsInvalid
+		case errors.Is(err, auth.ErrCredentialsInvalid):
+			return 0, auth.ErrCredentialsInvalid
 		default:
 			setPasswordWorkRetryAfter(w, err)
 			return 0, err
@@ -214,20 +215,20 @@ func (b *Browser) CompleteMFA(w http.ResponseWriter, r *http.Request, code strin
 		}
 		return ErrMFAChallengeMissing
 	}
-	result, err := b.mfa.CompleteLogin(r.Context(), MFACompletion{
+	result, err := b.mfa.CompleteLogin(r.Context(), auth.MFACompletion{
 		ChallengeToken: challenge,
 		Code:           code,
 		Source:         requestSource(r),
 	})
 	if err != nil {
 		_, _ = logSecurityAuditFailure(r, err)
-		var throttled *LoginThrottledError
+		var throttled *auth.LoginThrottledError
 		switch {
 		case errors.As(err, &throttled):
 			w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 			return throttled
-		case errors.Is(err, ErrMFAInvalid):
-			return ErrMFAInvalid
+		case errors.Is(err, auth.ErrMFAInvalid):
+			return auth.ErrMFAInvalid
 		default:
 			return err
 		}
@@ -272,13 +273,13 @@ func (b *Browser) RequestPasswordReset(w http.ResponseWriter, r *http.Request, e
 	if b.recovery == nil {
 		return errBrowserRecoveryNotConfigured
 	}
-	err := b.recovery.Request(r.Context(), RecoveryRequest{Email: email, TenantSlug: tenant, Source: requestSource(r)})
+	err := b.recovery.Request(r.Context(), auth.RecoveryRequest{Email: email, TenantSlug: tenant, Source: requestSource(r)})
 	if err == nil {
 		return nil
 	}
 	auditFailure, _ := logSecurityAuditFailure(r, err)
-	var throttled *RecoveryThrottledError
-	var delivery *RecoveryDeliveryError
+	var throttled *auth.RecoveryThrottledError
+	var delivery *auth.RecoveryDeliveryError
 	switch {
 	case errors.As(err, &throttled):
 		w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
@@ -305,18 +306,18 @@ func (b *Browser) ResetPassword(w http.ResponseWriter, r *http.Request, token, n
 	if b.recovery == nil {
 		return errBrowserRecoveryNotConfigured
 	}
-	err := b.recovery.Reset(r.Context(), PasswordReset{Token: token, NewPassword: newPassword, Source: requestSource(r)})
+	err := b.recovery.Reset(r.Context(), auth.PasswordReset{Token: token, NewPassword: newPassword, Source: requestSource(r)})
 	if err != nil {
 		if _, applied := logSecurityAuditFailure(r, err); !applied {
-			var throttled *RecoveryThrottledError
+			var throttled *auth.RecoveryThrottledError
 			switch {
 			case errors.As(err, &throttled):
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 				return throttled
-			case errors.Is(err, ErrRecoveryInvalid):
-				return ErrRecoveryInvalid
-			case errors.Is(err, ErrPasswordInvalid):
-				return ErrPasswordInvalid
+			case errors.Is(err, auth.ErrRecoveryInvalid):
+				return auth.ErrRecoveryInvalid
+			case errors.Is(err, auth.ErrPasswordInvalid):
+				return auth.ErrPasswordInvalid
 			default:
 				setPasswordWorkRetryAfter(w, err)
 				return err
@@ -333,7 +334,7 @@ func mfaChallengeCookie(r *http.Request) (string, bool) {
 	if len(cookies) != 1 {
 		return "", false
 	}
-	if _, err := ParseMFAChallengeToken(cookies[0].Value); err != nil {
+	if _, err := auth.ParseMFAChallengeToken(cookies[0].Value); err != nil {
 		return "", false
 	}
 	return cookies[0].Value, true

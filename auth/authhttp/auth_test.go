@@ -1,40 +1,18 @@
-package auth_test
+package authhttp_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
-
-func TestTokenRoundTripAndEntropyFailure(t *testing.T) {
-	t.Parallel()
-	token, err := auth.NewTokenWithEntropy(bytes.NewReader(make([]byte, 32)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := auth.ParseToken(token.Reveal())
-	if err != nil || parsed.Digest() != token.Digest() {
-		t.Fatalf("ParseToken()=(%v, %v)", parsed, err)
-	}
-	if _, err := auth.ParseToken(token.Reveal() + "="); !errors.Is(err, auth.ErrInvalidToken) {
-		t.Fatalf("non-canonical token error=%v", err)
-	}
-	if _, err := auth.NewTokenWithEntropy(bytes.NewReader(nil)); err == nil {
-		t.Fatal("expected entropy failure")
-	}
-	if formatted := fmt.Sprintf("%v %#v", token, token); formatted != "[REDACTED] auth.Token([REDACTED])" {
-		t.Fatalf("token formatting is not redacted: %q", formatted)
-	}
-}
 
 func TestMiddlewareAuthenticatesCurrentSessionAndTenant(t *testing.T) {
 	t.Parallel()
@@ -46,7 +24,7 @@ func TestMiddlewareAuthenticatesCurrentSessionAndTenant(t *testing.T) {
 		}
 		return auth.Session{Principal: principal, ExpiresAt: now.Add(time.Hour)}, true, nil
 	})
-	middleware, err := auth.NewMiddleware(resolver, auth.WithClock(func() time.Time { return now }))
+	middleware, err := authhttp.NewMiddleware(resolver, authhttp.WithClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +52,7 @@ func TestMiddlewareRejectsCredentialsFailClosed(t *testing.T) {
 	resolver := auth.ResolverFunc(func(_ context.Context, _ auth.Digest) (auth.Session, bool, error) {
 		return auth.Session{Principal: principal, ExpiresAt: now}, true, nil
 	})
-	middleware, err := auth.NewMiddleware(resolver, auth.WithClock(func() time.Time { return now }))
+	middleware, err := authhttp.NewMiddleware(resolver, authhttp.WithClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +88,7 @@ func TestMiddlewarePreservesResolverFailure(t *testing.T) {
 	resolver := auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
 		return auth.Session{}, false, errors.New("database unavailable")
 	})
-	middleware, err := auth.NewMiddleware(resolver)
+	middleware, err := authhttp.NewMiddleware(resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,15 +107,15 @@ func TestRequirePermission(t *testing.T) {
 	resolver := auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
 		return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
 	})
-	middleware, err := auth.NewMiddleware(resolver)
+	middleware, err := authhttp.NewMiddleware(resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowed, err := auth.Require("tasks:read", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	allowed, err := authhttp.Require("tasks:read", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	if err != nil {
 		t.Fatal(err)
 	}
-	denied, err := auth.Require("tasks:write", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	denied, err := authhttp.Require("tasks:write", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,11 +140,11 @@ func TestMiddlewareAuditsRejectedSessionsWithoutChangingUnauthorizedResponse(t *
 	t.Parallel()
 	token, _ := fixture(t)
 	auditor := &recordingAuditor{}
-	middleware, err := auth.NewMiddleware(
+	middleware, err := authhttp.NewMiddleware(
 		auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
 			return auth.Session{}, false, nil
 		}),
-		auth.WithAuthenticationAuditor(auditor),
+		authhttp.WithAuthenticationAuditor(auditor),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -196,11 +174,11 @@ func TestMiddlewareAuditFailureDoesNotChangeUnauthorizedResponse(t *testing.T) {
 	t.Parallel()
 	token, _ := fixture(t)
 	auditor := &recordingAuditor{err: errors.New("audit unavailable")}
-	middleware, err := auth.NewMiddleware(
+	middleware, err := authhttp.NewMiddleware(
 		auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
 			return auth.Session{}, false, nil
 		}),
-		auth.WithAuthenticationAuditor(auditor),
+		authhttp.WithAuthenticationAuditor(auditor),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -230,7 +208,7 @@ func TestRequireAuditsAuthorizationDenialAndPreservesForbiddenResponse(t *testin
 			t.Parallel()
 			token, principal := fixture(t)
 			auditor := &recordingAuditor{err: test.auditErr}
-			middleware, err := auth.NewMiddleware(
+			middleware, err := authhttp.NewMiddleware(
 				auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
 					return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
 				}),
@@ -238,7 +216,7 @@ func TestRequireAuditsAuthorizationDenialAndPreservesForbiddenResponse(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			denied, err := auth.RequireAudited("tasks:write", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			denied, err := authhttp.RequireAudited("tasks:write", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Fatal("handler called without permission")
 			}), auditor)
 			if err != nil {
@@ -269,12 +247,12 @@ func TestRequireAuditsAuthorizationDenialAndPreservesForbiddenResponse(t *testin
 func TestMiddlewareDoesNotAuditMalformedCredential(t *testing.T) {
 	t.Parallel()
 	auditor := &recordingAuditor{}
-	middleware, err := auth.NewMiddleware(
+	middleware, err := authhttp.NewMiddleware(
 		auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
 			t.Fatal("resolver called for malformed token")
 			return auth.Session{}, false, nil
 		}),
-		auth.WithAuthenticationAuditor(auditor),
+		authhttp.WithAuthenticationAuditor(auditor),
 	)
 	if err != nil {
 		t.Fatal(err)

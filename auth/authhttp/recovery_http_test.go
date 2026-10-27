@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"bytes"
@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 func TestPasswordRecoveryRequestHandlerIsUniform(t *testing.T) {
-	service, err := NewRecoveryService(&recoveryStoreStub{}, &recoverySenderStub{})
+	service, err := auth.NewRecoveryService(&recoveryStoreStub{}, &recoverySenderStub{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,16 +37,16 @@ func TestPasswordRecoveryRequestHandlerIsUniform(t *testing.T) {
 }
 
 func TestPasswordRecoveryRequestHandlerReturnsRetryAfter(t *testing.T) {
-	limiter, err := newMemoryLoginThrottler(LoginThrottleConfig{
+	limiter, err := auth.NewMemoryLoginThrottler(auth.LoginThrottleConfig{
 		Window:       time.Minute,
 		AccountLimit: 1,
 		SourceLimit:  10,
 		MaxEntries:   100,
-	}, time.Now)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewRecoveryService(&recoveryStoreStub{}, &recoverySenderStub{}, WithRecoveryThrottler(limiter))
+	service, err := auth.NewRecoveryService(&recoveryStoreStub{}, &recoverySenderStub{}, auth.WithRecoveryThrottler(limiter))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,12 +72,12 @@ func TestPasswordRecoveryRequestHandlerReturnsRetryAfter(t *testing.T) {
 }
 
 func TestPasswordResetHandlerConsumesToken(t *testing.T) {
-	token, err := NewRecoveryToken()
+	token, err := auth.NewRecoveryToken()
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &recoveryStoreStub{consumeResult: true}
-	service, err := NewRecoveryService(store, RecoverySenderFunc(func(context.Context, PasswordRecoveryMessage) error { return nil }))
+	service, err := auth.NewRecoveryService(store, auth.RecoverySenderFunc(func(context.Context, auth.PasswordRecoveryMessage) error { return nil }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,10 +110,10 @@ func TestPasswordResetHandlerConsumesToken(t *testing.T) {
 func TestPasswordRecoveryRequestHandlerMasksDeliveryFailure(t *testing.T) {
 	store := &recoveryStoreStub{
 		found:    true,
-		identity: RecoveryIdentity{SubjectID: uuid.MustNew(), Email: "alice@example.com"},
+		identity: auth.RecoveryIdentity{SubjectID: uuid.MustNew(), Email: "alice@example.com"},
 	}
 	sender := &recoverySenderStub{err: errors.New("mailer unavailable")}
-	service, err := NewRecoveryService(store, sender)
+	service, err := auth.NewRecoveryService(store, sender)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,7 @@ func TestPasswordRecoveryRequestHandlerMasksDeliveryFailure(t *testing.T) {
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if store.invalidated == (Digest{}) || store.invalidated != store.createdDigest {
+	if store.invalidated == (auth.Digest{}) || store.invalidated != store.createdDigest {
 		t.Fatalf("created=%x invalidated=%x", store.createdDigest, store.invalidated)
 	}
 }
@@ -137,12 +138,12 @@ func TestPasswordRecoveryRequestHandlerMasksDeliveryFailure(t *testing.T) {
 func TestRecoveryRequestHandlerMasksAuditFailure(t *testing.T) {
 	store := &recoveryStoreStub{
 		found:    true,
-		identity: RecoveryIdentity{SubjectID: uuid.MustNew(), Email: "alice@example.com"},
+		identity: auth.RecoveryIdentity{SubjectID: uuid.MustNew(), Email: "alice@example.com"},
 	}
-	service, err := NewRecoveryService(
+	service, err := auth.NewRecoveryService(
 		store,
 		&recoverySenderStub{},
-		WithRecoveryAuditor(&securityAuditorStub{err: errors.New("audit unavailable")}),
+		auth.WithRecoveryAuditor(&securityAuditorStub{err: errors.New("audit unavailable")}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -161,14 +162,14 @@ func TestRecoveryRequestHandlerMasksAuditFailure(t *testing.T) {
 }
 
 func TestPasswordResetHandlerKeepsSuccessWhenOnlyAuditFails(t *testing.T) {
-	token, err := NewRecoveryToken()
+	token, err := auth.NewRecoveryToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewRecoveryService(
+	service, err := auth.NewRecoveryService(
 		&recoveryStoreStub{consumeResult: true},
 		&recoverySenderStub{},
-		WithRecoveryAuditor(&securityAuditorStub{err: errors.New("audit unavailable")}),
+		auth.WithRecoveryAuditor(&securityAuditorStub{err: errors.New("audit unavailable")}),
 	)
 	if err != nil {
 		t.Fatal(err)

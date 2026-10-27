@@ -223,7 +223,7 @@ it needs a current code again: wait for the next code or use a backup code
 Keys and backup codes appear only on `no-store` pages and are never logged.
 The pages live in `app/adapters/htmlauth` and `app/views/mfa`; their text is
 under `mfa.*` in `config/locales/authentication.*.json`. Change them freely;
-the security steps are in `auth.Browser` (`BeginMFAEnrollment`,
+the security steps are in `authhttp.Browser` (`BeginMFAEnrollment`,
 `ConfirmMFAEnrollment`, `BeginMFARotation`, `ConfirmMFARotation`,
 `RegenerateMFABackupCodes`, `DisableMFA`, `MFAStatus`), which needs
 `BrowserOptions.Passwords` (an `auth.SubjectPasswordStore`, implemented by
@@ -249,7 +249,7 @@ Release note (forge-rust#36 parity): the MFA contracts changed.
   `RegenerateMFABackupCodes` take a required `MFAStepUpProof` (from
   `VerifyMFAStepUp`, bound to the account; the JSON handlers make one once
   their `MFAChangeAuthorizer` passed). `PendingTOTP` takes `rotation bool`.
-  `auth.Browser` and the generated `/mfa` pages are unchanged.
+  `authhttp.Browser` and the generated `/mfa` pages are unchanged.
 - `MFALifecycleStore.BeginTOTPRotation`, `ConfirmTOTPRotation`, `DisableMFA`
   and `MFASettingsStore.ReplaceMFABackupCodes` take `stepUp *Digest`: use
   that backup code up in the change's transaction and return

@@ -171,7 +171,7 @@ var (
 	// password there is ErrMFAStepUpInvalid only for an account without one.
 	ErrMFAStepUpInvalid = fault.New("mfa_step_up_invalid", "password or code is invalid", fault.CategoryUnauthorized, 0)
 	// ErrMFAUnavailable means the two-factor settings cannot work: the
-	// Browser has no MFA service (FORGE_AUTH_MFA_KEY is not set) or no
+	// authhttp.Browser has no MFA service (FORGE_AUTH_MFA_KEY is not set) or no
 	// SubjectPasswordStore to re-check the password.
 	ErrMFAUnavailable = fault.New("mfa_unavailable", "two-factor authentication is not available", fault.CategoryUnavailable, 0)
 )

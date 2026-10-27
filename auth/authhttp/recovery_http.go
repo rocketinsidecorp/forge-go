@@ -1,9 +1,10 @@
-package auth
+package authhttp
 
 import (
 	"errors"
 	"net/http"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -24,7 +25,7 @@ type passwordResetBody struct {
 
 // NewPasswordRecoveryRequestHandler returns the handler that requests a reset message. It answers
 // 202 whether or not an account matched, so it does not reveal which accounts exist.
-func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, error) {
+func NewPasswordRecoveryRequestHandler(service *auth.RecoveryService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("recovery service is required")
 	}
@@ -35,15 +36,15 @@ func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, 
 			web.Error(w, r, err)
 			return
 		}
-		err := service.Request(r.Context(), RecoveryRequest{
+		err := service.Request(r.Context(), auth.RecoveryRequest{
 			Email:      request.Email,
 			TenantSlug: request.TenantSlug,
 			Source:     requestSource(r),
 		})
 		if err != nil {
 			auditFailure, _ := logSecurityAuditFailure(r, err)
-			var throttled *RecoveryThrottledError
-			var delivery *RecoveryDeliveryError
+			var throttled *auth.RecoveryThrottledError
+			var delivery *auth.RecoveryDeliveryError
 			switch {
 			case errors.As(err, &throttled):
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
@@ -67,7 +68,7 @@ func NewPasswordRecoveryRequestHandler(service *RecoveryService) (http.Handler, 
 
 // NewPasswordResetHandler returns the handler that completes a reset with the token and the new
 // password; it answers 204.
-func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
+func NewPasswordResetHandler(service *auth.RecoveryService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("recovery service is required")
 	}
@@ -78,7 +79,7 @@ func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
 			web.Error(w, r, err)
 			return
 		}
-		if err := service.Reset(r.Context(), PasswordReset{
+		if err := service.Reset(r.Context(), auth.PasswordReset{
 			Token:       request.Token,
 			NewPassword: request.NewPassword,
 			Source:      requestSource(r),
@@ -88,7 +89,7 @@ func NewPasswordResetHandler(service *RecoveryService) (http.Handler, error) {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
-			var throttled *RecoveryThrottledError
+			var throttled *auth.RecoveryThrottledError
 			if errors.As(err, &throttled) {
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 			}
@@ -106,14 +107,14 @@ func recoveryNoStore(w http.ResponseWriter) {
 }
 
 // NewAuditedPasswordRecoveryRequestHandler is NewPasswordRecoveryRequestHandler with structured security audit.
-func NewAuditedPasswordRecoveryRequestHandler(service *RecoveryService, auditor SecurityAuditor) (http.Handler, error) {
+func NewAuditedPasswordRecoveryRequestHandler(service *auth.RecoveryService, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("security auditor is required")
 	}
 	return newPasswordRecoveryRequestHandler(service, auditor)
 }
 
-func newPasswordRecoveryRequestHandler(service *RecoveryService, auditor SecurityAuditor) (http.Handler, error) {
+func newPasswordRecoveryRequestHandler(service *auth.RecoveryService, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("recovery service is required")
 	}
@@ -124,14 +125,14 @@ func newPasswordRecoveryRequestHandler(service *RecoveryService, auditor Securit
 			web.Error(w, r, err)
 			return
 		}
-		err := service.Request(r.Context(), RecoveryRequest{
+		err := service.Request(r.Context(), auth.RecoveryRequest{
 			Email:      request.Email,
 			TenantSlug: request.TenantSlug,
 			Source:     requestSource(r),
 		})
 		if err != nil {
-			var throttled *RecoveryThrottledError
-			var delivery *RecoveryDeliveryError
+			var throttled *auth.RecoveryThrottledError
+			var delivery *auth.RecoveryDeliveryError
 			switch {
 			case errors.As(err, &throttled):
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
@@ -142,9 +143,9 @@ func newPasswordRecoveryRequestHandler(service *RecoveryService, auditor Securit
 				// non-enumerating public response; sender implementations
 				// remain responsible for logging/alerting their failure.
 				if auditor != nil {
-					if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-						Kind:    SecurityRecoveryRequested,
-						Outcome: SecurityOutcomeFailed,
+					if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+						Kind:    auth.SecurityRecoveryRequested,
+						Outcome: auth.SecurityOutcomeFailed,
 					}); auditErr != nil {
 						web.Logger(r.Context()).Error("security audit failed",
 							"method", r.Method,
@@ -161,9 +162,9 @@ func newPasswordRecoveryRequestHandler(service *RecoveryService, auditor Securit
 			}
 		}
 		if auditor != nil {
-			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-				Kind:    SecurityRecoveryRequested,
-				Outcome: SecurityOutcomeSucceeded,
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+				Kind:    auth.SecurityRecoveryRequested,
+				Outcome: auth.SecurityOutcomeSucceeded,
 			}); auditErr != nil {
 				web.Logger(r.Context()).Error("security audit failed",
 					"method", r.Method,
@@ -177,14 +178,14 @@ func newPasswordRecoveryRequestHandler(service *RecoveryService, auditor Securit
 }
 
 // NewAuditedPasswordResetHandler is NewPasswordResetHandler with structured security audit.
-func NewAuditedPasswordResetHandler(service *RecoveryService, auditor SecurityAuditor) (http.Handler, error) {
+func NewAuditedPasswordResetHandler(service *auth.RecoveryService, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("security auditor is required")
 	}
 	return newPasswordResetHandler(service, auditor)
 }
 
-func newPasswordResetHandler(service *RecoveryService, auditor SecurityAuditor) (http.Handler, error) {
+func newPasswordResetHandler(service *auth.RecoveryService, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("recovery service is required")
 	}
@@ -195,20 +196,20 @@ func newPasswordResetHandler(service *RecoveryService, auditor SecurityAuditor) 
 			web.Error(w, r, err)
 			return
 		}
-		if err := service.Reset(r.Context(), PasswordReset{
+		if err := service.Reset(r.Context(), auth.PasswordReset{
 			Token:       request.Token,
 			NewPassword: request.NewPassword,
 			Source:      requestSource(r),
 		}); err != nil {
-			var throttled *RecoveryThrottledError
+			var throttled *auth.RecoveryThrottledError
 			if errors.As(err, &throttled) {
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 			}
 			setPasswordWorkRetryAfter(w, err)
 			if auditor != nil {
-				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-					Kind:    SecurityPasswordReset,
-					Outcome: SecurityOutcomeFailed,
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+					Kind:    auth.SecurityPasswordReset,
+					Outcome: auth.SecurityOutcomeFailed,
 				}); auditErr != nil {
 					web.Logger(r.Context()).Error("security audit failed",
 						"method", r.Method,
@@ -221,9 +222,9 @@ func newPasswordResetHandler(service *RecoveryService, auditor SecurityAuditor) 
 			return
 		}
 		if auditor != nil {
-			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-				Kind:    SecurityPasswordReset,
-				Outcome: SecurityOutcomeSucceeded,
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+				Kind:    auth.SecurityPasswordReset,
+				Outcome: auth.SecurityOutcomeSucceeded,
 			}); auditErr != nil {
 				web.Logger(r.Context()).Error("security audit failed",
 					"method", r.Method,

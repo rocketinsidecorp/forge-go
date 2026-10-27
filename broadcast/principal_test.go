@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	"github.com/rocketinsidecorp/forge-go/broadcast"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -43,7 +44,7 @@ func TestHandlerCapsOpenStreamsPerAuthenticatedPrincipal(t *testing.T) {
 		return "Bearer " + token.Reveal()
 	}
 	alice, bob := bearer(), bearer()
-	middleware, err := auth.NewMiddleware(auth.ResolverFunc(func(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
+	middleware, err := authhttp.NewMiddleware(auth.ResolverFunc(func(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
 		principal, ok := principals[digest]
 		return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, ok, nil
 	}))

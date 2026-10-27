@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"bytes"
@@ -11,18 +11,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/fault"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
-func principalOf(t *testing.T, subject uuid.UUID) Principal {
+func principalOf(t *testing.T, subject uuid.UUID) auth.Principal {
 	t.Helper()
 	tenant, err := tenancy.New(uuid.MustNew())
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal, err := NewPrincipal(subject, tenant)
+	principal, err := auth.NewPrincipal(subject, tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +32,7 @@ func principalOf(t *testing.T, subject uuid.UUID) Principal {
 
 // serveMFA runs h for principal (nil: unauthenticated) with an optional JSON
 // body.
-func serveMFA(h http.Handler, principal *Principal, body string) *httptest.ResponseRecorder {
+func serveMFA(h http.Handler, principal *auth.Principal, body string) *httptest.ResponseRecorder {
 	var reader *bytes.Reader
 	if body == "" {
 		reader = bytes.NewReader(nil)
@@ -55,15 +56,15 @@ func statusOf(err error) int { return fault.From(err).Status() }
 
 // armChallenge gives the account a factor and a live sign-in challenge, and
 // returns the challenge token.
-func (f *faultMFA) armChallenge() MFAChallengeToken {
+func (f *faultMFA) armChallenge() auth.MFAChallengeToken {
 	f.t.Helper()
 	f.enroll()
-	token, err := NewMFAChallengeToken()
+	token, err := auth.NewMFAChallengeToken()
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.store.challengeFound = true
-	f.store.challenge = MFAChallengeRecord{
+	f.store.challenge = auth.MFAChallengeRecord{
 		SubjectID: f.subject, MembershipID: f.store.membership, CredentialVersion: 1,
 		SecretDigest: digestOf(f.secret), SecretCiphertext: f.store.accounts[f.subject].factor.SecretCiphertext,
 		LastCounter: -1, ExpiresAt: f.now.Add(time.Minute), SessionExpiresAt: f.now.Add(time.Hour),
@@ -71,15 +72,15 @@ func (f *faultMFA) armChallenge() MFAChallengeToken {
 	return token
 }
 
-func allowAll() MFAChangeAuthorizer {
-	return MFAChangeAuthorizerFunc(func(context.Context, Principal) error { return nil })
+func allowAll() auth.MFAChangeAuthorizer {
+	return auth.MFAChangeAuthorizerFunc(func(context.Context, auth.Principal) error { return nil })
 }
 
-func denyAll(err error) MFAChangeAuthorizer {
-	return MFAChangeAuthorizerFunc(func(context.Context, Principal) error { return err })
+func denyAll(err error) auth.MFAChangeAuthorizer {
+	return auth.MFAChangeAuthorizerFunc(func(context.Context, auth.Principal) error { return err })
 }
 
-func hasEvent(auditor *securityAuditorStub, kind SecurityEventKind, outcome SecurityOutcome) bool {
+func hasEvent(auditor *securityAuditorStub, kind auth.SecurityEventKind, outcome auth.SecurityOutcome) bool {
 	for _, event := range auditor.events {
 		if event.Kind == kind && event.Outcome == outcome {
 			return true
@@ -92,7 +93,7 @@ func TestMFAHandlerConstructorsRejectMissingDependencies(t *testing.T) {
 	t.Parallel()
 	f := newFaultMFA(t)
 	s, a := f.service, &securityAuditorStub{}
-	enrollAuth := MFAEnrollmentAuthorizerFunc(func(context.Context, Principal) error { return nil })
+	enrollAuth := auth.MFAEnrollmentAuthorizerFunc(func(context.Context, auth.Principal) error { return nil })
 	change := allowAll()
 	build := map[string]func() (http.Handler, error){
 		"enroll nil service":         func() (http.Handler, error) { return NewTOTPEnrollmentHandler(nil, "Forge", enrollAuth) },
@@ -146,7 +147,7 @@ func TestMFAHandlerConstructorsRejectMissingDependencies(t *testing.T) {
 // handlerRig builds the audited and unaudited form of one JSON MFA handler.
 type handlerRig struct {
 	name  string
-	build func(f *faultMFA, auditor SecurityAuditor, authorizer MFAChangeAuthorizer) (http.Handler, error)
+	build func(f *faultMFA, auditor auth.SecurityAuditor, authorizer auth.MFAChangeAuthorizer) (http.Handler, error)
 	// body is the request body; "" sends none.
 	body func(f *faultMFA) string
 	// prepare readies the fixture so the service call would succeed.
@@ -154,12 +155,12 @@ type handlerRig struct {
 	// failStore is the store method whose failure makes the service call fail.
 	failStore string
 	// started, applied: the audit kinds of this handler.
-	kind SecurityEventKind
+	kind auth.SecurityEventKind
 }
 
 func confirmBody(f *faultMFA) string {
 	pending := f.store.accounts[f.subject].pending
-	secret, err := f.service.cipher.Open(pending.SecretCiphertext)
+	secret, err := f.cipher.Open(pending.SecretCiphertext)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -171,15 +172,15 @@ func confirmBody(f *faultMFA) string {
 }
 
 func rigs() []handlerRig {
-	enrollAuth := func(a MFAChangeAuthorizer) MFAEnrollmentAuthorizer {
-		return MFAEnrollmentAuthorizerFunc(func(ctx context.Context, p Principal) error {
+	enrollAuth := func(a auth.MFAChangeAuthorizer) auth.MFAEnrollmentAuthorizer {
+		return auth.MFAEnrollmentAuthorizerFunc(func(ctx context.Context, p auth.Principal) error {
 			return a.AuthorizeMFAChange(ctx, p)
 		})
 	}
 	return []handlerRig{
 		{
 			name: "enroll",
-			build: func(f *faultMFA, a SecurityAuditor, auth MFAChangeAuthorizer) (http.Handler, error) {
+			build: func(f *faultMFA, a auth.SecurityAuditor, auth auth.MFAChangeAuthorizer) (http.Handler, error) {
 				if a == nil {
 					return NewTOTPEnrollmentHandler(f.service, "Forge", enrollAuth(auth))
 				}
@@ -188,11 +189,11 @@ func rigs() []handlerRig {
 			body:      func(*faultMFA) string { return "" },
 			prepare:   func(*faultMFA) {},
 			failStore: "BeginTOTPEnrollment",
-			kind:      SecurityMFAEnrollmentStarted,
+			kind:      auth.SecurityMFAEnrollmentStarted,
 		},
 		{
 			name: "confirm",
-			build: func(f *faultMFA, a SecurityAuditor, _ MFAChangeAuthorizer) (http.Handler, error) {
+			build: func(f *faultMFA, a auth.SecurityAuditor, _ auth.MFAChangeAuthorizer) (http.Handler, error) {
 				if a == nil {
 					return NewTOTPConfirmationHandler(f.service)
 				}
@@ -205,11 +206,11 @@ func rigs() []handlerRig {
 				}
 			},
 			failStore: "ConfirmTOTPEnrollment",
-			kind:      SecurityMFAEnabled,
+			kind:      auth.SecurityMFAEnabled,
 		},
 		{
 			name: "rotate",
-			build: func(f *faultMFA, a SecurityAuditor, auth MFAChangeAuthorizer) (http.Handler, error) {
+			build: func(f *faultMFA, a auth.SecurityAuditor, auth auth.MFAChangeAuthorizer) (http.Handler, error) {
 				if a == nil {
 					return NewTOTPRotationHandler(f.service, "Forge", auth)
 				}
@@ -218,11 +219,11 @@ func rigs() []handlerRig {
 			body:      func(*faultMFA) string { return "" },
 			prepare:   func(f *faultMFA) { f.enroll() },
 			failStore: "BeginTOTPRotation",
-			kind:      SecurityMFARotationStarted,
+			kind:      auth.SecurityMFARotationStarted,
 		},
 		{
 			name: "rotate confirm",
-			build: func(f *faultMFA, a SecurityAuditor, auth MFAChangeAuthorizer) (http.Handler, error) {
+			build: func(f *faultMFA, a auth.SecurityAuditor, auth auth.MFAChangeAuthorizer) (http.Handler, error) {
 				if a == nil {
 					return NewTOTPRotationConfirmationHandler(f.service, auth)
 				}
@@ -236,11 +237,11 @@ func rigs() []handlerRig {
 				}
 			},
 			failStore: "ConfirmTOTPRotation",
-			kind:      SecurityMFARotated,
+			kind:      auth.SecurityMFARotated,
 		},
 		{
 			name: "disable",
-			build: func(f *faultMFA, a SecurityAuditor, auth MFAChangeAuthorizer) (http.Handler, error) {
+			build: func(f *faultMFA, a auth.SecurityAuditor, auth auth.MFAChangeAuthorizer) (http.Handler, error) {
 				if a == nil {
 					return NewMFADisableHandler(f.service, auth)
 				}
@@ -249,7 +250,7 @@ func rigs() []handlerRig {
 			body:      func(*faultMFA) string { return "" },
 			prepare:   func(f *faultMFA) { f.enroll() },
 			failStore: "DisableMFA",
-			kind:      SecurityMFADisabled,
+			kind:      auth.SecurityMFADisabled,
 		},
 	}
 }
@@ -267,22 +268,22 @@ func TestMFAJSONHandlersAuditAndFailClosed(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				newRig := func(auth MFAChangeAuthorizer) (*faultMFA, *securityAuditorStub, http.Handler) {
+				newRig := func(authorizer auth.MFAChangeAuthorizer) (*faultMFA, *securityAuditorStub, http.Handler) {
 					f := newFaultMFA(t)
 					rig.prepare(f)
 					var auditor *securityAuditorStub
-					var asAuditor SecurityAuditor
+					var asAuditor auth.SecurityAuditor
 					if audited {
 						auditor = &securityAuditorStub{}
 						asAuditor = auditor
 					}
-					handler, err := rig.build(f, asAuditor, auth)
+					handler, err := rig.build(f, asAuditor, authorizer)
 					if err != nil {
 						t.Fatal(err)
 					}
 					return f, auditor, handler
 				}
-				principalFor := func(f *faultMFA) *Principal {
+				principalFor := func(f *faultMFA) *auth.Principal {
 					p := principalOf(t, f.subject)
 					return &p
 				}
@@ -297,21 +298,21 @@ func TestMFAJSONHandlersAuditAndFailClosed(t *testing.T) {
 				if recorder.Header().Get("Cache-Control") != "no-store" {
 					t.Errorf("Cache-Control=%q", recorder.Header().Get("Cache-Control"))
 				}
-				if audited && !hasEvent(auditor, rig.kind, SecurityOutcomeSucceeded) {
+				if audited && !hasEvent(auditor, rig.kind, auth.SecurityOutcomeSucceeded) {
 					t.Errorf("no succeeded %s event: %+v", rig.kind, auditor.events)
 				}
 
 				// Unauthenticated.
 				_, _, handler = newRig(allowAll())
-				if recorder := serveMFA(handler, nil, ""); recorder.Code != statusOf(ErrCredentialsRequired) {
+				if recorder := serveMFA(handler, nil, ""); recorder.Code != statusOf(auth.ErrCredentialsRequired) {
 					t.Errorf("unauthenticated status=%d", recorder.Code)
 				}
 
 				// The step-up authorizer refuses.
 				if rig.usesAuthorizer() {
-					f, auditor, handler = newRig(denyAll(ErrPermissionDenied))
+					f, auditor, handler = newRig(denyAll(auth.ErrPermissionDenied))
 					recorder = serveMFA(handler, principalFor(f), rig.body(f))
-					if recorder.Code != statusOf(ErrPermissionDenied) {
+					if recorder.Code != statusOf(auth.ErrPermissionDenied) {
 						t.Errorf("refused status=%d", recorder.Code)
 					}
 					if audited && len(auditor.events) != 0 {
@@ -338,7 +339,7 @@ func TestMFAJSONHandlersAuditAndFailClosed(t *testing.T) {
 				if strings.Contains(recorder.Body.String(), errInjected.Error()) {
 					t.Errorf("the response leaks the internal error: %s", recorder.Body.String())
 				}
-				if audited && !hasEvent(auditor, rig.kind, SecurityOutcomeFailed) {
+				if audited && !hasEvent(auditor, rig.kind, auth.SecurityOutcomeFailed) {
 					t.Errorf("no failed %s event: %+v", rig.kind, auditor.events)
 				}
 
@@ -402,7 +403,7 @@ func TestMFACompletionHandlersFailClosed(t *testing.T) {
 				}
 				return handler, auditor
 			}
-			bodyOf := func(token MFAChallengeToken, code string) string {
+			bodyOf := func(token auth.MFAChallengeToken, code string) string {
 				body, err := json.Marshal(mfaCompletionRequest{ChallengeToken: token.Reveal(), Code: code})
 				if err != nil {
 					t.Fatal(err)
@@ -425,7 +426,7 @@ func TestMFACompletionHandlersFailClosed(t *testing.T) {
 			if recorder.Code != http.StatusUnauthorized {
 				t.Errorf("wrong code status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
-			if audited && !hasEvent(auditor, SecurityMFAChallengeFailed, SecurityOutcomeFailed) {
+			if audited && !hasEvent(auditor, auth.SecurityMFAChallengeFailed, auth.SecurityOutcomeFailed) {
 				t.Errorf("no failed challenge event: %+v", auditor.events)
 			}
 
@@ -438,7 +439,7 @@ func TestMFACompletionHandlersFailClosed(t *testing.T) {
 			}
 
 			// A throttled challenge answers 429 with Retry-After.
-			f = newFaultMFA(t, WithMFAThrottler(failingThrottler{allowed: false}))
+			f = newFaultMFA(t, auth.WithMFAThrottler(failingThrottler{allowed: false}))
 			token = f.armChallenge()
 			handler, _ = build(f)
 			recorder = serveMFA(handler, nil, bodyOf(token, f.code()))
@@ -458,7 +459,7 @@ func TestMFACompletionHandlersFailClosed(t *testing.T) {
 			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.TokenType != "Bearer" || response.AccessToken == "" {
 				t.Errorf("response=%+v err=%v", response, err)
 			}
-			if audited && !hasEvent(auditor, SecurityMFAChallengeSucceeded, SecurityOutcomeSucceeded) {
+			if audited && !hasEvent(auditor, auth.SecurityMFAChallengeSucceeded, auth.SecurityOutcomeSucceeded) {
 				t.Errorf("no succeeded challenge event: %+v", auditor.events)
 			}
 			if audited {

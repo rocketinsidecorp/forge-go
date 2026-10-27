@@ -1,9 +1,10 @@
-package auth
+package authhttp
 
 import (
 	"errors"
 	"net/http"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
 
@@ -11,7 +12,7 @@ import (
 // request-scoped application log. It returns whether one was present and
 // whether the underlying security-sensitive operation had already committed.
 func logSecurityAuditFailure(r *http.Request, err error) (found, operationApplied bool) {
-	var failure *SecurityAuditError
+	var failure *auth.SecurityAuditError
 	if !errors.As(err, &failure) {
 		return false, false
 	}

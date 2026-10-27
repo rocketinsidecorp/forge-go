@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"errors"
@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -33,19 +34,19 @@ type mfaCompletionRequest struct {
 // principal only after an application-supplied step-up authorizer succeeds.
 // The issuer is server-controlled; the subject UUID is used as the default
 // authenticator label so the handler never trusts a client-supplied identity.
-func NewTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFAEnrollmentAuthorizer) (http.Handler, error) {
+func NewTOTPEnrollmentHandler(service *auth.MFAService, issuer string, authorizer auth.MFAEnrollmentAuthorizer) (http.Handler, error) {
 	if service == nil || authorizer == nil {
 		return nil, errors.New("MFA service and enrollment authorizer are required")
 	}
 	issuer = strings.TrimSpace(issuer)
-	if !ValidTOTPIssuer(issuer) {
+	if !auth.ValidTOTPIssuer(issuer) {
 		return nil, errors.New("TOTP issuer is required and must not contain control characters")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			web.Error(w, r, ErrCredentialsRequired)
+			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
 		if err := authorizer.AuthorizeMFAEnrollment(r.Context(), principal); err != nil {
@@ -77,15 +78,15 @@ func NewTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFA
 // authenticated principal. Confirmation invalidates all existing sessions,
 // including the session used for enrollment, and returns the one-time backup
 // codes exactly once so the next login exercises MFA.
-func NewTOTPConfirmationHandler(service *MFAService) (http.Handler, error) {
+func NewTOTPConfirmationHandler(service *auth.MFAService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("MFA service is required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			web.Error(w, r, ErrCredentialsRequired)
+			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
 		var request totpConfirmationRequest
@@ -111,7 +112,7 @@ func NewTOTPConfirmationHandler(service *MFAService) (http.Handler, error) {
 
 // NewMFACompletionHandler exchanges a valid password-login challenge plus TOTP
 // code for the normal opaque bearer session.
-func NewMFACompletionHandler(service *MFAService) (http.Handler, error) {
+func NewMFACompletionHandler(service *auth.MFAService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("MFA service is required")
 	}
@@ -122,14 +123,14 @@ func NewMFACompletionHandler(service *MFAService) (http.Handler, error) {
 			web.Error(w, r, err)
 			return
 		}
-		result, err := service.CompleteLogin(r.Context(), MFACompletion{
+		result, err := service.CompleteLogin(r.Context(), auth.MFACompletion{
 			ChallengeToken: request.ChallengeToken,
 			Code:           request.Code,
 			Source:         requestSource(r),
 		})
 		if err != nil {
 			_, _ = logSecurityAuditFailure(r, err)
-			var throttled *LoginThrottledError
+			var throttled *auth.LoginThrottledError
 			if errors.As(err, &throttled) {
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 			}
@@ -146,22 +147,22 @@ func NewMFACompletionHandler(service *MFAService) (http.Handler, error) {
 
 // NewTOTPRotationHandler starts replacement of an active TOTP factor. The
 // current factor remains active until the new seed is confirmed.
-func NewTOTPRotationHandler(service *MFAService, issuer string, authorizer MFAChangeAuthorizer) (http.Handler, error) {
+func NewTOTPRotationHandler(service *auth.MFAService, issuer string, authorizer auth.MFAChangeAuthorizer) (http.Handler, error) {
 	if service == nil || authorizer == nil {
 		return nil, errors.New("MFA service and change authorizer are required")
 	}
 	issuer = strings.TrimSpace(issuer)
-	if !ValidTOTPIssuer(issuer) {
+	if !auth.ValidTOTPIssuer(issuer) {
 		return nil, errors.New("TOTP issuer is required and must not contain control characters")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			web.Error(w, r, ErrCredentialsRequired)
+			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
 		if err != nil {
 			web.Error(w, r, err)
 			return
@@ -191,18 +192,18 @@ func NewTOTPRotationHandler(service *MFAService, issuer string, authorizer MFACh
 
 // NewTOTPRotationConfirmationHandler activates the pending replacement factor,
 // creates a fresh backup-code set, and revokes all sessions.
-func NewTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChangeAuthorizer) (http.Handler, error) {
+func NewTOTPRotationConfirmationHandler(service *auth.MFAService, authorizer auth.MFAChangeAuthorizer) (http.Handler, error) {
 	if service == nil || authorizer == nil {
 		return nil, errors.New("MFA service and change authorizer are required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			web.Error(w, r, ErrCredentialsRequired)
+			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
 		if err != nil {
 			web.Error(w, r, err)
 			return
@@ -230,18 +231,18 @@ func NewTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChang
 
 // NewMFADisableHandler disables the active factor only after application-
 // supplied step-up authorization. Disabling MFA revokes all current sessions.
-func NewMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer) (http.Handler, error) {
+func NewMFADisableHandler(service *auth.MFAService, authorizer auth.MFAChangeAuthorizer) (http.Handler, error) {
 	if service == nil || authorizer == nil {
 		return nil, errors.New("MFA service and change authorizer are required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			web.Error(w, r, ErrCredentialsRequired)
+			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
 		if err != nil {
 			web.Error(w, r, err)
 			return
@@ -258,26 +259,26 @@ func NewMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer) (
 }
 
 // NewAuditedTOTPEnrollmentHandler is NewTOTPEnrollmentHandler with structured security audit.
-func NewAuditedTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFAEnrollmentAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+func NewAuditedTOTPEnrollmentHandler(service *auth.MFAService, issuer string, authorizer auth.MFAEnrollmentAuthorizer, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("security auditor is required")
 	}
 	return newTOTPEnrollmentHandler(service, issuer, authorizer, auditor)
 }
 
-func newTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFAEnrollmentAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+func newTOTPEnrollmentHandler(service *auth.MFAService, issuer string, authorizer auth.MFAEnrollmentAuthorizer, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if service == nil || authorizer == nil {
 		return nil, errors.New("MFA service and enrollment authorizer are required")
 	}
 	issuer = strings.TrimSpace(issuer)
-	if !ValidTOTPIssuer(issuer) {
+	if !auth.ValidTOTPIssuer(issuer) {
 		return nil, errors.New("TOTP issuer is required and must not contain control characters")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			web.Error(w, r, ErrCredentialsRequired)
+			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
 		if err := authorizer.AuthorizeMFAEnrollment(r.Context(), principal); err != nil {
@@ -292,9 +293,9 @@ func newTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFA
 		)
 		if err != nil {
 			if auditor != nil {
-				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-					Kind:      SecurityMFAEnrollmentStarted,
-					Outcome:   SecurityOutcomeFailed,
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+					Kind:      auth.SecurityMFAEnrollmentStarted,
+					Outcome:   auth.SecurityOutcomeFailed,
 					ActorID:   principal.SubjectID(),
 					SubjectID: principal.SubjectID(),
 				}); auditErr != nil {
@@ -309,9 +310,9 @@ func newTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFA
 			return
 		}
 		if auditor != nil {
-			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-				Kind:      SecurityMFAEnrollmentStarted,
-				Outcome:   SecurityOutcomeSucceeded,
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+				Kind:      auth.SecurityMFAEnrollmentStarted,
+				Outcome:   auth.SecurityOutcomeSucceeded,
 				ActorID:   principal.SubjectID(),
 				SubjectID: principal.SubjectID(),
 			}); auditErr != nil {
@@ -331,22 +332,22 @@ func newTOTPEnrollmentHandler(service *MFAService, issuer string, authorizer MFA
 }
 
 // NewAuditedTOTPConfirmationHandler is NewTOTPConfirmationHandler with structured security audit.
-func NewAuditedTOTPConfirmationHandler(service *MFAService, auditor SecurityAuditor) (http.Handler, error) {
+func NewAuditedTOTPConfirmationHandler(service *auth.MFAService, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("security auditor is required")
 	}
 	return newTOTPConfirmationHandler(service, auditor)
 }
 
-func newTOTPConfirmationHandler(service *MFAService, auditor SecurityAuditor) (http.Handler, error) {
+func newTOTPConfirmationHandler(service *auth.MFAService, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("MFA service is required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			web.Error(w, r, ErrCredentialsRequired)
+			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
 		var request totpConfirmationRequest
@@ -357,9 +358,9 @@ func newTOTPConfirmationHandler(service *MFAService, auditor SecurityAuditor) (h
 		confirmation, err := service.ConfirmTOTPEnrollment(r.Context(), principal.SubjectID(), request.Code)
 		if err != nil {
 			if auditor != nil {
-				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-					Kind:      SecurityMFAEnabled,
-					Outcome:   SecurityOutcomeFailed,
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+					Kind:      auth.SecurityMFAEnabled,
+					Outcome:   auth.SecurityOutcomeFailed,
 					ActorID:   principal.SubjectID(),
 					SubjectID: principal.SubjectID(),
 				}); auditErr != nil {
@@ -374,9 +375,9 @@ func newTOTPConfirmationHandler(service *MFAService, auditor SecurityAuditor) (h
 			return
 		}
 		if auditor != nil {
-			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-				Kind:      SecurityMFAEnabled,
-				Outcome:   SecurityOutcomeSucceeded,
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+				Kind:      auth.SecurityMFAEnabled,
+				Outcome:   auth.SecurityOutcomeSucceeded,
 				ActorID:   principal.SubjectID(),
 				SubjectID: principal.SubjectID(),
 			}); auditErr != nil {
@@ -396,14 +397,14 @@ func newTOTPConfirmationHandler(service *MFAService, auditor SecurityAuditor) (h
 }
 
 // NewAuditedMFACompletionHandler is NewMFACompletionHandler with structured security audit.
-func NewAuditedMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http.Handler, error) {
+func NewAuditedMFACompletionHandler(service *auth.MFAService, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("security auditor is required")
 	}
 	return newMFACompletionHandler(service, auditor)
 }
 
-func newMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http.Handler, error) {
+func newMFACompletionHandler(service *auth.MFAService, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("MFA service is required")
 	}
@@ -414,20 +415,20 @@ func newMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http
 			web.Error(w, r, err)
 			return
 		}
-		result, err := service.CompleteLogin(r.Context(), MFACompletion{
+		result, err := service.CompleteLogin(r.Context(), auth.MFACompletion{
 			ChallengeToken: request.ChallengeToken,
 			Code:           request.Code,
 			Source:         requestSource(r),
 		})
 		if err != nil {
-			var throttled *LoginThrottledError
+			var throttled *auth.LoginThrottledError
 			if errors.As(err, &throttled) {
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 			}
 			if auditor != nil {
-				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-					Kind:    SecurityMFAChallengeFailed,
-					Outcome: SecurityOutcomeFailed,
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+					Kind:    auth.SecurityMFAChallengeFailed,
+					Outcome: auth.SecurityOutcomeFailed,
 				}); auditErr != nil {
 					web.Logger(r.Context()).Error("security audit failed",
 						"method", r.Method,
@@ -440,9 +441,9 @@ func newMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http
 			return
 		}
 		if auditor != nil {
-			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-				Kind:    SecurityMFAChallengeSucceeded,
-				Outcome: SecurityOutcomeSucceeded,
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+				Kind:    auth.SecurityMFAChallengeSucceeded,
+				Outcome: auth.SecurityOutcomeSucceeded,
 			}); auditErr != nil {
 				web.Logger(r.Context()).Error("security audit failed",
 					"method", r.Method,
@@ -460,29 +461,29 @@ func newMFACompletionHandler(service *MFAService, auditor SecurityAuditor) (http
 }
 
 // NewAuditedTOTPRotationHandler is NewTOTPRotationHandler with structured security audit.
-func NewAuditedTOTPRotationHandler(service *MFAService, issuer string, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+func NewAuditedTOTPRotationHandler(service *auth.MFAService, issuer string, authorizer auth.MFAChangeAuthorizer, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("security auditor is required")
 	}
 	return newTOTPRotationHandler(service, issuer, authorizer, auditor)
 }
 
-func newTOTPRotationHandler(service *MFAService, issuer string, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+func newTOTPRotationHandler(service *auth.MFAService, issuer string, authorizer auth.MFAChangeAuthorizer, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if service == nil || authorizer == nil {
 		return nil, errors.New("MFA service and change authorizer are required")
 	}
 	issuer = strings.TrimSpace(issuer)
-	if !ValidTOTPIssuer(issuer) {
+	if !auth.ValidTOTPIssuer(issuer) {
 		return nil, errors.New("TOTP issuer is required and must not contain control characters")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			web.Error(w, r, ErrCredentialsRequired)
+			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
 		if err != nil {
 			web.Error(w, r, err)
 			return
@@ -497,9 +498,9 @@ func newTOTPRotationHandler(service *MFAService, issuer string, authorizer MFACh
 		)
 		if err != nil {
 			if auditor != nil {
-				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-					Kind:      SecurityMFARotationStarted,
-					Outcome:   SecurityOutcomeFailed,
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+					Kind:      auth.SecurityMFARotationStarted,
+					Outcome:   auth.SecurityOutcomeFailed,
 					ActorID:   principal.SubjectID(),
 					SubjectID: principal.SubjectID(),
 				}); auditErr != nil {
@@ -514,9 +515,9 @@ func newTOTPRotationHandler(service *MFAService, issuer string, authorizer MFACh
 			return
 		}
 		if auditor != nil {
-			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-				Kind:      SecurityMFARotationStarted,
-				Outcome:   SecurityOutcomeSucceeded,
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+				Kind:      auth.SecurityMFARotationStarted,
+				Outcome:   auth.SecurityOutcomeSucceeded,
 				ActorID:   principal.SubjectID(),
 				SubjectID: principal.SubjectID(),
 			}); auditErr != nil {
@@ -536,25 +537,25 @@ func newTOTPRotationHandler(service *MFAService, issuer string, authorizer MFACh
 }
 
 // NewAuditedTOTPRotationConfirmationHandler is NewTOTPRotationConfirmationHandler with structured security audit.
-func NewAuditedTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+func NewAuditedTOTPRotationConfirmationHandler(service *auth.MFAService, authorizer auth.MFAChangeAuthorizer, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("security auditor is required")
 	}
 	return newTOTPRotationConfirmationHandler(service, authorizer, auditor)
 }
 
-func newTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+func newTOTPRotationConfirmationHandler(service *auth.MFAService, authorizer auth.MFAChangeAuthorizer, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if service == nil || authorizer == nil {
 		return nil, errors.New("MFA service and change authorizer are required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			web.Error(w, r, ErrCredentialsRequired)
+			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
 		if err != nil {
 			web.Error(w, r, err)
 			return
@@ -567,9 +568,9 @@ func newTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChang
 		confirmation, err := service.ConfirmTOTPRotation(r.Context(), principal.SubjectID(), request.Code, proof)
 		if err != nil {
 			if auditor != nil {
-				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-					Kind:      SecurityMFARotated,
-					Outcome:   SecurityOutcomeFailed,
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+					Kind:      auth.SecurityMFARotated,
+					Outcome:   auth.SecurityOutcomeFailed,
 					ActorID:   principal.SubjectID(),
 					SubjectID: principal.SubjectID(),
 				}); auditErr != nil {
@@ -584,9 +585,9 @@ func newTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChang
 			return
 		}
 		if auditor != nil {
-			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-				Kind:      SecurityMFARotated,
-				Outcome:   SecurityOutcomeSucceeded,
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+				Kind:      auth.SecurityMFARotated,
+				Outcome:   auth.SecurityOutcomeSucceeded,
 				ActorID:   principal.SubjectID(),
 				SubjectID: principal.SubjectID(),
 			}); auditErr != nil {
@@ -606,34 +607,34 @@ func newTOTPRotationConfirmationHandler(service *MFAService, authorizer MFAChang
 }
 
 // NewAuditedMFADisableHandler is NewMFADisableHandler with structured security audit.
-func NewAuditedMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+func NewAuditedMFADisableHandler(service *auth.MFAService, authorizer auth.MFAChangeAuthorizer, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("security auditor is required")
 	}
 	return newMFADisableHandler(service, authorizer, auditor)
 }
 
-func newMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer, auditor SecurityAuditor) (http.Handler, error) {
+func newMFADisableHandler(service *auth.MFAService, authorizer auth.MFAChangeAuthorizer, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if service == nil || authorizer == nil {
 		return nil, errors.New("MFA service and change authorizer are required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		noStore(w)
-		principal, ok := FromContext(r.Context())
+		principal, ok := auth.FromContext(r.Context())
 		if !ok {
-			web.Error(w, r, ErrCredentialsRequired)
+			web.Error(w, r, auth.ErrCredentialsRequired)
 			return
 		}
-		proof, err := AuthorizeMFAChange(r.Context(), authorizer, principal)
+		proof, err := auth.AuthorizeMFAChange(r.Context(), authorizer, principal)
 		if err != nil {
 			web.Error(w, r, err)
 			return
 		}
 		if err := service.DisableMFA(r.Context(), principal.SubjectID(), proof); err != nil {
 			if auditor != nil {
-				if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-					Kind:      SecurityMFADisabled,
-					Outcome:   SecurityOutcomeFailed,
+				if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+					Kind:      auth.SecurityMFADisabled,
+					Outcome:   auth.SecurityOutcomeFailed,
 					ActorID:   principal.SubjectID(),
 					SubjectID: principal.SubjectID(),
 				}); auditErr != nil {
@@ -648,9 +649,9 @@ func newMFADisableHandler(service *MFAService, authorizer MFAChangeAuthorizer, a
 			return
 		}
 		if auditor != nil {
-			if auditErr := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-				Kind:      SecurityMFADisabled,
-				Outcome:   SecurityOutcomeSucceeded,
+			if auditErr := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+				Kind:      auth.SecurityMFADisabled,
+				Outcome:   auth.SecurityOutcomeSucceeded,
 				ActorID:   principal.SubjectID(),
 				SubjectID: principal.SubjectID(),
 			}); auditErr != nil {

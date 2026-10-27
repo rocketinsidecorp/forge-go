@@ -1,4 +1,4 @@
-package auth
+package authhttp
 
 import (
 	"errors"
@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/openapi"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -29,7 +30,7 @@ type mfaRequiredResponse struct {
 }
 
 // NewLoginHandler returns a thin HTTP adapter over LoginService.
-func NewLoginHandler(service *LoginService) (http.Handler, error) {
+func NewLoginHandler(service *auth.LoginService) (http.Handler, error) {
 	if service == nil {
 		return nil, errors.New("login service is required")
 	}
@@ -39,29 +40,29 @@ func NewLoginHandler(service *LoginService) (http.Handler, error) {
 			web.Error(w, r, err)
 			return
 		}
-		result, err := service.Login(r.Context(), LoginInput{
+		result, err := service.Login(r.Context(), auth.LoginInput{
 			Email:      request.Email,
 			Password:   request.Password,
 			TenantSlug: request.TenantSlug,
 			Source:     requestSource(r),
 		})
 		if err != nil {
-			var auditFailure *SecurityAuditError
+			var auditFailure *auth.SecurityAuditError
 			if errors.As(err, &auditFailure) &&
-				(errors.Is(err, ErrCredentialsInvalid) || errors.Is(err, ErrLoginThrottled)) {
+				(errors.Is(err, auth.ErrCredentialsInvalid) || errors.Is(err, auth.ErrLoginThrottled)) {
 				web.Logger(r.Context()).Error("security audit failed",
 					"method", r.Method,
 					"path", r.URL.Path,
 					"error", auditFailure.Cause,
 				)
 			}
-			var throttled *LoginThrottledError
+			var throttled *auth.LoginThrottledError
 			switch {
 			case errors.As(err, &throttled):
 				w.Header().Set("Retry-After", retryAfterHeader(throttled.RetryAfter))
 				web.Error(w, r, err)
-			case errors.Is(err, ErrCredentialsInvalid):
-				unauthorized(w, r, ErrCredentialsInvalid)
+			case errors.Is(err, auth.ErrCredentialsInvalid):
+				unauthorized(w, r, auth.ErrCredentialsInvalid)
 			default:
 				setPasswordWorkRetryAfter(w, err)
 				web.Error(w, r, err)
@@ -88,21 +89,21 @@ func NewLoginHandler(service *LoginService) (http.Handler, error) {
 // NewLogoutHandler returns an idempotent logout endpoint. A syntactically
 // valid but unknown/already-revoked token still returns 204 and does not become
 // a credential oracle.
-func NewLogoutHandler(revoker SessionRevoker) (http.Handler, error) {
+func NewLogoutHandler(revoker auth.SessionRevoker) (http.Handler, error) {
 	return newLogoutHandler(revoker, nil)
 }
 
 // NewAuditedLogoutHandler is NewLogoutHandler with structured security audit.
 // A failure to persist the audit event is logged but does not undo a successful
 // revocation or change the idempotent 204 response.
-func NewAuditedLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Handler, error) {
+func NewAuditedLogoutHandler(revoker auth.SessionRevoker, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if auditor == nil {
 		return nil, errors.New("security auditor is required")
 	}
 	return newLogoutHandler(revoker, auditor)
 }
 
-func newLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Handler, error) {
+func newLogoutHandler(revoker auth.SessionRevoker, auditor auth.SecurityAuditor) (http.Handler, error) {
 	if revoker == nil {
 		return nil, errors.New("session revoker is required")
 	}
@@ -112,9 +113,9 @@ func newLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Han
 			unauthorized(w, r, err)
 			return
 		}
-		token, err := ParseToken(secret)
+		token, err := auth.ParseToken(secret)
 		if err != nil {
-			unauthorized(w, r, ErrCredentialsInvalid)
+			unauthorized(w, r, auth.ErrCredentialsInvalid)
 			return
 		}
 		if err := revoker.RevokeSession(r.Context(), token); err != nil {
@@ -122,9 +123,9 @@ func newLogoutHandler(revoker SessionRevoker, auditor SecurityAuditor) (http.Han
 			return
 		}
 		if auditor != nil {
-			if err := auditor.RecordSecurityEvent(r.Context(), SecurityEvent{
-				Kind:             SecuritySessionRevoked,
-				Outcome:          SecurityOutcomeSucceeded,
+			if err := auditor.RecordSecurityEvent(r.Context(), auth.SecurityEvent{
+				Kind:             auth.SecuritySessionRevoked,
+				Outcome:          auth.SecurityOutcomeSucceeded,
 				CredentialDigest: token.Digest(),
 			}); err != nil {
 				web.Logger(r.Context()).Error("security audit failed",
