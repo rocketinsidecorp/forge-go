@@ -147,6 +147,9 @@ func planTenancy(root string, env []string, now time.Time, slug string) (tenancy
 		return tenancyPlan{}, err
 	}
 	plan.unrecorded = unrecorded
+	if err := refuseAssociations(projectRoot, recorded); err != nil {
+		return tenancyPlan{}, err
+	}
 	for _, migration := range recorded {
 		command := migration.command
 		request, extend, err := parseRecordedCommand(command)
@@ -218,6 +221,39 @@ func planTenancy(root string, env []string, now time.Time, slug string) (tenancy
 		return tenancyPlan{}, err
 	}
 	return plan, nil
+}
+
+// refuseAssociations refuses to convert an application whose tables
+// reference each other (ADR 0051). With organizations every foreign key
+// between org-scoped tables must be composite, (org_id, post_id) -> posts
+// (org_id, id), so that no row can reference another organization's; the
+// conversion would have to replace each plain foreign key, and SQLite can
+// change a foreign key only by rebuilding the table. Rather than half-convert
+// them, tenancy refuses and says what to do.
+func refuseAssociations(projectRoot *os.Root, recorded []recordedMigration) error {
+	var found []string
+	for _, migration := range recorded {
+		request, _, err := parseRecordedCommand(migration.command)
+		if err != nil {
+			return err
+		}
+		for _, field := range request.Fields {
+			if field.References != "" {
+				found = append(found, fmt.Sprintf("%s:references in %s", field.References, migration.file))
+			}
+		}
+	}
+	joins, err := recordedJoins(projectRoot)
+	if err != nil {
+		return err
+	}
+	for _, join := range joins {
+		found = append(found, fmt.Sprintf("the join %s %s in %s", join.left, join.right, join.file))
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return fmt.Errorf("refusing to convert: the application has associations (%s), and with organizations their foreign keys must become composite, (org_id, post_id) -> posts (org_id, id), which forge generate tenancy does not rewrite (SQLite cannot alter a foreign key without rebuilding the table). Nothing was written. Convert before generating associations, or create the application with --tenants", strings.Join(found, "; "))
 }
 
 // recordedMigration is a create migration's file and the generator command

@@ -15,8 +15,11 @@ import (
 // SQLSTATE codes Forge handles. See
 // https://www.postgresql.org/docs/current/errcodes-appendix.html.
 const (
-	codeUniqueViolation      = "23505"
-	codeForeignKeyViolation  = "23503"
+	codeUniqueViolation     = "23505"
+	codeForeignKeyViolation = "23503"
+	// codeRestrictViolation is a delete (or key update) that ON DELETE
+	// RESTRICT refuses while rows still reference the row.
+	codeRestrictViolation    = "23001"
 	codeCheckViolation       = "23514"
 	codeExclusionViolation   = "23P01"
 	codeSerializationFailure = "40001"
@@ -80,7 +83,7 @@ func classify(err error) sqldb.Classification {
 	switch {
 	case code == codeUniqueViolation:
 		return sqldb.Classification{Kind: sqldb.KindUniqueViolation, Constraint: constraint}
-	case code == codeForeignKeyViolation:
+	case code == codeForeignKeyViolation, code == codeRestrictViolation:
 		return sqldb.Classification{Kind: sqldb.KindForeignKeyViolation, Constraint: constraint}
 	case code == codeExclusionViolation:
 		return sqldb.Classification{Kind: sqldb.KindExclusionViolation, Constraint: constraint}

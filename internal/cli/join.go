@@ -296,7 +296,7 @@ func joinMigration(v joinView) (up, down string) {
 	for _, side := range []referenceView{v.Left, v.Right} {
 		if side.AddsKey {
 			fmt.Fprintf(&sql, "-- The foreign key (org_id, %s) needs (org_id, id) declared unique on %s.\n", side.Field.Name, side.Plural)
-			fmt.Fprintf(&sql, "CREATE UNIQUE INDEX %s ON %s (%s, %s);\n", q(uniqueKeyName(side.Plural)), q(side.Plural), q("org_id"), q("id"))
+			fmt.Fprintf(&sql, "CREATE UNIQUE INDEX %s ON %s (%s, %s);\n\n", q(uniqueKeyName(side.Plural)), q(side.Plural), q("org_id"), q("id"))
 		}
 	}
 	fmt.Fprintf(&sql, "CREATE TABLE %s (\n%s\n)", q(v.Plural), strings.Join(lines, ",\n"))

@@ -339,7 +339,7 @@ func renderMigration(v resourceView) (up, down string) {
 	for _, reference := range v.References {
 		if reference.AddsKey {
 			fmt.Fprintf(&sql, "-- %s reference %s by (org_id, %s), so no row can name another organization's:\n-- the foreign key needs (org_id, id) declared unique on %s (id alone already is).\n", table, reference.Plural, reference.Field.Name, reference.Plural)
-			fmt.Fprintf(&sql, "CREATE UNIQUE INDEX %s ON %s (%s, %s);\n", q(uniqueKeyName(reference.Plural)), q(reference.Plural), q("org_id"), q("id"))
+			fmt.Fprintf(&sql, "CREATE UNIQUE INDEX %s ON %s (%s, %s);\n\n", q(uniqueKeyName(reference.Plural)), q(reference.Plural), q("org_id"), q("id"))
 		}
 	}
 	fmt.Fprintf(&sql, "CREATE TABLE %s (\n%s\n)", q(table), strings.Join(lines, ",\n"))
