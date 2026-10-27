@@ -3,10 +3,11 @@ package authhttp
 import (
 	"bytes"
 	"errors"
-	"github.com/rocketinsidecorp/forge-go/auth"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/auth"
 )
 
 func serveJSON(h http.Handler, method, body string) *httptest.ResponseRecorder {

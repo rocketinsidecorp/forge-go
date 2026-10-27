@@ -2,10 +2,11 @@ package authhttp
 
 import (
 	"errors"
-	"github.com/rocketinsidecorp/forge-go/auth"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/rocketinsidecorp/forge-go/auth"
 )
 
 // setPasswordWorkRetryAfter sets Retry-After when err is a saturated

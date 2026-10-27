@@ -3,12 +3,11 @@ package authhttp
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base32"
-	"strings"
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/internal/backupcode"
 	"github.com/rocketinsidecorp/forge-go/internal/principalctx"
 )
 
@@ -39,32 +38,23 @@ func totpCode(secret []byte, counter uint64) string {
 	return code
 }
 
-// backupCode is a backup code in auth's format: 15 random bytes in base32,
-// in groups of four.
+// backupCode is a backup code as auth.MFAService shows it.
 type backupCode string
 
 func (c backupCode) Reveal() string { return string(c) }
 
-// newMFABackupCodes returns count backup codes and their digests, as
-// auth.MFAService issues them.
+// newMFABackupCodes returns count backup codes and their digests, in auth's
+// format (auth/internal/backupcode).
 func newMFABackupCodes(count int) ([]backupCode, []auth.Digest, error) {
 	codes := make([]backupCode, 0, count)
 	digests := make([]auth.Digest, 0, count)
 	for range count {
-		raw := make([]byte, 15)
-		if _, err := rand.Read(raw); err != nil {
+		code, digest, err := backupcode.Generate(rand.Reader)
+		if err != nil {
 			return nil, nil, err
 		}
-		encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw)
-		var grouped strings.Builder
-		for index, r := range encoded {
-			if index > 0 && index%4 == 0 {
-				grouped.WriteByte('-')
-			}
-			grouped.WriteRune(r)
-		}
-		codes = append(codes, backupCode(grouped.String()))
-		digests = append(digests, backupCodeDigest(raw))
+		codes = append(codes, backupCode(code))
+		digests = append(digests, digest)
 	}
 	return codes, digests, nil
 }
@@ -72,14 +62,6 @@ func newMFABackupCodes(count int) ([]backupCode, []auth.Digest, error) {
 // parseMFABackupCode returns the digest auth stores for a backup code, and
 // whether value is one.
 func parseMFABackupCode(value string) (auth.Digest, bool) {
-	compact := strings.ReplaceAll(strings.ToUpper(strings.TrimSpace(value)), "-", "")
-	raw, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(compact)
-	if err != nil || len(raw) != 15 {
-		return auth.Digest{}, false
-	}
-	return backupCodeDigest(raw), true
-}
-
-func backupCodeDigest(raw []byte) auth.Digest {
-	return sha256.Sum256(append([]byte("mfa-backup\x00"), raw...))
+	digest, ok := backupcode.Parse(value)
+	return auth.Digest(digest), ok
 }

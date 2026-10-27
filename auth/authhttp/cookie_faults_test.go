@@ -3,11 +3,12 @@ package authhttp
 import (
 	"bytes"
 	"errors"
-	"github.com/rocketinsidecorp/forge-go/auth"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/rocketinsidecorp/forge-go/auth"
 )
 
 func secureJSON(h http.Handler, body string) *httptest.ResponseRecorder {
