@@ -168,7 +168,8 @@ func TestSSHRunnerCloseStopsMastersAndRemovesItsDirectory(t *testing.T) {
 }
 
 func TestSSHRunnerNeedsAControlDirectory(t *testing.T) {
-	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+	// A short path, so the runner does not fall back to /tmp.
+	t.Setenv("TMPDIR", "/forge-missing-tmpdir")
 	runner := &SSHRunner{Binary: "true"}
 	_, err := runner.Run(t.Context(), "h", Command{Script: "true"})
 	if err == nil || !strings.Contains(err.Error(), "control directory") {

@@ -610,6 +610,14 @@ Docker; your machine needs `ssh` and, to build, the `docker` CLI.
    `known_hosts`: Forge never disables host key checking. Use an SSH agent
    for passphrase-protected keys (commands run with `BatchMode=yes`).
 
+   Forge reuses one SSH connection per host through a control socket in a
+   private (`0700`) directory it removes when the command ends. A Unix socket
+   path is limited to 104 bytes on macOS, and macOS's default `$TMPDIR`
+   (`/var/folders/…/T/`) is too long for it, so the directory goes under
+   `/tmp` whenever `$TMPDIR` would not leave room. If no directory is short
+   enough, the command stops with an error that names `TMPDIR`; point it at a
+   short private directory.
+
 2. **Get forge-proxy.** Use a released image, signed by this repository's
    release workflow: verify it, then note the digest
    ([SUPPLY_CHAIN.md](SUPPLY_CHAIN.md)):

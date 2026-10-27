@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -113,13 +114,53 @@ func NewSSHRunner(cfg SSH) *SSHRunner {
 	return &SSHRunner{User: cfg.User, Port: cfg.Port, ProxyJump: cfg.ProxyJump}
 }
 
+const (
+	// maxControlPath is the longest ControlPath ssh can bind: a Unix socket
+	// path must fit sun_path, 104 bytes with its terminator on macOS and the
+	// BSDs (108 on Linux), and ssh refuses a longer one on every command with
+	// "ControlPath too long".
+	maxControlPath = 103
+	// controlSocketSuffix is what ssh adds to the directory: "/", the 40
+	// hexadecimal characters of %C, and the "." and 16 random characters of
+	// the temporary name it binds before renaming the socket.
+	controlSocketSuffix = 1 + 40 + 1 + 16
+	// controlDirectoryName is the longest name os.MkdirTemp gives the
+	// directory: the prefix and a uint32 in decimal.
+	controlDirectoryName = len("/forge-ssh-") + len("4294967295")
+)
+
+// controlDirectory creates the private (0700) directory that holds the SSH
+// control sockets of one run. It lives under $TMPDIR when the sockets fit
+// there, and under /tmp when they would not: macOS's default $TMPDIR
+// (/var/folders/xx/.../T/, about 49 bytes) is already too long for ssh. It
+// fails, naming TMPDIR, when no directory is short enough.
+func controlDirectory() (string, error) {
+	return makeControlDirectory(os.TempDir(), "/tmp", runtime.GOOS != "windows")
+}
+
+// makeControlDirectory is controlDirectory with its choices as arguments: the
+// preferred base, the short base to use instead, and whether the sockets are
+// Unix sockets (not on Windows, where ssh has no control master).
+func makeControlDirectory(base, short string, unixSockets bool) (string, error) {
+	if unixSockets && len(base)+controlDirectoryName+controlSocketSuffix > maxControlPath {
+		base = short
+	}
+	dir, err := os.MkdirTemp(base, "forge-ssh-")
+	if err != nil {
+		return "", fmt.Errorf("create ssh control directory: %w (set TMPDIR to a short, private directory)", err)
+	}
+	if length := len(dir) + controlSocketSuffix; unixSockets && length > maxControlPath {
+		_ = os.RemoveAll(dir)
+		return "", fmt.Errorf("create ssh control directory: the control socket path under %s would be %d bytes, over the %d a Unix socket allows (set TMPDIR to a shorter directory)", dir, length, maxControlPath)
+	}
+	return dir, nil
+}
+
 func (r *SSHRunner) init() error {
 	r.once.Do(func() {
-		// A short private directory: control socket paths are limited to
-		// about 100 bytes.
-		dir, err := os.MkdirTemp("", "forge-ssh-")
+		dir, err := controlDirectory()
 		if err != nil {
-			r.initErr = fmt.Errorf("create ssh control directory: %w", err)
+			r.initErr = err
 			return
 		}
 		r.controlDir = dir
