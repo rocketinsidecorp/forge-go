@@ -166,10 +166,17 @@ func rootTestImports(t *testing.T) (imports, staleToolTests []string) {
 	return imports, staleToolTests
 }
 
-// coreRuleGOOS are the operating systems the core rule lists packages for:
-// a file with a _darwin or _windows suffix or build constraint is invisible
-// to go list on Linux, and could import x/sys there.
-var coreRuleGOOS = []string{"linux", "darwin", "windows"}
+// coreRuleBuilds are the builds the core rule lists packages for: a file
+// with an operating system, architecture or tag suffix or constraint is
+// invisible to go list in other builds, and could import x/sys or argon2
+// there. forge_pbkdf2 is the FIPS build (ADR 0048).
+var coreRuleBuilds = []struct{ goos, goarch, tags string }{
+	{"linux", "amd64", ""},
+	{"linux", "amd64", "forge_pbkdf2"},
+	{"darwin", "amd64", ""},
+	{"darwin", "arm64", ""},
+	{"windows", "amd64", ""},
+}
 
 func TestCorePackagesAndTheirTestsDependOnlyOnStandardLibraryAndCore(t *testing.T) {
 	if testing.Short() {
@@ -193,16 +200,20 @@ func TestCorePackagesAndTheirTestsDependOnlyOnStandardLibraryAndCore(t *testing.
 			roots = append(roots, path)
 		}
 	}
-	for _, goos := range coreRuleGOOS {
-		t.Run(goos, func(t *testing.T) {
+	for _, build := range coreRuleBuilds {
+		name := build.goos + "/" + build.goarch
+		if build.tags != "" {
+			name += " -tags " + build.tags
+		}
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			goList := func(args ...string) string {
 				t.Helper()
-				command := exec.Command("go", append([]string{"list"}, args...)...)
-				command.Env = append(os.Environ(), "GOOS="+goos, "GOARCH=amd64")
+				command := exec.Command("go", append([]string{"list", "-tags=" + build.tags}, args...)...)
+				command.Env = append(os.Environ(), "GOOS="+build.goos, "GOARCH="+build.goarch)
 				output, err := command.CombinedOutput()
 				if err != nil {
-					t.Fatalf("GOOS=%s go list %v: %v\n%s", goos, args, err, output)
+					t.Fatalf("%s: go list %v: %v\n%s", name, args, err, output)
 				}
 				return string(output)
 			}
@@ -219,7 +230,7 @@ func TestCorePackagesAndTheirTestsDependOnlyOnStandardLibraryAndCore(t *testing.
 			listing := goList(append([]string{"-deps", "-test", "-f", format}, core...)...)
 			rootListing := goList(append([]string{"-deps", "-f", format}, roots...)...)
 			for _, problem := range coreDependencyViolations(listing + rootListing) {
-				t.Errorf("GOOS=%s: %s", goos, problem)
+				t.Errorf("%s: %s", name, problem)
 			}
 		})
 	}
