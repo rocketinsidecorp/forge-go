@@ -24,6 +24,7 @@ var apiOnlyFiles = []string{
 	".gitignore",
 	"Dockerfile",
 	"README.md",
+	"app/architecture_test.go",
 	"app/bootstrap/bootstrap.go",
 	"app/bootstrap/bootstrap_test.go",
 	"app/bootstrap/routes_gen.go",

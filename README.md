@@ -616,6 +616,7 @@ myapp/
   app/bootstrap/bootstrap.go   # opens the database, readiness check "database", GET /v1/status
   app/bootstrap/bootstrap_test.go
   app/bootstrap/routes_gen.go  # the routes generate scaffold/resource/controller add (generator-owned)
+  app/architecture_test.go     # enforces the ring dependency rules (see Architecture test)
   app/adapters/htmlauth/       # PostgreSQL: sign-in, sign-out, two-factor and password-reset pages
   app/views/                   # layout, flash partial (and, with PostgreSQL, sessions/ and passwords/)
   db/db.go                     # embeds db/migrations into the binary
@@ -644,6 +645,32 @@ SQLite) and runs it in `gcr.io/distroless/static-debian12:nonroot`,
 configured for production behind a TLS-terminating proxy. See
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
 [docs/DATABASE.md](docs/DATABASE.md).
+
+### Architecture test
+
+Every generated application carries `app/architecture_test.go`, a test that
+enforces the dependency direction of its rings with the standard library
+(`go/parser` on the import lines, no tools to install). `app/domain` imports
+only itself, the standard library without `net`, `net/http`, `database/sql`,
+`os`, `embed` and `html/template`, and Forge's `uuid` and `fault`;
+`app/application` imports `app/domain`, itself and Forge's `uuid`, `fault`,
+`pagination` and `tenancy`; `app/adapters` and every other package outside
+`app/bootstrap` never import `app/bootstrap`, the only composition root.
+It passes on a fresh application and after every generator, and a violation
+fails with the file, the line and the import:
+
+```sh
+forge new myapp -d sqlite3 && cd myapp
+forge g scaffold product name:string --global
+forge test ./app/ -run TestArchitecture -v        # passes
+printf 'package domain\n\nimport _ "net/http"\n' > app/domain/leak.go
+forge test ./app/ -run TestArchitecture           # app/domain/leak.go:3: imports "net/http": the domain ring must not do I/O or speak HTTP: ...
+rm app/domain/leak.go
+```
+
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#architecture-test-of-the-generated-application)
+has the rules; `extraAllowedImports` in the test admits a third-party package
+to the inner rings on purpose.
 
 ## Translations (i18n)
 

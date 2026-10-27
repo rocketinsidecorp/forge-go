@@ -460,6 +460,7 @@ forge generate authentication --api-auth
 | `db/migrations` | SQL migrations, embedded in the binary |
 | `db/seeds.go` | Idempotent seed data for `seed` |
 {{- end}}
+| `app/architecture_test.go` | Test that enforces the dependency rules of the rings (see Architecture) |
 | `Dockerfile` | Production image: static binary, distroless, non-root |
 | `compose.yaml` | Local stack running the same image in development mode |
 | `compose.observability.yaml`, `observability/` | Opt-in Grafana, Prometheus, Tempo, Loki and OpenTelemetry Collector stack, preconfigured |
@@ -470,6 +471,30 @@ forge generate authentication --api-auth
 
 Domain, application, adapter and infrastructure packages live under `app/`
 and are added as the application grows.
+
+## Architecture
+
+Code is layered in rings and imports point inward only:
+
+| Ring | May import |
+| --- | --- |
+| `app/domain` | itself, the standard library without `net`, `net/http`, `database/sql`, `os`, `embed`, `html/template`, and the framework's `uuid` and `fault` |
+| `app/application` | `app/domain`, itself, the framework's `uuid`, `fault`, `pagination` and `tenancy` |
+| `app/adapters` | the inner rings and the framework; never `app/bootstrap` |
+| `app/bootstrap` | everything: the only place that wires the application |
+
+`app/jobs`, `app/mailers`, `app/views`, `db` and `config` sit outside the rings
+and, like the adapters, never import `app/bootstrap`. `app/architecture_test.go`
+parses the imports of every Go file with the standard library and fails with the
+file, the line and the forbidden import. It runs with `forge test` and in CI.
+
+```bash
+forge test ./app/ -run TestArchitecture -v    # only the architecture test
+forge test                                    # everything, including it
+```
+
+To add a third-party package to the domain or application rings, list it in
+`extraAllowedImports` in that file, in a reviewed commit.
 {{- if and .DB .DB.Identity}}
 
 ## Identity
