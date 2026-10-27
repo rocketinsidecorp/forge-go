@@ -187,7 +187,7 @@ func (r *argon2Registry) load() argon2idKDF {
 	}
 	r.checked.Do(func() {
 		known := argon2idDefaultCostAnswer
-		got := (*kdf)(argon2idKnownPassword, argon2idKnownSalt, known.time, known.memory, known.threads, uint32(len(known.key))) // #nosec G115 -- 32
+		got := (*kdf)(argon2idKnownPassword, argon2idKnownSalt, known.time, known.memory, known.threads, uint32(len(known.key))) // #nosec G115 -- a 32-byte key length
 		r.sound.Store(subtle.ConstantTimeCompare(got, known.key) == 1)
 		if r.sound.Load() {
 			return
@@ -270,7 +270,7 @@ var argon2idDefaultCostAnswer = struct {
 // answer.
 func answersArgon2id(kdf argon2idKDF) bool {
 	for _, known := range argon2idKnownAnswers {
-		got := kdf(argon2idKnownPassword, argon2idKnownSalt, known.time, known.memory, known.threads, uint32(len(known.key))) // #nosec G115 -- 24 or 32
+		got := kdf(argon2idKnownPassword, argon2idKnownSalt, known.time, known.memory, known.threads, uint32(len(known.key))) // #nosec G115 -- a 24- or 32-byte key length
 		if subtle.ConstantTimeCompare(got, known.key) != 1 {
 			return false
 		}
