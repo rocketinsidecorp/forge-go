@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // streamCounter is a Runner whose Stream holds until holdUntil streams have
@@ -100,6 +101,11 @@ func TestHeldLockWithoutRecordCarriesTheRemoteDiagnostic(t *testing.T) {
 	want := interrupted.Message + "; the remote said: ln: failed to create hard link 'info': Operation not permitted second line"
 	if got.Holder != "unknown" || got.Message != want {
 		t.Fatalf("message = %q, want %q", got.Message, want)
+	}
+	// A cut inside a multi-byte character goes back to the character before.
+	runes := heldLockInfo("", strings.Repeat("x", maxHeldDetail-1)+strings.Repeat("é", 50))
+	if !utf8.ValidString(runes.Message) || !strings.HasSuffix(runes.Message, strings.Repeat("x", maxHeldDetail-1)+"...") {
+		t.Fatalf("the diagnostic was cut inside a character: %q", runes.Message[len(runes.Message)-20:])
 	}
 	long := heldLockInfo("", strings.Repeat("x", 2000))
 	if !strings.HasSuffix(long.Message, strings.Repeat("x", maxHeldDetail)+"...") || len(long.Message) > len(interrupted.Message)+len("; the remote said: ")+maxHeldDetail+3 {

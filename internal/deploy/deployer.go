@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$`)
@@ -296,7 +297,12 @@ func heldLockInfo(stdout, stderr string) LockInfo {
 	detail := strings.Join(strings.Fields(stderr), " ")
 	if text := strings.TrimSpace(stdout); (text == "" || text == "{}") && detail != "" {
 		if len(detail) > maxHeldDetail {
-			detail = detail[:maxHeldDetail] + "..."
+			// Back to a rune boundary: never cut a multi-byte character.
+			cut := maxHeldDetail
+			for cut > 0 && !utf8.RuneStart(detail[cut]) {
+				cut--
+			}
+			detail = detail[:cut] + "..."
 		}
 		info.Message += "; the remote said: " + detail
 	}
