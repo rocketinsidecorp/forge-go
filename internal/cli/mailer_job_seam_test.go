@@ -142,3 +142,45 @@ func TestMailerRefusesAnEditedSeamAndWritesNothing(t *testing.T) {
 		t.Errorf("a refused seam still wrote the mailer: %v", err)
 	}
 }
+
+// An application generated before mailers and jobs wired themselves into the
+// seam has their wiring pasted in bootstrap.go: the seam holds no block for
+// them, so destroy must still say what to take out there instead of reporting
+// nothing to do.
+func TestDestroyStillPrintsTheWiringTheSeamDoesNotHold(t *testing.T) {
+	t.Parallel()
+	dir := seamApp(t, "-d", "sqlite")
+	seamPath := filepath.Join(dir, "app", "bootstrap", "routes_gen.go")
+	empty := readFile(t, seamPath)
+	env := withoutDatabaseEnv()
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		generator string
+		args      []string
+		want      string
+	}{
+		{"mailer", []string{"user", "welcome:name"}, "Remove the mailer wiring:"},
+		{"job", []string{"send_welcome", "--queue"}, "Remove the registration: jobs.RegisterSendWelcome(registry)"},
+	} {
+		var out bytes.Buffer
+		if err := runGenerateEnv(append([]string{c.generator}, c.args...), &out, dir, env, now); err != nil {
+			t.Fatalf("generate %s: %v\n%s", c.generator, err, out.String())
+		}
+		// The files stay; the seam goes back to what it was before the block.
+		writeFile(t, seamPath, empty)
+		out.Reset()
+		if err := runDestroyEnv(append([]string{c.generator}, append(c.args, "--dry-run")...), &out, dir, env, now); err != nil {
+			t.Fatalf("destroy %s: %v\n%s", c.generator, err, out.String())
+		}
+		if !strings.Contains(out.String(), c.want) || strings.Contains(out.String(), "unwire") {
+			t.Errorf("destroy %s with the wiring outside the seam:\n%s", c.generator, out.String())
+		}
+		out.Reset()
+		if err := runDestroyEnv(append([]string{c.generator}, c.args...), &out, dir, env, now); err != nil {
+			t.Fatalf("destroy %s: %v\n%s", c.generator, err, out.String())
+		}
+		if readFile(t, seamPath) != empty {
+			t.Errorf("destroying %s changed a seam that held no block", c.generator)
+		}
+	}
+}
