@@ -560,6 +560,10 @@ an application-owned context. Handler calls happen outside database
 transactions, and the dispatcher renews its lease while the handler runs.
 Each worker claims up to `DispatcherOptions.BatchSize` events (default 10) in
 one transaction and delivers them in order, acknowledging each on its own.
+Canceling the context stops the dispatcher between its own statements: it
+cancels the running handler, records that handler's result (an
+acknowledgement, or a retry), and hands back the events not yet started
+without using an attempt. Each of those statements is bounded to 5 seconds.
 Dead-letter rows are retained for operator inspection; automated replay and
 queue metrics are not yet provided. See
 [ADR 0018](adr/0018-transactional-outbox-foundation.md) and
