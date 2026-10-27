@@ -2,6 +2,9 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-19
+- **Amended by:** [ADR 0049](0049-typescript-by-default.md): the generated
+  `app/javascript` is TypeScript, compiled by `forge` into `app/javascript/dist`
+  (`forge new --js` keeps the JavaScript described below)
 
 ## Context
 

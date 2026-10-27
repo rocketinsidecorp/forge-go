@@ -4,6 +4,9 @@
 .env
 .env.*
 bin
+{{- if .TypeScript}}
+node_modules
+{{- end}}
 tmp
 storage
 # Local observability stack configuration; not part of the application image.

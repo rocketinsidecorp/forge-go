@@ -55,7 +55,7 @@ func DefaultRules() Rules {
 	return Rules{
 		IgnoreDirs: []string{"tmp", "vendor", "node_modules", "bin", "storage", "log", "logs", "coverage", "dist"},
 		Extensions: []string{
-			".go", ".gohtml", ".html", ".tmpl", ".css", ".js", ".mjs", ".json", ".sql", ".txt",
+			".go", ".gohtml", ".html", ".tmpl", ".css", ".js", ".mjs", ".ts", ".json", ".sql", ".txt",
 			".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2", ".ttf",
 		},
 		Names:       []string{"go.mod", "go.sum"},

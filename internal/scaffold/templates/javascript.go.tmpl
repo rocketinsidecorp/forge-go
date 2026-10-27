@@ -1,3 +1,4 @@
+{{- if .JS -}}
 // Package javascript embeds {{.Name}}'s JavaScript: application.js, the entry
 // point, and the Stimulus controllers in controllers/. There is no bundler and
 // no Node toolchain: package assets serves these files with digested names and
@@ -18,3 +19,49 @@ var files embed.FS
 
 // Files returns the embedded JavaScript, rooted at app/javascript.
 func Files() fs.FS { return files }
+{{- else -}}
+// Package javascript embeds {{.Name}}'s front end, which is TypeScript: the
+// entry point application.ts and the Stimulus controllers in controllers/ are
+// compiled by forge (esbuild, types stripped, nothing bundled) into dist/, and
+// that JavaScript is what this package embeds. There is no Node toolchain and
+// no compiler in the binary: package assets serves the compiled files with
+// digested names and an import map, and the layout loads them with
+// {{"{{"}}javascriptImportmapTags "application"{{"}}"}}.
+//
+// dist/ is generated and committed, so plain `go build` and `go test` (CI and
+// the Dockerfile run them) need no other tool. `forge dev`, `forge build`,
+// `forge test` and `forge check` refresh it; `forge check` also runs
+// `tsc --noEmit` when tsc is installed. A test fails when a source changed
+// and dist/ did not.
+package javascript
+
+import (
+	"embed"
+	"io/fs"
+)
+
+// files holds every compiled file in dist/. A controller added to
+// controllers/ is compiled, embedded and pinned in the import map. A file
+// elsewhere (lib/format.ts) is compiled, embedded and served too, but pinned
+// only if app/assets/assets.go pins it (forgeassets.PinAllFrom(set, "lib")).
+//
+//go:embed dist
+var files embed.FS
+
+// dist is files rooted at dist/, so logical asset names are "application.js"
+// and "controllers/NAME.js".
+var dist = mustSub(files, "dist")
+
+// mustSub roots fsys at dir. dir is a constant directory of the embedded
+// files, so failing means the program is broken, not its input.
+func mustSub(fsys fs.FS, dir string) fs.FS {
+	sub, err := fs.Sub(fsys, dir)
+	if err != nil {
+		panic("javascript: " + err.Error())
+	}
+	return sub
+}
+
+// Files returns the embedded, compiled JavaScript, rooted at app/javascript/dist.
+func Files() fs.FS { return dist }
+{{- end}}

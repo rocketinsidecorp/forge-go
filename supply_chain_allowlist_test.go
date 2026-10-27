@@ -35,6 +35,7 @@ var allowedVariables = map[string]string{
 	"FORGE_TEST_DATABASE_URL":     anyValue,
 	"FORGE_TEST_REQUIRE_DATABASE": "true",
 	"FORGE_TEST_REQUIRE_SSHD":     "true",
+	"FORGE_TEST_REQUIRE_TSC":      "true",
 	// Database and Grafana service containers.
 	"POSTGRES_USER":          anyValue,
 	"POSTGRES_PASSWORD":      anyValue,

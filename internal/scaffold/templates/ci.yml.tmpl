@@ -47,6 +47,16 @@ jobs:
         run: test -z "$(find . -name '*.go' -not -path './vendor/*' -exec gofmt -l {} +)"
       - name: Vet
         run: go vet ./...
+{{- if .TypeScript}}
+      - name: Type-check TypeScript
+        # forge compiles app/javascript with esbuild, which strips types
+        # without checking them: tsc, pinned to an exact release and installed
+        # without lifecycle scripts, does. The compiled files in
+        # app/javascript/dist are checked against their sources by go test.
+        run: |
+          npm install --global --ignore-scripts typescript@{{.TypeScriptVersion}}
+          tsc --noEmit
+{{- end}}
       - name: Test
         run: go test -race ./...
       - name: Vulnerabilities

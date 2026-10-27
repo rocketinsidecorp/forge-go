@@ -30,3 +30,9 @@ upstream 3.2.2 tarball ships a file whose banner still reads "Stimulus 3.2.1".
 3. Update this table and the constants in `hotwire.go` (`*Version`, `*SHA256`).
 4. Run `go test ./hotwire`. If Turbo's progress bar CSS changed, the test fails
    until `TurboProgressBarStyleSHA256` (the CSP style hash) is updated too.
+5. Update the type declarations generated applications get
+   (`internal/scaffold/templates/typescript/types`, ADR 0049): Stimulus's from
+   the same npm tarball (`dist/types`), Turbo's from the newest
+   `@types/hotwired__turbo` for the same minor line; refresh
+   `types/README.md` and the `typesSHA256` constant of
+   `internal/scaffold/typescript_test.go`, which fails until both match.
