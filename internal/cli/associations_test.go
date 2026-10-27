@@ -483,7 +483,7 @@ func TestDestroyJoinKeepsTheUniqueKeyAChildReferencesThrough(t *testing.T) {
 		t.Fatalf("the comments migration declared the key the join declared:\n%s", up)
 	}
 	before := snapshotTree(t, dir)
-	if _, err := destroy(dir, "join", "post", "tag", "--migrations"); err == nil || !strings.Contains(err.Error(), "create_post_tags migration declares posts_org_id_id_key and tags_org_id_id_key") || !strings.Contains(err.Error(), "comments (post:references") {
+	if _, err := destroy(dir, "join", "post", "tag", "--migrations"); err == nil || !strings.Contains(err.Error(), "create_post_tags migration declares posts_org_id_id_key, which the composite foreign keys of comments") || !strings.Contains(err.Error(), "comments (post:references") || strings.Contains(err.Error(), "tags_org_id_id_key") {
 		t.Fatalf("destroy join --migrations: %v", err)
 	}
 	if !slices.Equal(before, snapshotTree(t, dir)) {

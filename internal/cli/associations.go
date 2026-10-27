@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -472,19 +473,19 @@ func parentRewrites(projectRoot *os.Root, spec resourceSpec) ([]fileRewrite, err
 	return rewrites, nil
 }
 
-// keyDependents lists what relies on the (org_id, id) unique keys that the
-// migration of spec (a resource, or a join when join is set) declares: the
-// other resources with a references field to the same table, and the joins
-// that name it. Removing that migration would leave their composite foreign
-// keys without the key they reference, so `forge destroy --migrations`
-// refuses while any exists.
-func keyDependents(projectRoot *os.Root, spec resourceSpec, join bool) ([]string, error) {
-	var found []string
+// keyDependents lists, by key, what relies on the (org_id, id) unique keys
+// that the migration of spec (a resource, or a join when join is set)
+// declares: the other resources with a references field to the same table,
+// and the joins that name it. Removing that migration would leave their
+// composite foreign keys without the key they reference, so `forge destroy
+// --migrations` refuses while any exists.
+func keyDependents(projectRoot *os.Root, spec resourceSpec, join bool) (map[string][]string, error) {
+	found := make(map[string][]string)
 	for _, reference := range spec.references {
 		if !reference.addsKey {
 			continue
 		}
-		parent := reference.parent.Name
+		parent, key := reference.parent.Name, uniqueKeyName(reference.parent.Plural)
 		resources, err := recordedResources(projectRoot)
 		if err != nil {
 			return nil, err
@@ -495,7 +496,7 @@ func keyDependents(projectRoot *os.Root, spec resourceSpec, join bool) ([]string
 			}
 			for _, field := range resource.request.Fields {
 				if field.References == parent {
-					found = append(found, fmt.Sprintf("%s (%s:references, %s)", resource.request.Plural, parent, resource.file))
+					found[key] = append(found[key], fmt.Sprintf("%s (%s:references, %s)", resource.request.Plural, parent, resource.file))
 				}
 			}
 		}
@@ -506,7 +507,7 @@ func keyDependents(projectRoot *os.Root, spec resourceSpec, join bool) ([]string
 		for _, other := range joins {
 			self := join && other.left == spec.references[0].parent.Name && other.right == spec.references[1].parent.Name
 			if !self && (other.left == parent || other.right == parent) {
-				found = append(found, fmt.Sprintf("the join %s %s (%s)", other.left, other.right, other.file))
+				found[key] = append(found[key], fmt.Sprintf("the join %s %s (%s)", other.left, other.right, other.file))
 			}
 		}
 	}
@@ -525,11 +526,10 @@ func keyDependentsRefusal(root string, spec resourceSpec, join bool) (string, er
 	if err != nil || len(found) == 0 {
 		return "", err
 	}
-	var keys []string
-	for _, reference := range spec.references {
-		if reference.addsKey {
-			keys = append(keys, uniqueKeyName(reference.parent.Plural))
-		}
+	keys := slices.Sorted(maps.Keys(found))
+	var reasons []string
+	for _, key := range keys {
+		reasons = append(reasons, fmt.Sprintf("%s, which the composite foreign keys of %s reference too", key, strings.Join(found[key], ", ")))
 	}
-	return fmt.Sprintf("the %s migration declares %s, the unique key that the composite foreign keys of %s reference too: removing it would leave them without it (the next forge migrate would fail on PostgreSQL and MySQL, and SQLite would refuse every delete from the table). Destroy those first (with --migrations), or destroy this one without --migrations and keep its migration", "create_"+spec.Plural, strings.Join(keys, " and "), strings.Join(found, ", ")), nil
+	return fmt.Sprintf("the create_%s migration declares %s. Removing it would leave them without that key: the next forge migrate would fail on PostgreSQL and MySQL, and SQLite would refuse every delete from the table. Destroy those first (with --migrations), or destroy this one without --migrations and keep its migration", spec.Plural, strings.Join(reasons, "; and ")), nil
 }
