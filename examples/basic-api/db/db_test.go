@@ -42,6 +42,14 @@ func TestMigrationsRoundTrip(t *testing.T) {
 	if applied, err := migrator.Up(ctx); err != nil || len(applied) != len(migrations) {
 		t.Fatalf("up: applied %d, err %v", len(applied), err)
 	}
+	// The ids are generated in Go: the tasks table has no database default.
+	var idDefault *string
+	if err := database.QueryRow(ctx, "SELECT column_default FROM information_schema.columns WHERE table_name = 'tasks' AND column_name = 'id'").Scan(&idDefault); err != nil || idDefault != nil {
+		if idDefault != nil {
+			t.Fatalf("tasks.id has the default %q after up", *idDefault)
+		}
+		t.Fatalf("tasks.id default after up: %v", err)
+	}
 	if _, err := migrator.Down(ctx, len(migrations)); err != nil {
 		t.Fatalf("down: %v", err)
 	}

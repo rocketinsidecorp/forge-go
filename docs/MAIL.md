@@ -133,8 +133,9 @@ forge generate mailer user welcome:name,url password_reset:name,reset_url
 
 writes `app/mailers/user_mailer.go` (a typed `UserMailer` with a method and a
 data struct per email), its templates under `app/mailers/templates/user/`,
-previews and tests, and prints the wiring that builds the sender and serves the
-previews at `/_mail/user/` in development ([Generators](GENERATORS.md#mailer)).
+previews and tests, and wires the sender and the previews at `/_mail/user/`
+(development only, with `FORGE_MAIL_PREVIEW=true`) into `app/bootstrap/routes_gen.go`
+([Generators](GENERATORS.md#mailer)).
 
 ## Testing
 

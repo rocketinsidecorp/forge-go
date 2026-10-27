@@ -1,7 +1,7 @@
 // Command {{.Name}} runs the {{.Name}} service.
 //
 //	{{.Name}}              serve HTTP (default)
-//	{{.Name}} healthcheck  probe the running server; used by the Docker HEALTHCHECK
+//	{{.Name}} healthcheck  probe the running server{{if not .SkipDocker}}; used by the Docker HEALTHCHECK{{end}}
 {{- if .DB}}
 //	{{.Name}} migrate      apply database migrations ("migrate status" lists them)
 //	{{.Name}} rollback     revert the latest migration

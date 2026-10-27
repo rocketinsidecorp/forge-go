@@ -44,6 +44,8 @@ func (d *Deployer) selectHosts(role, host string) (string, []string, error) {
 // Logs streams the logs of the current role container from every selected
 // host, each line prefixed with "host|". It returns when every stream has
 // ended or ctx is cancelled; cancellation stops the remote `docker logs`.
+// Without Follow at most Config.Parallelism hosts are read at once; with
+// Follow every host streams at once.
 func (d *Deployer) Logs(ctx context.Context, out io.Writer, opts LogsOptions) error {
 	if err := d.prepare(); err != nil {
 		return err
@@ -72,14 +74,23 @@ func (d *Deployer) Logs(ctx context.Context, out io.Writer, opts LogsOptions) er
 	}
 	shared := &lockedOutput{w: out}
 	cmd := d.cmds.logs(role, opts.Follow, opts.Since, opts.Lines)
+	streamHost := func(ctx context.Context, host string) error {
+		writer := &prefixWriter{prefix: host + "|", out: shared, grep: grep, redactor: d.redactor}
+		defer writer.flush()
+		return d.stream(ctx, host, cmd, writer)
+	}
+	if !opts.Follow {
+		// Every stream ends, so read at most Parallelism hosts at once, like
+		// every other multi-host operation.
+		return d.eachHost(ctx, hosts, streamHost)
+	}
+	// A followed stream never ends on its own: a host waiting for a free slot
+	// would never be shown, so every selected host streams at once (narrow
+	// them with --role and --host).
 	errs := make([]error, len(hosts))
 	var wg sync.WaitGroup
 	for i, host := range hosts {
-		wg.Go(func() {
-			writer := &prefixWriter{prefix: host + "|", out: shared, grep: grep, redactor: d.redactor}
-			errs[i] = d.stream(ctx, host, cmd, writer)
-			writer.flush()
-		})
+		wg.Go(func() { errs[i] = streamHost(ctx, host) })
 	}
 	wg.Wait()
 	return errors.Join(errs...)

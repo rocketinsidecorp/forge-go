@@ -562,9 +562,10 @@ an API client gets a `401` JSON error instead. A page asks for one permission
 (success, failure, throttling) and permission denials of signed-in users are
 audited; a request with no or an invalid session is refused with a `401` or a
 redirect but not recorded unless you add `authhttp.WithAuthenticationAuditor`
-([AUTHENTICATION.md](AUTHENTICATION.md), [AUDIT.md](AUDIT.md)). To let a signed-in user sign out, put
-`{{template "sessions/_sign_out" .}}` in a page: it renders a `DELETE /session`
-form.
+([AUTHENTICATION.md](AUTHENTICATION.md), [AUDIT.md](AUDIT.md)). The layout of an `--auth` application shows a sign-out button (the
+`sessions/_sign_out` partial, a `DELETE /session` form) to signed-in users; in
+an application that added sign-in with `forge generate authentication`, put
+`{{if signedIn}}{{template "sessions/_sign_out" .}}{{end}}` in your layout.
 
 Turn on two-factor authentication for the owner: signed in, open
 <http://localhost:8080/mfa>, enter the password, add the key to an
@@ -665,45 +666,8 @@ forge generate mailer user welcome:name,url
   create  app/mailers/templates/user/welcome.html.gohtml
 ```
 
-Wire it. Add the imports `"blog/app/mailers"` (and `"context"`, `"errors"` and
-`"github.com/rocketinsidecorp/forge-go/mail"` if `bootstrap.go` lacks them; the
-sign-in code already imports the last two). Then, in `identityRoutes` after the
-comments controller registration, paste the sender, the mailer and its
-previews:
-
-```go
-	mailSender, err := mail.FromConfig(app.Config(), mail.WithLogger(app.Logger()))
-	var mailFrom mail.Address
-	switch {
-	case errors.Is(err, mail.ErrNotConfigured):
-		// Mail is optional: until FORGE_MAIL_URL is set, every delivery fails
-		// closed with mail.ErrNotConfigured instead of pretending to send.
-		app.Logger().Warn("outgoing mail is not configured: set FORGE_MAIL_URL and FORGE_MAIL_FROM")
-		mailSender = mail.SenderFunc(func(context.Context, mail.Message) error { return mail.ErrNotConfigured })
-		mailFrom = mail.Address{Email: "noreply@example.invalid"}
-	case err != nil:
-		return err
-	default:
-		if mailFrom, err = mail.DefaultFrom(app.Config()); err != nil {
-			return err // FORGE_MAIL_FROM
-		}
-	}
-	userMailer, err := mailers.NewUserMailer(mailSender, mailFrom)
-	if err != nil {
-		return err
-	}
-	// Previews render each email with fixture data and send nothing. They are
-	// served only in development and test, and only with FORGE_MAIL_PREVIEW=true.
-	if app.Config().Mail.Preview {
-		userPreviews, err := mail.NewPreviewHandler(app.Config(), "/_mail/user", mailers.UserMailerPreviews(userMailer)...)
-		if err != nil {
-			return err
-		}
-		if err := app.Handle("GET /_mail/user/", userPreviews); err != nil {
-			return err
-		}
-	}
-```
+The generator wired it: the sender and the previews are in
+`app/bootstrap/routes_gen.go`, with nothing to paste.
 
 Configure development mail: every message becomes an `.eml` file under
 `tmp/mail`, and previews are on. These settings also turn on the
@@ -717,12 +681,13 @@ FORGE_MAIL_FROM="blog <no-reply@example.com>"
 FORGE_MAIL_PREVIEW=true
 FORGE_AUTH_PASSWORD_RESET_URL=http://localhost:8080/passwords/edit
 ENV
-gofmt -w app/bootstrap/bootstrap.go
 forge test
 ```
 
 Open <http://localhost:8080/_mail/user/> for the preview list and `/_mail/user/welcome`
 for the email rendered with fixture data. Send one from your own code with
+`mailers.NewUserMailer(sender, from)` (`mail.FromConfig(app.Config())` and
+`mail.DefaultFrom(app.Config())`) and
 `userMailer.Welcome(ctx, to, mailers.UserWelcomeData{Name: ..., URL: ...})`;
 data is escaped for its context and header injection is refused before a byte
 is sent. To see the password-reset email, request one at
@@ -829,11 +794,10 @@ forge test ./app/jobs
 ```
 
 The handler fails permanently until you implement `PerformSendWelcome`, so it
-can never report fake success. Running the queue needs its tables and a worker
-first (`queuepostgres.Migrations()`, `queuepostgres.NewStore`, `queue.NewWorker`
-started in `Configure` and stopped in `OnShutdown`); [JOBS.md](JOBS.md)
-sections 1 and 4 have the wiring. This guide leaves it unwired and removes it in
-section 15.
+can never report fake success. The generator registered it in
+`app/bootstrap/routes_gen.go`; the queue's tables, the `jobs` command and the
+worker (`QueueConfigure`, started while serving) came with `forge new`
+([JOBS.md](JOBS.md)). Section 15 removes it.
 
 ## 11. OpenAPI, tests and diagnostics
 
@@ -883,7 +847,13 @@ environment: development
 http address: 127.0.0.1:8080
 transport: plain
 database: postgres://blog@127.0.0.1:27521/blog_development?sslmode=disable
+database reachability: the server accepts connections
 ```
+
+The last line is a TCP connection to the database host within 3 seconds; the
+doctor never logs in. When the server does not answer it prints
+`database reachability: unreachable (connection refused)` and an `error:` line,
+and exits 1 (`--json` reports the diagnostic `database.unreachable`).
 
 `forge db rollback`/`forge rollback` revert your newest migration, never a
 framework table. The generated `.github/workflows/ci.yml` runs gofmt, vet, the
@@ -1057,7 +1027,7 @@ forge destroy job send_welcome user_id:uuid --queue
 forge test
 ```
 
-Destroy never edits `bootstrap.go` (it prints the wiring to remove), never
+Destroy never edits `bootstrap.go` (it takes the wiring out of `routes_gen.go`), never
 removes shared files (the views base, the live-updates transport) and removes
 directories only when they become empty. Supported generators: `model`,
 `resource`, `scaffold`, `controller`, `mailer`, `job` (both kinds) and `view`.

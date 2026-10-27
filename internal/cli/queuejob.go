@@ -2,11 +2,14 @@ package cli
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"go/format"
 	"io"
 	"path/filepath"
 	"strings"
+
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
 const queueJobUsage = "usage: forge generate job NAME [field:type...] --queue [--dry-run]"
@@ -65,7 +68,7 @@ func parseQueueJobArgs(args []string) (queueJobRequest, error) {
 // runGenerateQueueJob is `forge generate job NAME --queue`: a typed handler
 // for the persistent job queue (package queue), the function that enqueues it,
 // and tests that need no database.
-func runGenerateQueueJob(args []string, stdout io.Writer, root string) error {
+func runGenerateQueueJob(args []string, stdout io.Writer, root string, env []string) error {
 	request, err := parseQueueJobArgs(args)
 	if err != nil {
 		return err
@@ -74,12 +77,58 @@ func runGenerateQueueJob(args []string, stdout io.Writer, root string) error {
 	if err != nil {
 		return err
 	}
+	// The seam is planned first, so a refused seam writes nothing.
+	wiring, wired, err := planQueueJobSeam(root, request, env, false)
+	if err != nil {
+		return err
+	}
 	if !request.DryRun {
 		if err := applyGeneratedFiles(root, directoriesOf(files), files); err != nil {
 			return err
 		}
+		if wired && wiring.verb == "wire" {
+			if err := writeRoutes(root, wiring.content); err != nil {
+				return err
+			}
+		}
 	}
-	return reportFiles(stdout, request.DryRun, files, queueJobWiring(request, module))
+	if !wired {
+		return reportFiles(stdout, request.DryRun, files, queueJobWiring(request, module))
+	}
+	return reportFiles(stdout, request.DryRun, files, reportSeam(wiring, request.DryRun, "forge test"))
+}
+
+// planQueueJobSeam plans the routes seam with the job's registration added
+// (or, for `forge destroy`, removed): jobs.RegisterNAME(registry), on the
+// registry QueueConfigure runs a worker for. wired is false in an
+// application that does not pass the registry to the seam (one created before
+// forge new wired the queue): the generator then prints the registration.
+func planQueueJobSeam(root string, request queueJobRequest, env []string, remove bool) (wiring seamWiring, wired bool, err error) {
+	projectRoot, module, err := openApplication(root)
+	if err != nil {
+		return seamWiring{}, false, err
+	}
+	defer func() { _ = projectRoot.Close() }()
+	adapter, err := databaseAdapter(root, env)
+	if err != nil {
+		return seamWiring{}, false, errors.New("environment files could not be loaded: check .env.development and .env.local syntax")
+	}
+	identity := hasIdentityMigrations(projectRoot, adapter) && !apiOnlyApplication(projectRoot)
+	seam := openRoutesSeam(projectRoot, module, adapter, identity)
+	if !seam.app.Queue {
+		return seamWiring{}, false, nil
+	}
+	title := exportedName(request.Name)
+	body := fmt.Sprintf("\tif err := jobs.Register%s(registry); err != nil {\n\t\treturn err\n\t}\n", title)
+	content, verb, err := planRoutes(projectRoot, seam, routesChange{
+		entry:  scaffold.RouteBlock{Kind: "job", Name: request.Name, Body: body},
+		remove: remove,
+	})
+	notes := []string{
+		fmt.Sprintf("Enqueue it, atomically with your data when you can, from the code that owns your database handle: build the store with queue%s.NewStore(database) (QueueConfigure does the same) and pass it, with the registry Configure creates, to that code:\n\n\t_, err := jobs.Enqueue%s(ctx, store.In(tx), registry, jobs.%sPayload{%s})", adapter, title, title, queueJobPayloadExample(request)),
+		"Replace Perform" + title + ", which reports ErrNotImplemented (a permanent failure, so the job is dead and visible in `jobs dead`) until you do. The worker (QueueConfigure in app/bootstrap/bootstrap.go) starts with the first registered handler, while the application serves.",
+	}
+	return seamWiring{content: content, verb: verb, notes: notes}, true, err
 }
 
 type queueJobView struct {

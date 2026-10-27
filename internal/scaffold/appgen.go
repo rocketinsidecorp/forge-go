@@ -45,6 +45,10 @@ type AppFeatures struct {
 	// Organizations is a multi-tenant application (forge new --tenants,
 	// forge generate tenancy).
 	Organizations bool
+	// Queue composes the persistent job queue: its migrations and the
+	// binary's jobs command (forge new with a database). An application
+	// generated before it keeps running without it.
+	Queue bool
 }
 
 // ErrAppEdited reports an app_gen.go whose checksum does not match.
@@ -90,6 +94,9 @@ func RenderApp(features AppFeatures) ([]byte, error) {
 	if features.Identity {
 		imports = append(imports, "auth"+adapter+` "`+FrameworkModule+"/auth/"+adapter+`"`)
 	}
+	if features.Queue {
+		imports = append(imports, "queue"+adapter+` "`+FrameworkModule+"/queue/"+adapter+`"`)
+	}
 	imports = append(imports, strconv.Quote(FrameworkModule+"/"+adapter), "", strconv.Quote(features.Module+"/db"))
 
 	var source bytes.Buffer
@@ -111,6 +118,9 @@ const Organizations = false
 `)
 	}
 	source.WriteString("\n// Commands are the subcommands of the binary besides serving: migrate and\n// rollback over db.MigrationSets, seed")
+	if features.Queue {
+		source.WriteString(", jobs (inspects and repairs the job queue)")
+	}
 	if features.Identity {
 		source.WriteString(", and setup, which creates the owner")
 	}
@@ -118,6 +128,9 @@ const Organizations = false
 	fmt.Fprintf(&source, "\tcommands := %s.CommandsFromSets(db.MigrationSets()...)\n", adapter)
 	if features.Identity {
 		fmt.Fprintf(&source, "\tcommands = append(commands, auth%[1]s.SetupCommand(auth%[1]s.SetupOrganizations(Organizations)))\n", adapter)
+	}
+	if features.Queue {
+		fmt.Fprintf(&source, "\tcommands = append(commands, queue%s.Commands()...)\n", adapter)
 	}
 	fmt.Fprintf(&source, "\treturn append(commands, %s.SeedCommand(db.Seed))\n}\n", adapter)
 	return checksummed(AppFile, source.Bytes())
@@ -132,7 +145,7 @@ func RenderSets(features AppFeatures) ([]byte, error) {
 	adapter := features.Adapter
 	imports := []string{`"io/fs"`}
 	var sets []string
-	if features.Identity || features.Jobs {
+	if features.Identity || features.Jobs || features.Queue {
 		imports = append(imports, "")
 	}
 	if features.Identity {
@@ -142,6 +155,10 @@ func RenderSets(features AppFeatures) ([]byte, error) {
 	if features.Jobs {
 		imports = append(imports, "jobs"+adapter+` "`+FrameworkModule+"/jobs/"+adapter+`"`)
 		sets = append(sets, "jobs"+adapter+".Migrations()")
+	}
+	if features.Queue {
+		imports = append(imports, "queue"+adapter+` "`+FrameworkModule+"/queue/"+adapter+`"`)
+		sets = append(sets, "queue"+adapter+".Migrations()")
 	}
 	sets = append(sets, "Migrations()")
 	var source bytes.Buffer
@@ -180,6 +197,9 @@ func describeSets(features AppFeatures) string {
 	if features.Jobs {
 		sets = append(sets, "the job schedules")
 	}
+	if features.Queue {
+		sets = append(sets, "the job queue")
+	}
 	sets = append(sets, "db/migrations")
 	if len(sets) == 1 {
 		return sets[0]
@@ -198,11 +218,12 @@ func ParseApp(source []byte) (AppFeatures, error) {
 	return AppFeatures{
 		Identity:      strings.Contains(text, `"`+FrameworkModule+"/auth/"),
 		Organizations: strings.Contains(text, "\nconst Organizations = true\n"),
+		Queue:         strings.Contains(text, `"`+FrameworkModule+"/queue/"),
 	}, nil
 }
 
 // ParseSets verifies the checksum of migration_sets_gen.go and returns what
-// it says about Identity and Jobs. It returns ErrSetsEdited when the file is
+// it says about Identity, Jobs and Queue. It returns ErrSetsEdited when the file is
 // not exactly what a generator wrote.
 func ParseSets(source []byte) (AppFeatures, error) {
 	if !checksumMatches(source) {
@@ -212,6 +233,7 @@ func ParseSets(source []byte) (AppFeatures, error) {
 	return AppFeatures{
 		Identity: strings.Contains(text, `"`+FrameworkModule+"/auth/"),
 		Jobs:     strings.Contains(text, `"`+FrameworkModule+"/jobs/"),
+		Queue:    strings.Contains(text, `"`+FrameworkModule+"/queue/"),
 	}, nil
 }
 

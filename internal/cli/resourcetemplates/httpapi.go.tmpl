@@ -82,6 +82,16 @@ func Register[[.PluralTitle]](router [[.Title]]Router, service *application.[[.T
 			Responses: []openapi.Response{[[printf "openapi.JSON[%sResponse]" .Name]](http.StatusOK)},
 			Errors:    []int{http.StatusNotFound, http.StatusConflict[[if .References]], http.StatusUnprocessableEntity[[end]]},
 		}},
+		// PUT is the same handler under Rails' second name for update, so
+		// clients and OpenAPI generators that use it work: it changes the
+		// members it names, exactly as PATCH does.
+		{"PUT " + [[.Plural]]Path + "/{id}", [[.Plural]]WritePermission, h.update, openapi.Operation{
+			ID: "replace[[.Title]]", Summary: "Change a [[.Name]] (the same as PATCH)", Tags: tags,
+			Params:    [[printf "openapi.TypeOf[%sIDParam]" .Name]](),
+			Request:   [[printf "openapi.TypeOf[%sPatchRequest]" .Name]](),
+			Responses: []openapi.Response{[[printf "openapi.JSON[%sResponse]" .Name]](http.StatusOK)},
+			Errors:    []int{http.StatusNotFound, http.StatusConflict[[if .References]], http.StatusUnprocessableEntity[[end]]},
+		}},
 		{"DELETE " + [[.Plural]]Path + "/{id}", [[.Plural]]WritePermission, h.delete, openapi.Operation{
 			ID: "delete[[.Title]]", Summary: "Delete a [[.Name]]", Tags: tags,
 			Params:    [[printf "openapi.TypeOf[%sDeleteParams]" .Name]](),

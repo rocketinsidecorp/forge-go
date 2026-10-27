@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -248,26 +249,63 @@ func runDoctorAt(args []string, output io.Writer, root string, baseEnv []string)
 		}
 		return fmt.Errorf("configuration invalid: %w", err)
 	}
-	database := "not configured"
+	database, reachability := "not configured", ""
+	var diagnostics []doctorDiagnostic
 	if !cfg.Database.URL.IsZero() {
 		database = describeDatabase(cfg.Database.URL.Reveal())
+		status, reason, malformed := probeDatabase(context.Background(), cfg.Database, root)
+		reachability = status
+		if malformed {
+			diagnostics = append(diagnostics, doctorDatabaseMalformed())
+		} else if reason != "" {
+			reachability = "unreachable (" + reason + ")"
+			diagnostics = append(diagnostics, doctorDatabaseUnreachable(reason))
+		}
 	}
 	if jsonOutput {
 		adapter := string(cfg.Database.Adapter())
 		if adapter == "" {
 			adapter = "none"
 		}
-		return json.NewEncoder(output).Encode(doctorReport{
+		if diagnostics == nil {
+			diagnostics = []doctorDiagnostic{}
+		}
+		if err := json.NewEncoder(output).Encode(doctorReport{
 			SchemaVersion: 1,
-			OK:            true,
+			OK:            len(diagnostics) == 0,
 			Environment:   string(cfg.Environment),
 			Database:      adapter,
-			Diagnostics:   []doctorDiagnostic{},
-		})
+			Diagnostics:   diagnostics,
+		}); err != nil {
+			return err
+		}
+		return doctorExit(diagnostics)
 	}
-	_, err = fmt.Fprintf(output, "configuration: ok\nenvironment: %s\nhttp address: %s\ntransport: %s\ndatabase: %s\n",
-		cfg.Environment, cfg.HTTP.Address, cfg.HTTP.Transport, database)
-	return err
+	if _, err = fmt.Fprintf(output, "configuration: ok\nenvironment: %s\nhttp address: %s\ntransport: %s\ndatabase: %s\n",
+		cfg.Environment, cfg.HTTP.Address, cfg.HTTP.Transport, database); err != nil {
+		return err
+	}
+	if reachability != "" {
+		if _, err = fmt.Fprintf(output, "database reachability: %s\n", reachability); err != nil {
+			return err
+		}
+	}
+	for _, found := range diagnostics {
+		if _, err = fmt.Fprintf(output, "%s: %s %s\n", found.Severity, found.Summary, found.Remediation); err != nil {
+			return err
+		}
+	}
+	return doctorExit(diagnostics)
+}
+
+// doctorExit is errDoctorUnhealthy (exit status 1) when any finding is an error.
+func doctorExit(diagnostics []doctorDiagnostic) error {
+	for _, found := range diagnostics {
+		if found.Severity == "error" {
+			return errDoctorUnhealthy
+		}
+	}
+	return nil
 }
 
 func writeDoctorFailure(output io.Writer, diagnostic doctorDiagnostic) error {
@@ -334,7 +372,9 @@ commands:
                       --locale en (default), es or pt-BR;
                       --api-auth also mounts the JSON sign-in APIs (implies --auth);
                       --js keeps the front end in plain JavaScript (default: TypeScript);
-                      --api generates a JSON-only application (no views)
+                      --api generates a JSON-only application (no views);
+                      --skip-docker omits the Dockerfile, compose files and
+                      observability stack; --skip-ci omits .github/
   dev [NAME] [--no-reload] [--poll-interval D]
                       run the application; rebuild, restart gracefully and
                       reload the browser when files change
@@ -399,7 +439,8 @@ commands:
                       encrypted per-environment credentials (config/credentials)
   i18n check [--json] list translations missing per locale in config/locales
                       and keys no template or Go code references
-  doctor [--json]     validate the FORGE_* configuration
+  doctor [--json]     validate the FORGE_* configuration and check that the
+                      database server answers (a TCP connection, no login)
   inspect --json      inspect app structure without executing it
   routes [NAME]       list the registered routes, as a table
   openapi [--output FILE | --check FILE]

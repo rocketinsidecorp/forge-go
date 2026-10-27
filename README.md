@@ -184,6 +184,15 @@ forge new saas --tenants -d mysql   # organizations on MySQL: isolation by manda
 forge new shop -d mariadb --auth    # any -d works with --auth
 ```
 
+Like Rails' `--skip-docker`, and with the same names as Forge-Rust, the
+container and CI files are optional:
+
+```sh
+forge new shop --skip-docker           # no Dockerfile, .dockerignore, compose.yaml, compose.observability.yaml, docker/ or observability/ (and no image job in CI)
+forge new shop --skip-ci               # no .github/ (no CI, release workflow or Dependabot)
+forge new shop -d postgresql --skip-docker --skip-ci   # neither; start the PostgreSQL server yourself
+```
+
 `--tenants` implies `--auth` and selects PostgreSQL unless `-d` is given.
 An application grows later without edits: `forge generate authentication`
 adds sign-in to one created without `--auth`, and `forge generate tenancy`
@@ -547,8 +556,10 @@ In production set `FORGE_MAIL_URL=smtps://user:password@smtp.example.com:465`
 `FORGE_AUTH_PASSWORD_RESET_URL=https://app.example.com/passwords/edit`; see
 [docs/MAIL.md](docs/MAIL.md).
 
-Sign out with a `DELETE /session` form: include
-`{{template "sessions/_sign_out" .}}` in a page. `forge setup` refuses once an
+Sign out with a `DELETE /session` form: the layout `forge new --auth` generates
+shows it (the `sessions/_sign_out` partial) to signed-in users, with
+`{{if signedIn}}...{{end}}`; in an application that added sign-in with
+`forge generate authentication`, add that line to your layout. `forge setup` refuses once an
 organization exists. The same commands exist in the application binary, for
 containers and production (the password is never an argument; `--org SLUG`
 only with organizations):
@@ -755,7 +766,11 @@ detected by its checksum and refused, never overwritten; to replace a guard
 (`protect`, `protectCookie`, `protectPlatformWrite`, `public`), declare a
 function of that name in another file of `app/bootstrap`. Applications
 generated before the seam (no `generatedRoutes` call in `bootstrap.go`) still
-get the wiring printed to paste. The mailer and job generators print theirs. Fields are
+get the wiring printed to paste, and so do those created before `forge new` passed
+the job registry to the seam (for `generate job --queue`). The mailer and job
+generators wire themselves into the seam too: `generate mailer` writes the mail
+sender and the previews, `generate job --queue` the handler's registration on
+the queue registry, and `destroy` takes them out again. Fields are
 `name:type` with `type` one of `string`, `text`, `int`, `bool`, `time`, `uuid`
 (a trailing `?` makes one optional; quote it in shells that expand `?`). The
 full reference is [docs/GENERATORS.md](docs/GENERATORS.md).
@@ -792,7 +807,7 @@ forge routes
 # Mailer: typed methods, text and HTML templates, browser previews, tests
 forge generate mailer user welcome:name,url password_reset:name,reset_url
 FORGE_MAIL_URL=file:tmp/mails FORGE_MAIL_FROM='App <app@example.com>' FORGE_MAIL_PREVIEW=true forge dev
-#   http://localhost:8080/_mail/user/   (after pasting the printed wiring)
+#   http://localhost:8080/_mail/user/   (the generator already wired the previews)
 
 # Job: a typed handler for the persistent queue with its enqueue function and tests
 forge generate job send_welcome user_id:uuid --queue
@@ -810,8 +825,9 @@ unchanged: a file you edited is listed, nothing is removed, and `--force`
 overrides. The same goes for files a bigger generation still needs: a model
 inside a resource or scaffold, a view a controller renders. Migrations are kept unless `--migrations` (run `forge rollback`
 first if they ran), shared files such as the views base are never removed, and
-the routes are taken out of `app/bootstrap/routes_gen.go` (in an application
-without it, the wiring to take out of `bootstrap.go` is printed).
+the routes, mailers and job registrations are taken out of
+`app/bootstrap/routes_gen.go` (in an application without it, the wiring to take
+out of `bootstrap.go` is printed).
 
 `forge new myapp` generates:
 
@@ -828,6 +844,7 @@ myapp/
   app/views/                   # layout, flash partial (and, with PostgreSQL, sessions/ and passwords/)
   db/db.go                     # embeds db/migrations into the binary
   db/seeds.go                  # db.Seed: idempotent seed data for `seed`
+  db/migration_sets_gen.go     # the migration sets migrate applies, the job queue's among them (generator-owned)
   db/migrations/.keep
   .env.development             # committed development settings; no secrets
   Dockerfile                   # multi-stage, distroless, nonroot
@@ -840,6 +857,11 @@ myapp/
   .github/workflows/ci.yml     # gofmt, vet, test -race (with a database service), govulncheck, docker build
   .github/dependabot.yml       # weekly Go module, Actions, Docker and Compose updates
 ```
+
+`--skip-docker` leaves out `Dockerfile`, `.dockerignore`, `compose.yaml`,
+`compose.observability.yaml`, `docker/` and `observability/` (and CI's image
+job, Dependabot's Docker updates and the release workflow); `--skip-ci` leaves
+out `.github/`.
 
 With `--database none`, `db/`, the database wiring, and the Compose and CI
 database services are omitted. With SQLite, the image creates
@@ -1050,7 +1072,7 @@ response against the document. Details, type mapping and tags:
 
 | Command | Description |
 | ------- | ----------- |
-| `forge new NAME [--database DB] [--auth] [--tenants] [--locale LOCALE] [--js] [--api-auth \| --api] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps \| --skip-lockfile] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. `--skip-lockfile` is Forge-Rust's name for `--skip-deps` |
+| `forge new NAME [--database DB] [--auth] [--tenants] [--locale LOCALE] [--js] [--api-auth \| --api] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps \| --skip-lockfile] [--skip-database] [--skip-docker] [--skip-ci]` | Create an application. Refuses to write into a non-empty directory. `--skip-lockfile` is Forge-Rust's name for `--skip-deps` |
 | `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
 | `forge check` | Type-check the application: compile its TypeScript, then `go build ./...`, `go vet ./...` and, when `tsc` is on PATH, `tsc --noEmit` (without `tsc` one note says how to install it; Forge-Rust: `cargo check --all-targets`) |
@@ -1079,7 +1101,7 @@ response against the document. Details, type mapping and tags:
 | `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...`, `forge app shell [--image IMAGE]` | Run a command or a shell next to the deployed application |
 | `forge credentials init \| edit \| show \| rotate-key [--environment E]` | Encrypted credentials: create a key and skeleton, edit in `$EDITOR` (plaintext shredded on every exit path), show redacted (`--reveal` on a terminal only), rotate the key. See [docs/CREDENTIALS.md](docs/CREDENTIALS.md) |
 | `forge i18n check [--json]` | Read-only: list the translations each locale in `config/locales` lacks (keys of the other locales and literal keys used by `t` and `i18n.T`), missing CLDR plural forms and unused keys; exit 1 when anything is missing. See [Translations](#translations-i18n) |
-| `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
+| `forge doctor [--json]` | Load and validate configuration and check that the database server answers (a TCP connection within 3 seconds, no login; SQLite: the file); exits 1 when anything is wrong. JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes [NAME]` | Table of every route registered while the application composes (HTML and JSON, including the `/v1/<plural>` routes of generated resources) with its resource action and the source line that registered it, plus Forge's built-in routes. Builds `cmd/NAME` and runs its `routes` command without serving HTTP: `Configure` sees `app.Serving()` false, so a generated application opens its PostgreSQL or MySQL pool lazily (`postgres.Lazy`, `mysql.Lazy`) and starts no scheduler or worker, and the command works with the database stopped and records no job tick; `NAME` picks `cmd/NAME` when there are several binaries. When the application cannot be built or configured it says why on stderr and lists what a scan of the source finds (literal paths only). Try `forge routes \| grep /v1` |
 | `forge openapi [--output FILE \| --check FILE]` | Build the application and run its `openapi` command with the development environment: print or write the OpenAPI 3.1 document of the described routes, list undescribed ones on stderr; `--check` exits 1 when FILE is out of date. See [OpenAPI](#openapi) |
@@ -1268,7 +1290,13 @@ the context, bind `org_id` in every statement and, on PostgreSQL, run behind
 forced row-level security; MySQL, MariaDB and SQLite rely on the statement
 predicates alone. Updates and deletes need the version the client read (`409`
 when stale), lists are newest-first keyset pages, and `PATCH` changes only the
-fields it names (`null` clears an optional one).
+fields it names (`null` clears an optional one). `PUT /v1/NAME/{id}` is the
+same handler under Rails' other name for update, and the OpenAPI document
+describes both (`updateNAME` and `replaceNAME`):
+
+```sh
+curl -s -X PUT -H 'Content-Type: application/json' -d '{"version":1,"price":5900}' http://localhost:8080/v1/products/ID   # as PATCH (add the CSRF header with sign-in)
+```
 
 The generator refuses to overwrite any file (running it again with the same
 arguments is a no-op) and never edits `app/bootstrap/bootstrap.go`: it mounts
@@ -1560,6 +1588,15 @@ number, never its content.
 `.env.development` is committed and must not contain real secrets; put
 personal overrides in `.env.local`, which is git-ignored.
 
+`forge doctor` validates that configuration and checks that the database
+server answers: a TCP connection to its host within 3 seconds, never a login
+(SQLite: whether the file exists). It exits 1 when anything is wrong:
+
+```bash
+forge doctor          # configuration: ok ... database reachability: the server accepts connections
+forge doctor --json   # {"ok":true,...}; database.unreachable when the server does not answer
+```
+
 ### Application binary commands
 
 Binaries built with `forge.Main` accept:
@@ -1592,7 +1629,7 @@ FORGE_DATABASE_URL=postgres://app:app@127.0.0.1:1/down forge routes   # still li
 | `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database); `rollback` reverts application migrations only |
 | `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |
 | `setup [--org SLUG] --email EMAIL [--org-name NAME] [--password-stdin]` | Added by `auth<adapter>.SetupCommand(auth<adapter>.SetupOrganizations(Organizations))` in `app/bootstrap/app_gen.go` (applications with `--auth`): the first organization and owner, once |
-| `jobs status`, `jobs dead [-queue Q] [-kind K] [-limit N]`, `jobs show ID`, `jobs retry ID`, `jobs discard ID`, `jobs prune [-older D]` | Added by `queuepostgres.Commands()` (`queuemysql`, `queuesqlite` for the other databases) once the persistent job queue is wired ([JOBS](docs/JOBS.md)): inspect and repair the queue; payloads are never printed |
+| `jobs status`, `jobs dead [-queue Q] [-kind K] [-limit N]`, `jobs show ID`, `jobs retry ID`, `jobs discard ID`, `jobs prune [-older D]` | Added by `queuepostgres.Commands()` (`queuemysql`, `queuesqlite` for the other databases) (`forge new` wires them in every application with a database; [JOBS](docs/JOBS.md)): inspect and repair the queue; payloads are never printed |
 
 The `jobs` commands ship inside the production image, so operators need no
 extra tooling:
@@ -1617,6 +1654,17 @@ as the fallback) instead of after up to 10 seconds of idle backoff:
 store, err := queuepostgres.NewStore(database, queuepostgres.WithNotify())
 worker, err := queue.NewWorker(store, registry, queue.WorkerOptions{BatchSize: 10})
 dispatcher, err := outboxpostgres.NewDispatcher(database.Pool(), handler, outboxpostgres.DispatcherOptions{Workers: 2, BatchSize: 50})
+```
+
+`FORGE_JOBS_NOTIFY=true|false` switches the wake-up per deployment, with
+Forge-Rust's meaning: unset keeps the code's choice, `false` turns it off even
+where the code passes `WithNotify()` (`cfg.Jobs.Notifies(codeChoice)` decides; the
+`QueueConfigure` that `forge new` generates asks it with `false`, so PostgreSQL
+applications wake only when it is true):
+
+```sh
+FORGE_JOBS_NOTIFY=true forge dev          # enqueues announce; workers LISTEN
+FORGE_JOBS_NOTIFY=false ./bin/shop serve  # off, whatever the code chose
 ```
 
 ```sh

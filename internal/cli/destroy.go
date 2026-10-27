@@ -79,6 +79,18 @@ type destroyPlan struct {
 	ownedElsewhere string
 }
 
+// takeFromSeam records the seam planned without the generator's block. The
+// wiring to remove by hand stays in the plan unless the seam really held the
+// block (verb "unwire"): an application generated before the seam, or before
+// this generator wrote to it, has the wiring pasted in bootstrap.go, and
+// destroy must still say what to take out there.
+func (p *destroyPlan) takeFromSeam(wiring seamWiring) {
+	p.routes, p.routesVerb = wiring.content, wiring.verb
+	if wiring.verb == "unwire" {
+		p.unwire = ""
+	}
+}
+
 func planDestroy(generator string, args []string, root string, env []string, now time.Time) (destroyPlan, error) {
 	switch generator {
 	case "model":
@@ -142,7 +154,7 @@ func planDestroy(generator string, args []string, root string, env []string, now
 			if err != nil {
 				return destroyPlan{}, err
 			}
-			plan.routes, plan.routesVerb, plan.unwire = wiring.content, wiring.verb, ""
+			plan.takeFromSeam(wiring)
 		}
 		return plan, nil
 	case "controller":
@@ -161,7 +173,7 @@ func planDestroy(generator string, args []string, root string, env []string, now
 			if err != nil {
 				return destroyPlan{}, err
 			}
-			plan.routes, plan.routesVerb, plan.unwire = wiring.content, wiring.verb, ""
+			plan.takeFromSeam(wiring)
 		}
 		return plan, nil
 	case "mailer":
@@ -174,9 +186,17 @@ func planDestroy(generator string, args []string, root string, env []string, now
 		if err != nil {
 			return destroyPlan{}, err
 		}
-		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the mailer wiring:\n" + buildMailerWiring(request, mailerModule(root)).Usage}, nil
+		plan := destroyPlan{files: files, dryRun: request.DryRun, unwire: "the mailer wiring:\n" + buildMailerWiring(request, mailerModule(root)).Usage}
+		wiring, wired, err := planMailerSeam(root, request, env, true)
+		if err != nil {
+			return destroyPlan{}, err
+		}
+		if wired {
+			plan.takeFromSeam(wiring)
+		}
+		return plan, nil
 	case "job":
-		return planDestroyJob(args, root)
+		return planDestroyJob(args, root, env)
 	case "view":
 		return planDestroyView(args, root)
 	case "join":
@@ -233,7 +253,7 @@ func httpLayerOf(root, generator, name string) (string, error) {
 	return "", nil
 }
 
-func planDestroyJob(args []string, root string) (destroyPlan, error) {
+func planDestroyJob(args []string, root string, env []string) (destroyPlan, error) {
 	if slices.Contains(args, "--queue") {
 		request, err := parseQueueJobArgs(args)
 		if err != nil {
@@ -244,7 +264,15 @@ func planDestroyJob(args []string, root string) (destroyPlan, error) {
 		if err != nil {
 			return destroyPlan{}, err
 		}
-		return destroyPlan{files: files, dryRun: request.DryRun, unwire: fmt.Sprintf("the registration: jobs.Register%s(registry)", exportedName(request.Name))}, nil
+		plan := destroyPlan{files: files, dryRun: request.DryRun, unwire: fmt.Sprintf("the registration: jobs.Register%s(registry)", exportedName(request.Name))}
+		wiring, wired, err := planQueueJobSeam(root, request, env, true)
+		if err != nil {
+			return destroyPlan{}, err
+		}
+		if wired {
+			plan.takeFromSeam(wiring)
+		}
+		return plan, nil
 	}
 	flags, positional, err := splitFlags(args, generateUsage, "--dry-run")
 	if err != nil {
@@ -439,8 +467,8 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 		}
 	}
 	if plan.unwire == "" {
-		// The application has the routes seam: the generator's block is
-		// taken out of it (or was not there).
+		// The application has the routes seam and the generator's block was in
+		// it: it is taken out.
 		if unwire {
 			verb := "unwire"
 			if plan.dryRun {

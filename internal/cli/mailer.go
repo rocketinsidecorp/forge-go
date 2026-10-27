@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
 const mailerUsage = "usage: forge generate mailer NAME METHOD[:field,field...]... [--dry-run]"
@@ -123,7 +125,7 @@ func parseMailerMethod(declaration string) (mailerMethod, error) {
 // runGenerateMailer is `forge generate mailer`: a mailer type with one typed
 // method per email, text and HTML templates, previews and tests, built on the
 // framework's mail package.
-func runGenerateMailer(args []string, stdout io.Writer, root string) error {
+func runGenerateMailer(args []string, stdout io.Writer, root string, env []string) error {
 	request, err := parseMailerArgs(args)
 	if err != nil {
 		return err
@@ -132,12 +134,57 @@ func runGenerateMailer(args []string, stdout io.Writer, root string) error {
 	if err != nil {
 		return err
 	}
+	// The seam is planned first, so a refused seam writes nothing.
+	wiring, wired, err := planMailerSeam(root, request, env, false)
+	if err != nil {
+		return err
+	}
 	if !request.DryRun {
 		if err := applyGeneratedFiles(root, directoriesOf(files), files); err != nil {
 			return err
 		}
+		if wired && wiring.verb == "wire" {
+			if err := writeRoutes(root, wiring.content); err != nil {
+				return err
+			}
+		}
 	}
-	return reportFiles(stdout, request.DryRun, files, mailerWiring(request, mailerModule(root)))
+	if !wired {
+		return reportFiles(stdout, request.DryRun, files, mailerWiring(request, mailerModule(root)))
+	}
+	return reportFiles(stdout, request.DryRun, files, reportSeam(wiring, request.DryRun, "forge test"))
+}
+
+// planMailerSeam plans the routes seam with the mailer's sender and previews
+// added (or, for `forge destroy`, removed). wired is false in an application
+// whose bootstrap.go does not call the seam (one created before it existed):
+// the generator then prints the wiring.
+func planMailerSeam(root string, request mailerRequest, env []string, remove bool) (wiring seamWiring, wired bool, err error) {
+	projectRoot, module, err := openApplication(root)
+	if err != nil {
+		return seamWiring{}, false, err
+	}
+	defer func() { _ = projectRoot.Close() }()
+	adapter, err := databaseAdapter(root, env)
+	if err != nil {
+		return seamWiring{}, false, errors.New("environment files could not be loaded: check .env.development and .env.local syntax")
+	}
+	identity := hasIdentityMigrations(projectRoot, adapter) && !apiOnlyApplication(projectRoot)
+	seam := openRoutesSeam(projectRoot, module, adapter, identity)
+	if !seam.wired {
+		return seamWiring{}, false, nil
+	}
+	parts := buildMailerWiring(request, module)
+	content, verb, err := planRoutes(projectRoot, seam, routesChange{
+		entry:  scaffold.RouteBlock{Kind: "mailer", Name: request.Name, Body: parts.Usage},
+		shared: sharedFromParts(parts),
+		remove: remove,
+	})
+	notes := []string{
+		fmt.Sprintf("The mailer's previews are mounted. Build the mailer where you send these emails: mailers.New%sMailer(sender, from), with mail.FromConfig(app.Config()) and mail.DefaultFrom(app.Config()); its methods are %s.", exportedName(request.Name), mailerMethodList(request)),
+		parts.Notes[1],
+	}
+	return seamWiring{content: content, verb: verb, notes: notes}, true, err
 }
 
 // mailerModule reads the module path for the wiring, or "" when unreadable

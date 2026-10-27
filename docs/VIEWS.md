@@ -103,6 +103,7 @@ safely. The generated `views.go` embeds templates one directory deep
 | `{{domID "post" .ID}}` | `post_0190...`, or `new_post` for a zero UUID |
 | `{{dict "Form" .Form "Action" "/posts"}}` | a map, for partials |
 | `{{if can "posts:write"}}...{{end}}` | whether the signed-in principal holds the permission, to show only the forms and frames the caller may use; display only (routes still authorize), true without a principal (no Forge identity) |
+| `{{if signedIn}}...{{end}}` | whether the request carries a signed-in principal (false without one, and without a request); the generated layout of an application with Forge identity uses it to show the sign-out button only to signed-in people |
 | `{{t "posts.index.title"}}` | the translation for the request's locale; `{{t "posts.count" "count" .Total}}` picks the plural form, `_html` keys are trusted markup with escaped arguments ([I18N.md](I18N.md)) |
 | `{{l .CreatedAt "short"}}` | a time in the locale's `time.formats.short` (`"date.formats.long"` names any key) |
 | `{{number .Total 2}}` | a number with the locale's separators; integers get no decimals unless a precision is given |
@@ -428,12 +429,17 @@ messages and render `sessions/*` and `passwords/*`; edit them like any
 other page. `authhttp.Browser` does the security work (CSRF verification, the
 session cookies, uniform failures, throttling with `429` and `Retry-After`,
 the second-factor challenge cookie) and `authhttp.ReturnPath` keeps `return_to`
-local. To show a sign-out button, include the partial on pages people see
-while signed in:
+local. The layout `forge new --auth` generates already shows the sign-out
+button, in a `<header class="session">`, to people who are signed in:
 
 ```gotemplate
-{{template "sessions/_sign_out" .}}
+{{if signedIn}}<header class="session">{{template "sessions/_sign_out" .}}</header>{{end}}
 ```
+
+An application that got its sign-in pages from `forge generate authentication`
+keeps its own layout: add that line to `app/views/layouts/application.gohtml`,
+or include the partial (`{{template "sessions/_sign_out" .}}`) on the pages
+people see while signed in.
 
 Protect your own pages with `middleware.AuthenticateBrowser(htmlauth.SignInPath, page)`
 so signed-out browsers land on the sign-in page. The flow, its security

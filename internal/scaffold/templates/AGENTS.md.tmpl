@@ -83,7 +83,8 @@ Generated tables are plain tables.
 
 ## Routes seam
 
-Generators mount their routes in `app/bootstrap/routes_gen.go`, in blocks that start with `// forge:`. Never edit
+Generators mount their routes, mailers (the sender and the previews) and queue job registrations in
+`app/bootstrap/routes_gen.go`, in blocks that start with `// forge:`. Never edit
 that file by hand: it carries a checksum, the generators refuse to touch it after a hand edit, and `forge destroy`
 removes their blocks. Change `app/bootstrap/bootstrap.go` for your own wiring. To replace a generated guard
 function, copy it out of `routes_gen.go` into another file of package `bootstrap`, change it there and run any
@@ -118,8 +119,9 @@ temporary overlay and leaves `dist` alone. `forge check` also runs `tsc --noEmit
   never read an organization id from the request body or a query string.
 {{- end}}
 {{- if eq .DB.Adapter "postgres"}}
-- The application serves as `app_runtime` and migrates as `app_migrator` (`.env.development` and compose set
-  both){{if and .DB.Identity .Tenants}}, so PostgreSQL row-level security backs the `org_id` predicates{{end}}; do not point it at a superuser.
+- The application serves as `app_runtime` and migrates as `app_migrator` ({{if .SkipDocker}}`.env.development` sets
+  both{{else}}`.env.development` and compose set
+  both{{end}}){{if and .DB.Identity .Tenants}}, so PostgreSQL row-level security backs the `org_id` predicates{{end}}; do not point it at a superuser.
 {{- end}}
 {{- if .DB.Identity}}
 - Sign-in, sign-out, two-factor and password-reset pages come with the application{{if not .Tenants}}; it has one
@@ -136,11 +138,11 @@ temporary overlay and leaves `dist` alone. `forge check` also runs `tsc --noEmit
 ```sh
 forge test                                # everything, including the architecture test
 forge test ./app/ -run TestArchitecture   # only the architecture test
-forge format --check && forge check && forge lint   # what CI also runs
+forge format --check && forge check && forge lint{{if not .SkipCI}}   # what CI also runs{{end}}
 ```
 {{- if and .DB .DB.Server}}
 
-Database tests need the server from `compose.yaml` (`docker compose up -d --wait {{.DB.Service}}`) and skip without
+Database tests need {{if .SkipDocker}}a {{.DB.Title}} server as `.env.development` describes (this application has no `compose.yaml`){{else}}the server from `compose.yaml` (`docker compose up -d --wait {{.DB.Service}}`){{end}} and skip without
 `FORGE_TEST_DATABASE_URL`, which `.env.development` sets; `FORGE_TEST_REQUIRE_DATABASE=true` turns the skip into a
 failure. A skipped database test is not a pass.
 {{- end}}

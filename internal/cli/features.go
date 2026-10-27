@@ -29,7 +29,7 @@ func applicationFeatures(projectRoot *os.Root) (features scaffold.AppFeatures, p
 		return scaffold.AppFeatures{}, false, err
 	}
 	// The migration sets (db/migration_sets_gen.go) say whether the job
-	// schedules are composed.
+	// schedules and the job queue are composed.
 	if err := rejectExistingSymlinkPaths(projectRoot, []string{scaffold.SetsFile}); err != nil {
 		return scaffold.AppFeatures{}, false, err
 	}
@@ -42,6 +42,7 @@ func applicationFeatures(projectRoot *os.Root) (features scaffold.AppFeatures, p
 		return scaffold.AppFeatures{}, false, err
 	}
 	features.Jobs = parsed.Jobs
+	features.Queue = parsed.Queue
 	return features, true, nil
 }
 

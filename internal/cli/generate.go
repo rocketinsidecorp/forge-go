@@ -87,10 +87,10 @@ func generateFiles(args []string, stdout io.Writer, root string, env []string, n
 		return runGenerateController(args[1:], stdout, root, env, now)
 	}
 	if len(args) > 0 && args[0] == "job" && slices.Contains(args[1:], "--queue") {
-		return runGenerateQueueJob(args[1:], stdout, root)
+		return runGenerateQueueJob(args[1:], stdout, root, env)
 	}
 	if len(args) > 0 && args[0] == "mailer" {
-		return runGenerateMailer(args[1:], stdout, root)
+		return runGenerateMailer(args[1:], stdout, root, env)
 	}
 	if len(args) > 0 && args[0] == "scaffold" {
 		return runGenerateScaffold(args[1:], stdout, root, env, now)

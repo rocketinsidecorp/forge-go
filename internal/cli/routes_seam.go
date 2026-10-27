@@ -44,9 +44,16 @@ func openRoutesSeam(projectRoot *os.Root, module, adapter string, identity bool)
 	}
 	source, err := projectRoot.ReadFile(filepath.Join("app", "bootstrap", "bootstrap.go"))
 	seam.wired = err == nil && strings.Contains(string(source), scaffold.RoutesFunction+"(")
+	// Applications generated since the queue was wired pass the job registry
+	// to the seam; older ones do not, and `generate job --queue` prints the
+	// registration for them.
+	seam.app.Queue = seam.wired && passesRegistry.Match(source)
 	seam.overridden = bootstrapDeclarations(projectRoot)
 	return seam
 }
+
+// passesRegistry matches the seam call that hands over the job registry.
+var passesRegistry = regexp.MustCompile(`\b` + scaffold.RoutesFunction + `\([^)]*\bregistry\b`)
 
 // bootstrapDeclarations are the package-level names the files of package
 // bootstrap other than the seam declare.
@@ -84,7 +91,7 @@ func bootstrapDeclarations(projectRoot *os.Root) map[string]bool {
 // them, so the generators refuse them.
 var seamReservedNames = []string{
 	"protect", "public", "protect_cookie", "protect_platform_write", "renderer", "signer", "stream_signer",
-	"streams", "generated_routes", "repository", "middleware",
+	"streams", "generated_routes", "repository", "middleware", "mail_sender", "mail_from", "registry",
 }
 
 // rejectSeamReservedName refuses a name the routes seam uses.
@@ -116,6 +123,7 @@ var sharedBlocks = []scaffold.RouteBlock{
 	{Kind: "guard", Name: "protectPlatformWrite"},
 	{Kind: "guard", Name: "protectCookie"},
 	{Kind: "streams", Name: "streams"},
+	{Kind: "mail", Name: "mailSender"},
 }
 
 const (
@@ -258,6 +266,10 @@ func renderRoutes(seam routesSeam, existing map[string]string, entries []scaffol
 			continue
 		case "guard":
 			if !needs(block.Name) || seam.overridden[block.Name] {
+				continue
+			}
+		case "mail":
+			if !needs(block.Name) {
 				continue
 			}
 		}

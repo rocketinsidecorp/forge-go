@@ -177,6 +177,7 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_STREAMS_PREVIOUS_KEYS`       | (empty)          | While `FORGE_STREAMS_KEY` is rotated: up to 3 older keys, comma-separated, in the same format. They only verify, so pages open during the rotation keep updating. Rotate in two redeploys, new key as a previous key first ([VIEWS.md](VIEWS.md#rotating-the-stream-signing-key)); unset them after the token lifetime (24 hours by default). Secret, never echoed (an error names the key's position only). Needs `FORGE_STREAMS_KEY`. |
 | `FORGE_I18N_DEFAULT_LOCALE`         | (empty)          | Default locale, canonically spelled (`en`, `pt-BR`); empty uses the application's `locales.DefaultLocale` (`forge new --locale`). It needs a `config/locales/LOCALE.json` ([I18N.md](I18N.md)) |
 | `FORGE_OPENAPI_ENABLED`             | (empty)          | `GET /openapi.json`: empty serves it in `development` and `test` only, `true` everywhere (it lists every documented route; a startup warning outside development and test), `false` never ([OPENAPI.md](OPENAPI.md)) |
+| `FORGE_JOBS_NOTIFY`                 | (empty)          | `true` makes the PostgreSQL job store announce due jobs (`NOTIFY forge_jobs`) and its workers `LISTEN`, so an idle worker claims a job at once instead of at its next poll; `false` turns it off even where the code passes `queuepostgres.WithNotify()`; empty keeps the code's choice (off by default). Needs a direct connection or session pooling, not PgBouncer transaction pooling ([JOBS.md](JOBS.md)). Same meaning as Forge-Rust's. |
 | `FORGE_LOG_FORMAT`                  | `auto`           | `pretty`, `text`, `json` or `auto` (`json` in `staging` and `production`; keep it there: log stores parse it). `NO_COLOR` turns colors off. |
 | `FORGE_LOG_LEVEL`                   | `info`           | `debug`, `info`, `warn` or `error`. The request, SQL and job lines are Debug outside `development`: `debug` turns them on (JSON, `duration` in nanoseconds). |
 | `FORGE_LOG_SLOW_QUERY`              | `100ms`          | A SQL line slower than this carries `slow=true` |
@@ -209,7 +210,11 @@ SQLite tests use temporary files and need none of these.
 
 Run `forge doctor` with the same environment to validate a configuration
 before deploying; it prints the database URL without the password and
-without query parameters other than `sslmode`. Note
+without query parameters other than `sslmode`, and it checks that the database
+server answers: a TCP connection to its host and port within 3 seconds (never
+a login; SQLite reports whether the file exists, a PostgreSQL socket is not
+checked). It exits 1 when the configuration is invalid or the server does not
+answer, so run it where the database is reachable. Note
 that `forge doctor` also reads `.env.development` and `.env.local` from the
 current directory.
 
@@ -713,7 +718,10 @@ Decoding is strict: unknown or duplicate keys, a second YAML document,
 durations that are not strings (`30s`), a tag in `image`, a password in
 `registry.password`, host names starting with `-` (also `ssh.proxy_jump` and
 `registry.server`, which `ssh -J` and `docker login` would read as options),
-`retain` below 2, and more than one proxied role are errors. `retain` counts
+`retain` below 2, more than one proxied role, a file over 1 MiB
+(`read deploy config: PATH is larger than 1048576 bytes`) and nesting deeper
+than 100 levels (`deploy config: yaml: line N: exceeded max depth of 100`, the
+same limits and wording as Forge-Rust) are errors. `retain` counts
 the running version, so `retain: 1` would prune the previous version after
 every deploy and leave nothing to roll back to; it is refused (the default
 is 5). `migrate.env` is validated like the role `env` blocks and must not be
@@ -765,7 +773,7 @@ exact containers that would be stopped or pruned.
 | `forge deploy details [--json]` | Containers and versions per host and role, proxy routing and maintenance, lock holder, last deploys. |
 | `forge deploy lock status\|acquire\|release [--message M] [--force]` | Inspect or hold the lock (for maintenance windows). `release` removes only a lock this performer holds, and only while its record is unchanged; it refuses one held by someone else (or without a record) unless `--force`. |
 | `forge deploy maintenance on\|off` | Serve forge-proxy's static 503 page (with `Retry-After`) instead of the application. |
-| `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream `docker logs` of the current role container from every matching host, each line prefixed `host\|`. `--grep` filters locally. Ctrl-C stops the remote `docker logs` processes too. |
+| `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream `docker logs` of the current role container from every matching host, each line prefixed `host\|`. Without `-f` at most `parallelism` hosts are read at once; with `-f` every matching host streams at once (narrow with `--role` and `--host`). `--grep` filters locally. Ctrl-C stops the remote `docker logs` processes too. |
 | `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...` | Run CMD on one host (the first of the role unless `--host`): by default in a one-off container of the image the role currently runs, with its env file, where CMD goes to the image entrypoint (`forge app exec migrate status`); `--reuse` runs inside the running container (`forge app exec --reuse /app/server healthcheck`). |
 | `forge app shell [--image IMAGE]` | Interactive shell over `ssh -t`. Distroless images have no shell: `--image busybox:1.37` starts a sidecar sharing the container's network and process namespaces, without the application's environment. |
 
@@ -805,8 +813,9 @@ printed on stdout also on failure, with `ok`, `error` and `exit_code`.
    The lock needs `~/.forge` on every host to be on a file system that
    supports hard links (any local Linux file system does). Without them
    `ln` fails and every acquire reports the lock as held, which fails
-   closed: nothing deploys. The acquire prints `ln`'s own error on stderr
-   in that case, and an empty lock directory may be left behind (clear it
+   closed: nothing deploys. The held message then ends with `the remote
+   said:` and `ln`'s own redacted error (instead of the interrupted-acquire
+   hint, which would be false there), and an empty lock directory may be left behind (clear it
    with `lock release --force`). On NFS, `link(2)` is atomic on a correctly
    configured server, but client caching can delay what other hosts see;
    keep `~/.forge` on local disk.

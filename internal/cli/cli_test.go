@@ -231,12 +231,13 @@ func TestRunDoctorJSONReportsHealthyConfigurationWithoutDatabaseSecrets(t *testi
 
 	root := t.TempDir()
 	var stdout bytes.Buffer
+	server := listenForDoctor(t)
 	if err := runDoctorAt([]string{"--json"}, &stdout, root, []string{
-		"FORGE_DATABASE_URL=postgres://alice:super-secret@db.example/app?sslmode=verify-full",
+		"FORGE_DATABASE_URL=postgres://alice:super-secret@" + server + "/app?sslmode=verify-full",
 	}); err != nil {
 		t.Fatalf("run doctor: %v", err)
 	}
-	if strings.Contains(stdout.String(), "super-secret") || strings.Contains(stdout.String(), "db.example") {
+	if strings.Contains(stdout.String(), "super-secret") || strings.Contains(stdout.String(), server) {
 		t.Fatalf("JSON doctor leaked database URL details: %s", stdout.String())
 	}
 	var report doctorReport
@@ -402,6 +403,116 @@ func TestGeneratedApplication(t *testing.T) {
 		t.Parallel()
 		testWelcomeQuickstart(t, frameworkPath)
 	})
+
+	// forge new --skip-docker and --skip-ci (forge-go#87): the application is
+	// generated without the container assets, without .github/, or without
+	// both, and must still compile, vet and pass its own tests (nothing in the
+	// generated code or tests may need the omitted files).
+	for _, skip := range []struct {
+		name  string
+		flags []string
+		extra []string
+	}{
+		{"skip docker", []string{"--skip-docker"}, nil},
+		{"skip ci", []string{"--skip-ci"}, nil},
+		{"skip docker and ci", []string{"--skip-docker", "--skip-ci"}, nil},
+		{"skip docker and ci postgresql", []string{"--skip-docker", "--skip-ci", "--auth", "-d", "postgresql"}, []string{"postgres"}},
+	} {
+		t.Run(skip.name, func(t *testing.T) {
+			t.Parallel()
+			if len(skip.extra) > 0 {
+				// Skips (or fails under FORGE_TEST_REQUIRE_DATABASE) before
+				// any work when the database server is missing.
+				postgrestest.Config(t)
+			}
+			dir := generate(t, "edge", skip.flags...)
+			tree := fileTree(t, dir)
+			skipDocker, skipCI := containsFlag(skip.flags, "--skip-docker"), containsFlag(skip.flags, "--skip-ci")
+			for _, path := range dockerFiles {
+				if _, has := tree[path]; has == skipDocker {
+					t.Errorf("%s present = %v with --skip-docker = %v", path, has, skipDocker)
+				}
+			}
+			if hasPrefixIn(tree, "observability/") == skipDocker || hasPrefixIn(tree, "docker/") && skipDocker {
+				t.Errorf("observability/ or docker/ do not follow --skip-docker = %v", skipDocker)
+			}
+			if hasPrefixIn(tree, ".github/") == skipCI {
+				t.Errorf(".github/ does not follow --skip-ci = %v", skipCI)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "cmd", "edge", "main.go")); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	// forge new wires the persistent job queue (forge-go#88): its tables are
+	// part of `migrate`, the binary has the jobs command, and the README's
+	// `jobs status` works on a fresh application, on every database.
+	for _, database := range []struct {
+		name   string
+		config func(testing.TB) config.Database
+	}{
+		{"sqlite", sqlitetest.Config},
+		{"postgresql", postgrestest.Config},
+		{"mysql", mysqltest.Config},
+		{"mariadb", mysqltest.Config},
+	} {
+		t.Run("queue wired "+database.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := database.config(t)
+			dir := generate(t, "ledger", "--database", database.name)
+			adapter := map[string]string{"sqlite": "sqlite", "postgresql": "postgres", "mysql": "mysql", "mariadb": "mysql"}[database.name]
+			if !strings.Contains(readFile(t, filepath.Join(dir, "db", "migration_sets_gen.go")), "queue"+adapter+".Migrations()") ||
+				!strings.Contains(readFile(t, filepath.Join(dir, "app", "bootstrap", "app_gen.go")), "queue"+adapter+".Commands()") ||
+				!strings.Contains(readFile(t, filepath.Join(dir, "app", "bootstrap", "bootstrap.go")), "QueueConfigure(ctx, app, database,") {
+				t.Fatal("forge new did not wire the job queue's migrations, commands and worker")
+			}
+			readme := readFile(t, filepath.Join(dir, "README.md"))
+			if !strings.Contains(readme, "docker compose run --rm app jobs status") || strings.Contains(readme, "Follow the printed wiring") {
+				t.Fatalf("the README does not say how to inspect the queue of a wired application:\n%s", readme)
+			}
+			writeFile(t, filepath.Join(dir, ".env.local"), "FORGE_DATABASE_URL="+cfg.URL.Reveal()+"\nFORGE_MIGRATION_DATABASE_URL="+cfg.URL.Reveal()+"\n")
+			env, err := environment(dir, os.Environ())
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := func(args ...string) string {
+				t.Helper()
+				var output bytes.Buffer
+				if err := runApp(context.Background(), dir, "ledger", args, env, &output, &output); err != nil {
+					t.Fatalf("ledger %v: %v\n%s", args, err, output.String())
+				}
+				return output.String()
+			}
+			if output := run("migrate"); !strings.Contains(output, "_jobs") {
+				t.Fatalf("migrate did not apply the job queue's tables:\n%s", output)
+			}
+			if output := run("jobs", "status"); !strings.Contains(output, "no jobs") {
+				t.Fatalf("jobs status on a fresh application:\n%s", output)
+			}
+			// Describing the application starts no worker and needs no handler.
+			var spec, notes bytes.Buffer
+			if err := runApp(context.Background(), dir, "ledger", []string{"openapi"}, env, &spec, &notes); err != nil {
+				t.Fatalf("ledger openapi: %v\n%s", err, notes.String())
+			}
+			// A generated job registers itself on the queue's registry (the
+			// routes seam), so QueueConfigure starts a worker for it when the
+			// application is composed to serve: the generated Configure test
+			// builds such an application and shuts the worker down again.
+			var generated bytes.Buffer
+			if err := runGenerateEnv([]string{"job", "ping", "--queue"}, &generated, dir, withoutDatabaseEnv(), time.Now()); err != nil {
+				t.Fatalf("generate job: %v\n%s", err, generated.String())
+			}
+			if seam := readFile(t, filepath.Join(dir, "app", "bootstrap", "routes_gen.go")); !strings.Contains(seam, "jobs.RegisterPing(registry)") {
+				t.Fatalf("generate job --queue did not register the handler:\n%s", seam)
+			}
+			command := exec.Command("go", "test", "-count=1", "-v", "./app/bootstrap", "./app/jobs")
+			command.Dir = dir
+			if output, err := command.CombinedOutput(); err != nil || !strings.Contains(string(output), "--- PASS: TestConfigureConnectsToDatabase") || !strings.Contains(string(output), "--- PASS: TestRegisterPingAddsTheKind") {
+				t.Fatalf("go test with a registered job: %v\n%s", err, output)
+			}
+		})
+	}
 
 	t.Run("without database", func(t *testing.T) {
 		t.Parallel()
@@ -576,7 +687,7 @@ func TestGeneratedApplication(t *testing.T) {
 			var rest bytes.Buffer
 			err = runApp(context.Background(), dir, "ledger", []string{"rollback"}, env, &rest, &rest)
 			if database.adapter == "sqlite" {
-				if err == nil || !strings.Contains(rest.String(), "20260927090000_identity, from the auth package") {
+				if err == nil || !strings.Contains(rest.String(), "20261014000000_jobs, from the queue package") {
 					t.Fatalf("rollback with only Forge's migrations left: %v\n%s", err, rest.String())
 				}
 			} else if err == nil || !strings.Contains(rest.String(), "20261026120000_job_schedules, from the jobs package") {

@@ -77,3 +77,58 @@ func TestCanFollowsThePrincipalsPermissions(t *testing.T) {
 		t.Errorf("an invalid permission: %v", err)
 	}
 }
+
+// signedIn is true only for a request that carries a signed-in principal, and
+// false without one or without a request, so a layout can show a sign-out
+// button to signed-in people alone.
+func TestSignedInFollowsThePrincipal(t *testing.T) {
+	t.Parallel()
+	renderer := load(t, fstest.MapFS{
+		"page.gohtml":  {Data: []byte(`{{if signedIn}}[signed in]{{else}}[signed out]{{end}}`)},
+		"_frag.gohtml": {Data: []byte(`{{if signedIn}}[signed in]{{else}}[signed out]{{end}}`)},
+	}, views.Options{})
+	tenant, err := tenancy.New(uuid.MustNew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := auth.NewPrincipal(uuid.MustNew(), tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := authhttp.NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+		return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := renderer.RenderRequest(w, r, "page", http.StatusOK, nil); err != nil {
+			t.Error(err)
+		}
+	})
+	for name, test := range map[string]struct {
+		handler http.Handler
+		header  string
+		want    string
+	}{
+		"a signed-in principal": {middleware.Authenticate(page), "Bearer " + token.Reveal(), "[signed in]"},
+		"no principal":          {page, "", "[signed out]"},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		if test.header != "" {
+			request.Header.Set("Authorization", test.header)
+		}
+		recorder := httptest.NewRecorder()
+		test.handler.ServeHTTP(recorder, request)
+		if body := strings.TrimSpace(recorder.Body.String()); body != test.want {
+			t.Errorf("%s: %q, want %q", name, body, test.want)
+		}
+	}
+	if fragment, err := renderer.Fragment(nil, "_frag", nil); err != nil || string(fragment) != "[signed out]" {
+		t.Errorf("a fragment without a request: %q, %v", fragment, err)
+	}
+}
