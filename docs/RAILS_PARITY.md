@@ -74,8 +74,8 @@ the work is finished and waiting for its review; **Planned** means not started.
   draft release with the SBOMs, a `forge-proxy version` command, the Go
   toolchain in `forge version` (Rust: the `rustc` version), the README
   Install section and a `RELEASING.md`. Per decision D37 it follows after
-  Forge-Go reaches 100%; the tracking issue in forge-rust is still to be
-  filed.
+  Forge-Go reaches 100%; tracked in
+  [rocketinsidecorp/forge-rust#100](https://github.com/rocketinsidecorp/forge-rust/issues/100).
 
 - Opt-in authentication and organizations, SQLite by default (owner
   decisions D30, D31, D33-D36 of 2026-10-26, [ADR
