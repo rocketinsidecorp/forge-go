@@ -99,8 +99,9 @@ needed. It was replaced before release by recorded ticks, below.
   replica until they compose `jobs<adapter>.Migrations()` and pass
   `jobs<adapter>.NewTickClaimer(database)` to the scheduler.
 - Forge-Rust differs: it enqueues a scheduled tick as a queue job (recorded in
-  the same transaction) and skips ticks later than `max_lateness`; it has no
-  `LISTEN/NOTIFY` wake-up and no batch size knob for jobs, and its outbox
-  default batch is 50 with a lease covering the batch.
+  the same transaction) and skips ticks later than `max_lateness`; since
   [forge-rust#80](https://github.com/rocketinsidecorp/forge-rust/issues/80)
-  tracks the alignment.
+  it has the same `LISTEN/NOTIFY` wake-up (`PgJobStore::notify(true)`,
+  `FORGE_JOBS_NOTIFY`), a job batch bound of 10 and an outbox batch of 10
+  with a lease covering the batch. Go lacks the `FORGE_JOBS_NOTIFY` variable
+  ([forge-go#72](https://github.com/rocketinsidecorp/forge-go/issues/72)).

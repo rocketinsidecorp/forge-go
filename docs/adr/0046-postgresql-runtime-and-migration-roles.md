@@ -116,9 +116,10 @@ roles.
   host and removed when the step ends
   ([forge-go#57](https://github.com/rocketinsidecorp/forge-go/issues/57)).
   Without it the container gets the serving role's env file and migrating
-  fails closed on a runtime role that cannot run DDL. Forge-Rust has no
-  `migrate.env` yet
-  ([forge-rust#73](https://github.com/rocketinsidecorp/forge-rust/issues/73)).
+  fails closed on a runtime role that cannot run DDL. Forge-Rust has the
+  same `migrate.env`
+  ([forge-rust#73](https://github.com/rocketinsidecorp/forge-rust/issues/73),
+  merged).
 - Differences from Forge-Rust, kept deliberately: Forge-Rust requires
   `FORGE_MIGRATION_DATABASE_URL` for migrations and restores `init.sql`'s
   grants after `forge db reset`, where Forge-Go falls back to

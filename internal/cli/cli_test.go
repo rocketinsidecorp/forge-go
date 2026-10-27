@@ -140,7 +140,7 @@ func TestRunHelpJSONProvidesCompleteCommandCatalog(t *testing.T) {
 		}
 		commandsSeen[command.Name] = true
 		if command.Name == "generate" {
-			generateDeclaresJob = strings.Contains(command.Usage, "|job|model|controller|mailer|resource|scaffold|authentication|tenancy>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
+			generateDeclaresJob = strings.Contains(command.Usage, "|job|model|controller|mailer|resource|scaffold|join|authentication|tenancy>") && containsString(command.Examples, "forge generate job cleanup --dry-run") &&
 				containsString(command.Examples, "forge generate resource category name:string --global --plural categories") &&
 				containsString(command.Examples, "forge generate scaffold post title:string body:text published:bool --global --dry-run")
 		}
