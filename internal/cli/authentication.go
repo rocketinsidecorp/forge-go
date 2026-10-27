@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
@@ -227,7 +228,7 @@ func planAuthentication(root string, env []string, apiAuth bool) (authentication
 	for _, file := range plan.files {
 		paths = append(paths, file.path)
 	}
-	checked := append(paths, ".env.local")
+	checked := append(slices.Clone(paths), ".env.local")
 	if plan.agents.content != nil {
 		checked = append(checked, scaffold.AgentsFile)
 	}
