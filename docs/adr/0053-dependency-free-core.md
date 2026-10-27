@@ -49,7 +49,8 @@ afterwards the core needs nothing, which the later steps rely on.
   the database adapters and their test kits, `*/internal/integration`,
   `cmd/` and the CLI's `internal/` packages, `examples/`).
   `TestCorePackagesAndTheirTestsDependOnlyOnStandardLibraryAndCore` runs
-  `go list -deps -test` on every core package and fails on any import of a
+  `go list -deps -test` on every core package, for Linux, macOS and Windows,
+  and fails on any import of a
   package outside the standard library and the core, tests included. It
   replaces the hand-kept `corePackages` and `coreThirdPartyImports`. The
   root package's repository-wide tests that need the CLI's packages or yaml

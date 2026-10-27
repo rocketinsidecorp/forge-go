@@ -3,6 +3,7 @@ package forge_test
 import (
 	"go/parser"
 	"go/token"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -165,31 +166,19 @@ func rootTestImports(t *testing.T) (imports, staleToolTests []string) {
 	return imports, staleToolTests
 }
 
+// coreRuleGOOS are the operating systems the core rule lists packages for:
+// a file with a _darwin or _windows suffix or build constraint is invisible
+// to go list on Linux, and could import x/sys there.
+var coreRuleGOOS = []string{"linux", "darwin", "windows"}
+
 func TestCorePackagesAndTheirTestsDependOnlyOnStandardLibraryAndCore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs go list")
 	}
 	t.Parallel()
-	output, err := exec.Command("go", "list", "./...").CombinedOutput()
-	if err != nil {
-		t.Fatalf("go list: %v\n%s", err, output)
-	}
-	var core []string
-	for _, pkg := range strings.Fields(string(output)) {
-		if isCore(pkg) && pkg != modulePath {
-			core = append(core, pkg)
-		}
-	}
-	if len(core) < 40 || !slices.Contains(core, modulePath+"/auth") || slices.Contains(core, modulePath+"/auth/postgres") {
-		t.Fatalf("the core set looks wrong (%d packages): %v", len(core), core)
-	}
-	const format = "{{.ImportPath}}{{range .Imports}},{{.}}{{end}}"
-	listing, err := exec.Command("go", append([]string{"list", "-deps", "-test", "-f", format}, core...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("go list -deps -test: %v\n%s", err, listing)
-	}
 	// The root package: its code and the test files other than
-	// rootToolTests (its test imports, then what they import).
+	// rootToolTests (its test imports, then what they import). Parsed
+	// without build constraints, so every operating system's files count.
 	imports, stale := rootTestImports(t)
 	for _, file := range stale {
 		t.Errorf("%s is in rootToolTests but is missing or needs no package outside the core: remove it from the list", file)
@@ -204,12 +193,35 @@ func TestCorePackagesAndTheirTestsDependOnlyOnStandardLibraryAndCore(t *testing.
 			roots = append(roots, path)
 		}
 	}
-	rootListing, err := exec.Command("go", append([]string{"list", "-deps", "-f", format}, roots...)...).CombinedOutput()
-	if err != nil {
-		t.Fatalf("go list -deps (root): %v\n%s", err, rootListing)
-	}
-	for _, problem := range coreDependencyViolations(string(listing) + string(rootListing)) {
-		t.Error(problem)
+	for _, goos := range coreRuleGOOS {
+		t.Run(goos, func(t *testing.T) {
+			t.Parallel()
+			goList := func(args ...string) string {
+				t.Helper()
+				command := exec.Command("go", append([]string{"list"}, args...)...)
+				command.Env = append(os.Environ(), "GOOS="+goos, "GOARCH=amd64")
+				output, err := command.CombinedOutput()
+				if err != nil {
+					t.Fatalf("GOOS=%s go list %v: %v\n%s", goos, args, err, output)
+				}
+				return string(output)
+			}
+			var core []string
+			for _, pkg := range strings.Fields(goList("./...")) {
+				if isCore(pkg) && pkg != modulePath {
+					core = append(core, pkg)
+				}
+			}
+			if len(core) < 40 || !slices.Contains(core, modulePath+"/auth") || slices.Contains(core, modulePath+"/auth/postgres") {
+				t.Fatalf("the core set looks wrong (%d packages): %v", len(core), core)
+			}
+			const format = "{{.ImportPath}}{{range .Imports}},{{.}}{{end}}"
+			listing := goList(append([]string{"-deps", "-test", "-f", format}, core...)...)
+			rootListing := goList(append([]string{"-deps", "-f", format}, roots...)...)
+			for _, problem := range coreDependencyViolations(listing + rootListing) {
+				t.Errorf("GOOS=%s: %s", goos, problem)
+			}
+		})
 	}
 }
 
