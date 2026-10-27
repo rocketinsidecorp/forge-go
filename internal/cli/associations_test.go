@@ -512,3 +512,156 @@ func TestIdentifierBudgetCoversTheUniqueKey(t *testing.T) {
 		}
 	}
 }
+
+// TestAssociationsRefuseWhatTheyCannotTrust: recorded headers that no longer
+// parse, cycles, joins whose side is gone, and files where they should not
+// be stop the generators before anything is written.
+func TestAssociationsRefuseWhatTheyCannotTrust(t *testing.T) {
+	t.Parallel()
+	migration := func(t *testing.T, dir, name, header string) {
+		t.Helper()
+		writeFile(t, filepath.Join(dir, "db", "migrations", name+".up.sql"), header+"\nSELECT 1;\n")
+		writeFile(t, filepath.Join(dir, "db", "migrations", name+".down.sql"), "SELECT 1;\n")
+	}
+
+	corrupt := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	generateIn(t, corrupt, "scaffold", "post", "title:string")
+	generateIn(t, corrupt, "scaffold", "tag", "name:string")
+	migration(t, corrupt, "20200101000000_create_things", "-- forge:generate scaffold Thing name:varchar --plural things")
+	for _, args := range [][]string{
+		{"scaffold", "comment", "body:text", "post:references"},
+		{"join", "post", "tag"},
+	} {
+		if _, err := generate(corrupt, args[0], args[1:]...); err == nil || !strings.Contains(err.Error(), "no longer parses") {
+			t.Errorf("%v with a corrupt header: %v", args, err)
+		}
+	}
+	if _, err := destroy(corrupt, "scaffold", "post", "title:string"); err == nil || !strings.Contains(err.Error(), "no longer parses") {
+		t.Errorf("destroy with a corrupt header: %v", err)
+	}
+	if _, err := runTenancy(corrupt); err == nil || !strings.Contains(err.Error(), "no longer parses") {
+		t.Errorf("tenancy with a corrupt header: %v", err)
+	}
+
+	cycle := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	migration(t, cycle, "20200101000000_create_alphas", "-- forge:generate model alpha beta:references --plural alphas")
+	migration(t, cycle, "20200101000001_create_betas", "-- forge:generate model beta alpha:references --plural betas")
+	if _, err := generate(cycle, "model", "gamma", "alpha:references"); err == nil || !strings.Contains(err.Error(), "cannot reference itself") {
+		t.Errorf("a cycle of references: %v", err)
+	}
+
+	gone := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	generateIn(t, gone, "scaffold", "post", "title:string")
+	migration(t, gone, "20300101000000_create_post_widgets", "-- forge:generate join post widget")
+	if _, err := generate(gone, "scaffold", "post", "title:string"); err != nil {
+		t.Errorf("a post whose join names a resource that is gone: %v", err)
+	}
+
+	long := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	generateIn(t, long, "resource", "abcdefghijklmnopqrst", "name:string")
+	generateIn(t, long, "resource", "uvwxyzabcdefghijklmn", "name:string")
+	if _, err := generate(long, "join", "abcdefghijklmnopqrst", "uvwxyzabcdefghijklmn"); err == nil || !strings.Contains(err.Error(), "the join table") {
+		t.Errorf("a join table name over 40 characters: %v", err)
+	}
+
+	files := newApp(t, scaffold.Options{Database: "sqlite", Auth: true})
+	generateIn(t, files, "scaffold", "post", "title:string")
+	generateIn(t, files, "scaffold", "tag", "name:string")
+	writeFile(t, filepath.Join(files, "app", "domain", "post_tags.go"), "package domain\n")
+	if _, err := generate(files, "join", "post", "tag"); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Errorf("a join over an existing file: %v", err)
+	}
+	if err := os.Remove(filepath.Join(files, "app", "domain", "post_tags.go")); err != nil {
+		t.Fatal(err)
+	}
+	routes := filepath.Join(files, "app", "bootstrap", "routes_gen.go")
+	original := readFile(t, routes)
+	writeFile(t, routes, original+"\n// mine\n")
+	if _, err := generate(files, "join", "post", "tag"); err == nil || !strings.Contains(err.Error(), "edited by hand") {
+		t.Errorf("a join with an edited seam: %v", err)
+	}
+	writeFile(t, routes, original)
+	partial := filepath.Join(files, "app", "views", "posts", "_associations.gohtml")
+	writeFile(t, partial, "mine\n")
+	if _, err := generate(files, "join", "post", "tag"); err == nil || !strings.Contains(err.Error(), "it is not what the generators wrote") {
+		t.Errorf("a join with an edited partial: %v", err)
+	}
+	if err := os.Remove(partial); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(files, "go.mod"), partial); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generate(files, "scaffold", "comment", "body:text", "post:references"); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("a child with a symlinked partial: %v", err)
+	}
+	if err := os.Remove(partial); err != nil {
+		t.Fatal(err)
+	}
+	// An application whose parent page predates the partial gets it
+	// created.
+	output := generateIn(t, files, "scaffold", "comment", "body:text", "post:references")
+	if !strings.Contains(output, "update  app/views/posts/_associations.gohtml") || !strings.Contains(readFile(t, partial), "post_comments") {
+		t.Errorf("the missing partial was not created:\n%s", output)
+	}
+	generateIn(t, files, "join", "post", "tag")
+	join := firstMatch(t, files, "*_create_post_tags.up.sql")
+	writeFile(t, join, readFile(t, join)+"-- mine\n")
+	if _, err := generate(files, "join", "post", "tag"); err == nil || !strings.Contains(err.Error(), "already creates the table post_tags") {
+		t.Errorf("a join over its edited migration: %v", err)
+	}
+	for args, wantErr := range map[string]string{
+		"post":       "usage: forge generate join",
+		"post badge": "needs the badge resource",
+	} {
+		if _, err := destroy(files, append([]string{"join"}, strings.Fields(args)...)...); err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("destroy join %s: %v, want %q", args, err, wantErr)
+		}
+	}
+	output, err := destroy(files, "scaffold", "comment", "body:text", "post:references", "--dry-run")
+	if err != nil || !strings.Contains(output, "would update") {
+		t.Errorf("destroy --dry-run of a child: %v\n%s", err, output)
+	}
+}
+
+// TestJoinsAndChildrenOfModelsAndGlobalResources: a scaffold may reference a
+// model (no frame to add), a join of global resources keeps its writes
+// behind the platform guard, an API-only application gets no pages, and an
+// application in another default locale gets the join's text in it too.
+func TestJoinsAndChildrenOfModelsAndGlobalResources(t *testing.T) {
+	t.Parallel()
+	dir := newApp(t, scaffold.Options{Database: "postgresql", Tenants: true, Locale: "pt-BR"})
+	generateIn(t, dir, "model", "author", "name:string", "--org-scoped")
+	if output := generateIn(t, dir, "scaffold", "book", "title:string", "author:references", "--org-scoped"); strings.Contains(output, "update  ") {
+		t.Errorf("a child of a model updated a partial:\n%s", output)
+	}
+	if _, err := destroy(dir, "model", "author", "name:string", "--org-scoped"); err == nil || !strings.Contains(err.Error(), "still reference it") {
+		t.Errorf("destroy a referenced model: %v", err)
+	}
+	if _, err := destroy(dir, "model", "author", "name:string", "--org-scoped", "--migrations"); err == nil || !strings.Contains(err.Error(), "still reference it") {
+		t.Errorf("destroy --migrations of a referenced model: %v", err)
+	}
+	generateIn(t, dir, "scaffold", "genre", "name:string", "--global")
+	generateIn(t, dir, "scaffold", "rack", "name:string", "--global")
+	output := generateIn(t, dir, "join", "genre", "rack")
+	if !strings.Contains(output, "create  config/locales/genre_racks.pt-BR.json") {
+		t.Errorf("the join's text in the default locale:\n%s", output)
+	}
+	routes := readFile(t, filepath.Join(dir, "app", "bootstrap", "routes_gen.go"))
+	if !strings.Contains(routes, `if permission == "genres:write" {`) || !strings.Contains(routes, "return protectPlatformWrite(permission, next)") {
+		t.Errorf("the global join's writes are not behind the platform guard:\n%s", routes)
+	}
+	generatedGoParses(t, dir)
+
+	api := t.TempDir()
+	if _, err := scaffold.Generate(scaffold.Options{Name: "ledger", Module: "example.com/ledger", Dir: api, Database: "sqlite", API: true}); err != nil {
+		t.Fatal(err)
+	}
+	generateIn(t, api, "resource", "account", "name:string", "--public")
+	generateIn(t, api, "resource", "entry", "amount:integer", "account:references", "--public")
+	generateIn(t, api, "resource", "label", "name:string", "--public")
+	generateIn(t, api, "join", "account", "label")
+	if exists(api, "app/adapters/htmlui/account_labels.go") || !exists(api, "app/adapters/httpapi/account_labels.go") {
+		t.Error("an API-only join has pages, or no JSON routes")
+	}
+}
