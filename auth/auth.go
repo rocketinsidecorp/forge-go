@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/internal/principalctx"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -253,18 +254,13 @@ func require(permission Permission, next http.Handler, auditor SecurityAuditor) 
 	}), nil
 }
 
-type principalKey struct{}
-
 func withPrincipal(ctx context.Context, principal Principal) context.Context {
-	return context.WithValue(ctx, principalKey{}, principal)
+	return principalctx.With(ctx, principal)
 }
 
 // FromContext returns the Principal that Middleware.Authenticate stored in ctx.
 func FromContext(ctx context.Context) (Principal, bool) {
-	if ctx == nil {
-		return Principal{}, false
-	}
-	principal, ok := ctx.Value(principalKey{}).(Principal)
+	principal, ok := principalctx.Value(ctx).(Principal)
 	return principal, ok
 }
 

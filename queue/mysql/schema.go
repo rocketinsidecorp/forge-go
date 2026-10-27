@@ -9,7 +9,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/config"
 	forgemysql "github.com/rocketinsidecorp/forge-go/mysql"
 	"github.com/rocketinsidecorp/forge-go/queue"
-	"github.com/rocketinsidecorp/forge-go/queue/queuecmd"
+	"github.com/rocketinsidecorp/forge-go/queue/internal/jobscmd"
 )
 
 //go:embed migrations/*.sql
@@ -26,9 +26,10 @@ func Migrations() fs.FS {
 	return sub
 }
 
-// Commands returns the "jobs" operator command (see queuecmd).
+// Commands returns the "jobs" operator command (see queuecmd) backed by
+// this store.
 func Commands() []command.Command {
-	return queuecmd.Commands(func(ctx context.Context, cfg config.Database) (queue.Admin, func() error, error) {
+	return jobscmd.Commands(func(ctx context.Context, cfg config.Database) (queue.Admin, func() error, error) {
 		db, err := forgemysql.Open(ctx, cfg)
 		if err != nil {
 			return nil, nil, err
