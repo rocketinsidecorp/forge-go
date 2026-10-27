@@ -56,9 +56,13 @@ forge build                               # static binary in bin/
 forge routes                              # every route of the composed application
 ```
 
-Generator arguments are `name:type` with `string`, `text`, `int` (`integer`), `bool` (`boolean`), `time`
-(`timestamp`) or `uuid`; a trailing `?` makes the field optional (quote it: `'summary:text?'`). Money is an integer
-in minor units, never a float.
+Generator arguments are `name:type` with `string`, `text`, `integer` (`int`), `boolean` (`bool`), `timestamp`
+(`time`, `datetime`), `uuid` or `references` (`belongs_to`); a trailing `?` makes the field optional (quote it:
+`'summary:text?'`). Money is an integer in minor units, never a float.
+{{- if .DB}}
+`post:references` adds `post_id` with a foreign key (deleting a post that has rows is refused; `--on-delete=cascade`
+deletes them) and `forge generate join post tag` a many-to-many table.
+{{- end}}
 {{- if and .DB .DB.Identity .Tenants}}
 
 This application has organizations: models, resources and scaffolds need exactly one of `--org-scoped` (rows belong

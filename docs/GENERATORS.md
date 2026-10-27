@@ -33,6 +33,8 @@
 | `forge generate view` | one page | |
 | `forge generate authentication` | what `forge new --auth` generates: sign-in pages, identity migrations, `setup`, wired | `rails g authentication` |
 | `forge generate tenancy [--org SLUG]` | organizations for an `--auth` application: `org_id` on every generated table | |
+| `forge generate scaffold comment body:text post:references` | a comment that belongs to a post (`post_id`, its index and foreign key); the post has many comments | `rails g scaffold comment post:references` |
+| `forge generate join post tag` | the many-to-many table `post_tags`, attach, detach and list, JSON and HTML | `has_and_belongs_to_many` |
 | `forge destroy GENERATOR ARGUMENTS...` | removes what a generator created | `rails d` |
 
 `forge g` is short for `forge generate` and `forge d` for `forge destroy`, as
@@ -43,8 +45,11 @@ Tables have a scope only in an application with organizations
 binds; `--tenant-scoped` is an alias) or `--global` (shared by every
 organization), and the generators refuse to guess. In any other application
 they are plain tables: `--org-scoped` is refused ("create the app with
---tenants"), `--global` changes nothing. Field types take the Rails names too:
-`integer`, `boolean`, `timestamp` and `datetime` are `int`, `bool` and `time`.
+--tenants"), `--global` changes nothing. Field types (decision D22) are
+`string`, `text`, `integer`, `boolean`, `timestamp`, `uuid` and `references`,
+also spelled `int`, `bool`, `time`, `datetime` and `belongs_to`; a trailing `?`
+makes a field optional. Generated migrations record the canonical names in
+their `-- forge:generate` header. Any other type is refused with this list.
 
 ## The front end of a new application
 
@@ -120,8 +125,8 @@ forge test
 ```
 
 Takes exactly the arguments of `forge generate resource` (with organizations,
-`--org-scoped` or `--global`; `--plural`, field types `string`, `text`, `int`, `bool`, `time`,
-`uuid`, a trailing `?` for optional) and writes exactly the model and
+`--org-scoped` or `--global`; `--plural`, `--on-delete`, the field types of
+decision D22 with a trailing `?` for optional) and writes exactly the model and
 persistence files `resource` writes, byte for byte, without the HTTP layer:
 
 ```text
@@ -395,6 +400,75 @@ files edited by hand (nothing is written). On MySQL and MariaDB DDL is not
 transactional: a migration that passes its checks and then fails half-way
 for another reason (a full disk, a lock timeout) needs a manual fix.
 
+## Associations
+
+```sh
+forge generate scaffold post title:string body:text
+forge generate scaffold comment body:text post:references   # --org-scoped with organizations
+forge generate scaffold tag name:string
+forge generate join post tag
+forge migrate
+```
+
+A **references** field (`post:references`, `post:belongs_to`, optional with
+`post:references?`) names a model, resource or scaffold that a migration in
+`db/migrations` records generating (`-- forge:generate`), with the same scope:
+an org-scoped child needs an org-scoped parent and a global one a global
+parent; anything else, a missing parent, or a resource that would reference
+itself is refused before a file is written. It generates
+([ADR 0051](adr/0051-associations.md)):
+
+- the column `post_id` (`uuid`, `NOT NULL` unless optional), the index
+  `comments_post_id_idx` and the foreign key `comments_post_id_fk`, `ON DELETE
+  RESTRICT`, or `CASCADE` with `--on-delete=cascade`. With organizations the
+  index and the key are `(org_id, post_id)` and reference `posts (org_id,
+  id)`: the first migration that needs it declares `CREATE UNIQUE INDEX
+  posts_org_id_id_key ON posts (org_id, id)` (its down drops it), so the
+  database itself refuses a comment of one organization on another's post;
+- a service that checks the post through the post's repository before it
+  writes (`comment_post_not_found`, 422, also for another organization's post
+  or a tampered select), `CommentService.ListByPost` and `PostChoices`, and
+  `CommentRepository.ListByPost`;
+- `GET /v1/posts/{post_id}/comments` (with `comments:read`) and, for a
+  scaffold, `GET /posts/{post_id}/comments`, the page the post's show page
+  loads in a Turbo Frame; the comment form's `post_id` is a select of the
+  newest posts (`/comments/new?post_id=ID` preselects one);
+- tests for all of it, the database ones against the foreign keys (a missing
+  post, another organization's post, `RESTRICT` or `CASCADE`).
+
+Every resource's delete now reports a foreign key that refuses it as
+`ErrPostInUse` (`409 post_in_use`; on the pages, an alert on the post), on
+PostgreSQL, MySQL, MariaDB and SQLite alike.
+
+The parent's page lists its children through
+`app/views/posts/_associations.gohtml`, which every scaffold's show page
+includes. Generators own it: generating or destroying a child scaffold, or a
+join, rewrites it, and refuses (writing nothing) when it was edited by hand.
+Customize `show.gohtml` instead; `forge destroy --force` leaves an edited
+partial as it is.
+
+**`forge generate join LEFT RIGHT`** joins two resources or scaffolds of the
+same scope many to many: the table `LEFT_RIGHTS` (`post_tags`) with
+`(org_id,) post_id, tag_id, created_at`, a composite primary key, foreign keys
+to both sides that cascade (a join row goes with either side) and, with
+organizations, the same composite keys and row-level security as any
+org-scoped table. It generates `PostTagService` (`Attach`, idempotent,
+`Detach`, `Tags`, `TagChoices`), its repository, `GET` and `POST
+/v1/posts/{post_id}/tags` and `DELETE /v1/posts/{post_id}/tags/{tag_id}`
+(the post's permission, `posts:read` or `posts:write`, and `tags:read`),
+and, when the first side is a scaffold, the page `/posts/{post_id}/tags` with
+forms to tag and untag that the post's page shows. A model on either side is
+refused (the join answers through both sides' JSON types).
+
+`forge destroy join post tag` reverses it. `forge destroy` of a resource that
+a references field or a join still names is refused, with the list: destroy
+those first (rolling their migrations back and passing `--migrations`).
+`forge generate tenancy` refuses an application with associations: their
+foreign keys would have to become composite, which SQLite cannot do to an
+existing table; convert before generating them, or create the application
+with `--tenants`. `forge generate migration` refuses a references field: an
+association belongs to the generator of the table that has it.
+
 ## Permission ownership
 
 With Forge identity, generated migrations register the permissions their
@@ -508,8 +582,8 @@ whole and `go/format` it:
 - An application generated before the seam (its `bootstrap.go` does not call
   `generatedRoutes`) still gets the wiring printed to paste.
 
-Supported generators: `model`, `resource`, `scaffold`, `controller`, `mailer`,
-`job` (both kinds) and `view`. Migrations are kept unless `--migrations` is
+Supported generators: `model`, `resource`, `scaffold`, `join`, `controller`,
+`mailer`, `job` (both kinds) and `view`. Migrations are kept unless `--migrations` is
 given; roll them back with `forge rollback` first.
 
 Known limitations:

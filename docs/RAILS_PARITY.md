@@ -55,6 +55,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | `g` and `d` command aliases | `rails g`, `rails d` | Done (`forge g`, `forge d`, also in `forge help`) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
 | Inferred add/remove column migrations | `rails g migration AddSkuToProducts sku:string` | Done (`forge g migration add_COLUMNS_to_TABLE field:type...` and `remove_COLUMNS_from_TABLE`, per dialect; other names stay blank with a warning) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
 | Explicitly public generated routes without Forge identity | — | Done (`--public` on `generate resource\|scaffold` with `--global`, refused with Forge identity; deny-all otherwise) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
+| Associations: belongs_to, has_many, many-to-many; canonical field types | `rails g scaffold comment post:references`, `has_many`, `has_and_belongs_to_many`, `dependent:` | Done (`field:references`/`belongs_to` with index and foreign key, composite `(org_id, post_id)` with organizations, `ON DELETE RESTRICT` or `--on-delete=cascade`, parent select, `/posts/{id}/comments` HTML and JSON, the parent page's Turbo Frames, `409 post_in_use`; `forge generate join post tag` and `forge destroy join`; field types `string text integer boolean timestamp uuid references` with `int bool time datetime belongs_to`, decisions D22 and D23, [ADR 0051](adr/0051-associations.md)) | Planned, after forge-go 100% (decision D37), [forge-rust#96](https://github.com/rocketinsidecorp/forge-rust/issues/96) |
 | README quickstart run end to end in CI | Rails Guides "Getting Started" | Done (the generated README's Quickstart block run as written by a real `forge`, then sign-in, CRUD and JSON over HTTP for SQLite `--auth`, MySQL/MariaDB `--auth` and PostgreSQL `--tenants` with a cross-organization `404` check: `TestGeneratedApplication/readme_quickstart_*`, CI jobs `generated` and `mariadb`) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
 | Continuous fuzzing, SBOM, signed images | — | Done (every fuzz target per PR and nightly, `scripts/fuzz.sh`; CycloneDX/SPDX SBOMs; keyless cosign-signed images from `v*` tags; [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), [ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)) | Done (`scripts/fuzz.sh`, `scripts/sbom.sh`, signed forge-proxy image, SHA/digest pins enforced by `crates/forge/tests/supply_chain.rs`, Forge-Rust ADR 0043) |
 | Architecture test in the generated application | Packwerk-style boundary specs (gems) | Done (`app/architecture_test.go` in every `forge new`: `go/parser` on the imports, `domain` and `application` import inward only, nothing but `app/bootstrap` composes, a failure names file, line and import; [ARCHITECTURE.md](ARCHITECTURE.md#architecture-test-of-the-generated-application)) | Planned, after forge-go 100% (decision D37) |
@@ -63,6 +64,20 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Done (`docs/getting-started.md`) |
 
 ## Parity follow-ups
+
+- Associations and canonical field types (owner decisions D22 and D23 of
+  2026-10-27, [ADR 0051](adr/0051-associations.md)). Forge-Rust lacks
+  `field:references` (`belongs_to`) with its index and foreign key, composite
+  `(org_id, post_id)` keys with organizations and the parent's
+  `UNIQUE (org_id, id)`, `--on-delete=restrict|cascade`, the typed in-use
+  conflict on every backend, the nested `/posts/{id}/comments` routes and
+  parent select, the parent page's `_associations` Turbo Frames, `forge
+  generate join` and `forge destroy join`, `forge destroy` refusing a
+  referenced resource, `forge generate tenancy` refusing associations, and
+  the canonical type names with their aliases. Planned after Forge-Go
+  reaches 100% (decision D37), in
+  [forge-rust#96](https://github.com/rocketinsidecorp/forge-rust/issues/96),
+  with the same commands, names and generated routes.
 
 - Opt-in authentication and organizations, SQLite by default (owner
   decisions D30, D31, D33-D36 of 2026-10-26, [ADR
