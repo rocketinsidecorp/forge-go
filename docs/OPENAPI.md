@@ -253,7 +253,7 @@ way, and the generated bootstrap test fetches `/openapi.json` and validates
   `/auth/mfa/complete`, `/auth/recovery/request`, `/auth/recovery/reset`,
   `/auth/cookie/login`, `/auth/cookie/mfa/complete` and `/auth/cookie/logout`
   are in the document wherever they are registered
-  (`auth.NewLoginHandler`, `NewAuditedLogoutHandler`,
+  (`authhttp.NewLoginHandler`, `NewAuditedLogoutHandler`,
   `NewAuditedMFACompletionHandler`, `NewAuditedPasswordRecoveryRequestHandler`,
   `NewAuditedPasswordResetHandler`, `NewCookieLoginHandler`,
   `NewCookieMFACompletionHandler`, `NewAuditedCookieLogoutHandler` and their
@@ -264,6 +264,6 @@ way, and the generated bootstrap test fetches `/openapi.json` and validates
   around it hides its description (wrap the guard with `openapi.Describe`).
 
 Not described yet: the TOTP enrollment, confirmation, rotation and disable
-handlers (`auth.NewTOTPEnrollmentHandler` and the like, which an application
+handlers (`authhttp.NewTOTPEnrollmentHandler` and the like, which an application
 mounts behind its own guard), HTML pages, forms and event streams. See the
 follow-ups in ADR 0043.

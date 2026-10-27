@@ -184,7 +184,7 @@ a PostgreSQL application (Forge identity) the HTML part is:
 protectCookie := func(permission string, next http.Handler) (http.Handler, error) {
 	required, err := auth.NewPermission(permission)
 	// ...
-	guarded, err := auth.RequireAudited(required, next, repository)
+	guarded, err := authhttp.RequireAudited(required, next, repository)
 	// ...
 	return middleware.AuthenticateBrowser("/session/new", guarded)
 }
@@ -426,9 +426,9 @@ forge dev     # http://localhost:8080/session/new
 
 The handlers in `app/adapters/htmlauth` decode the forms, choose the
 messages and render `sessions/*` and `passwords/*`; edit them like any
-other page. `auth.Browser` does the security work (CSRF verification, the
+other page. `authhttp.Browser` does the security work (CSRF verification, the
 session cookies, uniform failures, throttling with `429` and `Retry-After`,
-the second-factor challenge cookie) and `auth.ReturnPath` keeps `return_to`
+the second-factor challenge cookie) and `authhttp.ReturnPath` keeps `return_to`
 local. The layout `forge new --auth` generates already shows the sign-out
 button, in a `<header class="session">`, to people who are signed in:
 
@@ -518,7 +518,7 @@ Pages never embed the token itself. `{{csrfField}}`, `{{csrfMeta}}` and
 a fresh 32-byte one-time pad followed by the token XOR the pad, 86
 characters of base64url. Every render embeds different bytes, so a page
 compressed together with reflected input cannot leak the token through its
-size (BREACH). The middleware and `auth.RequireCSRF` unmask what they receive
+size (BREACH). The middleware and `authhttp.RequireCSRF` unmask what they receive
 and compare it with the cookie in constant time. They also accept the token
 unmasked: scripts that read the cookie send it so (cookies are not part of a
 compressed body), and forms rendered before the upgrade to masked tokens
@@ -579,7 +579,7 @@ A new application from `forge new` already has these assertions.
 
 The token check does not apply to requests with an `Authorization: Bearer`
 header or a JSON body, which cross-site pages cannot send, so JSON APIs keep
-working; cookie-authenticated JSON routes still use `auth.RequireCSRF`.
+working; cookie-authenticated JSON routes still use `authhttp.RequireCSRF`.
 Endpoints that receive form posts from other systems (webhooks) must
 authenticate them by signature and be listed in `csrf.Options.Exempt`:
 

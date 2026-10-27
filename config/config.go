@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rocketinsidecorp/forge-go/i18n"
+	"github.com/rocketinsidecorp/forge-go/internal/langtag"
 )
 
 // Environment is the deployment environment selected by FORGE_ENV.
@@ -196,7 +196,7 @@ func (i I18n) validate() error {
 	if i.DefaultLocale == "" {
 		return nil
 	}
-	canonical, err := i18n.CanonicalLocale(i.DefaultLocale)
+	canonical, err := langtag.Canonical(i.DefaultLocale)
 	if err != nil {
 		return errors.New("FORGE_I18N_DEFAULT_LOCALE must be a locale such as en or pt-BR (language[-Script][-REGION])")
 	}

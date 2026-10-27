@@ -8,9 +8,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/auth/internal/setupcmd"
+	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/postgres"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
@@ -177,7 +177,7 @@ func SetupOrganizations(enabled bool) SetupOption {
 // as an argument, printed or logged, and must be at least
 // MinOwnerPasswordRunes characters. Running setup again refuses with
 // ErrAlreadyProvisioned.
-func SetupCommand(options ...SetupOption) forge.Command {
+func SetupCommand(options ...SetupOption) command.Command {
 	config := setupcmd.Config{Organizations: true, Provision: provision}
 	for _, option := range options {
 		if option != nil {
@@ -187,7 +187,7 @@ func SetupCommand(options ...SetupOption) forge.Command {
 	return setupcmd.Command(config)
 }
 
-func provision(ctx context.Context, env forge.CommandEnv, account setupcmd.Account) (setupcmd.Provisioned, error) {
+func provision(ctx context.Context, env command.Env, account setupcmd.Account) (setupcmd.Provisioned, error) {
 	database, err := postgres.Open(ctx, env.Config.Database)
 	if err != nil {
 		return setupcmd.Provisioned{}, err

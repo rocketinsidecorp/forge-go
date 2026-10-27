@@ -76,6 +76,7 @@ gross_floor=95.0
 package_floor=95.0
 guarded=(
 	auth
+	auth/authhttp
 	auth/internal/sqlidentity
 	auth/mysql
 	auth/postgres

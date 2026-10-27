@@ -106,7 +106,7 @@ func TestGenerateAPIOnlyApplicationForEveryDatabase(t *testing.T) {
 			if !strings.Contains(bootstrap, scaffold.APIOnlyMarker) {
 				t.Errorf("bootstrap.go does not carry %q", scaffold.APIOnlyMarker)
 			}
-			for _, forbidden := range []string{"csrf", "useBrowserPipeline", "web.MethodOverride", "web.Flash", "appassets", "/assets/", "config/locales", "translator", "htmlauth", "identityRoutes", "auth.NewBrowser"} {
+			for _, forbidden := range []string{"csrf", "useBrowserPipeline", "web.MethodOverride", "web.Flash", "appassets", "/assets/", "config/locales", "translator", "htmlauth", "identityRoutes", "authhttp.NewBrowser"} {
 				if strings.Contains(bootstrap, forbidden) {
 					t.Errorf("bootstrap.go of an API-only application mentions %q", forbidden)
 				}

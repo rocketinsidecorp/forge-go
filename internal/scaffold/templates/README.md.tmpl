@@ -451,7 +451,7 @@ pipe{{end}} the password with `--password-stdin` (or set `FORGE_SETUP_PASSWORD` 
 that one command){{if not .SkipDocker}} where there is no terminal{{end}}.
 
 The pages live in `app/adapters/htmlauth` and `app/views/sessions` and
-`app/views/passwords`; change their markup and wording freely. `auth.Browser`
+`app/views/passwords`; change their markup and wording freely. `authhttp.Browser`
 in the framework makes every security decision: CSRF verification, uniform
 failures, throttling (429 with `Retry-After`), the session cookies and
 validated return paths.

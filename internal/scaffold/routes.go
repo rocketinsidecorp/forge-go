@@ -130,6 +130,7 @@ func routesPackages(module, adapter string) map[string]string {
 		"time":        "time",
 		"forge":       FrameworkModule,
 		"auth":        FrameworkModule + "/auth",
+		"authhttp":    FrameworkModule + "/auth/authhttp",
 		"broadcast":   FrameworkModule + "/broadcast",
 		"fault":       FrameworkModule + "/fault",
 		"i18n":        FrameworkModule + "/i18n",

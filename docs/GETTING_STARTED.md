@@ -336,7 +336,7 @@ and give the renderer the signer so pages can sign their stream names:
 ```
 
 **c. The guards and the event stream**, right after the existing
-`middleware, err := auth.NewMiddleware(repository)` statement and its `if err
+`middleware, err := authhttp.NewMiddleware(repository)` statement and its `if err
 != nil` block. `protect` guards the JSON API (bearer token), `protectCookie`
 guards the pages (session cookie; signed-out browsers are sent to the sign-in
 page and back), and the stream is readable only with the permission of the
@@ -348,7 +348,7 @@ resource it carries:
 		if err != nil {
 			return nil, err
 		}
-		guarded, err := auth.RequireAudited(required, next, repository)
+		guarded, err := authhttp.RequireAudited(required, next, repository)
 		if err != nil {
 			return nil, err
 		}
@@ -359,7 +359,7 @@ resource it carries:
 		if err != nil {
 			return nil, err
 		}
-		guarded, err := auth.RequireAudited(required, next, repository)
+		guarded, err := authhttp.RequireAudited(required, next, repository)
 		if err != nil {
 			return nil, err
 		}
@@ -561,7 +561,7 @@ an API client gets a `401` JSON error instead. A page asks for one permission
 (`posts:read`, `comments:read`...) and roles hold permissions. Sign-ins
 (success, failure, throttling) and permission denials of signed-in users are
 audited; a request with no or an invalid session is refused with a `401` or a
-redirect but not recorded unless you add `auth.WithAuthenticationAuditor`
+redirect but not recorded unless you add `authhttp.WithAuthenticationAuditor`
 ([AUTHENTICATION.md](AUTHENTICATION.md), [AUDIT.md](AUDIT.md)). The layout of an `--auth` application shows a sign-out button (the
 `sessions/_sign_out` partial, a `DELETE /session` form) to signed-in users; in
 an application that added sign-in with `forge generate authentication`, put

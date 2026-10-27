@@ -12,6 +12,7 @@ import (
 
 	"{{.Module}}/app/adapters/htmlauth"
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	auth{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/auth/{{.DB.Adapter}}"
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}/{{.DB.TestPackage}}"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -32,7 +33,7 @@ func TestMFASettingsNeedASignedInAccount(t *testing.T) {
 		page.Header().Get("Location") != htmlauth.SignInPath+"?return_to=%2Fmfa" {
 		t.Fatalf("signed out: status=%d Location=%q", page.Code, page.Header().Get("Location"))
 	}
-	if visitor.signIn(testPassword, ""); visitor.cookies[auth.SessionCookieName] == nil {
+	if visitor.signIn(testPassword, ""); visitor.cookies[authhttp.SessionCookieName] == nil {
 		t.Fatal("sign in failed")
 	}
 	page := visitor.do(http.MethodGet, htmlauth.MFASettingsPath, nil)
@@ -134,7 +135,7 @@ func TestMFAPagesAgainstTheIdentityStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	browser, err := auth.NewBrowser(auth.BrowserOptions{Login: login, Sessions: repository, MFA: mfa, Passwords: repository, Auditor: repository})
+	browser, err := authhttp.NewBrowser(authhttp.BrowserOptions{Login: login, Sessions: repository, MFA: mfa, Passwords: repository, Auditor: repository})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +150,7 @@ func TestMFAPagesAgainstTheIdentityStore(t *testing.T) {
 	}
 	sessionResolves := func(c *client) bool {
 		t.Helper()
-		cookie := c.cookies[auth.SessionCookieName]
+		cookie := c.cookies[authhttp.SessionCookieName]
 		if cookie == nil {
 			return false
 		}
@@ -210,7 +211,7 @@ func TestMFAPagesAgainstTheIdentityStore(t *testing.T) {
 	if confirmed.Code != http.StatusOK || len(backup) != auth.DefaultMFABackupCodeCount || confirmed.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("confirm status=%d codes=%d:\n%s", confirmed.Code, len(backup), confirmed.Body)
 	}
-	if !enabled(owner.UserID) || ada.cookies[auth.SessionCookieName] != nil {
+	if !enabled(owner.UserID) || ada.cookies[authhttp.SessionCookieName] != nil {
 		t.Fatal("confirming must turn two-factor on and sign the browser out")
 	}
 
@@ -274,7 +275,7 @@ func TestMFAPagesAgainstTheIdentityStore(t *testing.T) {
 		t.Fatalf("rotation confirm without a current code: status=%d", refused.Code)
 	}
 	rotated := ada.submit("/mfa/rotation/confirm", url.Values{"password": {testPassword}, "current_code": {fresh[1][1]}, "code": {clock.code(t, newKey)}})
-	if rotated.Code != http.StatusOK || len(shownBackupCodes.FindAllString(rotated.Body.String(), -1)) != auth.DefaultMFABackupCodeCount || ada.cookies[auth.SessionCookieName] != nil {
+	if rotated.Code != http.StatusOK || len(shownBackupCodes.FindAllString(rotated.Body.String(), -1)) != auth.DefaultMFABackupCodeCount || ada.cookies[authhttp.SessionCookieName] != nil {
 		t.Fatalf("rotation confirm status=%d:\n%s", rotated.Code, rotated.Body)
 	}
 
@@ -290,12 +291,12 @@ func TestMFAPagesAgainstTheIdentityStore(t *testing.T) {
 	if stale := ada.submit("/mfa", url.Values{"_method": {"DELETE"}, "password": {testPassword}, "code": {clock.code(t, key)}}); stale.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("the replaced key still works: status=%d", stale.Code)
 	}
-	signedInBefore := ada.cookies[auth.SessionCookieName]
+	signedInBefore := ada.cookies[authhttp.SessionCookieName]
 	disabled := ada.submit("/mfa", url.Values{"_method": {"DELETE"}, "password": {testPassword}, "code": {clock.code(t, newKey)}})
 	if disabled.Code != http.StatusSeeOther || disabled.Header().Get("Location") != htmlauth.SignInPath || enabled(owner.UserID) {
 		t.Fatalf("disable status=%d Location=%q", disabled.Code, disabled.Header().Get("Location"))
 	}
-	ada.cookies[auth.SessionCookieName] = signedInBefore
+	ada.cookies[authhttp.SessionCookieName] = signedInBefore
 	if sessionResolves(ada) {
 		t.Fatal("turning two-factor off must end every session")
 	}

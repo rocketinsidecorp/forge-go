@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -409,12 +409,12 @@ func TestMethodOverrideBehindProtection(t *testing.T) {
 	}
 }
 
-// A token issued for HTML forms is accepted by auth.RequireCSRF, and a token
+// A token issued for HTML forms is accepted by authhttp.RequireCSRF, and a token
 // issued at cookie login is accepted by the form middleware: both use the
 // same cookie and format.
 func TestInteroperatesWithAuthCookieTokens(t *testing.T) {
 	t.Parallel()
-	if auth.CSRFCookieName != csrf.CookieName || auth.CSRFHeaderName != csrf.HeaderName || !errors.Is(csrf.ErrInvalid, auth.ErrCSRFInvalid) {
+	if authhttp.CSRFCookieName != csrf.CookieName || authhttp.CSRFHeaderName != csrf.HeaderName || !errors.Is(csrf.ErrInvalid, authhttp.ErrCSRFInvalid) {
 		t.Fatal("auth and csrf disagree on the CSRF cookie, header or error")
 	}
 	protection, err := csrf.New(csrf.Options{})
@@ -431,7 +431,7 @@ func TestInteroperatesWithAuthCookieTokens(t *testing.T) {
 		t.Fatal("no CSRF cookie")
 	}
 
-	required, err := auth.RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	required, err := authhttp.RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestInteroperatesWithAuthCookieTokens(t *testing.T) {
 	for _, header := range []string{issued, cookie.Value} {
 		request := httptest.NewRequest(http.MethodPost, site+"/auth/cookie/logout", nil)
 		request.AddCookie(cookie)
-		request.Header.Set(auth.CSRFHeaderName, header)
+		request.Header.Set(authhttp.CSRFHeaderName, header)
 		recorder := httptest.NewRecorder()
 		protection.Handler(required).ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusNoContent {

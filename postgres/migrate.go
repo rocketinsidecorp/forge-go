@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 
-	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/migrate"
 )
@@ -34,13 +34,13 @@ func NewMigrator(cfg config.Database, migrations []migrate.Migration, logger *sl
 
 // Commands returns the migrate and rollback subcommands for an application
 // binary with one migration set; see migrate.Commands.
-func Commands(migrations fs.FS) []forge.Command {
+func Commands(migrations fs.FS) []command.Command {
 	return CommandsFromSets(migrations)
 }
 
 // CommandsFromSets returns migrate and rollback commands over one globally
 // ordered history composed from independent migration filesystems.
-func CommandsFromSets(migrationSets ...fs.FS) []forge.Command {
+func CommandsFromSets(migrationSets ...fs.FS) []command.Command {
 	return migrate.CommandsFromSets(migrationSets, func(_ context.Context, cfg config.Database, loaded []migrate.Migration, logger *slog.Logger) (*migrate.Migrator, error) {
 		return NewMigrator(cfg, loaded, logger)
 	})

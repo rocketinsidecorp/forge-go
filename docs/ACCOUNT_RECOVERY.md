@@ -30,7 +30,7 @@ if err := queue.Start(recovery); err != nil {
     return err
 }
 
-handler, err := auth.NewPasswordRecoveryRequestHandler(recovery)
+handler, err := authhttp.NewPasswordRecoveryRequestHandler(recovery)
 if err != nil {
     return err
 }
@@ -138,7 +138,7 @@ The reset endpoint accepts:
 Register it as a POST route:
 
 ```go
-reset, err := auth.NewPasswordResetHandler(recovery)
+reset, err := authhttp.NewPasswordResetHandler(recovery)
 if err != nil {
     return err
 }

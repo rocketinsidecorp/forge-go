@@ -140,7 +140,7 @@ type Options struct {
 	// non-JSON requests from them still need a valid token; JSON and bearer
 	// requests skip the token check (see Handler), so never combine a trusted
 	// origin with credentialed CORS on cookie-authenticated JSON routes that
-	// lack auth.RequireCSRF.
+	// lack authhttp.RequireCSRF.
 	TrustedOrigins []string
 	// Exempt lists http.ServeMux patterns ("POST /webhooks/payments") that
 	// skip both checks. Use it only for endpoints that authenticate requests
@@ -230,7 +230,7 @@ type state struct {
 //     "Authorization: Bearer" header, and those with a JSON body
 //     (application/json or +json), which browsers send cross-origin only
 //     after a CORS preflight Forge does not grant. Cookie-authenticated JSON
-//     routes still use auth.RequireCSRF.
+//     routes still use authhttp.RequireCSRF.
 //
 // Rejections are answered in the JSON error format, or with a minimal HTML
 // page when the client prefers HTML. Form bodies are read through

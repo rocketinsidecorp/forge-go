@@ -4,7 +4,7 @@
 // config/locales for the request's locale) and renders app/views/sessions,
 // app/views/passwords and app/views/mfa. Every security decision (CSRF
 // verification, credential checks, step-up re-authentication, throttling,
-// uniform failures, cookies) is made by auth.Browser in the framework, so
+// uniform failures, cookies) is made by authhttp.Browser in the framework, so
 // change the pages and the wording freely, but keep calling Browser for
 // anything that signs in, signs out, changes a password or changes a second
 // factor.
@@ -44,6 +44,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	"github.com/rocketinsidecorp/forge-go/i18n"
 	"github.com/rocketinsidecorp/forge-go/views"
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -51,7 +52,7 @@ import (
 
 const (
 	// SignInPath is the sign-in page. Protected pages redirect signed-out
-	// browsers here (auth.Middleware.AuthenticateBrowser).
+	// browsers here (authhttp.Middleware.AuthenticateBrowser).
 	SignInPath = "/session/new"
 	// AfterSignInPath is where a sign-in without a valid return path lands.
 	AfterSignInPath = "/"
@@ -95,7 +96,7 @@ func WithOrganizations(enabled bool) Option {
 // and password-reset routes only when it has a recovery service. The
 // two-factor settings (/mfa) sit behind sessions.AuthenticateBrowser and say
 // so when two-factor authentication is not configured.
-func Register(routes Router, browser *auth.Browser, renderer *views.Renderer, sessions *auth.Middleware, options ...Option) error {
+func Register(routes Router, browser *authhttp.Browser, renderer *views.Renderer, sessions *authhttp.Middleware, options ...Option) error {
 	if routes == nil || browser == nil || renderer == nil || sessions == nil {
 		return errors.New("htmlauth: router, browser, view renderer and session middleware are required")
 	}
@@ -174,7 +175,7 @@ func Register(routes Router, browser *auth.Browser, renderer *views.Renderer, se
 }
 
 type pages struct {
-	browser       *auth.Browser
+	browser       *authhttp.Browser
 	renderer      *views.Renderer
 	organizations bool
 }
@@ -274,7 +275,7 @@ func (p pages) newSession(w http.ResponseWriter, r *http.Request) {
 	p.render(w, r, "sessions/new", http.StatusOK, sessionPage{
 		Organizations:   p.organizations,
 		Tenant:          query.Get("tenant"),
-		ReturnTo:        auth.ReturnPath(query.Get(auth.ReturnToParameter), ""),
+		ReturnTo:        authhttp.ReturnPath(query.Get(authhttp.ReturnToParameter), ""),
 		RecoveryEnabled: p.browser.RecoveryEnabled(),
 	})
 }
@@ -297,10 +298,10 @@ func (p pages) createSession(w http.ResponseWriter, r *http.Request) {
 		Organizations:   p.organizations,
 		Tenant:          form.Tenant,
 		Email:           form.Email,
-		ReturnTo:        auth.ReturnPath(form.ReturnTo, ""),
+		ReturnTo:        authhttp.ReturnPath(form.ReturnTo, ""),
 		RecoveryEnabled: p.browser.RecoveryEnabled(),
 	}
-	step, err := p.browser.SignIn(w, r, auth.SignInCredentials{Email: form.Email, Password: form.Password, Tenant: form.Tenant})
+	step, err := p.browser.SignIn(w, r, authhttp.SignInCredentials{Email: form.Email, Password: form.Password, Tenant: form.Tenant})
 	var throttled *auth.LoginThrottledError
 	switch {
 	case errors.As(err, &throttled):
@@ -316,10 +317,10 @@ func (p pages) createSession(w http.ResponseWriter, r *http.Request) {
 		p.render(w, r, "sessions/new", http.StatusUnprocessableEntity, page)
 	case err != nil:
 		web.Error(w, r, err)
-	case step == auth.SignInNeedsMFA:
+	case step == authhttp.SignInNeedsMFA:
 		redirect(w, r, withReturnTo(mfaPath, page.ReturnTo), "", "")
 	default:
-		redirect(w, r, auth.ReturnPath(form.ReturnTo, AfterSignInPath), web.FlashNotice, i18n.T(r.Context(), "sessions.signed_in"))
+		redirect(w, r, authhttp.ReturnPath(form.ReturnTo, AfterSignInPath), web.FlashNotice, i18n.T(r.Context(), "sessions.signed_in"))
 	}
 }
 
@@ -339,7 +340,7 @@ func (p pages) newMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.render(w, r, "sessions/mfa", http.StatusOK, mfaPage{
-		ReturnTo: auth.ReturnPath(r.URL.Query().Get(auth.ReturnToParameter), ""),
+		ReturnTo: authhttp.ReturnPath(r.URL.Query().Get(authhttp.ReturnToParameter), ""),
 	})
 }
 
@@ -350,14 +351,14 @@ func (p pages) createMFA(w http.ResponseWriter, r *http.Request) {
 		web.Error(w, r, err)
 		return
 	}
-	page := mfaPage{ReturnTo: auth.ReturnPath(form.ReturnTo, "")}
+	page := mfaPage{ReturnTo: authhttp.ReturnPath(form.ReturnTo, "")}
 	err := p.browser.CompleteMFA(w, r, form.Code)
 	var throttled *auth.LoginThrottledError
 	switch {
 	case errors.As(err, &throttled):
 		page.Error = i18n.T(r.Context(), "throttled.code", "count", retryMinutes(throttled.RetryAfter))
 		p.render(w, r, "sessions/mfa", http.StatusTooManyRequests, page)
-	case errors.Is(err, auth.ErrMFAChallengeMissing):
+	case errors.Is(err, authhttp.ErrMFAChallengeMissing):
 		redirect(w, r, SignInPath, web.FlashAlert, i18n.T(r.Context(), "sessions.expired"))
 	case errors.Is(err, auth.ErrMFAInvalid):
 		page.Error = i18n.T(r.Context(), "sessions.invalid_code")
@@ -365,7 +366,7 @@ func (p pages) createMFA(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		web.Error(w, r, err)
 	default:
-		redirect(w, r, auth.ReturnPath(form.ReturnTo, AfterSignInPath), web.FlashNotice, i18n.T(r.Context(), "sessions.signed_in"))
+		redirect(w, r, authhttp.ReturnPath(form.ReturnTo, AfterSignInPath), web.FlashNotice, i18n.T(r.Context(), "sessions.signed_in"))
 	}
 }
 
@@ -641,7 +642,7 @@ func withReturnTo(target, returnTo string) string {
 	if returnTo == "" {
 		return target
 	}
-	return target + "?" + url.Values{auth.ReturnToParameter: {returnTo}}.Encode()
+	return target + "?" + url.Values{authhttp.ReturnToParameter: {returnTo}}.Encode()
 }
 
 // retryMinutes is the wait a throttled form announces, in whole minutes

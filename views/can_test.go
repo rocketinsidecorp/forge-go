@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/views"
@@ -39,7 +40,7 @@ func TestCanFollowsThePrincipalsPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := auth.NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+	middleware, err := authhttp.NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
 		return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
 	}))
 	if err != nil {
@@ -98,7 +99,7 @@ func TestSignedInFollowsThePrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	middleware, err := auth.NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+	middleware, err := authhttp.NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
 		return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
 	}))
 	if err != nil {

@@ -98,8 +98,11 @@ func (s *MFAService) PendingTOTP(ctx context.Context, subjectID uuid.UUID, issue
 // RegenerateMFABackupCodes, DisableMFA) require one and refuse a proof of
 // another account, or the zero value, with ErrMFAStepUpInvalid. A backup code
 // is used up only by the change, in the transaction that applies it. Only
-// this package creates proofs: VerifyMFAStepUp, and the JSON handlers once
-// their MFAChangeAuthorizer passed.
+// this package creates proofs: VerifyMFAStepUp, after a current code of the
+// account, and AuthorizeMFAChange, for the signed-in principal of the request
+// context only (authhttp.Middleware is the only writer of it) once the
+// application's MFAChangeAuthorizer passed; the JSON two-factor handlers of
+// authhttp use the latter.
 type MFAStepUpProof struct {
 	subjectID  uuid.UUID
 	backupCode *Digest

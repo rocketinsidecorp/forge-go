@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/command"
 )
 
 // SeedFunc loads the rows every environment of an application needs, such as
@@ -19,16 +19,16 @@ type SeedFunc func(ctx context.Context, tx *sql.Tx) error
 // on the configured database and commits only when seed returns nil, so a
 // failed seed changes nothing. Generated applications register it with their
 // db.Seed function.
-func SeedCommand(seed SeedFunc) forge.Command {
-	return forge.Command{
+func SeedCommand(seed SeedFunc) command.Command {
+	return command.Command{
 		Name:    "seed",
 		Summary: "load the application's seed data in one transaction (idempotent; run after migrate)",
-		Run: func(ctx context.Context, env forge.CommandEnv, args []string) error {
+		Run: func(ctx context.Context, env command.Env, args []string) error {
 			if seed == nil {
 				return errors.New("no seed function is registered")
 			}
 			if len(args) != 0 {
-				return fmt.Errorf("%w: seed accepts no arguments", forge.ErrUsage)
+				return fmt.Errorf("%w: seed accepts no arguments", command.ErrUsage)
 			}
 			database, err := Open(ctx, env.Config.Database)
 			if err != nil {

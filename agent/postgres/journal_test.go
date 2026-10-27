@@ -14,6 +14,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/agent"
 	agentpostgres "github.com/rocketinsidecorp/forge-go/agent/postgres"
 	"github.com/rocketinsidecorp/forge-go/auth"
+	"github.com/rocketinsidecorp/forge-go/auth/authhttp"
 	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -206,7 +207,7 @@ func authenticatedContextFor(t *testing.T, tenant tenancy.Tenant, principal auth
 	if err != nil {
 		return nil, err
 	}
-	middleware, err := auth.NewMiddleware(auth.ResolverFunc(func(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
+	middleware, err := authhttp.NewMiddleware(auth.ResolverFunc(func(_ context.Context, digest auth.Digest) (auth.Session, bool, error) {
 		if digest != token.Digest() {
 			return auth.Session{}, false, nil
 		}

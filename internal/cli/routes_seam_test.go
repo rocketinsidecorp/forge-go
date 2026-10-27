@@ -89,8 +89,8 @@ func TestScaffoldWiresItselfIntoTheSeamAndDestroyUnwiresIt(t *testing.T) {
 	for _, want := range []string{
 		"httpapi.RegisterProducts(app, productService, protect(repository, middleware))",
 		"htmlui.RegisterProducts(app, productService, renderer, protectCookie(repository, middleware))",
-		"\nfunc protect(repository auth.SecurityAuditor, middleware *auth.Middleware) func(string, http.Handler) (http.Handler, error) {",
-		"auth.RequireCSRF(guarded)", "middleware.AuthenticateCookie(checked)", `middleware.AuthenticateBrowser("/session/new", guarded)`,
+		"\nfunc protect(repository auth.SecurityAuditor, middleware *authhttp.Middleware) func(string, http.Handler) (http.Handler, error) {",
+		"authhttp.RequireCSRF(guarded)", "middleware.AuthenticateCookie(checked)", `middleware.AuthenticateBrowser("/session/new", guarded)`,
 		"\"example.com/shop/app/adapters/htmlui\"",
 	} {
 		if !strings.Contains(seam, want) {

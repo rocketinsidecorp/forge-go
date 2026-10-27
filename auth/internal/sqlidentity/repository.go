@@ -290,7 +290,7 @@ func (r *Repository) revokeSessionsOf(ctx context.Context, tx db, userID uuid.UU
 // ResolveSession returns the live session for digest. A session that is
 // revoked, unused for the idle timeout (WithSessionIdleTimeout), or whose
 // user, membership, tenant or organization is no longer active is not found;
-// the caller (auth.Middleware) checks the absolute expiry. Resolving records
+// the caller (authhttp.Middleware) checks the absolute expiry. Resolving records
 // the use in last_seen_at at most once a minute per session, so most
 // requests only read; that write, conditional on the stored value still being
 // stale, makes concurrent requests record one use. The database clock decides

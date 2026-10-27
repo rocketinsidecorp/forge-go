@@ -156,7 +156,7 @@ func TestGeneratorsInAnAPIOnlyApplication(t *testing.T) {
 				// No Forge identity (decision D31): nothing wires it: no identityRoutes, no auth
 				// middleware, no permission migration. (The mailer's wiring
 				// names identityRoutes only for full-stack applications.)
-				if args[0] != "mailer" && (strings.Contains(output.String(), "identityRoutes") || strings.Contains(output.String(), "_permissions.up.sql") || strings.Contains(output.String(), "auth.NewMiddleware")) {
+				if args[0] != "mailer" && (strings.Contains(output.String(), "identityRoutes") || strings.Contains(output.String(), "_permissions.up.sql") || strings.Contains(output.String(), "authhttp.NewMiddleware")) {
 					t.Errorf("forge generate %v prints identity wiring an API-only application lacks:\n%s", args, output.String())
 				}
 				if strings.Contains(output.String(), "useBrowserPipeline") || strings.Contains(output.String(), "views.New") {

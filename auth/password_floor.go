@@ -107,7 +107,7 @@ func (f *legacyTimingFloor) pad(ctx context.Context, started time.Time) error {
 
 // WithLegacyHashTimingFloor turns the legacy-hash timing floor on or off.
 // While it is on (the default when the hasher writes Argon2id), a failed
-// password check of LoginService and of the step-up of auth.Browser (an
+// password check of LoginService and of the step-up of authhttp.Browser (an
 // unknown account or tenant, a malformed login, a wrong password against any
 // hash) does not answer before one PBKDF2-600k verification would have
 // finished (plus 25%, for its variation), so a wrong password against an
