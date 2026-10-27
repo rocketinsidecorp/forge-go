@@ -1,0 +1,197 @@
+package htmlui
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/pagination"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+	"github.com/rocketinsidecorp/forge-go/views"
+	"github.com/rocketinsidecorp/forge-go/web"
+)
+
+// [[.Title]]Router is where Register[[.PluralTitle]] mounts the pages; *forge.App satisfies it.
+type [[.Title]]Router interface {
+	Handle(pattern string, handler http.Handler) error
+}
+
+// [[.Title]]Protect wraps next so that only callers holding permission reach it,
+// as the guards of the [[.Left.Plural]] and [[.Right.Plural]] pages do.
+type [[.Title]]Protect func(permission string, next http.Handler) (http.Handler, error)
+
+// Register[[.PluralTitle]] mounts the page of a [[.Left.Human]]'s [[.Right.Plural]], which the [[.Left.Human]]'s page
+// shows in a Turbo Frame, and the forms that add and remove one. The page
+// requires "[[.Left.Plural]]:read" and "[[.Right.Plural]]:read"; the forms "[[.Left.Plural]]:write" and
+// "[[.Right.Plural]]:read". The application must install web.MethodOverride and
+// csrf.Protection (forge new does).
+func Register[[.PluralTitle]](routes [[.Title]]Router, service *application.[[.Title]]Service, renderer *views.Renderer, protect [[.Title]]Protect) error {
+	if routes == nil || service == nil || renderer == nil {
+		return errors.New("htmlui: router, [[.Plural]] service and view renderer are required")
+	}
+	if protect == nil {
+		return errors.New("htmlui: a protect function is required: [[.Plural]] pages are never public")
+	}
+	pages := [[.Camel]]Pages{service: service, renderer: renderer}
+	for _, route := range []struct {
+		pattern     string
+		permissions []string
+		handler     http.HandlerFunc
+	}{
+		{"GET /[[.Left.Plural]]/{[[.Left.Field.Name]]}/[[.Right.Plural]]", []string{"[[.Left.Plural]]:read", "[[.Right.Plural]]:read"}, pages.Index},
+		{"POST /[[.Left.Plural]]/{[[.Left.Field.Name]]}/[[.Right.Plural]]", []string{"[[.Left.Plural]]:write", "[[.Right.Plural]]:read"}, pages.Attach},
+		{"DELETE /[[.Left.Plural]]/{[[.Left.Field.Name]]}/[[.Right.Plural]]/{[[.Right.Field.Name]]}", []string{"[[.Left.Plural]]:write", "[[.Right.Plural]]:read"}, pages.Detach},
+	} {
+		var guarded http.Handler = route.handler
+		for i := len(route.permissions) - 1; i >= 0; i-- {
+			protected, err := protect(route.permissions[i], guarded)
+			if err != nil {
+				return fmt.Errorf("protect %s: %w", route.pattern, err)
+			}
+			if protected == nil {
+				return fmt.Errorf("protect %s: the protect function returned no handler", route.pattern)
+			}
+			guarded = protected
+		}
+		if err := routes.Handle(route.pattern, guarded); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type [[.Camel]]Pages struct {
+	service  *application.[[.Title]]Service
+	renderer *views.Renderer
+}
+
+// [[.Camel]]Item is a [[.Right.Human]] as the page lists it, or offers it in the select.
+type [[.Camel]]Item struct {
+	ID    uuid.UUID
+	Label string
+}
+
+// [[.Camel]]Page is the data of the page.
+type [[.Camel]]Page struct {
+	Path       string // /[[.Left.Plural]]/{id}/[[.Right.Plural]], where the forms post
+	[[.Left.Title]]ID     uuid.UUID
+	Items      [][[.Camel]]Item
+	NextCursor string
+	Choices    [][[.Camel]]Item
+	Error      string // why the last form was refused
+}
+
+func new[[.Title]]Item(entity domain.[[.Right.Title]]) [[.Camel]]Item {
+	return [[.Camel]]Item{ID: entity.ID, Label: [[if .Right.Label]][[.Right.Label.Access "entity"]][[else]]entity.ID.String()[[end]]}
+}
+
+// Index shows the [[.Left.Human]]'s [[.Right.Plural]], newest first, and the form to add one.
+func (h [[.Camel]]Pages) Index(w http.ResponseWriter, r *http.Request) {
+	[[.Left.Camel]]ID, ok := h.[[.Left.Camel]]ID(w, r)
+	if !ok {
+		return
+	}
+	h.render(w, r, [[.Left.Camel]]ID, http.StatusOK, "")
+}
+
+// Attach gives the [[.Left.Human]] the [[.Right.Human]] the form names, then shows the page
+// again (303, so a reload does not submit twice). A [[.Right.Human]] the caller
+// cannot see shows the page with 422 and the reason, even when the select
+// was bypassed.
+func (h [[.Camel]]Pages) Attach(w http.ResponseWriter, r *http.Request) {
+	[[.Left.Camel]]ID, ok := h.[[.Left.Camel]]ID(w, r)
+	if !ok {
+		return
+	}
+	var form struct {
+		[[.Right.Title]]ID string `form:"[[.Right.Field.Name]]"`
+	}
+	if err := web.DecodeForm(r, &form); err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	[[.Right.Camel]]ID, err := domain.Parse[[.Right.Title]]ID(form.[[.Right.Title]]ID)
+	if err == nil {
+		err = h.service.Attach(r.Context(), [[.Left.Camel]]ID, [[.Right.Camel]]ID)
+	}
+	h.after(w, r, [[.Left.Camel]]ID, err)
+}
+
+// Detach takes the [[.Right.Human]] the path names from the [[.Left.Human]], then shows the page
+// again.
+func (h [[.Camel]]Pages) Detach(w http.ResponseWriter, r *http.Request) {
+	[[.Left.Camel]]ID, ok := h.[[.Left.Camel]]ID(w, r)
+	if !ok {
+		return
+	}
+	[[.Right.Camel]]ID, err := domain.Parse[[.Right.Title]]ID(r.PathValue("[[.Right.Field.Name]]"))
+	if err == nil {
+		err = h.service.Detach(r.Context(), [[.Left.Camel]]ID, [[.Right.Camel]]ID)
+	}
+	h.after(w, r, [[.Left.Camel]]ID, err)
+}
+
+// after answers a form: back to the page when it worked, the page with 422
+// and the reason when the [[.Right.Human]] was refused, the error otherwise.
+func (h [[.Camel]]Pages) after(w http.ResponseWriter, r *http.Request, [[.Left.Camel]]ID uuid.UUID, err error) {
+	switch {
+	case err == nil:
+		if err := web.Redirect(w, [[.Camel]]Path([[.Left.Camel]]ID)); err != nil {
+			web.Error(w, r, err)
+		}
+	case errors.Is(err, domain.Err[[.Title]][[.Right.Title]]NotFound), errors.Is(err, domain.ErrInvalid[[.Right.Title]]ID):
+		message := err.Error()
+		if refused := fault.From(err); refused != nil {
+			message = refused.Message
+		}
+		h.render(w, r, [[.Left.Camel]]ID, http.StatusUnprocessableEntity, message)
+	default:
+		web.Error(w, r, err)
+	}
+}
+
+// [[.Left.Camel]]ID reads the [[.Left.Human]] the path names. When ok is false the response is written.
+func (h [[.Camel]]Pages) [[.Left.Camel]]ID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+	id, err := domain.Parse[[.Left.Title]]ID(r.PathValue("[[.Left.Field.Name]]"))
+	if err != nil {
+		web.Error(w, r, err)
+		return uuid.UUID{}, false
+	}
+	return id, true
+}
+
+func (h [[.Camel]]Pages) render(w http.ResponseWriter, r *http.Request, [[.Left.Camel]]ID uuid.UUID, status int, problem string) {
+	request, err := pagination.FromQuery(r.URL.Query())
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	page, err := h.service.[[.Right.PluralTitle]](r.Context(), [[.Left.Camel]]ID, request)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	choices, err := h.service.[[.Right.Title]]Choices(r.Context())
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	data := [[.Camel]]Page{Path: [[.Camel]]Path([[.Left.Camel]]ID), [[.Left.Title]]ID: [[.Left.Camel]]ID, NextCursor: page.NextCursor, Error: problem}
+	for _, entity := range page.Items {
+		data.Items = append(data.Items, new[[.Title]]Item(entity))
+	}
+	for _, entity := range choices {
+		data.Choices = append(data.Choices, new[[.Title]]Item(entity))
+	}
+	if err := h.renderer.RenderRequest(w, r, "[[.Plural]]/index", status, data); err != nil {
+		web.Error(w, r, err)
+	}
+}
+
+// [[.Camel]]Path is the page of the [[.Left.Human]]'s [[.Right.Plural]].
+func [[.Camel]]Path([[.Left.Camel]]ID uuid.UUID) string {
+	return "/[[.Left.Plural]]/" + [[.Left.Camel]]ID.String() + "/[[.Right.Plural]]"
+}

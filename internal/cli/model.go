@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const modelUsage = "usage: forge generate model NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--dry-run]"
+const modelUsage = "usage: forge generate model NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--on-delete=restrict|cascade] [--dry-run]"
 
 // modelDirectories are the directories a model writes into.
 var modelDirectories = []string{"db/migrations", "app/domain", "app/application", "app/adapters/persistence"}
@@ -61,7 +61,7 @@ func modelWiring(spec resourceSpec) string {
 		fmt.Fprintf(&out, "\t%q\n", path)
 	}
 	out.WriteString("\n  2. Next to the database you opened in Configure:\n\n")
-	fmt.Fprintf(&out, "\t%[1]sService, err := application.New%[2]sService(persistence.New%[2]sRepository(database), time.Now, uuid.New)\n\tif err != nil {\n\t\treturn err\n\t}\n", lowerCamel(spec.Name), title)
+	fmt.Fprintf(&out, "\t%sService, err := %s\n\tif err != nil {\n\t\treturn err\n\t}\n", lowerCamel(spec.Name), serviceConstructor(spec))
 	out.WriteString("\n  The service offers Create, Get, List, Update and Delete; pass it to the code that needs it (Go refuses a variable nothing uses).\n")
 	if spec.TenantScoped {
 		fmt.Fprintf(&out, "\n  %s is tenant-scoped: every call needs a tenant in its context (tenancy.WithContext), or it fails with tenant_required.\n", title)

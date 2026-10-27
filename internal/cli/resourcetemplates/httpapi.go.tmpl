@@ -35,7 +35,8 @@ type [[.Title]]Router interface {
 type [[.Title]]Protect func(permission string, next http.Handler) (http.Handler, error)
 
 // Register[[.PluralTitle]] mounts the [[.Name]] endpoints. Reads require
-// "[[.Plural]]:read" and writes "[[.Plural]]:write".
+// "[[.Plural]]:read" and writes "[[.Plural]]:write".[[range .References]]
+// GET /v1/[[.Plural]]/{[[.Field.Name]]}/[[$.Plural]] lists the [[$.Plural]] of one [[.Human]].[[end]]
 func Register[[.PluralTitle]](router [[.Title]]Router, service *application.[[.Title]]Service, protect [[.Title]]Protect) error {
 	if router == nil || service == nil {
 		return errors.New("httpapi: router and [[.Name]] service are required")
@@ -58,6 +59,9 @@ func Register[[.PluralTitle]](router [[.Title]]Router, service *application.[[.T
 			ID: "create[[.Title]]", Summary: "Create a [[.Name]]", Tags: tags,
 			Request:   [[printf "openapi.TypeOf[%sCreateRequest]" .Name]](),
 			Responses: []openapi.Response{{Status: http.StatusCreated, Body: [[printf "openapi.TypeOf[%sResponse]" .Name]](), Headers: []string{"Location"}}},
+[[- if .References]]
+			Errors:    []int{http.StatusUnprocessableEntity},
+[[- end]]
 		}},
 		{"GET " + [[.Plural]]Path, [[.Plural]]ReadPermission, h.list, openapi.Operation{
 			ID: "list[[.PluralTitle]]", Summary: "List [[.Plural]], newest first", Tags: tags,
@@ -76,7 +80,7 @@ func Register[[.PluralTitle]](router [[.Title]]Router, service *application.[[.T
 			Params:    [[printf "openapi.TypeOf[%sIDParam]" .Name]](),
 			Request:   [[printf "openapi.TypeOf[%sPatchRequest]" .Name]](),
 			Responses: []openapi.Response{[[printf "openapi.JSON[%sResponse]" .Name]](http.StatusOK)},
-			Errors:    []int{http.StatusNotFound, http.StatusConflict},
+			Errors:    []int{http.StatusNotFound, http.StatusConflict[[if .References]], http.StatusUnprocessableEntity[[end]]},
 		}},
 		{"DELETE " + [[.Plural]]Path + "/{id}", [[.Plural]]WritePermission, h.delete, openapi.Operation{
 			ID: "delete[[.Title]]", Summary: "Delete a [[.Name]]", Tags: tags,
@@ -84,6 +88,15 @@ func Register[[.PluralTitle]](router [[.Title]]Router, service *application.[[.T
 			Responses: []openapi.Response{openapi.Empty(http.StatusNoContent)},
 			Errors:    []int{http.StatusBadRequest, http.StatusNotFound, http.StatusConflict},
 		}},
+[[- range .References]]
+		// The [[$.Plural]] of one [[.Human]] (it has many): /v1/[[.Plural]]/{[[.Field.Name]]}/[[$.Plural]].
+		{"GET /v1/[[.Plural]]/{[[.Field.Name]]}/[[$.Plural]]", [[$.Plural]]ReadPermission, h.listBy[[.Title]], openapi.Operation{
+			ID: "list[[.Title]][[$.PluralTitle]]", Summary: "List the [[$.Plural]] of a [[.Human]], newest first", Tags: tags,
+			Params:    [[printf "openapi.TypeOf[%sBy%sParams]" $.Name .Title]](),
+			Responses: []openapi.Response{[[printf "openapi.JSON[pagination.Page[%sResponse]]" $.Name]](http.StatusOK)},
+			Errors:    []int{http.StatusBadRequest, http.StatusNotFound},
+		}},
+[[- end]]
 	}
 	for _, route := range routes {
 		route.operation.Permission = route.permission
@@ -111,6 +124,15 @@ type [[.Name]]DeleteParams struct {
 	[[.Name]]IDParam
 	Version int `query:"version" openapi:"required" doc:"The version the client last read."`
 }
+
+[[- range .References]]
+
+// [[$.Name]]By[[.Title]]Params documents the parameters of the [[.Human]]'s [[$.Plural]].
+type [[$.Name]]By[[.Title]]Params struct {
+	[[.Title]]ID uuid.UUID `path:"[[.Field.Name]]" doc:"The [[.Human]]'s ID."`
+	pagination.Query
+}
+[[- end]]
 
 type [[.Name]]Handlers struct {
 	service *application.[[.Title]]Service
@@ -315,6 +337,34 @@ func (h [[.Name]]Handlers) list(w http.ResponseWriter, r *http.Request) {
 	}
 	web.JSON(w, http.StatusOK, [[printf "pagination.Page[%sResponse]" .Name]]{Items: items, NextCursor: page.NextCursor})
 }
+
+[[- range .References]]
+
+// listBy[[.Title]] lists the [[$.Plural]] of the [[.Human]] the path names; a [[.Human]] the
+// caller cannot see is not found.
+func (h [[$.Name]]Handlers) listBy[[.Title]](w http.ResponseWriter, r *http.Request) {
+	[[.Camel]]ID, err := domain.Parse[[.Title]]ID(r.PathValue("[[.Field.Name]]"))
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	request, err := pagination.FromQuery(r.URL.Query())
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	page, err := h.service.ListBy[[.Title]](r.Context(), [[.Camel]]ID, request)
+	if err != nil {
+		web.Error(w, r, err)
+		return
+	}
+	items := make([][[$.Name]]Response, len(page.Items))
+	for i, entity := range page.Items {
+		items[i] = new[[$.Title]]Response(entity)
+	}
+	web.JSON(w, http.StatusOK, [[printf "pagination.Page[%sResponse]" $.Name]]{Items: items, NextCursor: page.NextCursor})
+}
+[[- end]]
 
 func (h [[.Name]]Handlers) get(w http.ResponseWriter, r *http.Request) {
 	id, err := domain.Parse[[.Title]]ID(r.PathValue("id"))

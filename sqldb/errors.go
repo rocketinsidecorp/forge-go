@@ -48,6 +48,13 @@ type Classification struct {
 // Classifier inspects driver errors for one database.
 type Classifier func(error) Classification
 
+// ErrReferenceViolation is what Translate returns for a foreign key
+// violation: a write named a row that does not exist, or a delete removed one
+// that rows of another table still reference. Recognize it with errors.Is to
+// turn it into a domain error, as generated repositories do (a delete into
+// "still in use", a write into "names no such row"). Never modify it.
+var ErrReferenceViolation = fault.New("reference_violation", "a referenced resource does not exist or is still in use", fault.CategoryConflict, http.StatusConflict)
+
 // Translate maps a database error to a *fault.Error that is safe to return to
 // clients: stable code, generic message, correct HTTP status. The original
 // error stays in the chain for logging. Errors that already are faults pass
@@ -71,7 +78,7 @@ func Translate(err error, classify Classifier) error {
 	case KindUniqueViolation:
 		return withConstraint(newFault("already_exists", "resource already exists", fault.CategoryConflict, http.StatusConflict, false, err), c)
 	case KindForeignKeyViolation:
-		return withConstraint(newFault("reference_violation", "a referenced resource does not exist or is still in use", fault.CategoryConflict, http.StatusConflict, false, err), c)
+		return withConstraint(ErrReferenceViolation.WithCause(err), c)
 	case KindExclusionViolation:
 		return withConstraint(newFault("conflict", "resource conflicts with an existing one", fault.CategoryConflict, http.StatusConflict, false, err), c)
 	case KindInvalidData:

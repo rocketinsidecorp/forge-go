@@ -1,0 +1,129 @@
+package persistence
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/rocketinsidecorp/forge-go/postgres"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
+[[- if .Tenant]]
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+[[- end]]
+	"github.com/rocketinsidecorp/forge-go/uuid"
+)
+
+const (
+	// Attaching twice changes nothing.
+	attach[[.Title]] = [[.Attach.GoLiteral]]
+
+	detach[[.Title]] = [[.Detach.GoLiteral]]
+
+	// A [[.Left.Human]]'s [[.Right.Plural]], newest first.
+	list[[.Title]][[.Right.PluralTitle]]First = [[.ListFirst.GoLiteral]]
+	list[[.Title]][[.Right.PluralTitle]]After = [[.ListAfter.GoLiteral]]
+)
+
+// [[.Title]]Repository is the PostgreSQL application.[[.Title]]Repository over the
+// [[.Plural]] table.
+[[- if .Tenant]]
+//
+// It is tenant-scoped twice over: every statement binds the tenant from
+// tenancy.Require(ctx), and every call runs in InTenantTx behind the table's
+// FORCE ROW LEVEL SECURITY policy. The foreign keys (org_id, [[.Left.Field.Name]]) and
+// (org_id, [[.Right.Field.Name]]) refuse a row of another organization.
+type [[.Title]]Repository struct {
+	db *postgres.DB
+}
+
+// New[[.Title]]Repository returns the repository on db.
+func New[[.Title]]Repository(db *postgres.DB) *[[.Title]]Repository {
+	return &[[.Title]]Repository{db: db}
+}
+
+// run executes fn in a transaction scoped to the context's tenant.
+func (r *[[.Title]]Repository) run(ctx context.Context, fn func(q postgres.DBTX, orgID uuid.UUID) error) error {
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return err
+	}
+	return r.db.InTenantTx(ctx, func(tx pgx.Tx) error { return fn(tx, tenant.ID) })
+}
+[[- else]]
+// It runs on a pool or inside a transaction, whichever postgres.DBTX it is
+// given.
+type [[.Title]]Repository struct {
+	db postgres.DBTX
+}
+
+// New[[.Title]]Repository returns the repository on db.
+func New[[.Title]]Repository(db postgres.DBTX) *[[.Title]]Repository {
+	return &[[.Title]]Repository{db: db}
+}
+
+func (r *[[.Title]]Repository) run(_ context.Context, fn func(q postgres.DBTX) error) error {
+	return fn(r.db)
+}
+[[- end]]
+
+var _ application.[[.Title]]Repository = (*[[.Title]]Repository)(nil)
+
+// Attach records that the [[.Left.Human]] has the [[.Right.Human]].
+func (r *[[.Title]]Repository) Attach(ctx context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID, at time.Time) error {
+	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], orgID uuid.UUID[[end]]) error {
+		_, err := q.Exec(ctx, attach[[.Title]], [[.Attach.ArgList]])
+		return err
+	})
+	if err != nil {
+		return [[.Camel]]WriteError(postgres.Translate(err))
+	}
+	return nil
+}
+
+// Detach removes the [[.Right.Human]] from the [[.Left.Human]].
+func (r *[[.Title]]Repository) Detach(ctx context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID) error {
+	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], orgID uuid.UUID[[end]]) error {
+		_, err := q.Exec(ctx, detach[[.Title]], [[.Detach.ArgList]])
+		return err
+	})
+	return postgres.Translate(err)
+}
+
+// List[[.Right.PluralTitle]] returns up to limit [[.Right.Plural]] of the [[.Left.Human]], newest first, starting
+// after the one with ID after (the zero UUID for the first page).
+func (r *[[.Title]]Repository) List[[.Right.PluralTitle]](ctx context.Context, [[.Left.Camel]]ID, after uuid.UUID, limit int) ([]domain.[[.Right.Title]], error) {
+	var entities []domain.[[.Right.Title]]
+	err := r.run(ctx, func(q postgres.DBTX[[if .Tenant]], orgID uuid.UUID[[end]]) error {
+		var rows pgx.Rows
+		var err error
+		if after == (uuid.UUID{}) {
+			rows, err = q.Query(ctx, list[[.Title]][[.Right.PluralTitle]]First, [[.ListFirst.ArgList]])
+		} else {
+			rows, err = q.Query(ctx, list[[.Title]][[.Right.PluralTitle]]After, [[.ListAfter.ArgList]])
+		}
+		if err != nil {
+			return err
+		}
+		// The [[.Right.Plural]] repository's scanner: the columns are its own.
+		entities, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.[[.Right.Title]], error) { return scan[[.Right.Title]](row) })
+		return err
+	})
+	if err != nil {
+		return nil, postgres.Translate(err)
+	}
+	return entities, nil
+}
+
+// [[.Camel]]WriteError reports an attach the foreign keys refused: the [[.Right.Human]] (or
+// the [[.Left.Human]]) does not exist[[if .Tenant]] in the organization[[end]], or was deleted since the
+// service checked it.
+func [[.Camel]]WriteError(err error) error {
+	if errors.Is(err, sqldb.ErrReferenceViolation) {
+		return domain.Err[[.Title]][[.Right.Title]]NotFound.WithCause(err)
+	}
+	return err
+}

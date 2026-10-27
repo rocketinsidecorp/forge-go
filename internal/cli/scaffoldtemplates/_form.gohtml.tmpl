@@ -17,6 +17,17 @@
 [[- else if .IsText]]
 		<label for="[[$.Name]]_[[.Name]]">{{t "[[$.Plural]].fields.[[.Name]]"}}</label>
 		<textarea id="[[$.Name]]_[[.Name]]" name="[[.Name]]" rows="6"[[if not .Optional]] required[[end]]{{if .Errors.Has "[[.Name]]"}} aria-invalid="true" aria-describedby="[[$.Name]]_[[.Name]]_error"{{end}}>{{.Values.[[.Title]]}}</textarea>
+[[- else if .IsReference]]
+		<label for="[[$.Name]]_[[.Name]]">{{t "[[$.Plural]].fields.[[.Name]]"}}</label>
+		{{- if can "[[.Ref.Plural]]:read"}}
+		<select id="[[$.Name]]_[[.Name]]" name="[[.Name]]"[[if not .Optional]] required[[end]]{{if .Errors.Has "[[.Name]]"}} aria-invalid="true" aria-describedby="[[$.Name]]_[[.Name]]_error"{{end}}>
+			<option value="">{{t "[[$.Plural]].form.choose_[[.Ref.Name]]"}}</option>
+			{{range .[[.Ref.Title]]Choices}}<option value="{{.Value}}"{{if eq .Value $.Values.[[.Title]]}} selected{{end}}>{{.Label}}</option>{{end}}
+		</select>
+		{{- else}}
+		{{- /* Without [[.Ref.Plural]]:read the [[.Ref.Plural]] are not listed: the id is typed in. */}}
+		<input [[.InputAttributes]] id="[[$.Name]]_[[.Name]]" name="[[.Name]]" value="{{.Values.[[.Title]]}}"[[if not .Optional]] required[[end]]{{if .Errors.Has "[[.Name]]"}} aria-invalid="true" aria-describedby="[[$.Name]]_[[.Name]]_error"{{end}}>
+		{{- end}}
 [[- else if .IsBool]]
 		<label for="[[$.Name]]_[[.Name]]">{{t "[[$.Plural]].fields.[[.Name]]"}}</label>
 		<select id="[[$.Name]]_[[.Name]]" name="[[.Name]]"{{if .Errors.Has "[[.Name]]"}} aria-invalid="true" aria-describedby="[[$.Name]]_[[.Name]]_error"{{end}}>

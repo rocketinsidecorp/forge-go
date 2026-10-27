@@ -665,6 +665,78 @@ call `renderer.RenderRequest(w, r, "pages/welcome", http.StatusOK, data)` from a
 HTTP handler (`data` needs `Title` and `Content`). Execution errors happen before
 response headers or body bytes are written.
 
+### Associations: belongs_to, has_many and many-to-many
+
+A comment belongs to a post, a post has many comments, and posts and tags are
+joined many to many ([ADR 0051](docs/adr/0051-associations.md)). From an empty
+directory, with no code edited:
+
+```sh
+forge new blog --auth                # also: forge new blog -d mysql --auth
+cd blog
+forge migrate
+forge setup --email you@example.com
+forge generate scaffold post title:string body:text
+forge generate scaffold comment body:text post:references   # belongs_to; a post has many comments
+forge generate scaffold tag name:string
+forge generate join post tag         # many-to-many: post_tags
+forge migrate && forge dev
+```
+
+With organizations (`forge new blog --tenants`, PostgreSQL), sign up the
+organization and give each table its scope; the join takes its sides':
+
+```sh
+forge new blog --tenants && cd blog
+docker compose up -d --wait postgres
+forge migrate
+forge setup --org acme --email you@example.com
+forge generate scaffold post title:string body:text --org-scoped
+forge generate scaffold comment body:text post:references --org-scoped
+forge generate scaffold tag name:string --org-scoped
+forge generate join post tag
+forge migrate && forge dev
+```
+
+Sign in at `http://localhost:8080/session/new`, create a post, and its page
+shows its comments and tags in Turbo Frames (`/posts/{id}/comments`,
+`/posts/{id}/tags`), with a link to add a comment (the comment form picks
+the post in a select) and forms to tag and untag it. As JSON:
+
+```sh
+curl -s -b "$jar" http://localhost:8080/v1/posts/$post/comments
+curl -s -b "$jar" http://localhost:8080/v1/posts/$post/tags
+curl -s -b "$jar" -H "X-CSRF-Token: $csrf" -H 'Content-Type: application/json' -d "{\"tag_id\":\"$tag\"}" http://localhost:8080/v1/posts/$post/tags
+curl -s -b "$jar" -H "X-CSRF-Token: $csrf" -X DELETE http://localhost:8080/v1/posts/$post/tags/$tag
+```
+
+(`$jar` and `$csrf` as in the sign-in example of the generated README.)
+
+- `post:references` (alias `post:belongs_to`, optional with `post:references?`)
+  is the column `post_id` with an index and a foreign key. With organizations
+  the key is composite, `(org_id, post_id)` to `posts (org_id, id)`, so no row
+  can reference another organization's post even when the application's own
+  checks are bypassed; the first migration that needs it declares
+  `UNIQUE (org_id, id)` on `posts`. A single-organization application gets a
+  plain foreign key. The referenced resource must exist, with the same scope.
+- The service checks the post before it writes: a post id that names no post
+  (or another organization's) is `422 comment_post_not_found`, even when the
+  form's select is tampered with.
+- Deleting a post that still has comments is refused: `409 post_in_use` as
+  JSON, an alert on the post's page. Generate the child with
+  `--on-delete=cascade` to delete its rows with the parent instead
+  (`forge generate scaffold note body:text post:references --on-delete=cascade`).
+- `forge generate join post tag` creates `post_tags` (composite primary key,
+  foreign keys to both sides that cascade), attach, detach and list use cases,
+  `GET|POST /v1/posts/{post_id}/tags`, `DELETE /v1/posts/{post_id}/tags/{tag_id}`
+  and the HTML page the post shows, guarded by `posts:read`/`posts:write` and
+  `tags:read`. `forge destroy join post tag` removes it.
+- `forge destroy` refuses to remove a resource that something still
+  references; `forge generate tenancy` refuses an application with
+  associations (convert first, or create it with `--tenants`).
+- Field types are `string text integer boolean timestamp uuid references`,
+  also spelled `int bool time datetime belongs_to`.
+
 ### Generators
 
 Every generator refuses to overwrite a file, writes nothing when it refuses,

@@ -1,0 +1,196 @@
+package persistence_test
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"testing"
+	"time"
+
+	"[[.Module]]/app/adapters/persistence"
+	"[[.Module]]/app/domain"
+	"[[.Module]]/db"
+
+[[- if .Postgres]]
+	"github.com/rocketinsidecorp/forge-go/postgres/postgrestest"
+[[- else]]
+	"github.com/rocketinsidecorp/forge-go/[[.Database]]/[[.Database]]test"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
+[[- end]]
+[[- if .Tenant]]
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+[[- end]]
+	"github.com/rocketinsidecorp/forge-go/uuid"
+)
+
+// These are integration tests against a migrated database of their own, as
+// the [[.Left.Plural]] and [[.Right.Plural]] tests are.
+
+func new[[.Title]]Repository(t *testing.T) (*persistence.[[.Title]]Repository, [[if .Postgres]]*postgrestest.RLS[[else]]*sqldb.DB[[end]]) {
+	t.Helper()
+[[- if .Postgres]]
+	database := postgrestest.NewRLS(t, db.MigrationSets()...)
+	return persistence.New[[.Title]]Repository(database.Runtime), database
+[[- else]]
+	database := [[.Database]]test.NewMigratedSets(t, db.MigrationSets()...)
+	return persistence.New[[.Title]]Repository(database), database
+[[- end]]
+}
+[[- if .Tenant]]
+
+// new[[.Title]]Tenant creates an organization and returns it and a context
+// carrying it.
+func new[[.Title]]Tenant(t *testing.T, database [[if .Postgres]]*postgrestest.RLS[[else]]*sqldb.DB[[end]]) (tenancy.Tenant, context.Context) {
+	t.Helper()
+	organization, id := uuid.MustNew(), uuid.MustNew()
+	for _, statement := range []struct {
+		sql  string
+		args []any
+	}{
+		{"INSERT INTO forge_organizations (id, name) VALUES ([[if .Postgres]]$1, $2[[else]]?, ?[[end]])", []any{organization, "Test organization"}},
+		{"INSERT INTO forge_tenants (id, organization_id, slug) VALUES ([[if .Postgres]]$1, $2, $3[[else]]?, ?, ?[[end]])", []any{id, organization, "org-" + id.String()}},
+	} {
+[[- if .Postgres]]
+		if _, err := database.Admin.Exec(context.Background(), statement.sql, statement.args...); err != nil {
+[[- else]]
+		if _, err := database.SQL().ExecContext(context.Background(), statement.sql, statement.args...); err != nil {
+[[- end]]
+			t.Fatal(err)
+		}
+	}
+	tenant, err := tenancy.New(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := tenancy.WithContext(context.Background(), tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tenant, ctx
+}
+[[- end]]
+[[.InsertHelpers]]
+
+// [[.Camel]]Rows inserts a [[.Left.Human]] and n [[.Right.Plural]][[if .Tenant]] in the organization[[end]] and returns their ids.
+func [[.Camel]]Rows(t *testing.T, database [[if .Postgres]]*postgrestest.RLS[[else]]*sqldb.DB[[end]][[if .Tenant]], orgID uuid.UUID[[end]], n int) (uuid.UUID, []uuid.UUID) {
+	t.Helper()
+	[[.Left.Camel]] := uuid.MustNew()
+	[[.Left.Child]]Insert[[.Left.Title]](t, database, [[if .Tenant]]orgID, [[end]][[.Left.Camel]])
+	var [[.Right.PluralCamel]] []uuid.UUID
+	for range n {
+		id := uuid.MustNew()
+		[[.Left.Child]]Insert[[.Right.Title]](t, database, [[if .Tenant]]orgID, [[end]]id)
+		[[.Right.PluralCamel]] = append([[.Right.PluralCamel]], id)
+	}
+	return [[.Left.Camel]], [[.Right.PluralCamel]]
+}
+
+// Attaching twice stores one row, the list walks the [[.Left.Human]]'s [[.Right.Plural]] newest
+// first, and detaching removes one.
+func Test[[.Title]]RepositoryAttachListDetach(t *testing.T) {
+	repo, database := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	tenant, ctx := new[[.Title]]Tenant(t, database)
+	[[.Left.Camel]], [[.Right.PluralCamel]] := [[.Camel]]Rows(t, database, tenant.ID, 3)
+[[- else]]
+	ctx := context.Background()
+	[[.Left.Camel]], [[.Right.PluralCamel]] := [[.Camel]]Rows(t, database, 3)
+[[- end]]
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	for _, id := range [[.Right.PluralCamel]] {
+		for range 2 {
+			if err := repo.Attach(ctx, [[.Left.Camel]], id, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	first, err := repo.List[[.Right.PluralTitle]](ctx, [[.Left.Camel]], uuid.UUID{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest, err := repo.List[[.Right.PluralTitle]](ctx, [[.Left.Camel]], first[len(first)-1].ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []uuid.UUID
+	for _, entity := range append(first, rest...) {
+		got = append(got, entity.ID)
+	}
+	want := slices.Clone([[.Right.PluralCamel]])
+	slices.Reverse(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("[[.Right.Plural]] = %v, want %v", got, want)
+	}
+	if err := repo.Detach(ctx, [[.Left.Camel]], [[.Right.PluralCamel]][1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Detach(ctx, [[.Left.Camel]], [[.Right.PluralCamel]][1]); err != nil {
+		t.Fatalf("detaching again: %v", err)
+	}
+	left, err := repo.List[[.Right.PluralTitle]](ctx, [[.Left.Camel]], uuid.UUID{}, 10)
+	if err != nil || len(left) != 2 || left[0].ID != [[.Right.PluralCamel]][2] || left[1].ID != [[.Right.PluralCamel]][0] {
+		t.Fatalf("after detach: %v, %v", left, err)
+	}
+}
+
+// The foreign keys refuse a [[.Right.Human]] that does not exist[[if .Tenant]], and rows of another
+// organization: they are (org_id, [[.Left.Field.Name]]) and (org_id, [[.Right.Field.Name]])[[end]].
+func Test[[.Title]]RepositoryRefusesMissingRows(t *testing.T) {
+	repo, database := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	tenant, ctx := new[[.Title]]Tenant(t, database)
+	[[.Left.Camel]], _ := [[.Camel]]Rows(t, database, tenant.ID, 0)
+[[- else]]
+	ctx := context.Background()
+	[[.Left.Camel]], _ := [[.Camel]]Rows(t, database, 0)
+[[- end]]
+	if err := repo.Attach(ctx, [[.Left.Camel]], uuid.MustNew(), time.Now()); !errors.Is(err, domain.Err[[.Title]][[.Right.Title]]NotFound) {
+		t.Fatalf("missing [[.Right.Human]]: err = %v, want Err[[.Title]][[.Right.Title]]NotFound", err)
+	}
+[[- if .Tenant]]
+	other, otherCtx := new[[.Title]]Tenant(t, database)
+	foreign[[.Left.Title]], foreign[[.Right.PluralTitle]] := [[.Camel]]Rows(t, database, other.ID, 1)
+	if err := repo.Attach(ctx, [[.Left.Camel]], foreign[[.Right.PluralTitle]][0], time.Now()); !errors.Is(err, domain.Err[[.Title]][[.Right.Title]]NotFound) {
+		t.Fatalf("another organization's [[.Right.Human]]: err = %v, want Err[[.Title]][[.Right.Title]]NotFound", err)
+	}
+	if err := repo.Attach(ctx, foreign[[.Left.Title]], foreign[[.Right.PluralTitle]][0], time.Now()); err == nil {
+		t.Fatal("attached another organization's [[.Left.Human]] and [[.Right.Human]] in this organization")
+	}
+	if err := repo.Attach(otherCtx, foreign[[.Left.Title]], foreign[[.Right.PluralTitle]][0], time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := repo.List[[.Right.PluralTitle]](ctx, foreign[[.Left.Title]], uuid.UUID{}, 10); err != nil || len(rows) != 0 {
+		t.Fatalf("this organization lists %d of another's [[.Right.Plural]] (%v)", len(rows), err)
+	}
+[[- end]]
+}
+
+// A join row goes with either side: deleting the [[.Right.Human]] or the [[.Left.Human]] is not
+// refused, and removes it.
+func Test[[.Title]]RowsGoWithEitherSide(t *testing.T) {
+	repo, database := new[[.Title]]Repository(t)
+[[- if .Tenant]]
+	tenant, ctx := new[[.Title]]Tenant(t, database)
+	[[.Left.Camel]], [[.Right.PluralCamel]] := [[.Camel]]Rows(t, database, tenant.ID, 2)
+[[- else]]
+	ctx := context.Background()
+	[[.Left.Camel]], [[.Right.PluralCamel]] := [[.Camel]]Rows(t, database, 2)
+[[- end]]
+	for _, id := range [[.Right.PluralCamel]] {
+		if err := repo.Attach(ctx, [[.Left.Camel]], id, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := persistence.New[[.Right.Title]]Repository(database[[if .Postgres]].Runtime[[end]]).Delete(ctx, [[.Right.PluralCamel]][0], 1); err != nil {
+		t.Fatalf("delete an attached [[.Right.Human]]: %v", err)
+	}
+	if rows, err := repo.List[[.Right.PluralTitle]](ctx, [[.Left.Camel]], uuid.UUID{}, 10); err != nil || len(rows) != 1 || rows[0].ID != [[.Right.PluralCamel]][1] {
+		t.Fatalf("after deleting a [[.Right.Human]]: %v, %v", rows, err)
+	}
+	if err := persistence.New[[.Left.Title]]Repository(database[[if .Postgres]].Runtime[[end]]).Delete(ctx, [[.Left.Camel]], 1); err != nil {
+		t.Fatalf("delete a [[.Left.Human]] with [[.Right.Plural]]: %v", err)
+	}
+	if rows, err := repo.List[[.Right.PluralTitle]](ctx, [[.Left.Camel]], uuid.UUID{}, 10); err != nil || len(rows) != 0 {
+		t.Fatalf("after deleting the [[.Left.Human]]: %v, %v", rows, err)
+	}
+}

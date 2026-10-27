@@ -15,7 +15,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/i18n"
 )
 
-const scaffoldUsage = "usage: forge generate scaffold NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--broadcast] [--public] [--dry-run]"
+const scaffoldUsage = "usage: forge generate scaffold NAME field:type... [--org-scoped | --global] [--plural PLURAL] [--on-delete=restrict|cascade] [--broadcast] [--public] [--dry-run]"
 
 // scaffoldReservedPlurals are the first path segments the application or the
 // view tree already owns: /assets and /health are routes Forge registers,
@@ -121,6 +121,21 @@ func planScaffoldFiles(projectRoot *os.Root, spec *resourceSpec) ([]generatedFil
 			return nil, err
 		}
 		files = append(files, generatedFile{path: filepath.Join("app", "views", spec.Plural, page.name+".gohtml"), content: content})
+	}
+	for _, reference := range view.References {
+		content, err := renderScaffoldTemplate("by_reference.gohtml.tmpl", byReferenceView{scaffoldView: view, Ref: reference})
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, generatedFile{path: filepath.Join("app", "views", spec.Plural, "by_"+reference.Name+".gohtml"), content: content})
+	}
+	entries, err := associationEntries(projectRoot, spec.resourceRequest)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, generatedFile{path: associationsPath(spec.Plural), content: renderAssociations(spec.resourceRequest, entries)})
+	if spec.rewrites, err = parentRewrites(projectRoot, *spec); err != nil {
+		return nil, err
 	}
 	if spec.Destroy {
 		// The views base and the live-update transport are shared with the

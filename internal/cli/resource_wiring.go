@@ -314,14 +314,14 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 			spec.Module + "/app/application",
 			"github.com/rocketinsidecorp/forge-go/uuid",
 		},
-		Usage: fmt.Sprintf(`	%[1]sService, err := application.New%[2]sService(persistence.New%[2]sRepository(database), time.Now, uuid.New)
+		Usage: fmt.Sprintf(`	%[1]sService, err := %[5]s
 	if err != nil {
 		return err
 	}
 	if err := httpapi.Register%[3]s(app, %[1]sService, %[4]s); err != nil {
 		return err
 	}
-`, lowerCamel(spec.Name), title, plural, spec.guard("protect")),
+`, lowerCamel(spec.Name), title, plural, spec.guard("protect"), serviceConstructor(spec)),
 	}
 	if spec.Identity {
 		parts.Where = "inside identityRoutes, after the `middleware, err := auth.NewMiddleware(repository)` statement and its error check"
@@ -338,7 +338,7 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 			// itself any permission. Writes to rows every tenant reads need
 			// authorization above the tenant.
 			parts.PlatformGuard = platformWriteGuard
-			parts.Usage = fmt.Sprintf(`	%[1]sService, err := application.New%[2]sService(persistence.New%[2]sRepository(database), time.Now, uuid.New)
+			parts.Usage = fmt.Sprintf(`	%[1]sService, err := %[6]s
 	if err != nil {
 		return err
 	}
@@ -350,7 +350,7 @@ func buildResourceRoutesWiring(spec resourceSpec) resourceWiringParts {
 	}); err != nil {
 		return err
 	}
-`, lowerCamel(spec.Name), title, plural, spec.Plural+":write", spec.guard("protect"))
+`, lowerCamel(spec.Name), title, plural, spec.Plural+":write", spec.guard("protect"), serviceConstructor(spec))
 			parts.Notes = append(parts.Notes, fmt.Sprintf("%s is global: its read route uses %s:read, but its write routes stay denied until protectPlatformWrite authorizes platform operators.", spec.Plural, spec.Plural))
 		}
 		return parts
@@ -496,6 +496,20 @@ func formatWiring(kind, subject string, parts resourceWiringParts, then string) 
 	}
 	fmt.Fprintf(&out, "\n  Then: %s\n", then)
 	return out.String()
+}
+
+// serviceConstructor is the call that builds the resource's use cases on the
+// database: its repository, then the repository of every resource it
+// references (the service checks references against them).
+func serviceConstructor(spec resourceSpec) string {
+	title := exportedName(spec.Name)
+	call := "application.New" + title + "Service(persistence.New" + title + "Repository(database), "
+	for _, field := range spec.Fields {
+		if field.References != "" {
+			call += "persistence.New" + exportedName(field.References) + "Repository(database), "
+		}
+	}
+	return call + "time.Now, uuid.New)"
 }
 
 // lowerCamel converts snake_case to a lower-camel Go identifier

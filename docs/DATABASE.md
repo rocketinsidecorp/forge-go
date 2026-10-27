@@ -648,7 +648,7 @@ original error stays in the chain (`Cause`) for logs and
 | `timeout` | 503 | yes | `context.DeadlineExceeded`; `57014` | `context.DeadlineExceeded`; `3024` (MySQL), `1969` (MariaDB) | `context.DeadlineExceeded`; `SQLITE_INTERRUPT` |
 | `canceled` | 503 | yes | `context.Canceled` | `context.Canceled` | `context.Canceled` |
 | `already_exists` | 409 | no | `23505` | `1062` | `SQLITE_CONSTRAINT_UNIQUE`, `SQLITE_CONSTRAINT_PRIMARYKEY` |
-| `reference_violation` | 409 | no | `23503` | `1451`, `1452` | `SQLITE_CONSTRAINT_FOREIGNKEY` |
+| `reference_violation` (`sqldb.ErrReferenceViolation`) | 409 | no | `23503`, `23001` (`ON DELETE RESTRICT`) | `1451`, `1452` | `SQLITE_CONSTRAINT_FOREIGNKEY`, and `SQLITE_CONSTRAINT_TRIGGER` with the foreign key message (`ON DELETE RESTRICT`) |
 | `conflict` | 409 | no | `23P01` exclusion | - | - |
 | `constraint_violation` | 400 | no | `23514` check, `22001`, `22003`, `22007`, `22008` | `3819` (MySQL check), `4025` (MariaDB check), `1406` too long, `1264` out of range, `1292` bad value | `SQLITE_CONSTRAINT_CHECK`, `SQLITE_CONSTRAINT_DATATYPE` (STRICT type mismatch) |
 | `transaction_conflict` | 409 | yes | `40001`, `40P01` | `1213`, `1205` | `SQLITE_BUSY`, `SQLITE_LOCKED` |

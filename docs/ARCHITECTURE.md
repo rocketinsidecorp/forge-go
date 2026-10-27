@@ -566,8 +566,8 @@ a rule weakened by mistake fails the test. `internal/cli` generates an
 application with a scaffold, a model, a controller, a mailer and jobs, requires
 the test to pass, injects one forbidden import per rule (including with a
 module path without a dot) and requires the failure message to name the file
-and the import. Forge-Rust does not generate this test yet: it is planned
-after forge-go reaches 100% (decision D37, see [RAILS_PARITY.md](RAILS_PARITY.md)).
+and the import. Forge-Rust generates its own `tests/architecture.rs` (syntactic, over
+`use` trees); see [RAILS_PARITY.md](RAILS_PARITY.md), row `architecture-test`.
 
 ## Resource generator
 

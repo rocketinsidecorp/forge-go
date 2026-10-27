@@ -208,8 +208,8 @@ func TestScaffoldPagesFollowTheFieldTypes(t *testing.T) {
 		resourceRequest: resourceRequest{
 			Name: "ticket", Plural: "tickets", Scaffold: true,
 			Fields: []resourceField{
-				{"subject", "string", false}, {"details", "text", true}, {"priority", "int", false}, {"urgent", "bool", false},
-				{"escalated", "bool", true}, {"due_at", "time", true}, {"owner_id", "uuid", false},
+				{Name: "subject", Type: "string", Optional: false}, {Name: "details", Type: "text", Optional: true}, {Name: "priority", Type: "int", Optional: false}, {Name: "urgent", Type: "bool", Optional: false},
+				{Name: "escalated", Type: "bool", Optional: true}, {Name: "due_at", Type: "time", Optional: true}, {Name: "owner_id", Type: "uuid", Optional: false},
 			},
 		},
 		Module: "example.com/shop", Database: "sqlite",

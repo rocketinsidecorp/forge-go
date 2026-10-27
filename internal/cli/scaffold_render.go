@@ -287,6 +287,9 @@ func (v scaffoldView) Translations(locale string) (string, error) {
 		fields[field.Name] = field.Label()
 		optionalBool = optionalBool || (field.IsBool() && field.Optional)
 	}
+	for _, reference := range v.References {
+		fields[reference.Field.Name] = capitalize(reference.Human)
+	}
 	form := map[string]any{
 		"errors": "This " + v.Human + " could not be saved:",
 		"submit": "Save " + v.Human,
@@ -296,6 +299,9 @@ func (v scaffoldView) Translations(locale string) (string, error) {
 	}
 	if optionalBool {
 		form["yes"], form["no"] = "Yes", "No"
+	}
+	for _, reference := range v.References {
+		form["choose_"+reference.Name] = "Choose a " + reference.Human
 	}
 	scope := map[string]any{
 		"back":   "Back to " + v.PluralHuman,
@@ -327,11 +333,35 @@ func (v scaffoldView) Translations(locale string) (string, error) {
 			"updated": v.HumanTitle + " was updated.",
 			"deleted": v.HumanTitle + " was deleted.",
 			"stale":   v.HumanTitle + " was not deleted because it changed since you opened it. Review it and try again.",
+			"in_use":  v.HumanTitle + " was not deleted because other records still refer to it. Delete them first.",
 		},
+	}
+	for _, reference := range v.References {
+		scope["by_"+reference.Name] = map[string]any{"title": v.PluralHumanTitle}
 	}
 	content, err := json.MarshalIndent(map[string]any{locale: map[string]any{v.Plural: scope}}, "", "  ")
 	if err != nil {
 		return "", err
 	}
 	return string(content) + "\n", nil
+}
+
+// byReferenceView is the data of a scaffold's nested index page
+// (by_post.gohtml): the scaffold and the references field it lists by.
+type byReferenceView struct {
+	scaffoldView
+	Ref referenceView
+}
+
+// ItemLabel is the template expression that names a row in a list: its first
+// string field, else its first text field, else its id.
+func (v scaffoldView) ItemLabel() string {
+	for _, kind := range []string{"string", "text"} {
+		for _, f := range v.Fields {
+			if f.Type == kind && !f.Optional {
+				return "." + f.Title
+			}
+		}
+	}
+	return ".ID"
 }

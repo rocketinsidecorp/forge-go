@@ -47,6 +47,12 @@ type resourceView struct {
 	SQLite   bool
 	Fields   []fieldView
 	SQL      sqlStatements
+	// References are the references fields (belongs_to), with the resource
+	// each one references.
+	References []referenceView
+	// Cascade is --on-delete=cascade: deleting a referenced row deletes the
+	// rows that reference it.
+	Cascade bool
 
 	HasText      bool // a string or text field exists (validation helpers)
 	HasString    bool
@@ -66,6 +72,9 @@ type fieldView struct {
 	Message    string // public error message
 	Resource   string // Product
 	Camel      string // product: the resource in lower camel case, for identifiers
+	// Ref is the resource a references field references, nil for any other
+	// field.
+	Ref *referenceView
 }
 
 func (f fieldView) IsString() bool { return f.Type == "string" }
@@ -74,6 +83,36 @@ func (f fieldView) IsInt() bool    { return f.Type == "int" }
 func (f fieldView) IsBool() bool   { return f.Type == "bool" }
 func (f fieldView) IsTime() bool   { return f.Type == "time" }
 func (f fieldView) IsUUID() bool   { return f.Type == "uuid" }
+
+// IsReference reports a references field (post:references is post_id).
+func (f fieldView) IsReference() bool { return f.References != "" }
+
+// referenceView is a references field and the resource it references, as
+// the templates read them.
+type referenceView struct {
+	Field fieldView
+	// The referenced resource: post, Post, posts, Posts, post, posts, "post".
+	Name, Title, Plural, PluralTitle, Camel, PluralCamel, Human string
+	// Scaffold reports that the referenced resource has pages (its show
+	// page links the referencing rows).
+	Scaffold bool
+	// AddsKey reports that this migration declares the referenced table's
+	// UNIQUE (org_id, id), which the composite foreign key needs.
+	AddsKey bool
+	// Constraint and Index name the foreign key and its index.
+	Constraint, Index string
+	// ListFirst and ListAfter list the rows that reference one row, newest
+	// first (the nested index).
+	ListFirst, ListAfter statement
+	// Parent is the referenced resource's own view.
+	Parent resourceView
+	// Label is the referenced resource's field that names a row in a select
+	// (its first required string field), or nil for the id.
+	Label *fieldView
+	// Child is the referencing resource in lower camel case (comment), the
+	// prefix of the test doubles' names.
+	Child string
+}
 
 // Validated reports whether the domain checks values of this field's type
 // beyond what JSON decoding already guarantees.
@@ -141,7 +180,47 @@ func newResourceView(spec resourceSpec) resourceView {
 	}
 	view.HasText = view.HasString || view.HasTextType
 	view.SQL = buildStatements(view)
+	view.Cascade = spec.Cascade
+	for _, reference := range spec.references {
+		view.References = append(view.References, newReferenceView(spec, view, reference))
+	}
+	for i := range view.Fields {
+		for j := range view.References {
+			if view.References[j].Field.Name == view.Fields[i].Name {
+				view.Fields[i].Ref = &view.References[j]
+			}
+		}
+	}
 	return view
+}
+
+// newReferenceView resolves one references field of view (spec's) for the
+// templates.
+func newReferenceView(spec resourceSpec, view resourceView, reference referenceSpec) referenceView {
+	parent := newResourceView(resourceSpec{
+		resourceRequest: reference.parent, Module: spec.Module, Database: spec.Database,
+		Identity: spec.Identity, Organizations: spec.Organizations, references: reference.parents,
+	})
+	result := referenceView{
+		Name: parent.Name, Title: parent.Title, Plural: parent.Plural, PluralTitle: parent.PluralTitle,
+		Camel: lowerCamel(parent.Name), PluralCamel: lowerCamel(parent.Plural), Human: strings.ReplaceAll(parent.Name, "_", " "),
+		Scaffold: reference.parent.Scaffold, AddsKey: reference.addsKey,
+		Constraint: view.Plural + "_" + reference.field.Name + "_fk", Index: view.Plural + "_" + reference.field.Name + "_idx",
+		Parent: parent, Child: lowerCamel(view.Name),
+	}
+	for _, field := range view.Fields {
+		if field.Name == reference.field.Name {
+			result.Field = field
+		}
+	}
+	for _, field := range parent.Fields {
+		if field.IsString() && !field.Optional {
+			result.Label = &field
+			break
+		}
+	}
+	result.ListFirst, result.ListAfter = listByStatements(view, reference.field.Name, result.Camel+"ID")
+	return result
 }
 
 func fieldMessage(f fieldView) string {
@@ -492,8 +571,8 @@ func renderResource(spec resourceSpec) (renderedResource, error) {
 }
 
 // generatorCommand is the canonical command line of request: the generator,
-// the name, the fields with their canonical types, the plural and the flags
-// that change what is rendered.
+// the name, the fields with their canonical (decision D22) types, the plural
+// and the flags that change what is rendered.
 func generatorCommand(request resourceRequest) string {
 	kind := "resource"
 	switch {
@@ -504,13 +583,19 @@ func generatorCommand(request resourceRequest) string {
 	}
 	parts := []string{kind, request.Name}
 	for _, field := range request.Fields {
-		declaration := field.Name + ":" + field.Type
+		declaration := field.Name + ":" + canonicalFieldType(field.Type)
+		if field.References != "" {
+			declaration = field.References + ":references"
+		}
 		if field.Optional {
 			declaration += "?"
 		}
 		parts = append(parts, declaration)
 	}
 	parts = append(parts, "--plural", request.Plural)
+	if request.Cascade {
+		parts = append(parts, "--on-delete", "cascade")
+	}
 	for _, flag := range []struct {
 		set  bool
 		name string

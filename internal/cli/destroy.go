@@ -14,7 +14,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
-const destroyUsage = `usage: forge destroy <model|resource|scaffold|controller|mailer|job|view> ARGUMENTS... [--force] [--migrations] [--dry-run]
+const destroyUsage = `usage: forge destroy <model|resource|scaffold|join|controller|mailer|job|view> ARGUMENTS... [--force] [--migrations] [--dry-run]
        ARGUMENTS are the ones the generator was run with: forge destroy scaffold post title:string --tenant-scoped`
 
 // runDestroy is `forge destroy`, the counterpart of `forge generate` (Rails'
@@ -65,6 +65,13 @@ type destroyPlan struct {
 	// "unwire"): it is written once the files are removed.
 	routes     []byte
 	routesVerb string
+	// keyDependents, when set, says why the generation's migration may not
+	// be removed (--migrations): it declares a unique key that other
+	// associations' foreign keys reference.
+	keyDependents string
+	// rewrites take a scaffold's frame out of the referenced scaffolds'
+	// _associations.gohtml.
+	rewrites []fileRewrite
 	// ownedElsewhere, when set, says why the files belong to a bigger
 	// generation (a model inside a resource or scaffold, a view a controller
 	// renders): removing them alone would break the application, so the
@@ -80,16 +87,23 @@ func planDestroy(generator string, args []string, root string, env []string, now
 			return destroyPlan{}, err
 		}
 		request.Destroy = true
+		if err := refuseReferenced(root, request); err != nil {
+			return destroyPlan{}, err
+		}
 		spec, files, err := planResource(root, request, env, now)
 		if err != nil {
 			return destroyPlan{}, err
 		}
-		line := fmt.Sprintf("%[1]sService, err := application.New%[2]sService(persistence.New%[2]sRepository(database), time.Now, uuid.New)", lowerCamel(spec.Name), exportedName(spec.Name))
+		keys, err := keyDependentsRefusal(root, spec, false)
+		if err != nil {
+			return destroyPlan{}, err
+		}
+		line := fmt.Sprintf("%sService, err := %s", lowerCamel(spec.Name), serviceConstructor(spec))
 		owned, err := httpLayerOf(root, "model", spec.Name)
 		if err != nil {
 			return destroyPlan{}, err
 		}
-		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + spec.Name + " use cases you built: " + line, ownedElsewhere: owned}, nil
+		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + spec.Name + " use cases you built: " + line, ownedElsewhere: owned, keyDependents: keys}, nil
 	case "resource", "scaffold":
 		usage := resourceUsage
 		if generator == "scaffold" {
@@ -100,6 +114,9 @@ func planDestroy(generator string, args []string, root string, env []string, now
 			return destroyPlan{}, err
 		}
 		request.Destroy = true
+		if err := refuseReferenced(root, request); err != nil {
+			return destroyPlan{}, err
+		}
 		var extend planExtension
 		if generator == "scaffold" {
 			request.Scaffold = true
@@ -115,7 +132,11 @@ func planDestroy(generator string, args []string, root string, env []string, now
 				return destroyPlan{}, err
 			}
 		}
-		plan := destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + generator + " wiring:\n" + buildResourceWiring(spec).Usage, ownedElsewhere: owned}
+		keys, err := keyDependentsRefusal(root, spec, false)
+		if err != nil {
+			return destroyPlan{}, err
+		}
+		plan := destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + generator + " wiring:\n" + buildResourceWiring(spec).Usage, ownedElsewhere: owned, rewrites: spec.rewrites, keyDependents: keys}
 		if spec.Seam {
 			wiring, err := planResourceSeam(root, spec, true)
 			if err != nil {
@@ -158,11 +179,29 @@ func planDestroy(generator string, args []string, root string, env []string, now
 		return planDestroyJob(args, root)
 	case "view":
 		return planDestroyView(args, root)
+	case "join":
+		return planDestroyJoin(args, root, env, now)
 	case "migration":
 		return destroyPlan{}, errors.New("forge destroy does not remove migrations: one that ran is part of the database's history. Revert it with `forge rollback` and delete db/migrations/<version>_NAME.{up,down}.sql yourself")
 	default:
 		return destroyPlan{}, usageError{fmt.Sprintf("unknown generator %q\n%s", generator, destroyUsage)}
 	}
+}
+
+// refuseReferenced refuses to destroy a resource that other resources or
+// joins still reference: their foreign keys need its table, and their code
+// its repository. They are destroyed first, migrations included.
+func refuseReferenced(root string, request resourceRequest) error {
+	projectRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return errors.New("go.mod not found: run this inside a Forge application")
+	}
+	defer func() { _ = projectRoot.Close() }()
+	found, err := dependents(projectRoot, request.Name)
+	if err != nil || len(found) == 0 {
+		return err
+	}
+	return fmt.Errorf("refusing to destroy %s, nothing was removed: %s still reference it (foreign keys to %s, and code that reads it). Destroy them first, with `forge rollback` and --migrations for their migrations, then %s", request.Name, strings.Join(found, ", "), request.Plural, request.Name)
 }
 
 // httpLayerOf reports, for `destroy model` or `destroy resource`, the HTTP
@@ -284,6 +323,11 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 	if plan.ownedElsewhere != "" && !force {
 		return errors.New("refusing to destroy, nothing was removed: " + plan.ownedElsewhere)
 	}
+	if plan.keyDependents != "" && migrations {
+		// --force does not override it: it is about the database, not
+		// about edited files.
+		return errors.New("refusing to destroy with --migrations, nothing was removed: " + plan.keyDependents)
+	}
 
 	var actions []destroyAction
 	var kept []string
@@ -332,6 +376,18 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 		return fmt.Errorf("refusing to destroy: %d file(s) differ from what this generator would write from these arguments (edited since, generated with other arguments, or written by another generator), so nothing was removed:\n  %s\nReview them, or pass --force to remove them anyway", len(modified), strings.Join(modified, "\n  "))
 	}
 	unwire := plan.routesVerb == "unwire"
+	rewrites, err := checkRewrites(root, plan.rewrites, false)
+	if err != nil && !force {
+		return err
+	}
+	if err != nil {
+		// --force: the edited file keeps its frame, which now loads a page
+		// that no longer exists; say so.
+		rewrites = nil
+		for _, rewrite := range plan.rewrites {
+			actions = append(actions, destroyAction{rewrite.path, "keep", "edited since it was generated: remove the frame of this scaffold by hand"})
+		}
+	}
 	if len(removable) == 0 && len(kept) > 0 && !unwire {
 		return fmt.Errorf("nothing to destroy but the migrations, which are kept:\n  %s\nRevert them with `forge rollback` if they ran, then run this command again with --migrations", strings.Join(kept, "\n  "))
 	}
@@ -356,6 +412,18 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 				return err
 			}
 		}
+		for _, rewrite := range rewrites {
+			if err := writeRootFileAtomic(root, rewrite.path, []byte(rewrite.to)); err != nil {
+				return err
+			}
+		}
+	}
+	for _, rewrite := range rewrites {
+		verb := "update"
+		if plan.dryRun {
+			verb = "would update"
+		}
+		actions = append(actions, destroyAction{rewrite.path, verb, "the frame of this scaffold is taken out"})
 	}
 	for _, action := range actions {
 		verb := action.verb

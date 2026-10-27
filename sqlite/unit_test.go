@@ -77,6 +77,8 @@ func TestClassifyResult(t *testing.T) {
 			sqldb.KindInvalidData, "tasks.position", "constraint_violation", http.StatusBadRequest, false},
 		{"not null is a server bug", sqlite3.SQLITE_CONSTRAINT_NOTNULL, driverMessage("NOT NULL constraint failed: tasks.title", 1299),
 			sqldb.KindUnknown, "", "internal_error", http.StatusInternalServerError, false},
+		{"restricted delete", sqlite3.SQLITE_CONSTRAINT_TRIGGER, driverMessage("FOREIGN KEY constraint failed", 1811),
+			sqldb.KindForeignKeyViolation, "", "reference_violation", http.StatusConflict, false},
 		{"other constraint", sqlite3.SQLITE_CONSTRAINT_TRIGGER, driverMessage("raised by trigger", 1811),
 			sqldb.KindUnknown, "", "internal_error", http.StatusInternalServerError, false},
 		{"busy", sqlite3.SQLITE_BUSY, "database is locked (5) (SQLITE_BUSY)",

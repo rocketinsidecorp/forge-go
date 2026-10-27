@@ -1,0 +1,100 @@
+package application
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"[[.Module]]/app/domain"
+	"github.com/rocketinsidecorp/forge-go/pagination"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+)
+
+// [[.Title]]Repository stores which [[.Right.Plural]] a [[.Left.Human]] has: the [[.Plural]] join
+// table. Implementations report a write whose [[.Right.Human]] does not exist as
+// domain.Err[[.Title]][[.Right.Title]]NotFound.
+[[- if .Tenant]]
+//
+// The repository is tenant-scoped: every method takes the tenant from the
+// context (tenancy.Require) and never reads or writes another tenant's rows.
+[[- end]]
+type [[.Title]]Repository interface {
+	// Attach records that the [[.Left.Human]] has the [[.Right.Human]], at; attaching twice
+	// changes nothing.
+	Attach(ctx context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID, at time.Time) error
+	// Detach removes the [[.Right.Human]] from the [[.Left.Human]]; detaching one it does not
+	// have changes nothing.
+	Detach(ctx context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID) error
+	// List[[.Right.PluralTitle]] returns up to limit [[.Right.Plural]] of the [[.Left.Human]], newest first,
+	// starting after the one with id after (or from the newest).
+	List[[.Right.PluralTitle]](ctx context.Context, [[.Left.Camel]]ID, after uuid.UUID, limit int) ([]domain.[[.Right.Title]], error)
+}
+
+// [[.Title]]Service implements the use cases of the [[.Left.Human]]-[[.Right.Human]] association:
+// a [[.Left.Human]] has many [[.Right.Plural]] and a [[.Right.Human]] has many [[.Left.Plural]]. Both rows
+// must be ones the caller can see[[if .Tenant]] (of its own organization)[[end]]. It is safe for
+// concurrent use when its repositories are.
+type [[.Title]]Service struct {
+	repository [[.Title]]Repository
+	[[.Left.PluralCamel]] [[.Left.Title]]Repository
+	[[.Right.PluralCamel]] [[.Right.Title]]Repository
+	now        func() time.Time
+}
+
+// New[[.Title]]Service wires the use cases on the join's repository and the two
+// sides' repositories. now is injected so tests control time; production
+// passes time.Now.
+func New[[.Title]]Service(repository [[.Title]]Repository, [[.Left.PluralCamel]] [[.Left.Title]]Repository, [[.Right.PluralCamel]] [[.Right.Title]]Repository, now func() time.Time) (*[[.Title]]Service, error) {
+	if repository == nil || [[.Left.PluralCamel]] == nil || [[.Right.PluralCamel]] == nil || now == nil {
+		return nil, errors.New("application: [[.Plural]] repository, [[.Left.Human]] repository, [[.Right.Human]] repository and clock are required")
+	}
+	return &[[.Title]]Service{repository: repository, [[.Left.PluralCamel]]: [[.Left.PluralCamel]], [[.Right.PluralCamel]]: [[.Right.PluralCamel]], now: now}, nil
+}
+
+// Attach gives the [[.Left.Human]] the [[.Right.Human]]. A [[.Left.Human]] the caller cannot see is
+// domain.Err[[.Left.Title]]NotFound, a [[.Right.Human]] domain.Err[[.Title]][[.Right.Title]]NotFound.
+func (s *[[.Title]]Service) Attach(ctx context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID) error {
+	if _, err := s.[[.Left.PluralCamel]].Get(ctx, [[.Left.Camel]]ID); err != nil {
+		return err
+	}
+	if _, err := s.[[.Right.PluralCamel]].Get(ctx, [[.Right.Camel]]ID); err != nil {
+		if errors.Is(err, domain.Err[[.Right.Title]]NotFound) {
+			return domain.Err[[.Title]][[.Right.Title]]NotFound
+		}
+		return err
+	}
+	return s.repository.Attach(ctx, [[.Left.Camel]]ID, [[.Right.Camel]]ID, s.now().UTC().Truncate(time.Microsecond))
+}
+
+// Detach takes the [[.Right.Human]] from the [[.Left.Human]]. A [[.Left.Human]] the caller cannot see is
+// domain.Err[[.Left.Title]]NotFound.
+func (s *[[.Title]]Service) Detach(ctx context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID) error {
+	if _, err := s.[[.Left.PluralCamel]].Get(ctx, [[.Left.Camel]]ID); err != nil {
+		return err
+	}
+	return s.repository.Detach(ctx, [[.Left.Camel]]ID, [[.Right.Camel]]ID)
+}
+
+// [[.Right.PluralTitle]] returns one page of the [[.Left.Human]]'s [[.Right.Plural]], newest first. A zero limit means
+// pagination.DefaultLimit; limits above pagination.MaxLimit are capped.
+func (s *[[.Title]]Service) [[.Right.PluralTitle]](ctx context.Context, [[.Left.Camel]]ID uuid.UUID, request pagination.Request) (pagination.Page[domain.[[.Right.Title]]], error) {
+	if _, err := s.[[.Left.PluralCamel]].Get(ctx, [[.Left.Camel]]ID); err != nil {
+		return pagination.Page[domain.[[.Right.Title]]]{}, err
+	}
+	limit := request.Limit
+	if limit < 1 {
+		limit = pagination.DefaultLimit
+	}
+	limit = min(limit, pagination.MaxLimit)
+	rows, err := s.repository.List[[.Right.PluralTitle]](ctx, [[.Left.Camel]]ID, request.After, limit+1)
+	if err != nil {
+		return pagination.Page[domain.[[.Right.Title]]]{}, err
+	}
+	return pagination.NewPage(rows, limit, func(entity domain.[[.Right.Title]]) uuid.UUID { return entity.ID }), nil
+}
+
+// [[.Right.Title]]Choices returns the newest [[.Right.Plural]] a [[.Left.Human]] can be given, at most
+// pagination.MaxLimit of them, for a form's select.
+func (s *[[.Title]]Service) [[.Right.Title]]Choices(ctx context.Context) ([]domain.[[.Right.Title]], error) {
+	return s.[[.Right.PluralCamel]].List(ctx, uuid.UUID{}, pagination.MaxLimit)
+}

@@ -1,0 +1,115 @@
+package persistence
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/rocketinsidecorp/forge-go/[[.Database]]"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
+[[- if .Tenant]]
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+[[- end]]
+	"github.com/rocketinsidecorp/forge-go/uuid"
+)
+
+const (
+	// Attaching twice changes nothing.
+	attach[[.Title]] = [[.Attach.GoLiteral]]
+
+	detach[[.Title]] = [[.Detach.GoLiteral]]
+
+	// A [[.Left.Human]]'s [[.Right.Plural]], newest first.
+	list[[.Title]][[.Right.PluralTitle]]First = [[.ListFirst.GoLiteral]]
+	list[[.Title]][[.Right.PluralTitle]]After = [[.ListAfter.GoLiteral]]
+)
+
+// [[.Title]]Repository is the [[.Database]] application.[[.Title]]Repository over the [[.Plural]]
+// table. It runs on a pool or inside a transaction, whichever sqldb.DBTX it is
+// given.
+[[- if .Tenant]]
+//
+// It is tenant-scoped: every method takes the tenant from tenancy.Require(ctx)
+// and binds it in every statement, and the foreign keys (org_id, [[.Left.Field.Name]]) and
+// (org_id, [[.Right.Field.Name]]) refuse a row of another organization. [[if .SQLite]]SQLite[[else]]MySQL and MariaDB[[end]] have no
+// row-level security, so this is the only isolation (ADR 0017).
+[[- end]]
+type [[.Title]]Repository struct {
+	db sqldb.DBTX
+}
+
+var _ application.[[.Title]]Repository = (*[[.Title]]Repository)(nil)
+
+// New[[.Title]]Repository returns the repository on db.
+func New[[.Title]]Repository(db sqldb.DBTX) *[[.Title]]Repository {
+	return &[[.Title]]Repository{db: db}
+}
+
+// Attach records that the [[.Left.Human]] has the [[.Right.Human]].
+func (r *[[.Title]]Repository) Attach(ctx context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID, at time.Time) error {
+[[- if .Tenant]]
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return err
+	}
+	orgID := tenant.ID
+[[- end]]
+	if _, err := r.db.ExecContext(ctx, attach[[.Title]], [[.Attach.ArgList]]); err != nil {
+		return [[.Camel]]WriteError([[.Database]].Translate(err))
+	}
+	return nil
+}
+
+// Detach removes the [[.Right.Human]] from the [[.Left.Human]].
+func (r *[[.Title]]Repository) Detach(ctx context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID) error {
+[[- if .Tenant]]
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return err
+	}
+	orgID := tenant.ID
+[[- end]]
+	if _, err := r.db.ExecContext(ctx, detach[[.Title]], [[.Detach.ArgList]]); err != nil {
+		return [[.Database]].Translate(err)
+	}
+	return nil
+}
+
+// List[[.Right.PluralTitle]] returns up to limit [[.Right.Plural]] of the [[.Left.Human]], newest first, starting
+// after the one with ID after (the zero UUID for the first page).
+func (r *[[.Title]]Repository) List[[.Right.PluralTitle]](ctx context.Context, [[.Left.Camel]]ID, after uuid.UUID, limit int) ([]domain.[[.Right.Title]], error) {
+[[- if .Tenant]]
+	tenant, err := tenancy.Require(ctx)
+	if err != nil {
+		return nil, err
+	}
+	orgID := tenant.ID
+	var rows *sql.Rows
+[[- else]]
+	var rows *sql.Rows
+	var err error
+[[- end]]
+	if after == (uuid.UUID{}) {
+		rows, err = r.db.QueryContext(ctx, list[[.Title]][[.Right.PluralTitle]]First, [[.ListFirst.ArgList]])
+	} else {
+		rows, err = r.db.QueryContext(ctx, list[[.Title]][[.Right.PluralTitle]]After, [[.ListAfter.ArgList]])
+	}
+	if err != nil {
+		return nil, [[.Database]].Translate(err)
+	}
+	// The [[.Right.Plural]] repository's scanner: the columns are its own.
+	return collect[[.Right.PluralTitle]](rows)
+}
+
+// [[.Camel]]WriteError reports an attach the foreign keys refused: the [[.Right.Human]] (or
+// the [[.Left.Human]]) does not exist[[if .Tenant]] in the organization[[end]], or was deleted since the
+// service checked it.
+func [[.Camel]]WriteError(err error) error {
+	if errors.Is(err, sqldb.ErrReferenceViolation) {
+		return domain.Err[[.Title]][[.Right.Title]]NotFound.WithCause(err)
+	}
+	return err
+}

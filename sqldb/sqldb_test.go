@@ -64,6 +64,15 @@ func TestTranslateMapsEveryKind(t *testing.T) {
 	if sqldb.Translate(nil, classifyFake) != nil {
 		t.Error("nil must stay nil")
 	}
+	// A foreign key violation is recognizable as the sentinel, keeps its
+	// constraint for logs, and never changes the sentinel itself.
+	violation := sqldb.Translate(kindError{sqldb.Classification{Kind: sqldb.KindForeignKeyViolation, Constraint: "comments_post_id_fk"}}, classifyFake)
+	if !errors.Is(violation, sqldb.ErrReferenceViolation) || fault.From(violation).Metadata["constraint"] != "comments_post_id_fk" {
+		t.Errorf("foreign key violation: %+v", fault.From(violation))
+	}
+	if sqldb.ErrReferenceViolation.Metadata != nil || sqldb.ErrReferenceViolation.Cause != nil {
+		t.Errorf("Translate changed the sentinel: %+v", sqldb.ErrReferenceViolation)
+	}
 	existing := fault.New("task_not_found", "task not found", fault.CategoryNotFound, 0)
 	if !errors.Is(sqldb.Translate(existing, classifyFake), existing) {
 		t.Error("faults must pass through")

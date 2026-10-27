@@ -102,3 +102,18 @@ tenant explicitly or call `tenancy.Require(ctx)`. This application-layer rule
 is weaker than PostgreSQL RLS; the framework does not claim otherwise. A
 future adapter API may make scoped repositories easier, but it must not imply
 database enforcement that the database does not provide.
+
+## Associations between org-scoped tables
+
+A references field between org-scoped tables (`forge generate scaffold
+comment body:text post:references --org-scoped`) and a join (`forge generate
+join post tag`) get composite foreign keys, `(org_id, post_id)` to `posts
+(org_id, id)`, on PostgreSQL, MySQL, MariaDB and SQLite alike, so a row can
+reference only rows of its own organization even when the application's
+checks are bypassed; PostgreSQL's referential checks ignore row-level
+security, so the key holds whatever the policy says. The generated service
+checks the reference through the parent's org-scoped repository first, so a
+foreign id is a `422` field error rather than a database error. A global
+table and an org-scoped one never reference each other: the generators
+refuse it. `forge generate tenancy` refuses an application that already has
+associations ([ADR 0051](adr/0051-associations.md)).

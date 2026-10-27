@@ -537,9 +537,11 @@ refuses, naming the file in the way.
 
 An application generated before this option mounts all of them;
 `forge generate authentication` lists the ones its `bootstrap.go` still
-mounts. Remove those no API client or script uses. Forge-Rust has no JSON
-login (its applications sign in through the pages only), so the flag is
-Forge-Go's ([RAILS_PARITY.md](RAILS_PARITY.md#parity-follow-ups)).
+mounts. Remove those no API client or script uses. Forge-Rust has the same
+flag with the login, logout and session routes; its MFA completion, recovery
+and cookie routes are tracked in
+[forge-rust#82](https://github.com/rocketinsidecorp/forge-rust/issues/82)
+([RAILS_PARITY.md](RAILS_PARITY.md), row `json-auth-routes`).
 
 ### Password-reset emails
 

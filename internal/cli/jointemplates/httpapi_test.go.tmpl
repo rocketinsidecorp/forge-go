@@ -1,0 +1,204 @@
+package httpapi_test
+
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	forge "github.com/rocketinsidecorp/forge-go"
+	"[[.Module]]/app/adapters/httpapi"
+	"[[.Module]]/app/application"
+	"[[.Module]]/app/domain"
+	"github.com/rocketinsidecorp/forge-go/uuid"
+)
+
+// [[.Camel]]MemoryRepository keeps the handler tests independent of any database.
+type [[.Camel]]MemoryRepository struct {
+	mu   sync.Mutex
+	rows map[uuid.UUID]map[uuid.UUID]time.Time
+}
+
+var _ application.[[.Title]]Repository = (*[[.Camel]]MemoryRepository)(nil)
+
+func (r *[[.Camel]]MemoryRepository) Attach(_ context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.rows[ [[.Left.Camel]]ID] == nil {
+		r.rows[ [[.Left.Camel]]ID] = make(map[uuid.UUID]time.Time)
+	}
+	if _, ok := r.rows[ [[.Left.Camel]]ID][ [[.Right.Camel]]ID]; !ok {
+		r.rows[ [[.Left.Camel]]ID][ [[.Right.Camel]]ID] = at
+	}
+	return nil
+}
+
+func (r *[[.Camel]]MemoryRepository) Detach(_ context.Context, [[.Left.Camel]]ID, [[.Right.Camel]]ID uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.rows[ [[.Left.Camel]]ID], [[.Right.Camel]]ID)
+	return nil
+}
+
+func (r *[[.Camel]]MemoryRepository) List[[.Right.PluralTitle]](_ context.Context, [[.Left.Camel]]ID, after uuid.UUID, limit int) ([]domain.[[.Right.Title]], error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var ids []uuid.UUID
+	for id := range r.rows[ [[.Left.Camel]]ID] {
+		if after == (uuid.UUID{}) || id.Compare(after) < 0 {
+			ids = append(ids, id)
+		}
+	}
+	slices.SortFunc(ids, func(a, b uuid.UUID) int { return cmp.Compare(0, a.Compare(b)) })
+	var page []domain.[[.Right.Title]]
+	for _, id := range ids[:min(limit, len(ids))] {
+		page = append(page, domain.[[.Right.Title]]{ID: id})
+	}
+	return page, nil
+}
+[[.ReferenceStubs]]
+
+// new[[.Title]]HandlerFor serves the routes from a forge.App, checking every
+// response against the OpenAPI document the routes declare.
+func new[[.Title]]HandlerFor(t *testing.T, protect httpapi.[[.Title]]Protect) http.Handler {
+	t.Helper()
+	repo := &[[.Camel]]MemoryRepository{rows: make(map[uuid.UUID]map[uuid.UUID]time.Time)}
+	service, err := application.New[[.Title]]Service(repo,[[.StubArgs]] time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := httpapi.Register[[.PluralTitle]](app, service, protect); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := app.OpenAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if undocumented := spec.Undocumented(); len(undocumented) != 0 {
+		t.Fatalf("undocumented routes: %v", undocumented)
+	}
+	return spec.CheckResponses(app.Handler(), func(r *http.Request, err error) {
+		t.Errorf("%s %s: the response does not match the OpenAPI document: %v", r.Method, r.URL, err)
+	})
+}
+
+func [[.Camel]]Send(t *testing.T, handler http.Handler, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, target, strings.NewReader(body))
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func [[.Camel]]Expect(t *testing.T, recorder *httptest.ResponseRecorder, status int) {
+	t.Helper()
+	if recorder.Code != status {
+		t.Fatalf("status %d, want %d; body %s", recorder.Code, status, recorder.Body)
+	}
+}
+
+func [[.Camel]]Listed(t *testing.T, handler http.Handler, target string) []string {
+	t.Helper()
+	recorder := [[.Camel]]Send(t, handler, http.MethodGet, target, "")
+	[[.Camel]]Expect(t, recorder, http.StatusOK)
+	var page struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, item := range page.Items {
+		ids = append(ids, item.ID)
+	}
+	return ids
+}
+
+func [[.Camel]]AllowAll(_ string, next http.Handler) (http.Handler, error) { return next, nil }
+
+// Attach (twice changes nothing), list and detach, as JSON.
+func Test[[.Title]]Routes(t *testing.T) {
+	t.Parallel()
+	handler := new[[.Title]]HandlerFor(t, [[.Camel]]AllowAll)
+	path := "/v1/[[.Left.Plural]]/" + uuid.MustNew().String() + "/[[.Right.Plural]]"
+	[[.Right.Camel]] := uuid.MustNew().String()
+	for range 2 {
+		[[.Camel]]Expect(t, [[.Camel]]Send(t, handler, http.MethodPost, path, `{"[[.Right.Field.Name]]":"`+[[.Right.Camel]]+`"}`), http.StatusNoContent)
+	}
+	if got := [[.Camel]]Listed(t, handler, path); !slices.Equal(got, []string{[[.Right.Camel]]}) {
+		t.Fatalf("listed %v, want [%s]", got, [[.Right.Camel]])
+	}
+	[[.Camel]]Expect(t, [[.Camel]]Send(t, handler, http.MethodDelete, path+"/"+[[.Right.Camel]], ""), http.StatusNoContent)
+	if got := [[.Camel]]Listed(t, handler, path); len(got) != 0 {
+		t.Fatalf("listed %v after detach", got)
+	}
+}
+
+func Test[[.Title]]RouteErrors(t *testing.T) {
+	t.Parallel()
+	handler := new[[.Title]]HandlerFor(t, [[.Camel]]AllowAll)
+	path := "/v1/[[.Left.Plural]]/" + uuid.MustNew().String() + "/[[.Right.Plural]]"
+	missing := "/v1/[[.Left.Plural]]/" + [[.Left.MissingVar]].String() + "/[[.Right.Plural]]"
+	for _, check := range []struct {
+		name, method, target, body string
+		status                     int
+		code                       string
+	}{
+		{"missing [[.Right.Human]]", http.MethodPost, path, `{"[[.Right.Field.Name]]":"` + [[.Right.MissingVar]].String() + `"}`, http.StatusUnprocessableEntity, "[[.Name]]_[[.Right.Name]]_not_found"},
+		{"missing [[.Left.Human]]", http.MethodPost, missing, `{"[[.Right.Field.Name]]":"` + uuid.MustNew().String() + `"}`, http.StatusNotFound, "[[.Left.Name]]_not_found"},
+		{"list of a missing [[.Left.Human]]", http.MethodGet, missing, "", http.StatusNotFound, "[[.Left.Name]]_not_found"},
+		{"detach from a missing [[.Left.Human]]", http.MethodDelete, missing + "/" + uuid.MustNew().String(), "", http.StatusNotFound, "[[.Left.Name]]_not_found"},
+		{"no [[.Right.Field.Name]]", http.MethodPost, path, `{}`, http.StatusBadRequest, "invalid_[[.Right.Name]]_id"},
+		{"malformed [[.Right.Field.Name]]", http.MethodPost, path, `{"[[.Right.Field.Name]]":"nope"}`, http.StatusBadRequest, "invalid_[[.Right.Name]]_id"},
+		{"malformed [[.Left.Human]] id", http.MethodGet, "/v1/[[.Left.Plural]]/nope/[[.Right.Plural]]", "", http.StatusBadRequest, "invalid_[[.Left.Name]]_id"},
+	} {
+		recorder := [[.Camel]]Send(t, handler, check.method, check.target, check.body)
+		if recorder.Code != check.status || !strings.Contains(recorder.Body.String(), `"`+check.code+`"`) {
+			t.Errorf("%s: %d %s, want %d with %s", check.name, recorder.Code, recorder.Body, check.status, check.code)
+		}
+	}
+}
+
+// Every route asks the guard for the [[.Left.Human]]'s permission first, then
+// [[.Right.Plural]]:read.
+func Test[[.Title]]ProtectIsAskedForEveryRoute(t *testing.T) {
+	t.Parallel()
+	var asked []string
+	new[[.Title]]HandlerFor(t, func(permission string, next http.Handler) (http.Handler, error) {
+		asked = append(asked, permission)
+		return next, nil
+	})
+	want := []string{"[[.Right.Plural]]:read", "[[.Left.Plural]]:read", "[[.Right.Plural]]:read", "[[.Left.Plural]]:write", "[[.Right.Plural]]:read", "[[.Left.Plural]]:write"}
+	if !slices.Equal(asked, want) {
+		t.Fatalf("protect asked for %v, want %v", asked, want)
+	}
+	if err := httpapi.Register[[.PluralTitle]](nil, nil, nil); err == nil {
+		t.Fatal("Register accepted no router, service or guard")
+	}
+	app, err := forge.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := application.New[[.Title]]Service(&[[.Camel]]MemoryRepository{},[[.StubArgs]] time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := httpapi.Register[[.PluralTitle]](app, service, nil); err == nil {
+		t.Fatal("Register accepted no guard: the routes would be public")
+	}
+}
