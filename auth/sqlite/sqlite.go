@@ -20,6 +20,7 @@ import (
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/auth/internal/setupcmd"
 	"github.com/rocketinsidecorp/forge-go/auth/internal/sqlidentity"
+	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/sqldb"
 	forgesqlite "github.com/rocketinsidecorp/forge-go/sqlite"
 )
@@ -109,7 +110,7 @@ func SetupOrganizations(enabled bool) SetupOption {
 // The password comes from FORGE_SETUP_PASSWORD, one line of standard input
 // (--password-stdin) or a terminal prompt, never an argument.
 func SetupCommand(options ...SetupOption) forge.Command {
-	config := setupcmd.Config{Organizations: true, Provision: provision}
+	config := setupcmd.Config{Organizations: true, Provision: sqlidentity.Provision(open, dialect)}
 	for _, option := range options {
 		if option != nil {
 			option(&config)
@@ -118,34 +119,13 @@ func SetupCommand(options ...SetupOption) forge.Command {
 	return setupcmd.Command(config)
 }
 
-func provision(ctx context.Context, env forge.CommandEnv, account setupcmd.Account) (setupcmd.Provisioned, error) {
-	database, err := forgesqlite.Open(ctx, env.Config.Database)
-	if err != nil {
-		return setupcmd.Provisioned{}, err
-	}
-	defer func() { _ = database.Close() }()
-	repository, err := New(database)
-	if err != nil {
-		return setupcmd.Provisioned{}, err
-	}
-	owner, err := repository.ProvisionOwner(ctx, OwnerAccount{
-		Organization: account.OrganizationName,
-		TenantSlug:   account.OrgSlug,
-		Email:        account.Email,
-		Password:     account.Password,
-	})
-	if err != nil {
-		return setupcmd.Provisioned{}, err
-	}
-	return setupcmd.Provisioned{Email: owner.Email, OrgSlug: owner.TenantSlug, Permissions: len(owner.Permissions)}, nil
-}
-
 // Migrations returns the identity migrations rooted at "." so they can be
 // passed to forge-go/sqlite.CommandsFromSets or sqlitetest.NewMigrated.
 func Migrations() fs.FS {
-	sub, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		panic(err) // unreachable: "migrations" is an embedded directory
-	}
-	return sub
+	return sqlidentity.Migrations(migrations)
+}
+
+// open opens the database setup provisions.
+func open(ctx context.Context, cfg config.Database) (*sqldb.DB, error) {
+	return forgesqlite.Open(ctx, cfg)
 }

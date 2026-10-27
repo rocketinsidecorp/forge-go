@@ -5,10 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 
+	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/auth/internal/setupcmd"
+	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
@@ -133,4 +137,41 @@ func (r *Repository) ProvisionOwner(ctx context.Context, account OwnerAccount) (
 		return ProvisionedOwner{}, err
 	}
 	return owner, nil
+}
+
+// Provision is setup's Provision for dialect: it opens the database env
+// configures with open, creates the first organization and owner with
+// ProvisionOwner and closes the database.
+func Provision(open func(context.Context, config.Database) (*sqldb.DB, error), dialect *Dialect) func(context.Context, forge.CommandEnv, setupcmd.Account) (setupcmd.Provisioned, error) {
+	return func(ctx context.Context, env forge.CommandEnv, account setupcmd.Account) (_ setupcmd.Provisioned, err error) {
+		database, err := open(ctx, env.Config.Database)
+		if err != nil {
+			return setupcmd.Provisioned{}, err
+		}
+		defer func() { err = errors.Join(err, database.Close()) }()
+		repository, err := New(database, dialect)
+		if err != nil {
+			return setupcmd.Provisioned{}, err
+		}
+		owner, err := repository.ProvisionOwner(ctx, OwnerAccount{
+			Organization: account.OrganizationName,
+			TenantSlug:   account.OrgSlug,
+			Email:        account.Email,
+			Password:     account.Password,
+		})
+		if err != nil {
+			return setupcmd.Provisioned{}, err
+		}
+		return setupcmd.Provisioned{Email: owner.Email, OrgSlug: owner.TenantSlug, Permissions: len(owner.Permissions)}, nil
+	}
+}
+
+// Migrations returns the "migrations" directory of an adapter's embedded
+// files, rooted at ".".
+func Migrations(embedded fs.FS) fs.FS {
+	sub, err := fs.Sub(embedded, "migrations")
+	if err != nil {
+		panic(err) // unreachable: the adapters embed a "migrations" directory
+	}
+	return sub
 }
