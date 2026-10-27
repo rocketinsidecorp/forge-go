@@ -66,6 +66,20 @@ that file by hand: it carries a checksum, the generators refuse to touch it afte
 removes their blocks. Change `app/bootstrap/bootstrap.go` for your own wiring. To replace a generated guard
 function, copy it out of `routes_gen.go` into another file of package `bootstrap`, change it there and run any
 `forge generate` command again; until then the build fails with "redeclared", never silently.
+{{- if not .API}}
+
+## Front end
+{{if .JS}}
+Stimulus controllers are plain JavaScript in `app/javascript/controllers`, served through the import map with
+digested asset names; there is no bundler and no Node toolchain to run.
+{{- else}}
+Stimulus controllers are TypeScript in `app/javascript/**/*.ts` (`tsconfig.json`, typings in
+`app/javascript/types`). `forge build`, `forge test`, `forge check` and `forge deploy` compile them into
+`app/javascript/dist`, which is committed and embedded: never edit `dist` by hand (its header hashes fail
+`go test`), commit it together with the `.ts` sources, and review its diff like code. `forge dev` compiles into a
+temporary overlay and leaves `dist` alone. `forge check` also runs `tsc --noEmit` when `tsc` is installed.
+{{- end}}
+{{- end}}
 
 ## Security defaults
 

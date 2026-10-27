@@ -31,6 +31,7 @@ func TestGeneratedAgentsGuideMatchesTheApplication(t *testing.T) {
 		{"postgresql", scaffold.Options{Database: "postgresql"}, true, true, true, true},
 		{"sqlite", scaffold.Options{Database: "sqlite"}, true, true, false, false},
 		{"mysql", scaffold.Options{Database: "mysql"}, true, true, false, false},
+		{"sqlite js", scaffold.Options{Database: "sqlite", JS: true}, true, true, false, false},
 		{"api postgresql", scaffold.Options{Database: "postgresql", API: true}, true, false, false, true},
 		{"api sqlite", scaffold.Options{Database: "sqlite", API: true}, true, false, false, false},
 		{"no database", scaffold.Options{}, false, true, false, false},
@@ -87,6 +88,9 @@ func TestGeneratedAgentsGuideMatchesTheApplication(t *testing.T) {
 				"runtime roles":   {"app_runtime", c.roles},
 				"migrator role":   {"app_migrator", c.roles},
 				"test files":      {"`_test.go` files too", true},
+				"TypeScript":      {"never edit `dist` by hand", c.browser && !c.options.JS},
+				"tsc":             {"tsc --noEmit", c.browser && !c.options.JS},
+				"plain JS":        {"plain JavaScript", c.browser && c.options.JS},
 			} {
 				if got := strings.Contains(guide, want.text); got != want.present {
 					t.Errorf("AGENTS.md mentions %s (%q) = %v, want %v", feature, want.text, got, want.present)
