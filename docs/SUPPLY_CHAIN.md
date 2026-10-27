@@ -268,6 +268,44 @@ digests as its compose file and the framework's CI
 (`internal/scaffold/database.go`), and Dependabot does not update CI service
 images: bump them together, by hand, in one change.
 
+## TypeScript: esbuild and tsc
+
+Generated applications use TypeScript by default
+([ADR 0049](adr/0049-typescript-by-default.md)). Two third-party programs are
+involved, both pinned to one exact version and both optional for running an
+application:
+
+| | esbuild | tsc (TypeScript) |
+| --- | --- | --- |
+| Role | strips types from `app/javascript/**/*.ts`; linked into the `forge` command (`github.com/evanw/esbuild/pkg/api`, `Transform` only) | checks types (`tsc --noEmit`); never part of any binary |
+| Version | `v0.28.2` in `go.mod` and `go.sum` (`frontend.EsbuildVersion`; a test compares them), released 2026-08-08 | `6.0.3` (`frontend.TypeScriptVersion`), released 2026-04-16 |
+| Licence | MIT | Apache-2.0 |
+| Reaches | the `forge` binary only; no application, no `forge-proxy`, no core package (`TestEsbuildIsLinkedOnlyByTheForgeCommandLine`) | the developer's machine and the two CI jobs that run `tsc --noEmit` |
+| Dependencies | none of its own: one `go.mod` edge to `golang.org/x/sys`, which already resolves to Forge's `v0.49.0`; pure Go, no cgo, no `os/exec`, no install or build scripts run by `go` | none: the one pure-JavaScript package, no install scripts. 6.0.x rather than 7.x on purpose: 7.0 is a native compiler that installs a platform binary package besides `typescript` |
+| Installed by | `go install` / `go build` (checksummed in `go.sum`, `go mod verify`) | `npm install --global --ignore-scripts typescript@6.0.3`, the one npm package any workflow installs (`TestTypeScriptCheckerIsTheOnlyNpmPackageAndIsPinned`) |
+
+Updating either is a reviewed change, never an automatic one:
+
+```sh
+# esbuild: pick a release at least two weeks old, read its changelog, then
+go get github.com/evanw/esbuild@v0.28.3 && go mod tidy && go mod verify
+go list -deps ./cmd/forge | grep evanw              # still only pkg/api and its internal packages
+go list -deps -f '{{join .Imports "\n"}}' github.com/evanw/esbuild/pkg/api | sort -u   # no new os/exec, plugin or network import
+# set frontend.EsbuildVersion to the new version, regenerate dist of the templates' tests, update the ADR
+go test ./internal/frontend ./internal/scaffold .
+
+# tsc: change frontend.TypeScriptVersion and the same version in .github/workflows/ci.yml and
+# internal/scaffold/templates/ci.yml.tmpl together (the test requires both), then
+go test -count=1 -run 'TypeScript' . ./internal/cli
+```
+
+Dependabot proposes esbuild through the Go module updates it already opens;
+treat that pull request like any other new-code review (diff the module, look
+for new imports of `os/exec`, `net`, `plugin` or `unsafe` in the packages
+`pkg/api` links). It cannot update the `tsc` version, which sits in workflow
+`run:` text. The generated application's own `go.sum` lists esbuild because it
+sits in Forge's module graph, but its `go.mod` and its binary do not.
+
 ## Threat model and residual risk
 
 Engineering decisions D6 and D8 (2026-10-25). The supply-chain gate is
@@ -354,6 +392,10 @@ model: a bypass inside the lists' scope is a defect to fix in the gate.
   `release.yml`, so a tag on a commit that removed it skips it. Protect `v*`
   tags with a repository ruleset, and when verifying an image also check that
   the certificate's source commit is on `main`.
+- `npm install` of `tsc` fetches from the npm registry by exact version and
+  integrity-checks the tarball, but there is no lockfile and the registry is
+  trusted for that release; `--ignore-scripts` means no package code runs at
+  install. It affects type checking only, never what is built or shipped.
 - Signatures prove which workflow built an image from which commit, not that
   the commit is benign: review still guards `main`.
 - Binary SBOMs are workflow artifacts (90 days for releases); they are not

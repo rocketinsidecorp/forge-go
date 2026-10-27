@@ -62,6 +62,7 @@ func TestGenerateTenancyConvertsASingleOrganizationApplication(t *testing.T) {
 		"convert  " + filepath.Join("app", "adapters", "persistence", "product.go"),
 		"convert  " + filepath.Join("app", "adapters", "persistence", "tag.go"),
 		"rewrite  " + scaffold.AppFile,
+		"rewrite  " + scaffold.AgentsFile,
 		"Org-scoped now: products, tags",
 		"notes stays global",
 		`belong to the organization "acme"`,
@@ -71,7 +72,7 @@ func TestGenerateTenancyConvertsASingleOrganizationApplication(t *testing.T) {
 		}
 	}
 	// The converted code is what --org-scoped generates.
-	for _, path := range []string{"app/domain/product.go", "app/application/product.go", "app/adapters/persistence/product.go", "app/adapters/persistence/product_test.go", "app/adapters/httpapi/product.go", "app/adapters/htmlui/product.go", scaffold.AppFile} {
+	for _, path := range []string{"app/domain/product.go", "app/application/product.go", "app/adapters/persistence/product.go", "app/adapters/persistence/product_test.go", "app/adapters/httpapi/product.go", "app/adapters/htmlui/product.go", scaffold.AppFile, scaffold.AgentsFile} {
 		if readFile(t, filepath.Join(dir, filepath.FromSlash(path))) != readFile(t, filepath.Join(want, filepath.FromSlash(path))) {
 			t.Errorf("%s differs from forge new --tenants with an --org-scoped scaffold", path)
 		}

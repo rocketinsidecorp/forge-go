@@ -7,6 +7,19 @@ validation, principal permissions, explicit approval for destructive/external
 actions, and a mandatory journal. Forge does not call an LLM or provide an
 autonomous action catalog; the application owns those integrations.
 
+## The generated AGENTS.md
+
+`forge new` writes `AGENTS.md` into the application: the rings and the
+architecture test (`app/architecture_test.go`), the commands, the routes seam,
+the security defaults and how to run the tests, in under 120 lines and only for
+what that application has (no CSRF paragraph in an `--api` application, no
+migrations without a database, no sign-in without PostgreSQL). It is a starting
+point: edit it as the application grows. The template is
+`internal/scaffold/templates/AGENTS.md.tmpl`;
+`internal/cli/agents_guide_test.go` fails when it names a command or a file
+that does not exist. Tools that read only `CLAUDE.md` can import it with a
+`CLAUDE.md` that contains `@AGENTS.md`.
+
 ## Discover before acting
 
 ```sh

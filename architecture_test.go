@@ -132,3 +132,86 @@ func TestCoreThirdPartyImportsAreScopedToTheirImporter(t *testing.T) {
 		}
 	}
 }
+
+// esbuildModule compiles the TypeScript front end of generated applications
+// (ADR 0049). It is tooling: only the forge command line may link it, never a
+// package that handles requests, and never an application built with Forge.
+const esbuildModule = "github.com/evanw/esbuild"
+
+// esbuildReachers are the only packages that may import esbuild, directly or
+// through another package: internal/frontend wraps it, internal/scaffold
+// compiles the TypeScript it generates, internal/cli runs the compiler for
+// forge dev, build, check and test, and cmd/forge is the program.
+var esbuildReachers = []string{
+	modulePath + "/cmd/forge",
+	modulePath + "/internal/cli",
+	modulePath + "/internal/frontend",
+	modulePath + "/internal/scaffold",
+}
+
+// esbuildReachingPackages returns the packages of listing, the output of
+// go list -f '{{.ImportPath}}{{range .Imports}} {{.}}{{end}}' ./..., that
+// import esbuild directly or through other listed packages, sorted.
+func esbuildReachingPackages(listing string) []string {
+	imports := map[string][]string{}
+	for line := range strings.Lines(listing) {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			imports[fields[0]] = fields[1:]
+		}
+	}
+	reaches := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		for pkg, imported := range imports {
+			if reaches[pkg] {
+				continue
+			}
+			for _, dep := range imported {
+				if dep == esbuildModule || strings.HasPrefix(dep, esbuildModule+"/") || reaches[dep] {
+					reaches[pkg], changed = true, true
+					break
+				}
+			}
+		}
+	}
+	var result []string
+	for pkg := range reaches {
+		result = append(result, pkg)
+	}
+	slices.Sort(result)
+	return result
+}
+
+func TestEsbuildIsLinkedOnlyByTheForgeCommandLine(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go list")
+	}
+	t.Parallel()
+	output, err := exec.Command("go", "list", "-f", "{{.ImportPath}}{{range .Imports}} {{.}}{{end}}", "./...").CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list: %v\n%s", err, output)
+	}
+	got := esbuildReachingPackages(string(output))
+	if !slices.Equal(got, esbuildReachers) {
+		t.Fatalf("packages that link esbuild: %v\nonly %v may (ADR 0049): esbuild is build tooling and must not reach request handling, the framework's packages or the applications built with them", got, esbuildReachers)
+	}
+}
+
+func TestEsbuildReachingPackagesFollowsImportsAndSortsThem(t *testing.T) {
+	t.Parallel()
+	listing := strings.Join([]string{
+		modulePath + "/cmd/forge " + modulePath + "/internal/cli fmt",
+		modulePath + "/internal/cli " + modulePath + "/internal/frontend",
+		modulePath + "/internal/frontend " + esbuildModule + "/pkg/api",
+		modulePath + "/web net/http",
+		modulePath + "/middle " + modulePath + "/web " + modulePath + "/internal/frontend",
+		"",
+	}, "\n")
+	want := []string{modulePath + "/cmd/forge", modulePath + "/internal/cli", modulePath + "/internal/frontend", modulePath + "/middle"}
+	if got := esbuildReachingPackages(listing); !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if got := esbuildReachingPackages(modulePath + "/web net/http\n"); len(got) != 0 {
+		t.Errorf("a package that imports no esbuild was reported: %v", got)
+	}
+}

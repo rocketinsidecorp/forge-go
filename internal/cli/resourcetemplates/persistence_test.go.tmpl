@@ -19,7 +19,7 @@ import (
 
 	"[[.Module]]/app/adapters/persistence"
 	"[[.Module]]/app/domain"
-	"[[.Module]]/app/bootstrap"
+	"[[.Module]]/db"
 
 	"github.com/rocketinsidecorp/forge-go/fault"
 [[- if .Postgres]]
@@ -49,15 +49,15 @@ func new[[.Title]]Repository(t *testing.T) (*persistence.[[.Title]]Repository, [
 	t.Helper()
 [[- if .Postgres]]
 	// Migrated, as the application's migrate command does
-	// (bootstrap.MigrationSets), as the migration role that owns the schema.
+	// (db.MigrationSets), as the migration role that owns the schema.
 	// The repository runs as the runtime role the application serves with:
 	// not a superuser, no BYPASSRLS, not the owner, only data privileges.
-	database := postgrestest.NewRLS(t, bootstrap.MigrationSets()...)
+	database := postgrestest.NewRLS(t, db.MigrationSets()...)
 	return persistence.New[[.Title]]Repository(database.Runtime), database
 [[- else]]
 	// Migrated as the application's migrate command does
-	// (bootstrap.MigrationSets).
-	database := [[.Database]]test.NewMigratedSets(t, bootstrap.MigrationSets()...)
+	// (db.MigrationSets).
+	database := [[.Database]]test.NewMigratedSets(t, db.MigrationSets()...)
 	return persistence.New[[.Title]]Repository(database), database
 [[- end]]
 }

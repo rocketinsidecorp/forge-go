@@ -62,9 +62,16 @@ func runGenerateAuthentication(args []string, stdout io.Writer, root string, env
 		fmt.Fprintf(&out, "  %s  %s\n", verb, file.path)
 	}
 	fmt.Fprintf(&out, "  %s  %s\n", wire, scaffold.AppFile)
+	fmt.Fprintf(&out, "  %s  %s\n", wire, scaffold.SetsFile)
 	fmt.Fprintf(&out, "  %s  %s\n", strings.Replace(wire, "rewrite", "wire", 1), scaffold.RoutesFile)
+	if plan.agents.content != nil {
+		fmt.Fprintf(&out, "  %s  %s\n", wire, scaffold.AgentsFile)
+	}
 	if plan.mfaKey != "" {
 		fmt.Fprintf(&out, "  %s  .env.local (FORGE_AUTH_MFA_KEY)\n", strings.Replace(wire, "rewrite", "append", 1))
+	}
+	if plan.agents.note != "" {
+		fmt.Fprintf(&out, "\n  %s\n", plan.agents.note)
 	}
 	out.WriteString(authenticationNotes(plan))
 	_, err = io.WriteString(stdout, out.String())
@@ -74,9 +81,9 @@ func runGenerateAuthentication(args []string, stdout io.Writer, root string, env
 type authenticationPlan struct {
 	module string
 	files  []generatedFile
-	// app is app_gen.go with Forge identity, routes the seam with its
-	// identity block.
-	app, routes []byte
+	// app is app_gen.go with Forge identity, sets migration_sets_gen.go
+	// with its migrations, routes the seam with its identity block.
+	app, sets, routes []byte
 	// mfaKey is the FORGE_AUTH_MFA_KEY line to append to .env.local, empty
 	// when it has one.
 	mfaKey          string
@@ -89,6 +96,20 @@ type authenticationPlan struct {
 	// jsonAuthRoutes are the JSON authentication routes the application
 	// already mounts.
 	jsonAuthRoutes []string
+	// agents is AGENTS.md, refreshed for an application with sign-in.
+	agents agentsRefresh
+}
+
+// newDatabaseOption is the `forge new -d` name the application was created
+// with: MySQL and MariaDB share the mysql adapter, and a MariaDB
+// application's compose.yaml runs the mariadb service.
+func newDatabaseOption(projectRoot *os.Root, adapter string) string {
+	if adapter == "mysql" {
+		if compose, err := projectRoot.ReadFile("compose.yaml"); err == nil && strings.Contains(string(compose), "\n  mariadb:\n") {
+			return "mariadb"
+		}
+	}
+	return databaseOption(adapter)
 }
 
 // databaseOption is the `forge new -d` name of an adapter.
@@ -157,6 +178,9 @@ func planAuthentication(root string, env []string, apiAuth bool) (authentication
 	if plan.app, err = scaffold.RenderApp(features); err != nil {
 		return authenticationPlan{}, err
 	}
+	if plan.sets, err = scaffold.RenderSets(features); err != nil {
+		return authenticationPlan{}, err
+	}
 	if plan.routes, err = planIdentitySeam(projectRoot, seam); err != nil {
 		return authenticationPlan{}, err
 	}
@@ -167,12 +191,17 @@ func planAuthentication(root string, env []string, apiAuth bool) (authentication
 			name = command
 		}
 	}
-	authentication, err := scaffold.AuthenticationFiles(scaffold.Options{Name: name, Module: module, Database: databaseOption(adapter), APIAuth: apiAuth})
+	authentication, err := scaffold.AuthenticationFiles(scaffold.Options{Name: name, Module: module, Database: newDatabaseOption(projectRoot, adapter), APIAuth: apiAuth})
 	if err != nil {
 		return authenticationPlan{}, err
 	}
 	for _, file := range authentication {
 		plan.files = append(plan.files, generatedFile{path: file.Path, content: string(file.Content)})
+	}
+	plan.agents, err = planAgentsRefresh(projectRoot, scaffold.Options{Name: name, Module: module, Database: newDatabaseOption(projectRoot, adapter)},
+		func(*scaffold.Options) {}, func(options *scaffold.Options) { options.Auth, options.APIAuth = true, apiAuth })
+	if err != nil {
+		return authenticationPlan{}, err
 	}
 	base, err := viewBaseFiles(projectRoot, module)
 	if err != nil {
@@ -198,7 +227,11 @@ func planAuthentication(root string, env []string, apiAuth bool) (authentication
 	for _, file := range plan.files {
 		paths = append(paths, file.path)
 	}
-	if err := rejectExistingSymlinkPaths(projectRoot, append(paths, ".env.local")); err != nil {
+	checked := append(paths, ".env.local")
+	if plan.agents.content != nil {
+		checked = append(checked, scaffold.AgentsFile)
+	}
+	if err := rejectExistingSymlinkPaths(projectRoot, checked); err != nil {
 		return authenticationPlan{}, err
 	}
 	for _, path := range paths {
@@ -291,11 +324,19 @@ func writeAuthenticationWiring(root string, plan authenticationPlan) error {
 		return err
 	}
 	defer func() { _ = projectRoot.Close() }()
+	if err := writeRootFileAtomic(projectRoot, scaffold.SetsFile, plan.sets); err != nil {
+		return err
+	}
 	if err := writeRootFileAtomic(projectRoot, scaffold.AppFile, plan.app); err != nil {
 		return err
 	}
 	if err := writeRootFileAtomic(projectRoot, scaffold.RoutesFile, plan.routes); err != nil {
 		return err
+	}
+	if plan.agents.content != nil {
+		if err := writeRootFileAtomic(projectRoot, scaffold.AgentsFile, plan.agents.content); err != nil {
+			return err
+		}
 	}
 	if plan.mfaKey == "" {
 		return nil

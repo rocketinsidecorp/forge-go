@@ -66,6 +66,12 @@ func runGenerateTenancy(args []string, stdout io.Writer, root string, env []stri
 		fmt.Fprintf(&out, "  %sconvert  %s\n", verb, file.path)
 	}
 	fmt.Fprintf(&out, "  %srewrite  %s\n", verb, scaffold.AppFile)
+	if plan.agents.content != nil {
+		fmt.Fprintf(&out, "  %srewrite  %s\n", verb, scaffold.AgentsFile)
+	}
+	if plan.agents.note != "" {
+		fmt.Fprintf(&out, "\n  %s\n", plan.agents.note)
+	}
 	if len(plan.tables) > 0 {
 		fmt.Fprintf(&out, "\n  Org-scoped now: %s (an org_id column every query is filtered by%s).\n", strings.Join(plan.tables, ", "), map[bool]string{true: ", behind row-level security", false: ""}[plan.adapter == "postgres"])
 	}
@@ -93,6 +99,8 @@ type tenancyPlan struct {
 	tables     []string
 	kept       []string
 	unrecorded []unrecordedTable
+	// agents is AGENTS.md, refreshed for an application with organizations.
+	agents agentsRefresh
 }
 
 // recordedCommand finds the generator command a create migration records.
@@ -187,7 +195,21 @@ func planTenancy(root string, env []string, now time.Time, slug string) (tenancy
 		return tenancyPlan{}, fmt.Errorf("refusing to generate: %s exists already; nothing was written", existing)
 	}
 	plan.migrations = migrations
+	name := "app"
+	if command, err := resolveCommand(root, nil); err == nil {
+		if _, err := scaffold.Normalize(scaffold.Options{Name: command}); err == nil {
+			name = command
+		}
+	}
+	plan.agents, err = planAgentsRefresh(projectRoot, scaffold.Options{Name: name, Module: module, Database: newDatabaseOption(projectRoot, adapter), Auth: true},
+		func(*scaffold.Options) {}, func(options *scaffold.Options) { options.Tenants = true })
+	if err != nil {
+		return tenancyPlan{}, err
+	}
 	paths := []string{scaffold.AppFile}
+	if plan.agents.content != nil {
+		paths = append(paths, scaffold.AgentsFile)
+	}
 	for _, file := range append(slices.Clone(plan.migrations), plan.converted...) {
 		paths = append(paths, file.path)
 	}
@@ -303,6 +325,11 @@ func applyTenancy(root string, plan tenancyPlan) error {
 	defer func() { _ = projectRoot.Close() }()
 	for _, file := range plan.converted {
 		if err := writeRootFileAtomic(projectRoot, file.path, []byte(file.content)); err != nil {
+			return err
+		}
+	}
+	if plan.agents.content != nil {
+		if err := writeRootFileAtomic(projectRoot, scaffold.AgentsFile, plan.agents.content); err != nil {
 			return err
 		}
 	}

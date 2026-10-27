@@ -110,22 +110,42 @@ func TestGenerateViewAddsAPageToTheSharedViewTree(t *testing.T) {
 		filepath.Join("app", "assets", "assets.go"),
 		filepath.Join("app", "assets", "assets_test.go"),
 		filepath.Join("app", "javascript", "javascript.go"),
+		filepath.Join("app", "javascript", "javascript_test.go"),
 		filepath.Join("app", "views", "views.go"),
 		filepath.Join("app", "views", "views_test.go"),
 		filepath.Join("app", "views", "layouts", "application.gohtml"),
 		filepath.Join("app", "views", "shared", "_flash.gohtml"),
 		filepath.Join("app", "assets", "forge-go-logo.png"),
 		filepath.Join("app", "assets", "application.css"),
-		filepath.Join("app", "javascript", "application.js"),
-		filepath.Join("app", "javascript", "controllers", "application.js"),
-		filepath.Join("app", "javascript", "controllers", "index.js"),
-		filepath.Join("app", "javascript", "controllers", "hello_controller.js"),
+		// The front end is TypeScript, compiled to dist, with its tsconfig
+		// and declarations (listed below as a group).
+		filepath.Join("app", "javascript", "application.ts"),
+		filepath.Join("app", "javascript", "controllers", "application.ts"),
+		filepath.Join("app", "javascript", "controllers", "hello_controller.ts"),
+		filepath.Join("app", "javascript", "controllers", "index.ts"),
+		"tsconfig.json",
+		filepath.Join("app", "javascript", "dist", "application.js"),
+		filepath.Join("app", "javascript", "dist", "controllers", "application.js"),
+		filepath.Join("app", "javascript", "dist", "controllers", "hello_controller.js"),
+		filepath.Join("app", "javascript", "dist", "controllers", "index.js"),
 		filepath.Join("config", "locales", "locales.go"),
 		filepath.Join("config", "locales", "locales_test.go"),
 		filepath.Join("config", "locales", "en.json"),
 	}
-	if strings.Join(paths, "|") != strings.Join(want, "|") {
-		t.Fatalf("generated paths = %v, want %v", paths, want)
+	declarations := 0
+	var withoutDeclarations []string
+	for _, path := range paths {
+		if strings.HasPrefix(path, filepath.Join("app", "javascript", "types")+string(filepath.Separator)) {
+			declarations++
+			continue
+		}
+		withoutDeclarations = append(withoutDeclarations, path)
+	}
+	if declarations == 0 {
+		t.Error("the type declarations of Turbo and Stimulus were not generated")
+	}
+	if strings.Join(withoutDeclarations, "|") != strings.Join(want, "|") {
+		t.Fatalf("generated paths = %v, want %v", withoutDeclarations, want)
 	}
 	page := readFile(t, filepath.Join(root, paths[0]))
 	for _, fragment := range []string{`{{define "title"}}{{.Title}}{{end}}`, `{{define "content"}}`, "{{.Content}}"} {

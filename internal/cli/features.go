@@ -2,8 +2,10 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
@@ -23,8 +25,24 @@ func applicationFeatures(projectRoot *os.Root) (features scaffold.AppFeatures, p
 	if err != nil {
 		return scaffold.AppFeatures{}, false, err
 	}
-	features, err = scaffold.ParseApp(source)
-	return features, err == nil, err
+	if features, err = scaffold.ParseApp(source); err != nil {
+		return scaffold.AppFeatures{}, false, err
+	}
+	// The migration sets (db/migration_sets_gen.go) say whether the job
+	// schedules are composed.
+	if err := rejectExistingSymlinkPaths(projectRoot, []string{scaffold.SetsFile}); err != nil {
+		return scaffold.AppFeatures{}, false, err
+	}
+	sets, err := projectRoot.ReadFile(scaffold.SetsFile)
+	if err != nil {
+		return scaffold.AppFeatures{}, false, fmt.Errorf("%s: %w", filepath.ToSlash(scaffold.SetsFile), err)
+	}
+	parsed, err := scaffold.ParseSets(sets)
+	if err != nil {
+		return scaffold.AppFeatures{}, false, err
+	}
+	features.Jobs = parsed.Jobs
+	return features, true, nil
 }
 
 // hasOrganizations reports whether an application with Forge identity is

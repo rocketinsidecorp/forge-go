@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/format"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -31,14 +32,27 @@ func ViewBase(name, module string) ([]BaseFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, asset := range assets {
+	frontend, err := frontendAssets(opts)
+	if err != nil {
+		return nil, err
+	}
+	for _, asset := range append(slices.Clone(assets), frontend...) {
+		if asset.target == ".gitattributes" {
+			// A project's own .gitattributes is not ours to overwrite or
+			// merge: only forge new writes it.
+			continue
+		}
 		content, err := templateFS.ReadFile(asset.source)
 		if err != nil {
 			return nil, fmt.Errorf("read asset %s: %w", asset.source, err)
 		}
 		rendered = append(rendered, BaseFile{Path: asset.target, Content: content})
 	}
-	return rendered, nil
+	compiled, err := compiledFiles(opts)
+	if err != nil {
+		return nil, err
+	}
+	return append(rendered, compiled...), nil
 }
 
 // AuthenticationFiles returns the Forge identity files `forge new --auth`
@@ -106,7 +120,7 @@ func renderSelected(opts Options, keep func(file) bool) ([]BaseFile, error) {
 // that every full-stack application has; the authentication pages belong to
 // AuthenticationFiles.
 func isViewBase(f file) bool {
-	if f.scope != withViews {
+	if f.scope != withViews && f.scope != withTypeScript {
 		return false
 	}
 	path := f.path("")
@@ -116,4 +130,22 @@ func isViewBase(f file) bool {
 		}
 	}
 	return false
+}
+
+// AgentsFile is AGENTS.md, the guide for AI coding agents `forge new`
+// writes. `forge generate authentication` and `forge generate tenancy`
+// render it again when they change what it describes.
+const AgentsFile = "AGENTS.md"
+
+// RenderAgents renders AGENTS.md for an application like opts.
+func RenderAgents(opts Options) ([]byte, error) {
+	opts, err := Normalize(opts)
+	if err != nil {
+		return nil, err
+	}
+	files, err := renderSelected(opts, func(f file) bool { return f.template == "AGENTS.md.tmpl" })
+	if err != nil {
+		return nil, err
+	}
+	return files[0].Content, nil
 }

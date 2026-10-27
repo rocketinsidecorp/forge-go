@@ -6,9 +6,15 @@
 # Prometheus names documented in docs/OBSERVABILITY.md, for example
 # http.server.request.duration -> http_server_request_duration_seconds, and
 # the resource attribute service.name becomes the job label.
+#
+# alerts.yml holds the alert rules (docs/OBSERVABILITY.md#alert-rules). There
+# is no Alertmanager here: firing alerts are listed at /alerts.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
 
 scrape_configs:
   - job_name: prometheus

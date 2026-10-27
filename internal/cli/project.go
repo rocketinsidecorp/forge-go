@@ -78,6 +78,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	tenants := flags.Bool("tenants", false, "generate a multi-tenant application: users belong to organizations, generated tables take --org-scoped or --global (implies --auth; PostgreSQL unless -d is given)")
 	apiAuth := flags.Bool("api-auth", false, "also mount the JSON authentication APIs (bearer and cookie login, MFA completion, JSON password recovery, GET /v1/auth/session); implies --auth")
 	apiOnly := flags.Bool("api", false, "generate an API-only application (like rails new --api): JSON handlers without views, assets, JavaScript, translations, sign-in pages or browser middleware")
+	plainJS := flags.Bool("js", false, "keep the front end in plain JavaScript (app/javascript/*.js, served as written) instead of the default TypeScript, which forge compiles to app/javascript/dist with esbuild (no Node needed)")
 	name, err := parseSinglePositional(flags, args, "NAME")
 	if err != nil {
 		return err
@@ -106,7 +107,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	case !explicit:
 		*database = "sqlite"
 	}
-	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale, Auth: *authentication, Tenants: *tenants, APIAuth: *apiAuth, API: *apiOnly})
+	opts, err := scaffold.Normalize(scaffold.Options{Name: name, Module: *module, Dir: *dir, Database: *database, Locale: *locale, Auth: *authentication, Tenants: *tenants, APIAuth: *apiAuth, API: *apiOnly, JS: *plainJS})
 	if err != nil {
 		return err
 	}
@@ -121,9 +122,7 @@ func runNew(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	for _, path := range paths {
-		fmt.Fprintf(stdout, "  create  %s\n", filepath.Join(opts.Dir, path))
-	}
+	printCreated(stdout, opts.Dir, paths)
 	if !*skipDeps {
 		if err := resolveDependencies(context.Background(), opts.Dir, localFramework, stdout, stderr); err != nil {
 			return fmt.Errorf("resolve dependencies (files were generated; fix the cause and run `go mod tidy` in %s): %w", opts.Dir, err)
@@ -164,18 +163,40 @@ func nextSteps(opts scaffold.Options) string {
 	return out.String()
 }
 
+// typesDir is app/javascript/types, the declarations of Turbo and Stimulus:
+// dozens of files `forge new` lists as one line.
+var typesDir = filepath.Join("app", "javascript", "types")
+
+// printCreated lists the files `forge new` wrote, one `create` line each,
+// except the type declarations, which share one line.
+func printCreated(stdout io.Writer, dir string, paths []string) {
+	declarations := 0
+	for _, path := range paths {
+		if strings.HasPrefix(path, typesDir+string(filepath.Separator)) {
+			declarations++
+			continue
+		}
+		fmt.Fprintf(stdout, "  create  %s\n", filepath.Join(dir, path))
+	}
+	if declarations > 0 {
+		fmt.Fprintf(stdout, "  create  %s/ (%d files: type declarations for Turbo and Stimulus)\n", filepath.Join(dir, typesDir), declarations)
+	}
+}
+
 // checkAPIConflicts refuses the flags Forge-Rust declares conflicts_with =
 // "api" for `forge new`: --api-auth (the JSON authentication APIs sit beside
 // the sign-in pages an API-only application lacks) and --locale (it has no
 // pages to translate). Naming either with --api is a usage error, as in
-// Forge-Rust, even with the default value.
+// Forge-Rust, even with the default value. --js conflicts too: an API-only
+// application has no front end to write in JavaScript. So do --auth and
+// --tenants: an API-only application has no sign-in pages.
 func checkAPIConflicts(flags *flag.FlagSet, apiOnly bool) error {
 	if !apiOnly {
 		return nil
 	}
 	var conflicts []string
 	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "api-auth" || f.Name == "locale" || f.Name == "auth" || f.Name == "tenants" {
+		if f.Name == "api-auth" || f.Name == "locale" || f.Name == "auth" || f.Name == "tenants" || f.Name == "js" {
 			conflicts = append(conflicts, f.Name)
 		}
 	})

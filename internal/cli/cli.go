@@ -97,7 +97,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "destroy":
 		err = runDestroy(args[1:], stdout)
 	case "deploy":
-		err = deploy.RunDeploy(args[1:], stdout, commandStderr)
+		err = runDeploy(args[1:], stdout, commandStderr)
 	case "logs":
 		err = deploy.RunLogs(args[1:], stdout, commandStderr)
 	case "app":
@@ -333,12 +333,14 @@ commands:
                       unless --database is given);
                       --locale en (default), es or pt-BR;
                       --api-auth also mounts the JSON sign-in APIs (implies --auth);
+                      --js keeps the front end in plain JavaScript (default: TypeScript);
                       --api generates a JSON-only application (no views)
   dev [NAME] [--no-reload] [--poll-interval D]
                       run the application; rebuild, restart gracefully and
                       reload the browser when files change
   test [ARGS]         go test with .env.development loaded (default ./...)
-  check               type-check the application: go build ./... and go vet ./...
+  check               type-check the application: go build ./... and go vet ./...,
+                      plus tsc --noEmit for TypeScript when tsc is installed
   format [--check]    gofmt -l -w the application's Go files; --check lists
                       them and fails without writing
   lint                golangci-lint run ./... (install it when missing)

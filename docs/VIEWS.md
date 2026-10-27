@@ -15,8 +15,9 @@ app/views/layouts/application.gohtml  the layout every page with a "content" blo
 app/views/shared/_flash.gohtml        flash messages, included by the layout
 app/assets/assets.go                  embeds the stylesheet and images; builds the digested asset table and import map
 app/assets/application.css            the stylesheet, served as /assets/application-<digest>.css
-app/javascript/application.js         JavaScript entry point (Turbo and the Stimulus controllers)
-app/javascript/controllers/           Stimulus controllers: index.js registers them, hello_controller.js is an example
+app/javascript/application.ts         front-end entry point (Turbo and the Stimulus controllers), TypeScript; application.js with --js
+app/javascript/controllers/           Stimulus controllers: index.ts registers them, hello_controller.ts is an example
+app/javascript/dist/                  the compiled JavaScript the binary embeds (generated, committed)
 config/locales/locales.go             embeds the translations; locales.New(cfg, logger) builds the translator
 config/locales/en.json                the text of the layout and the welcome page (forge new --locale adds es.json or pt-BR.json)
 ```
@@ -630,35 +631,57 @@ mjs, map, svg, png, jpg, jpeg, gif, webp, ico, woff2, txt).
 
 ### JavaScript: import map, Turbo and Stimulus
 
-`app/javascript/application.js` is the entry point:
+The front end is TypeScript by default ([ADR 0049](adr/0049-typescript-by-default.md);
+`forge new --js` keeps plain JavaScript, with `.js` where this page says `.ts`
+and no `dist`). `app/javascript/application.ts` is the entry point:
 
-```js
+```ts
 import "@hotwired/turbo"
 import "controllers"
 ```
 
-There is no bundler. The browser resolves bare specifiers through the import
+There is no bundler and no Node toolchain. `forge dev`, `forge build`,
+`forge test` and `forge check` compile each `.ts` file alone with esbuild's Go
+API, which only strips the types, into `app/javascript/dist` (generated and
+committed: the application's `javascript` package embeds it, so a plain
+`go build` as in the generated Dockerfile needs nothing else, and a generated
+test fails when a source changed and `dist` did not, or when a compiled file
+is not the one `forge` wrote: its header records the SHA-256 of the source and
+of its own body; review `dist/` diffs like code). Everything under `dist/` is
+embedded; only `application.js` and `controllers/*` are pinned in the import
+map, so a file such as `lib/format.ts` needs `forgeassets.PinAllFrom(set, "lib")`
+in `app/assets/assets.go` to be imported by name. The browser resolves
+bare specifiers through the import
 map the layout renders, which `app/assets/assets.go` builds: `@hotwired/turbo`
 and `@hotwired/stimulus` (the vendored files in package `hotwire`, pinned by
 SHA-256 and verified by its test, with their MIT licences retained) and every
-file of `app/javascript/controllers/` by its name without `.js`
+file of `dist/controllers/` by its name without `.js`
 (`controllers/hello_controller`; `controllers/index.js` is also `controllers`).
 Digested URLs mean a deploy invalidates exactly the files that changed.
+
+Types are checked by `tsc --noEmit` (`forge check` runs it when `tsc` is on
+`PATH`, and prints one note saying how to install it when not:
+`npm install --global --ignore-scripts typescript@6.0.3`). `tsconfig.json` is strict, resolves
+the import map's bare names with `paths`, and finds the declarations of Turbo
+and Stimulus in `app/javascript/types/` (copied unchanged from the npm
+packages; `types/README.md` has the provenance).
 
 Add a Stimulus controller:
 
 ```sh
-cp app/javascript/controllers/hello_controller.js app/javascript/controllers/clipboard_controller.js
+cp app/javascript/controllers/hello_controller.ts app/javascript/controllers/clipboard_controller.ts
 ```
 
-then in `app/javascript/controllers/index.js`:
+then in `app/javascript/controllers/index.ts`:
 
-```js
+```ts
 import ClipboardController from "controllers/clipboard_controller"
 application.register("clipboard", ClipboardController)
 ```
 
-and use `data-controller="clipboard"` in a template. Write controllers with
+and run `forge build` (`forge dev` compiles on save, with inline source maps,
+without rewriting `dist` in your working tree), then use
+`data-controller="clipboard"` in a template. Write controllers with
 `textContent`, not `innerHTML`, for user input. Inline `<script>` blocks and
 `onclick=` attributes are blocked by the policy by design.
 

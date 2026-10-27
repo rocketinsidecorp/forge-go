@@ -55,11 +55,19 @@ func TestGenerateRemovesWhatItCreatedWhenAWriteFails(t *testing.T) {
 		generated = append(generated, f.path(opts.Name))
 	}
 	var copied []string
-	for _, a := range append(append([]asset{}, assets...), repositoryFiles...) {
+	copiedAssets, err := copiedFiles(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range copiedAssets {
 		copied = append(copied, a.target)
 	}
-	for _, a := range localeAssets(opts.Locale, hasIdentity(opts)) {
-		copied = append(copied, a.target)
+	compiled, err := compiledFiles(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range compiled {
+		copied = append(copied, f.Path)
 	}
 	var observability []string
 	if err := fs.WalkDir(templateFS, observabilityDir, func(source string, entry fs.DirEntry, walkErr error) error {

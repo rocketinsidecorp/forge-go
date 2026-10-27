@@ -226,6 +226,19 @@ func testReadmeQuickstart(t *testing.T, frameworkPath, name string) {
 	browser.signIn(org, "you@example.com", quickstartPassword, http.StatusSeeOther)
 	chair := quickstartCRUD(t, browser)
 
+	// The front end is TypeScript: the page loads the compiled JavaScript, with
+	// no types left, and forge dev embeds it with an inline source map.
+	_, hello := assertServesCompiledJavaScript(t, func(path string) (string, string) {
+		response, content := browser.do(http.MethodGet, path, "", nil, http.Header{"Accept": {"*/*"}})
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s = %d", path, response.StatusCode)
+		}
+		return string(content), response.Header.Get("Content-Type")
+	}, "/products")
+	if !strings.Contains(hello, "//# sourceMappingURL=data:application/json;base64,") {
+		t.Errorf("forge dev serves the controller without a source map:\n%s", hello)
+	}
+
 	if !variant.tenants {
 		return
 	}

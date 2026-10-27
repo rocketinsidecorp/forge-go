@@ -25,8 +25,19 @@ func TestAppFileRoundTripAndChecksum(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%+v: %v\n%s", features, err, source)
 		}
-		if parsed.Identity != features.Identity || parsed.Organizations != features.Organizations || parsed.Jobs != features.Jobs {
-			t.Fatalf("%+v parsed as %+v", features, parsed)
+		sets, err := scaffold.RenderSets(features)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsedSets, err := scaffold.ParseSets(sets)
+		if err != nil {
+			t.Fatalf("%+v: %v\n%s", features, err, sets)
+		}
+		if parsed.Identity != features.Identity || parsed.Organizations != features.Organizations || parsedSets.Jobs != features.Jobs || parsedSets.Identity != features.Identity {
+			t.Fatalf("%+v parsed as %+v and %+v", features, parsed, parsedSets)
+		}
+		if _, err := scaffold.ParseSets(append(sets, "// a note\n"...)); !errors.Is(err, scaffold.ErrSetsEdited) {
+			t.Fatalf("an edited migration_sets_gen.go parsed: %v", err)
 		}
 		if strings.Contains(string(source), "SetupCommand") != features.Identity {
 			t.Fatalf("%+v: setup command = %v", features, !features.Identity)

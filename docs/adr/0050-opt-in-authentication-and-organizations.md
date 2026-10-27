@@ -42,13 +42,20 @@ The owner decided on 2026-10-26:
   authentication` later adds exactly what `--auth` generates and wires it
   with no manual edit.
 - **Wiring without edits.** Generator-owned, checksummed
-  `app/bootstrap/app_gen.go` declares `const Organizations`,
-  `MigrationSets()` (identity, job schedules, `db/migrations`) and
+  `app/bootstrap/app_gen.go` declares `const Organizations` and
   `Commands()` (migrate, rollback, seed and, with identity, `setup`);
   `cmd/NAME/main.go` passes `bootstrap.Commands()` to `forge.Main`. The
-  routes seam (`routes_gen.go`) starts with a `forge:identity repository`
-  block calling `identityRoutes` in `app/bootstrap/identity.go` (yours to
-  change). A hand-edited `app_gen.go` is refused, as `routes_gen.go` is.
+  migration sets (identity, job schedules, `db/migrations`) are
+  `db.MigrationSets()` in the generator-owned, checksummed
+  `db/migration_sets_gen.go`: package `db`, not `app/bootstrap`, so the
+  generated persistence tests migrate exactly what the application migrates
+  without importing the composition root, which the generated architecture
+  test forbids for `app/adapters`. The routes seam (`routes_gen.go`) starts
+  with a `forge:identity repository` block calling `identityRoutes` in
+  `app/bootstrap/identity.go` (yours to change). Hand-edited `app_gen.go`
+  or `migration_sets_gen.go` is refused, as `routes_gen.go` is. `forge
+  generate authentication` and `tenancy` also refresh `AGENTS.md` when it is
+  exactly what `forge new` wrote, and leave an edited one alone with a note.
 - **Identity on every database (D30).** `auth/sqlite` and `auth/mysql`
   (MySQL and MariaDB) implement the same interfaces as `auth/postgres`,
   through one shared implementation (`auth/internal/sqlidentity`) with

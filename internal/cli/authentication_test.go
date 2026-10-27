@@ -38,11 +38,17 @@ func newApp(t *testing.T, opts scaffold.Options) string {
 // A second run refuses and changes nothing.
 func TestGenerateAuthenticationAddsWhatForgeNewAuthGenerates(t *testing.T) {
 	t.Parallel()
-	for _, database := range []string{"sqlite", "mysql", "postgresql"} {
-		t.Run(database, func(t *testing.T) {
+	for name, options := range map[string]scaffold.Options{
+		"sqlite": {Database: "sqlite"}, "mysql": {Database: "mysql"}, "mariadb": {Database: "mariadb"},
+		"postgresql": {Database: "postgresql"}, "sqlite --js": {Database: "sqlite", JS: true},
+	} {
+		database := options.Database
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			plain := newApp(t, scaffold.Options{Database: database})
-			want := newApp(t, scaffold.Options{Database: database, Auth: true})
+			plain := newApp(t, options)
+			withAuth := options
+			withAuth.Auth = true
+			want := newApp(t, withAuth)
 			output, err := runAuthentication(plain)
 			if err != nil {
 				t.Fatal(err)
@@ -54,7 +60,11 @@ func TestGenerateAuthenticationAddsWhatForgeNewAuthGenerates(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			paths := []string{scaffold.AppFile, scaffold.RoutesFile}
+			// AGENTS.md is refreshed too: it now describes sign-in.
+			if !strings.Contains(output, "rewrite  "+scaffold.AgentsFile) {
+				t.Errorf("output does not list %s:\n%s", scaffold.AgentsFile, output)
+			}
+			paths := []string{scaffold.AppFile, scaffold.SetsFile, scaffold.RoutesFile, scaffold.AgentsFile}
 			for _, file := range files {
 				paths = append(paths, file.Path)
 				if !strings.Contains(output, "create  "+file.Path) {
@@ -77,6 +87,22 @@ func TestGenerateAuthenticationAddsWhatForgeNewAuthGenerates(t *testing.T) {
 				t.Fatal("a refused run changed files")
 			}
 		})
+	}
+}
+
+// An AGENTS.md edited by hand is left as it is, with a note.
+func TestGenerateAuthenticationLeavesAnEditedAgentsGuide(t *testing.T) {
+	t.Parallel()
+	dir := newApp(t, scaffold.Options{Database: "sqlite"})
+	path := filepath.Join(dir, scaffold.AgentsFile)
+	edited := readFile(t, path) + "\nOur own rule.\n"
+	writeFile(t, path, edited)
+	output, err := runAuthentication(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readFile(t, path) != edited || !strings.Contains(output, "AGENTS.md was edited by hand, so it was left as it is") || strings.Contains(output, "rewrite  AGENTS.md") {
+		t.Fatalf("an edited AGENTS.md:\n%s", output)
 	}
 }
 

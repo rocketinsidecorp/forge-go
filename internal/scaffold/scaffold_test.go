@@ -82,10 +82,13 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			`"example.com/acme/billing/app/bootstrap"`,
 			"forge.Main(bootstrap.Configure, bootstrap.Commands()...)",
 		},
+		"db/migration_sets_gen.go": {
+			"package db",
+			"return []fs.FS{authpostgres.Migrations(), jobspostgres.Migrations(), Migrations()}",
+		},
 		"app/bootstrap/app_gen.go": {
 			`authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"`,
-			"return []fs.FS{authpostgres.Migrations(), jobspostgres.Migrations(), db.Migrations()}",
-			"postgres.CommandsFromSets(MigrationSets()...)",
+			"postgres.CommandsFromSets(db.MigrationSets()...)",
 			"authpostgres.SetupCommand(authpostgres.SetupOrganizations(Organizations))",
 			"const Organizations = false",
 		},
@@ -389,7 +392,8 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 			want: map[string][]string{
 				"compose.yaml":                    {"image: mysql:8.4", "MYSQL_DATABASE: shop_development", "mysql:/var/lib/mysql", "FORGE_DATABASE_URL: mysql://shop:development@mysql:3306/shop_development", `"mysqladmin", "ping"`},
 				".env.development":                {"FORGE_DATABASE_URL=mysql://shop:development@127.0.0.1:", "FORGE_TEST_DATABASE_URL=mysql://root:development@127.0.0.1:"},
-				"app/bootstrap/app_gen.go":        {`"github.com/rocketinsidecorp/forge-go/mysql"`, "return []fs.FS{jobsmysql.Migrations(), db.Migrations()}", "mysql.CommandsFromSets(MigrationSets()...)"},
+				"app/bootstrap/app_gen.go":        {`"github.com/rocketinsidecorp/forge-go/mysql"`, "mysql.CommandsFromSets(db.MigrationSets()...)"},
+				"db/migration_sets_gen.go":        {"return []fs.FS{jobsmysql.Migrations(), Migrations()}"},
 				"app/bootstrap/bootstrap.go":      {"mysql.Open(ctx, app.Config().Database, mysql.WithTelemetry(app.Telemetry()),\n\t\tmysql.Lazy(!app.Serving()))"},
 				"app/bootstrap/bootstrap_test.go": {`"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"`, "mysqltest.Config(t)"},
 				".github/workflows/ci.yml":        {"image: mysql:8.4", "MYSQL_ROOT_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
@@ -406,7 +410,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 			database: "mariadb",
 			want: map[string][]string{
 				"compose.yaml":             {"image: mariadb:11.8", "MARIADB_DATABASE: shop_development", "FORGE_DATABASE_URL: mysql://shop:development@mariadb:3306/shop_development", "healthcheck.sh"},
-				"app/bootstrap/app_gen.go": {"return []fs.FS{jobsmysql.Migrations(), db.Migrations()}"},
+				"db/migration_sets_gen.go": {"return []fs.FS{jobsmysql.Migrations(), Migrations()}"},
 				".github/workflows/ci.yml": {"image: mariadb:11.8", "MARIADB_ROOT_PASSWORD: forge", "healthcheck.sh --connect --innodb_initialized", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
 				"README.md":                {"MariaDB 11.8"},
 			},
@@ -424,7 +428,8 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"Dockerfile":                      {"COPY --from=build --chown=nonroot:nonroot /out/storage /app/storage", "FORGE_DATABASE_URL=sqlite:///app/storage/production.db"},
 				".gitignore":                      {"/storage/"},
 				".dockerignore":                   {"storage"},
-				"app/bootstrap/app_gen.go":        {"return []fs.FS{db.Migrations()}", "sqlite.CommandsFromSets(MigrationSets()...)"},
+				"app/bootstrap/app_gen.go":        {"sqlite.CommandsFromSets(db.MigrationSets()...)"},
+				"db/migration_sets_gen.go":        {"return []fs.FS{Migrations()}"},
 				"README.md":                       {"queuesqlite.Commands()", "docker compose run --rm app jobs dead"},
 				"app/bootstrap/bootstrap_test.go": {"sqlitetest.Config(t)"},
 			},
@@ -512,14 +517,33 @@ func TestRootAppNameDoesNotCollideWithDatabaseRoot(t *testing.T) {
 func TestGenerateServerRenderedHTML(t *testing.T) {
 	t.Parallel()
 	for _, database := range []string{"", "sqlite", "postgresql"} {
-		t.Run("database "+database, func(t *testing.T) {
+		for _, js := range []bool{false, true} {
+			testServerRenderedHTML(t, database, js)
+		}
+	}
+}
+
+// testServerRenderedHTML is one subtest of TestGenerateServerRenderedHTML: the
+// front end is TypeScript (compiled to app/javascript/dist) by default and
+// plain JavaScript with --js.
+func testServerRenderedHTML(t *testing.T, database string, js bool) {
+	{
+		name := "database " + database
+		if js {
+			name += " js"
+		}
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			dir := filepath.Join(t.TempDir(), "shop")
-			paths, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: database})
+			paths, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: database, JS: js})
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, required := range []string{"app/views/views.go", "app/views/views_test.go", "app/views/layouts/application.gohtml", "app/views/shared/_flash.gohtml", "app/assets/application.css", "app/assets/forge-go-logo.png", "app/assets/assets.go", "app/assets/assets_test.go", "app/javascript/javascript.go", "app/javascript/application.js", "app/javascript/controllers/index.js", "app/javascript/controllers/application.js", "app/javascript/controllers/hello_controller.js"} {
+			ext, entry, embedPattern := "ts", "application.ts", "//go:embed dist"
+			if js {
+				ext, entry, embedPattern = "js", "application.js", "//go:embed application.js controllers/*.js"
+			}
+			for _, required := range []string{"app/views/views.go", "app/views/views_test.go", "app/views/layouts/application.gohtml", "app/views/shared/_flash.gohtml", "app/assets/application.css", "app/assets/forge-go-logo.png", "app/assets/assets.go", "app/assets/assets_test.go", "app/javascript/javascript.go", "app/javascript/" + entry, "app/javascript/controllers/index." + ext, "app/javascript/controllers/application." + ext, "app/javascript/controllers/hello_controller." + ext} {
 				if !contains(paths, filepath.FromSlash(required)) {
 					t.Fatalf("missing %s in %v", required, paths)
 				}
@@ -536,14 +560,14 @@ func TestGenerateServerRenderedHTML(t *testing.T) {
 					`{{template "shared/_flash" .}}`,
 					`{{block "content" .}}{{end}}`,
 				},
-				"app/views/shared/_flash.gohtml":      {"{{range flashes}}", `role="{{if eq .Kind "alert"}}alert{{else}}status{{end}}"`, "{{.Text}}"},
-				"app/views/views.go":                  {"//go:embed */*.gohtml", "forgeviews.Load(files, opts)", "hotwire.StyleHashes()", "func WithStreams("},
-				"app/assets/assets.go":                {"//go:embed application.css forge-go-logo.png", "hotwire.Files()", `forgeassets.PinAllFrom(set, "controllers")`},
-				"app/javascript/javascript.go":        {"//go:embed application.js controllers/*.js"},
-				"app/javascript/application.js":       {`import "@hotwired/turbo"`, `import "controllers"`},
-				"app/javascript/controllers/index.js": {`application.register("hello", HelloController)`},
-				"app/bootstrap/welcome.go":            {`<meta name="turbo-visit-control" content="reload">`, `src="[[.Logo]]"`, `i18n.T(ctx, "welcome.title", "app", "shop")`, "var welcomeContentSecurityPolicy = ", "sha256.Sum256([]byte(style))"},
-				"app/bootstrap/welcome_test.go":       {"func TestWelcomePageContentSecurityPolicyHashesItsStylesheet(t *testing.T) {", "sha256.Sum256([]byte(styles[0][1]))"},
+				"app/views/shared/_flash.gohtml":          {"{{range flashes}}", `role="{{if eq .Kind "alert"}}alert{{else}}status{{end}}"`, "{{.Text}}"},
+				"app/views/views.go":                      {"//go:embed */*.gohtml", "forgeviews.Load(files, opts)", "hotwire.StyleHashes()", "func WithStreams("},
+				"app/assets/assets.go":                    {"//go:embed application.css forge-go-logo.png", "hotwire.Files()", `forgeassets.PinAllFrom(set, "controllers")`},
+				"app/javascript/" + entry:                 {`import "@hotwired/turbo"`, `import "controllers"`},
+				"app/javascript/controllers/index." + ext: {`application.register("hello", HelloController)`},
+				"app/javascript/javascript.go":            {embedPattern},
+				"app/bootstrap/welcome.go":                {`<meta name="turbo-visit-control" content="reload">`, `src="[[.Logo]]"`, `i18n.T(ctx, "welcome.title", "app", "shop")`, "var welcomeContentSecurityPolicy = ", "sha256.Sum256([]byte(style))"},
+				"app/bootstrap/welcome_test.go":           {"func TestWelcomePageContentSecurityPolicyHashesItsStylesheet(t *testing.T) {", "sha256.Sum256([]byte(styles[0][1]))"},
 				"app/bootstrap/bootstrap.go": {
 					"translator, err := locales.New(app.Config(), app.Logger())",
 					"if err := useBrowserPipeline(app, translator); err != nil {",

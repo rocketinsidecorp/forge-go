@@ -74,6 +74,13 @@ type Options struct {
 	// override, flash). It conflicts with APIAuth and with a Locale other
 	// than the default, as in Forge-Rust.
 	API bool
+	// JS keeps the front end in plain JavaScript (`forge new --js`): the
+	// application's own files are app/javascript/application.js and
+	// controllers/*.js, served as they are. Without it the front end is
+	// TypeScript (ADR 0049): app/javascript/**/*.ts, a tsconfig.json and
+	// declarations for Turbo and Stimulus, compiled by forge to
+	// app/javascript/dist. It has no effect with API.
+	JS bool
 }
 
 // APIOnlyMarker is the phrase the generated app/bootstrap/bootstrap.go of an
@@ -119,6 +126,9 @@ type templateData struct {
 // appTemplate names the generated file built by code: app_gen.go.
 const appTemplate = "(app_gen.go)"
 
+// setsTemplate names the other one: db/migration_sets_gen.go.
+const setsTemplate = "(migration_sets_gen.go)"
+
 type file struct {
 	template string
 	path     func(name string) string
@@ -147,6 +157,9 @@ const (
 	// `forge new --api`): server-rendered views, assets, JavaScript and the
 	// translations of the pages.
 	withViews
+	// withTypeScript files are generated only for full-stack applications
+	// whose front end is TypeScript (not `forge new --js`).
+	withTypeScript
 )
 
 type asset struct {
@@ -166,13 +179,17 @@ var files = []file{
 	// The features the generators set (see appgen.go): the commands and
 	// whether the application has organizations.
 	{appTemplate, fixed(AppFile), withDatabase},
+	{setsTemplate, fixed(SetsFile), withDatabase},
 	{"identity.go.tmpl", fixed(filepath.Join("app", "bootstrap", "identity.go")), withIdentity},
 	{"identity_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "identity_test.go")), withIdentity},
+	// The dependency rules of the rings, as a test (see the file's comment).
+	{"architecture_test.go.tmpl", fixed(filepath.Join("app", "architecture_test.go")), everyApplication},
 	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), everyApplication},
 	{"welcome_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome_test.go")), everyApplication},
 	{"app_assets.go.tmpl", fixed(filepath.Join("app", "assets", "assets.go")), withViews},
 	{"app_assets_test.go.tmpl", fixed(filepath.Join("app", "assets", "assets_test.go")), withViews},
 	{"javascript.go.tmpl", fixed(filepath.Join("app", "javascript", "javascript.go")), withViews},
+	{"javascript_test.go.tmpl", fixed(filepath.Join("app", "javascript", "javascript_test.go")), withTypeScript},
 	{"locales.go.tmpl", fixed(filepath.Join("config", "locales", "locales.go")), withViews},
 	{"locales_test.go.tmpl", fixed(filepath.Join("config", "locales", "locales_test.go")), withViews},
 	{"views.go.tmpl", fixed(filepath.Join("app", "views", "views.go")), withViews},
@@ -200,6 +217,8 @@ var files = []file{
 	{"ci.yml.tmpl", fixed(filepath.Join(".github", "workflows", "ci.yml")), everyApplication},
 	{"dependabot.yml.tmpl", fixed(filepath.Join(".github", "dependabot.yml")), everyApplication},
 	{"README.md.tmpl", fixed("README.md"), everyApplication},
+	// The guide for AI coding agents (the repository convention: AGENTS.md only).
+	{"AGENTS.md.tmpl", fixed("AGENTS.md"), everyApplication},
 	{"env.development.tmpl", fixed(".env.development"), everyApplication},
 	{"env.local.tmpl", fixed(".env.local"), withDatabase},
 	{"db.go.tmpl", fixed(filepath.Join("db", "db.go")), withDatabase},
@@ -207,9 +226,15 @@ var files = []file{
 	{"keep.tmpl", fixed(filepath.Join("db", "migrations", ".keep")), withDatabase},
 }
 
+// assets are the stylesheet and the logo every full-stack application has.
 var assets = []asset{
 	{source: "templates/assets/forge-go-logo.png", target: filepath.Join("app", "assets", "forge-go-logo.png")},
 	{source: "templates/assets/application.css", target: filepath.Join("app", "assets", "application.css")},
+}
+
+// javascriptAssets are the front end of `forge new --js`: JavaScript served
+// as written.
+var javascriptAssets = []asset{
 	{source: "templates/javascript/application.js", target: filepath.Join("app", "javascript", "application.js")},
 	{source: "templates/javascript/controllers/application.js", target: filepath.Join("app", "javascript", "controllers", "application.js")},
 	{source: "templates/javascript/controllers/index.js", target: filepath.Join("app", "javascript", "controllers", "index.js")},
@@ -272,6 +297,9 @@ func Normalize(opts Options) (Options, error) {
 	}
 	if opts.API && opts.Locale != i18n.DefaultLocale {
 		return Options{}, errors.New("--locale cannot be used with --api: an API-only application has no pages to translate")
+	}
+	if opts.API && opts.JS {
+		return Options{}, errors.New("--js cannot be used with --api: an API-only application has no front end")
 	}
 	if opts.Auth && opts.Database == "" {
 		return Options{}, errors.New("--auth, --tenants and --api-auth need a database: Forge identity stores users, organizations and sessions in it (choose -d sqlite3, postgresql, mysql or mariadb)")
@@ -377,7 +405,11 @@ func Generate(opts Options) ([]string, error) {
 		}
 		paths = append(paths, relative)
 	}
-	for _, asset := range copiedFiles(opts) {
+	copied, err := copiedFiles(opts)
+	if err != nil {
+		return nil, cleanup(opts.Dir, created, err)
+	}
+	for _, asset := range copied {
 		content, err := templateFS.ReadFile(asset.source)
 		if err != nil {
 			return nil, cleanup(opts.Dir, created, fmt.Errorf("read asset %s: %w", asset.source, err))
@@ -390,6 +422,20 @@ func Generate(opts Options) ([]string, error) {
 			return nil, cleanup(opts.Dir, created, err)
 		}
 		paths = append(paths, asset.target)
+	}
+	compiled, err := compiledFiles(opts)
+	if err != nil {
+		return nil, cleanup(opts.Dir, created, err)
+	}
+	for _, file := range compiled {
+		target := filepath.Join(opts.Dir, file.Path)
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			return nil, cleanup(opts.Dir, created, err)
+		}
+		if err := os.WriteFile(target, file.Content, 0o600); err != nil {
+			return nil, cleanup(opts.Dir, created, err)
+		}
+		paths = append(paths, file.Path)
 	}
 	observability, err := writeObservability(opts.Dir)
 	if err != nil {
@@ -408,15 +454,21 @@ func Generate(opts Options) ([]string, error) {
 }
 
 // copiedFiles are the files Generate copies unchanged: the release workflow
-// and, in a full-stack application, the assets, the JavaScript and the
-// translations of the pages.
-func copiedFiles(opts Options) []asset {
+// and, in a full-stack application, the assets, the front-end sources and the
+// translations of the pages. The compiled JavaScript is not among them (see
+// compiledFiles).
+func copiedFiles(opts Options) ([]asset, error) {
 	copied := slices.Clone(repositoryFiles)
 	if opts.API {
-		return copied
+		return copied, nil
+	}
+	frontend, err := frontendAssets(opts)
+	if err != nil {
+		return nil, err
 	}
 	copied = append(slices.Clone(assets), copied...)
-	return append(copied, localeAssets(opts.Locale, hasIdentity(opts))...)
+	copied = append(copied, frontend...)
+	return append(copied, localeAssets(opts.Locale, hasIdentity(opts))...), nil
 }
 
 func parseTemplates(views bool) (*template.Template, error) {
@@ -487,7 +539,7 @@ func render(opts Options) (map[string][]byte, error) {
 	}
 	output := make(map[string][]byte, len(files))
 	for _, f := range selectedFiles(opts) {
-		if f.template == routesTemplate || f.template == appTemplate {
+		if f.template == routesTemplate || f.template == appTemplate || f.template == setsTemplate {
 			content, err := codeFile(f.template, data)
 			if err != nil {
 				return nil, err
@@ -564,13 +616,19 @@ func NewCommand(opts Options) string {
 	if opts.Locale != "" && opts.Locale != i18n.DefaultLocale {
 		command += " --locale " + opts.Locale
 	}
+	if opts.JS {
+		command += " --js"
+	}
 	return command
 }
 
 // codeFile renders a generated file built by code rather than a template.
 func codeFile(name string, data templateData) ([]byte, error) {
-	if name == appTemplate {
+	switch name {
+	case appTemplate:
 		return RenderApp(appFeaturesOf(data))
+	case setsTemplate:
+		return RenderSets(appFeaturesOf(data))
 	}
 	return routesFile(data)
 }
@@ -595,6 +653,7 @@ func selectedFiles(opts Options) []file {
 		case f.scope == withDatabase && opts.Database == "",
 			f.scope == withIdentity && !identity,
 			f.scope == withViews && opts.API,
+			f.scope == withTypeScript && (opts.API || opts.JS),
 			f.scope == withPostgres && opts.Database != "postgresql":
 			continue
 		}

@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "paths": {
+      "@hotwired/turbo": ["./app/javascript/types/@hotwired/turbo/index.d.ts"],
+      "@hotwired/stimulus": ["./app/javascript/types/@hotwired/stimulus/index.d.ts"],
+      "controllers": ["./app/javascript/controllers/index.ts"],
+      "controllers/*": ["./app/javascript/controllers/*"]
+    },
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["app/javascript/**/*.ts"],
+  "exclude": ["app/javascript/dist"]
+}
