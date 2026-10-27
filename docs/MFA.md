@@ -171,10 +171,9 @@ authentication`) include the two-factor settings of the signed-in account
 Forge-Rust):
 
 ```sh
-forge new myapp && cd myapp          # .env.local already holds a development FORGE_AUTH_MFA_KEY
-docker compose up -d postgres
+forge new myapp --auth && cd myapp   # .env.local already holds a development FORGE_AUTH_MFA_KEY
 forge migrate
-forge setup --tenant acme --email you@example.com
+forge setup --email you@example.com
 forge dev
 # sign in at http://localhost:8080/session/new, then open http://localhost:8080/mfa
 ```

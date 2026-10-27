@@ -578,22 +578,36 @@ off the site. The wiring `forge generate scaffold` prints uses this guard.
 
 ```bash
 forge migrate
-forge setup --tenant acme --email owner@example.com --organization "Acme Inc"
+forge setup --email owner@example.com                                # forge new --auth
+forge setup --org acme --email owner@example.com --org-name "Acme Inc"   # forge new --tenants
 ```
 
-`setup` (`authpostgres.SetupCommand()`, registered by generated
-`main.go`) calls `Repository.ProvisionOwner`, which creates the organization,
-tenant, user, active membership and an `owner` role with every permission in
-`forge_permissions`, in one transaction under an advisory lock, with UUIDv7
-IDs generated in Go and an `auth.identity.provisioned` audit event. It
-refuses with `ErrAlreadyProvisioned` once any tenant exists, so it cannot add
-an account to, or take over, a running installation; run it again and
-nothing changes.
+`setup` (`auth<adapter>.SetupCommand(auth<adapter>.SetupOrganizations(Organizations))`,
+registered by the generated `app/bootstrap/app_gen.go`, for `auth/postgres`,
+`auth/mysql` and `auth/sqlite` alike) calls `Repository.ProvisionOwner`,
+which creates the organization, tenant, user, active membership and an
+`owner` role with every permission in `forge_permissions`, in one transaction
+under the database's setup lock (an advisory lock on PostgreSQL, `GET_LOCK`
+on MySQL and MariaDB, `BEGIN IMMEDIATE` on SQLite), with UUIDv7 IDs generated
+in Go and an `auth.identity.provisioned` audit event. It refuses with
+`ErrAlreadyProvisioned` once any tenant exists, so it cannot add an account
+to, or take over, a running installation; run it again and nothing changes.
+
+An application without organizations (`forge new --auth`) takes `--email`
+only: setup creates the one organization every user belongs to, with the
+hidden sign-in slug `default` (`auth.DefaultTenantSlug`), and refuses
+`--org`. Its login and recovery services are built with
+`auth.WithDefaultTenant` and `auth.WithRecoveryDefaultTenant`, so a sign-in
+without an organization resolves to that one; tenant isolation, roles and
+permissions work as with organizations. With organizations (`--tenants`)
+`--org SLUG` is required (`--tenant` is an alias, `--organization` one of
+`--org-name`), and the sign-in page asks for it. `forge generate tenancy
+--org SLUG` later renames `default` to `SLUG`.
 
 The password is read from `FORGE_SETUP_PASSWORD`, from one line of standard
 input with `--password-stdin`, or from a terminal prompt (twice, echo off);
 it is never an argument, never printed and must be at least 12 characters.
-In a container: `docker compose run --rm app setup --tenant acme --email ...`.
+In a container: `docker compose run --rm app setup --email ...` (plus `--org acme` with organizations).
 
 The `owner` role holds every permission: setup grants all registered
 permissions, and migrations from `forge generate resource` and

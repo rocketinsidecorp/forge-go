@@ -30,11 +30,21 @@
 | `forge generate job NAME [field:type...] --queue` | a typed handler for the persistent job queue, its enqueue function, tests | `rails g job` |
 | `forge generate job NAME` | a recurring job stub for the in-process scheduler | |
 | `forge generate resource` / `scaffold` | model plus JSON API / plus HTML CRUD | `rails g scaffold` |
-| `forge generate view`, `authentication` | one page; the sign-in pages | |
+| `forge generate view` | one page | |
+| `forge generate authentication` | what `forge new --auth` generates: sign-in pages, identity migrations, `setup`, wired | `rails g authentication` |
+| `forge generate tenancy [--org SLUG]` | organizations for an `--auth` application: `org_id` on every generated table | |
 | `forge destroy GENERATOR ARGUMENTS...` | removes what a generator created | `rails d` |
 
 `forge g` is short for `forge generate` and `forge d` for `forge destroy`, as
-in Rails (`forge g scaffold post title:string --global`).
+in Rails (`forge g scaffold post title:string`).
+
+Tables have a scope only in an application with organizations
+(`forge new --tenants`): `--org-scoped` (an `org_id` column every statement
+binds; `--tenant-scoped` is an alias) or `--global` (shared by every
+organization), and the generators refuse to guess. In any other application
+they are plain tables: `--org-scoped` is refused ("create the app with
+--tenants"), `--global` changes nothing. Field types take the Rails names too:
+`integer`, `boolean`, `timestamp` and `datetime` are `int`, `bool` and `time`.
 
 ## Migration
 
@@ -76,14 +86,14 @@ The names the seam uses cannot name a resource, plural or controller:
 ## Model
 
 ```sh
-forge generate model post title:string 'body:text?' published:bool --tenant-scoped --dry-run
-forge generate model post title:string 'body:text?' published:bool --tenant-scoped
+forge generate model post title:string 'body:text?' published:bool --dry-run
+forge generate model post title:string 'body:text?' published:bool   # --org-scoped or --global with organizations
 forge migrate
 forge test
 ```
 
-Takes exactly the arguments of `forge generate resource` (`--tenant-scoped` or
-`--global`, `--plural`, field types `string`, `text`, `int`, `bool`, `time`,
+Takes exactly the arguments of `forge generate resource` (with organizations,
+`--org-scoped` or `--global`; `--plural`, field types `string`, `text`, `int`, `bool`, `time`,
 `uuid`, a trailing `?` for optional) and writes exactly the model and
 persistence files `resource` writes, byte for byte, without the HTTP layer:
 
@@ -100,9 +110,9 @@ The printed wiring builds the service where you need it:
 postService, err := application.NewPostService(persistence.NewPostRepository(database), time.Now, uuid.New)
 ```
 
-Tenant-scoped models read the tenant from the context and bind it in every
-statement (and, on PostgreSQL, run behind forced row-level security); calls
-without a tenant fail with `tenant_required`. IDs are UUIDv7 generated in Go.
+Org-scoped models read the organization from the context and bind `org_id`
+in every statement (and, on PostgreSQL, run behind forced row-level
+security); calls without one fail with `tenant_required`. IDs are UUIDv7 generated in Go.
 
 A scaffold's pages read their text from `config/locales/PLURAL.en.json`, which
 it generates (and `destroy` removes when unchanged); translate it into
@@ -268,22 +278,79 @@ write nothing, `--dry-run` included:
 
 ```sh
 forge new shop --api && cd shop
-forge generate resource product name:string --tenant-scoped   # JSON under /v1/products
+forge generate resource product name:string                  # JSON under /v1/products
 forge generate controller status_checks index --api           # JSON under /v1/status_checks
-forge generate scaffold product name:string --tenant-scoped   # refused
+forge generate scaffold product name:string                  # refused
 forge generate view about                                     # refused
 ```
 
 The printed wiring goes into `Configure`, after the `routes(ctx, app)` call
 (`routes`, before its final `return nil`, without a database). An API-only
-application has no Forge identity wiring (on PostgreSQL it has the identity,
-audit and session tables, but no sign-in or auth middleware), so the guard
+application has no Forge identity (no identity tables, sign-in or auth
+middleware: `--auth` and `--tenants` cannot be combined with `--api`), so the guard
 is the deny-all placeholder you replace with the authentication of your API
 clients, and no permission migration is generated. Forge-Go recognizes
 the application by the phrase `API-only application (forge new --api)` in the
 package comment of `app/bootstrap/bootstrap.go`; without it, `generate view`
 and `scaffold` add the views base as they do in any application that lacks
 one.
+
+## Authentication and organizations
+
+`forge generate authentication` gives an application created without `--auth`
+everything `--auth` generates, with no manual edit: the pages
+(`app/adapters/htmlauth`, `app/views/{sessions,passwords,mfa}`, their
+translations), `app/bootstrap/identity.go`, the identity block of the routes
+seam, the identity migrations and `setup` command (it rewrites the
+generator-owned `app/bootstrap/app_gen.go`) and a development
+`FORGE_AUTH_MFA_KEY` in `.env.local`. The result is byte for byte what
+`forge new --auth` writes. Routes generated before keep the guard they were
+generated with (`public`, or `protect`, which without identity refuses
+everyone); routes generated afterwards need sign-in and their permissions.
+Generate the application's resources after this command where you can. It refuses an
+API-only application, an application without a database, one that already
+has identity (with `--api-auth` it then prints the JSON authentication
+wiring only), and one generated before `app_gen.go` existed.
+
+```sh
+forge new shop && cd shop
+forge generate authentication --dry-run
+forge generate authentication
+forge migrate && forge setup --email you@example.com
+```
+
+`forge generate tenancy [--org SLUG] [--dry-run]` turns an `--auth`
+application into one with organizations. It writes one migration,
+`db/migrations/<timestamp>_add_organizations.{up,down}.sql`, that for every
+table a generator created with `--org-scoped` semantics (every table except
+`--public` ones) adds `org_id`, fills it with the organization `forge setup`
+created, adds the `(org_id, id)` index and `NOT NULL` (SQLite: triggers that
+refuse an empty `org_id`, since SQLite cannot add `NOT NULL` to a column) and,
+on PostgreSQL, enables and forces row-level security with the same policy
+`--org-scoped` generates; with `--org` it renames the hidden `default`
+organization to `SLUG`. It then rewrites every generated file as
+`--org-scoped` writes it (create migrations record their generator command on
+their first line, so it re-renders them and refuses any you edited), flips
+`const Organizations` in `app_gen.go`, and from then on sign-in asks for the
+organization and `forge setup` for `--org`. The down migration reverses the
+schema and the slug, and refuses while any row belongs to another
+organization than the first; restore the code with version control.
+
+```sh
+forge new shop --auth && cd shop
+forge migrate && forge setup --email you@example.com
+forge generate scaffold product name:string price:integer
+forge migrate
+forge generate tenancy --org acme --dry-run
+forge generate tenancy --org acme
+forge migrate                                                    # existing products now belong to acme
+forge generate scaffold invoice total:integer --org-scoped       # new tables take a scope
+```
+
+It refuses an application without Forge identity (`forge generate
+authentication` first), one that already has organizations, and generated
+files edited by hand (nothing is written). On MySQL and MariaDB DDL is not
+transactional: a migration that fails half-way needs a manual fix.
 
 ## Permission ownership
 
@@ -321,12 +388,12 @@ forge generate scaffold widget title:string --global
 ## Destroy
 
 ```sh
-forge destroy scaffold post title:string body:text --tenant-scoped --dry-run
-forge destroy scaffold post title:string body:text --tenant-scoped
+forge destroy scaffold post title:string body:text --dry-run
+forge destroy scaffold post title:string body:text
 forge destroy controller pages home about_us
 forge destroy mailer user welcome:name,url
 forge destroy job send_welcome user_id:uuid --queue
-forge destroy model post title:string body:text --tenant-scoped --migrations
+forge destroy model post title:string body:text --migrations
 ```
 
 `forge destroy GENERATOR ARGUMENTS...` takes the arguments the generator was
@@ -361,8 +428,11 @@ therefore be exact, and it works for code generated by any earlier version.
 ## The routes seam
 
 `forge new` generates `app/bootstrap/routes_gen.go` with an empty
-`generatedRoutes` function, and `bootstrap.go` calls it once (inside
-`identityRoutes` in a PostgreSQL application, after `routes` otherwise).
+`generatedRoutes` function, and `bootstrap.go` calls it once, after `routes`.
+With Forge identity its first block, `// forge:identity repository`, calls
+`identityRoutes` (`app/bootstrap/identity.go`, yours to change), which mounts
+the sign-in pages and returns the session store and middleware the guards
+use; `forge generate authentication` adds that block.
 `forge generate scaffold`, `resource` and `controller` rewrite that file
 whole and `go/format` it:
 
@@ -386,9 +456,9 @@ whole and `go/format` it:
   command again (repeating the last one is enough). Until then the build
   fails with `protect redeclared`, so an override is never silently ignored;
   afterwards the generators leave theirs out and use yours.
-- Without Forge identity (SQLite, MySQL, MariaDB, API-only applications) the
-  guard refuses every request; `--public` (resources and scaffolds with
-  `--global`, and controllers) uses a pass-through `public` guard instead and
+- Without Forge identity (applications created without `--auth`, API-only
+  applications) the guard refuses every request; `--public` (resources,
+  scaffolds and controllers) uses a pass-through `public` guard instead and
   prints a warning. With Forge identity `--public` is refused for resources
   and scaffolds: their routes need sign-in and the permissions the migration
   grants to the `owner` role.

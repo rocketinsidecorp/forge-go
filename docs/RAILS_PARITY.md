@@ -10,9 +10,10 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Capability | Rails 8 | Forge-Go | Forge-Rust |
 | --- | --- | --- | --- |
 | New application with Docker and CI | `rails new` | Done | Done |
-| Database selection | `rails new -d` | Done (PostgreSQL, MySQL, MariaDB, SQLite) | Done (PostgreSQL, MySQL, MariaDB, SQLite) |
+| Database selection | `rails new -d` | Done (SQLite by default, PostgreSQL with `--tenants`; MySQL, MariaDB; [ADR 0050](adr/0050-opt-in-authentication-and-organizations.md)) | Done (PostgreSQL default; SQLite default and `--tenants` pending, see Parity follow-ups) |
+| Authentication and organizations opt-in | `rails new` + `rails g authentication` | Done (`forge new --auth`, `--tenants`; `forge generate authentication` wires itself; `forge generate tenancy` converts; Forge identity on PostgreSQL, MySQL, MariaDB and SQLite; `org_id`/`--org-scoped`, `forge setup [--org]`) | Pending (see Parity follow-ups) |
 | Server-rendered HTML, layouts, partials, forms, flash, CSRF | Action View | Done | Done |
-| API-only application | `rails new --api` | Done (`forge new --api [-d DB]`: JSON `GET /`, `/v1/status`, health and OpenAPI; on PostgreSQL the identity, audit and session schema (D15); no `app/views`, `app/assets`, `app/javascript`, `config/locales`, sign-in pages or browser middleware; `--api-auth` and `--locale` conflict with it; `generate view\|scaffold\|authentication` and HTML `controller` refuse it, [GENERATORS.md](GENERATORS.md#in-an-api-only-application)) | Done (`forge new --api`: same flag, conflicts and refusals; `generate resource` and `controller --api` are refused too, see the follow-ups) |
+| API-only application | `rails new --api` | Done (`forge new --api [-d DB]`: JSON `GET /`, `/v1/status`, health and OpenAPI; no identity schema (authentication is opt-in, ADR 0050); no `app/views`, `app/assets`, `app/javascript`, `config/locales`, sign-in pages or browser middleware; `--api-auth` and `--locale` conflict with it; `generate view\|scaffold\|authentication` and HTML `controller` refuse it, [GENERATORS.md](GENERATORS.md#in-an-api-only-application)) | Done (`forge new --api`: same flag, conflicts and refusals; `generate resource` and `controller --api` are refused too, see the follow-ups) |
 | HTML + JSON CRUD generator | `rails g scaffold` | Done | Done |
 | Authentication pages, password reset | `rails g authentication` | Done | Done |
 | Sign-in through the HTML pages only by default; JSON login opt-in | (`rails new --api` for API-only apps) | Done (`forge new --api-auth`, `forge generate authentication --api-auth`; without the flag no JSON login is mounted) | Done (no JSON login exists; `--api-auth` not needed until one does) |
@@ -51,12 +52,25 @@ the work is finished and waiting for its review; **Planned** means not started.
 | `g` and `d` command aliases | `rails g`, `rails d` | Done (`forge g`, `forge d`, also in `forge help`) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
 | Inferred add/remove column migrations | `rails g migration AddSkuToProducts sku:string` | Done (`forge g migration add_COLUMNS_to_TABLE field:type...` and `remove_COLUMNS_from_TABLE`, per dialect; other names stay blank with a warning) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
 | Explicitly public generated routes without Forge identity | — | Done (`--public` on `generate resource\|scaffold` with `--global`, refused with Forge identity; deny-all otherwise) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
-| README quickstart run end to end in CI | Rails Guides "Getting Started" | Done (the generated README's Quickstart block run as written by a real `forge`, then sign-in and CRUD over HTTP, PostgreSQL and SQLite: `TestGeneratedApplication/readme_quickstart_*`, CI job `generated`) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
+| README quickstart run end to end in CI | Rails Guides "Getting Started" | Done (the generated README's Quickstart block run as written by a real `forge`, then sign-in, CRUD and JSON over HTTP for SQLite `--auth`, MySQL/MariaDB `--auth` and PostgreSQL `--tenants` with a cross-organization `404` check: `TestGeneratedApplication/readme_quickstart_*`, CI jobs `generated` and `mariadb`) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
 | Continuous fuzzing, SBOM, signed images | — | Done (every fuzz target per PR and nightly, `scripts/fuzz.sh`; CycloneDX/SPDX SBOMs; keyless cosign-signed images from `v*` tags; [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), [ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)) | Done (`scripts/fuzz.sh`, `scripts/sbom.sh`, signed forge-proxy image, SHA/digest pins enforced by `crates/forge/tests/supply_chain.rs`, Forge-Rust ADR 0043) |
 | Published benchmarks | — | In review (`go test -bench`, `scripts/bench.sh`, [BENCHMARKS.md](BENCHMARKS.md)) | Done (`cargo bench -p forge-bench`, `scripts/bench.sh`) |
 | Getting Started guide | Rails Guides | Done ([GETTING_STARTED.md](GETTING_STARTED.md)) | Done (`docs/getting-started.md`) |
 
 ## Parity follow-ups
+
+- Opt-in authentication and organizations, SQLite by default (owner
+  decisions D30, D31, D33-D36 of 2026-10-26, [ADR
+  0050](adr/0050-opt-in-authentication-and-organizations.md)). Forge-Rust
+  still lacks: `forge new --auth` and `--tenants` (and a plain `forge new`
+  without identity), SQLite as the default database, identity stores for
+  MySQL/MariaDB and SQLite with a shared contract suite, `forge setup
+  --email` with a hidden default organization and `--org`, `org_id` and
+  `--org-scoped` in generated code, a self-wiring `forge generate
+  authentication`, and `forge generate tenancy`. Per the owner's decision D37
+  of 2026-10-27, Forge-Rust takes no new package until Forge-Go reaches 100%;
+  this follows then, tracked in a Forge-Rust issue opened with the AUTH-OPT
+  pull request.
 
 - Argon2id password hashing (forge-go QG13, audit S-9 and P-7, [ADR
   0048](adr/0048-argon2id-password-hashing.md)). Both frameworks write the same

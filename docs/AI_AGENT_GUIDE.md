@@ -29,8 +29,8 @@ Generators that support `--dry-run` show planned paths without writing files:
 forge generate migration create_orders --dry-run
 forge generate view orders --dry-run
 forge generate job cleanup --dry-run
-forge generate resource product name:string 'summary:text?' price_cents:int --tenant-scoped --dry-run
-forge generate scaffold product name:string 'summary:text?' price_cents:int --tenant-scoped --dry-run
+forge generate resource product name:string 'summary:text?' price_cents:int --dry-run
+forge generate scaffold product name:string 'summary:text?' price_cents:int --org-scoped --dry-run   # with organizations
 ```
 
 `forge generate scaffold` takes the same arguments as `generate resource` and
@@ -38,9 +38,12 @@ adds HTML pages (`app/adapters/htmlui`, `app/views/<plural>`); everything below
 about resources applies to it, and its pages are guarded like the JSON routes.
 
 For `forge generate resource` and `forge generate scaffold`, always run `--dry-run` first and show the user
-the planned files and the wiring it prints. Choose the scope deliberately:
-`--tenant-scoped` for data that belongs to one tenant, `--global` only for data
-shared by all tenants; the command refuses to guess. Money is an `int` in
+the planned files and the wiring it prints. In an application with
+organizations (`forge new --tenants`, `const Organizations = true` in
+`app/bootstrap/app_gen.go`) choose the scope deliberately: `--org-scoped` for
+data that belongs to one organization, `--global` only for data shared by all
+of them; the command refuses to guess. Other applications have plain tables
+and refuse `--org-scoped`. Money is an `int` in
 minor units (`price_cents:int`); there are no floating-point or decimal types.
 Quote an optional field (`'summary:text?'`) so the shell does not expand the
 `?`. The generator never edits `app/bootstrap/bootstrap.go` and never opens

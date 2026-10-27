@@ -611,6 +611,17 @@ boundaries; - dependency direction; - data access; - external
 integrations; - shared packages; - public contracts; - forbidden
 coupling.
 
+### Application defaults (owner decision, 2026-10-26)
+
+`forge new APP` generates a SQLite application with no authentication and
+plain tables. `--auth` adds Forge identity (on every database), `--tenants`
+(implies `--auth`) adds organizations (`org_id`, `--org-scoped`,
+`forge setup --org`) and selects PostgreSQL automatically unless `-d` is
+given; `-d postgresql|mysql|mariadb|sqlite3|none` keeps working. Framework
+internals keep their tenant names (`TenantContext`, `forge_tenants`,
+`forge.tenant_id`). This replaces the earlier PostgreSQL default; see
+[ADR 0050](docs/adr/0050-opt-in-authentication-and-organizations.md).
+
 ### Project-Specific High-Risk Areas
 
 Add repository-specific escalation rules only when evidence supports
