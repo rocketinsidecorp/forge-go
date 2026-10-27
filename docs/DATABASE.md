@@ -562,8 +562,13 @@ Each worker claims up to `DispatcherOptions.BatchSize` events (default 10) in
 one transaction and delivers them in order, acknowledging each on its own.
 Canceling the context stops the dispatcher between its own statements: it
 cancels the running handler, records that handler's result (an
-acknowledgement, or a retry), and hands back the events not yet started
-without using an attempt. Each of those statements is bounded to 5 seconds.
+acknowledgement, a retry, or a dead letter on its last attempt), and hands
+back the events not yet started without using an attempt. Each of those
+statements is bounded to 5 seconds, including waiting for a pool connection,
+so a worker can take about 15 seconds past its handler's return to stop
+(record, the last lease renewal, release); workers stop in parallel. Keep
+`FORGE_HTTP_SHUTDOWN_TIMEOUT` (30 s by default) above that, plus the time your
+handlers need to honour cancellation.
 Dead-letter rows are retained for operator inspection; automated replay and
 queue metrics are not yet provided. See
 [ADR 0018](adr/0018-transactional-outbox-foundation.md) and
