@@ -714,7 +714,10 @@ Decoding is strict: unknown or duplicate keys, a second YAML document,
 durations that are not strings (`30s`), a tag in `image`, a password in
 `registry.password`, host names starting with `-` (also `ssh.proxy_jump` and
 `registry.server`, which `ssh -J` and `docker login` would read as options),
-`retain` below 2, and more than one proxied role are errors. `retain` counts
+`retain` below 2, more than one proxied role, a file over 1 MiB
+(`read deploy config: PATH is larger than 1048576 bytes`) and nesting deeper
+than 100 levels (`deploy config: yaml: line N: exceeded max depth of 100`, the
+same limits and wording as Forge-Rust) are errors. `retain` counts
 the running version, so `retain: 1` would prune the previous version after
 every deploy and leave nothing to roll back to; it is refused (the default
 is 5). `migrate.env` is validated like the role `env` blocks and must not be

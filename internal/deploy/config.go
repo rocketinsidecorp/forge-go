@@ -17,6 +17,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -192,19 +193,41 @@ var (
 	argPattern          = regexp.MustCompile(`^[^\x00-\x1f]*$`)
 )
 
+// Limits of config/deploy.yml, the same as Forge-Rust's: deploy files are a few
+// kilobytes and nest a few levels, so a bounded read keeps a wrong path from
+// filling memory and a bounded depth refuses a hostile document with a line
+// number (yaml.v3 alone allows 10,000 levels).
+const (
+	// MaxConfigBytes is the largest deploy.yml LoadConfig reads.
+	MaxConfigBytes = 1 << 20
+	// MaxConfigDepth is how deeply the nodes of deploy.yml may nest.
+	MaxConfigDepth = 100
+)
+
 // LoadConfig reads and validates the configuration at path. Unknown keys,
-// duplicate keys, several YAML documents and wrongly typed values are
-// errors.
+// duplicate keys, several YAML documents, wrongly typed values, a file over
+// MaxConfigBytes and a document nested deeper than MaxConfigDepth are errors.
 func LoadConfig(path string) (*Config, error) {
-	content, err := os.ReadFile(path) // #nosec G304 -- the operator names the config file.
+	file, err := os.Open(path) // #nosec G304 -- the operator names the config file.
 	if err != nil {
 		return nil, fmt.Errorf("read deploy config: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	content, err := io.ReadAll(io.LimitReader(file, MaxConfigBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read deploy config: %w", err)
+	}
+	if len(content) > MaxConfigBytes {
+		return nil, fmt.Errorf("read deploy config: %s is larger than %d bytes", path, MaxConfigBytes)
 	}
 	return ParseConfig(content)
 }
 
 // ParseConfig decodes and validates a configuration.
 func ParseConfig(content []byte) (*Config, error) {
+	if err := checkConfigDepth(content); err != nil {
+		return nil, err
+	}
 	decoder := yaml.NewDecoder(bytes.NewReader(content))
 	decoder.KnownFields(true)
 	var cfg Config
@@ -223,6 +246,56 @@ func ParseConfig(content []byte) (*Config, error) {
 		return nil, fmt.Errorf("deploy config: %w", err)
 	}
 	return &cfg, nil
+}
+
+// yamlDepthLimit is the nesting at which yaml.v3 itself gives up; its error
+// carries no line.
+const yamlDepthLimit = "exceeded max depth of 10000"
+
+// checkConfigDepth refuses a first document nested deeper than
+// MaxConfigDepth, naming the line of the first node past it ("yaml: line N:
+// exceeded max depth of 100", Forge-Rust's wording). Aliases are not
+// followed. Syntax errors are left to the strict decode, except yaml.v3's own
+// 10,000-level limit: its error has no line, so the line where the scanner
+// gave up (the first line whose prefix trips it, found by bisection) is
+// reported with the same cap.
+func checkConfigDepth(content []byte) error {
+	var doc yaml.Node
+	if err := yaml.NewDecoder(bytes.NewReader(content)).Decode(&doc); err != nil {
+		if !strings.HasSuffix(err.Error(), yamlDepthLimit) {
+			return nil
+		}
+		lines := bytes.SplitAfter(content, []byte("\n"))
+		line := sort.Search(len(lines), func(i int) bool {
+			var scratch yaml.Node
+			err := yaml.NewDecoder(bytes.NewReader(bytes.Join(lines[:i+1], nil))).Decode(&scratch)
+			return err != nil && strings.HasSuffix(err.Error(), yamlDepthLimit)
+		}) + 1
+		return fmt.Errorf("deploy config: yaml: line %d: exceeded max depth of %d", line, MaxConfigDepth)
+	}
+	root := &doc
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) == 1 {
+		root = doc.Content[0]
+	}
+	var deepest func(n *yaml.Node, depth int) *yaml.Node
+	deepest = func(n *yaml.Node, depth int) *yaml.Node {
+		if depth > MaxConfigDepth {
+			return n
+		}
+		if n.Kind == yaml.AliasNode {
+			return nil
+		}
+		for _, child := range n.Content {
+			if found := deepest(child, depth+1); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	if n := deepest(root, 1); n != nil {
+		return fmt.Errorf("deploy config: yaml: line %d: exceeded max depth of %d", n.Line, MaxConfigDepth)
+	}
+	return nil
 }
 
 // explicitNullMigrateEnv reports whether the document sets migrate.env to

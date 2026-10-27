@@ -78,7 +78,7 @@ Run it with `go test -run TestRailsParity .`.
 | `alert-rules` | Prometheus alert rules in the local stack | — | Done (`observability/alerts.yml`: target down, no metrics, 5xx ratio, p95 latency, database pool saturation and waiters, dead queue jobs, failing scheduled jobs; a test checks every metric and label against what the exporter registers; [OBSERVABILITY.md](OBSERVABILITY.md#alert-rules)) | Planned, after forge-go 100% (decision D37; forge-rust#101): the same rules in `observability/alerts.yml` and a test of every metric and label) |
 | `deploy` | Zero-downtime deploys, rollback, remote logs | Kamal | Done (`forge deploy`, `forge logs`, `forge app`, `forge-proxy`) | Done (`forge deploy`, `forge logs`, `forge app`, `forge-proxy` with ACME TLS, same `config/deploy.yml`; `crates/forge-cli/src/deploy`, Forge-Rust ADR 0042) |
 | `deploy-lock-logs-polish` | Bounded `forge logs` concurrency, the `ln` error text on a held deploy lock, partial `lock status` | Kamal | Done (`forge logs` reads at most `parallelism` hosts at once, every host at once with `-f`; `forge deploy lock acquire` on a held lock without a record appends the redacted remote stderr, such as `ln`'s, to the held message; partial `lock status` records were already returned with the error) | Partial (`forge logs` reads at most `parallelism` hosts at once without `-f`; the `ln` error text and the partial `lock status` follow in forge-rust#108) |
-| `deploy-yml-caps` | `deploy.yml` size and nesting caps | Kamal | Planned (forge-go#89): refuse a file over 1 MiB or nested deeper than 100 levels with a line-numbered error; today `internal/deploy/config.go` reads it uncapped and relies on yaml.v3's depth of 10,000) | Done (`config/deploy.yml` over 1 MiB or nested deeper than 100 levels is refused with a line-numbered error; `crates/forge-cli/src/deploy/yaml.rs`, `config.rs`) |
+| `deploy-yml-caps` | `deploy.yml` size and nesting caps | Kamal | Done (`forge deploy`: `config/deploy.yml` over 1 MiB (`MaxConfigBytes`) or nested deeper than 100 levels (`MaxConfigDepth`) is refused with a line-numbered error, `deploy config: yaml: line N: exceeded max depth of 100`, as in Rust; [DEPLOYMENT.md](DEPLOYMENT.md)) | Done (`config/deploy.yml` over 1 MiB or nested deeper than 100 levels is refused with a line-numbered error; `crates/forge-cli/src/deploy/yaml.rs`, `config.rs`) |
 | `dev-db-lifecycle` | Live reload and database lifecycle | `bin/dev`, `db:*` | Done (`forge dev`, `forge db`) | Done (`forge dev [NAME] [--no-reload]` restarts on change; `forge db create\|drop\|reset\|setup\|prepare\|migrate\|rollback\|status\|seed\|console`, `forge migrate`, `forge rollback`, `forge doctor`, `forge version`; Forge-Rust ADR 0036) |
 | `dev-browser-reload` | Browser reload after each restart of `forge dev` | `bin/dev` with live reload gems | Done (`forge dev` reloads the browser after each restart; `--no-reload` turns watching and reload off; [ADR 0035](adr/0035-development-loop.md)) | Planned (forge-rust#106): `forge dev` restarts the binary but has no browser-reload proxy) |
 | `db-schema-dump-load` | Schema dump and load | `db:schema:dump`, `db:schema:load` | Done (`forge db schema:dump`, `forge db schema:load`) | Planned (forge-rust#107): the commands need the credential passed to `pg_dump` and `psql` through the child's environment, never an argument) |
@@ -379,11 +379,9 @@ Run it with `go test -run TestRailsParity .`.
   patterns in both frameworks, `retain` must be 2 or more (1 pruned the
   previous version, so rollback was impossible), and the deploy lock is
   released only while its record is the deploy's own, with a record-less lock
-  older than a minute recovered without `--force`. One difference is
-  deliberate: Forge-Rust refuses YAML nesting deeper than 100 levels (and a
-  `deploy.yml` over 1 MiB) with a line-numbered error, while Forge-Go relies
-  on yaml.v3's own maximum depth (10,000 levels) and reads the file without a
-  size cap (a Forge-Go gap, row `deploy-yml-caps`). Forge-Rust mirrors the lock scripts and the four golden plan
+  older than a minute recovered without `--force`. Both refuse YAML
+  nesting deeper than 100 levels and a `deploy.yml` over 1 MiB with a
+  line-numbered error (forge-go#89, row `deploy-yml-caps`). Forge-Rust mirrors the lock scripts and the four golden plan
   files in `internal/deploy/testdata` and the `retain` minimum, tracked in
   [forge-rust#40](https://github.com/rocketinsidecorp/forge-rust/issues/40).
 
