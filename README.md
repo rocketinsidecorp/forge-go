@@ -616,6 +616,8 @@ myapp/
   app/bootstrap/bootstrap.go   # opens the database, readiness check "database", GET /v1/status
   app/bootstrap/bootstrap_test.go
   app/bootstrap/routes_gen.go  # the routes generate scaffold/resource/controller add (generator-owned)
+  app/architecture_test.go     # enforces the ring dependency rules (see Architecture test)
+  AGENTS.md                    # guide for AI coding agents (see AGENTS.md for AI coding agents)
   app/adapters/htmlauth/       # PostgreSQL: sign-in, sign-out, two-factor and password-reset pages
   app/views/                   # layout, flash partial (and, with PostgreSQL, sessions/ and passwords/)
   db/db.go                     # embeds db/migrations into the binary
@@ -644,6 +646,53 @@ SQLite) and runs it in `gcr.io/distroless/static-debian12:nonroot`,
 configured for production behind a TLS-terminating proxy. See
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
 [docs/DATABASE.md](docs/DATABASE.md).
+
+### Architecture test
+
+Every generated application carries `app/architecture_test.go`, a test that
+enforces the dependency direction of its rings with the standard library
+(`go/parser` on the import lines, no tools to install). `app/domain` imports
+only itself, the standard library without `net`, `net/http`, `database/sql`,
+`os`, `io/fs`, `io/ioutil`, `path/filepath`, `embed`, `html/template`, `unsafe`
+and cgo, and Forge's `uuid` and `fault`;
+`app/application` imports `app/domain`, itself and Forge's `uuid`, `fault`,
+`pagination` and `tenancy`; `app/adapters` and every other package outside
+`app/bootstrap` never import `app/bootstrap`, the only composition root. Test
+files are checked too: domain and application tests use in-memory fakes. It
+passes on a fresh application and after every generator, and a violation
+fails with the file, the line and the import:
+
+```sh
+forge new myapp -d sqlite3 && cd myapp
+forge g scaffold product name:string --global
+forge test ./app/ -run TestArchitecture -v        # passes
+printf 'package domain\n\nimport _ "net/http"\n' > app/domain/leak.go
+forge test ./app/ -run TestArchitecture           # app/domain/leak.go:3: imports "net/http": the domain ring must not do I/O or speak HTTP: ...
+rm app/domain/leak.go
+```
+
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#architecture-test-of-the-generated-application)
+has the rules; `extraAllowedImports` in the test admits a third-party package
+to the inner rings on purpose.
+
+### AGENTS.md for AI coding agents
+
+Every generated application carries `AGENTS.md`, a guide of under 120 lines
+for AI coding agents (and new teammates): the rings and the architecture test,
+the `forge` commands (`generate`, `destroy`, `migrate`, `dev`, `test`, `check`,
+`build`), the routes seam (`app/bootstrap/routes_gen.go` is never edited by
+hand), the security defaults (CSRF, tenant scoping, secrets never logged) and
+how to run the tests. It describes only what that application has: an
+`--api` application has no CSRF or view paragraph, one without a database has
+no migration or tenant paragraph, and the sign-in paragraph appears only with
+PostgreSQL. A framework test checks that every command and file it names
+exists.
+
+```sh
+forge new myapp -d sqlite3 && cd myapp
+head -20 AGENTS.md                       # what an agent reads first
+printf '@AGENTS.md\n' > CLAUDE.md        # optional: tools that read only CLAUDE.md import it
+```
 
 ## Translations (i18n)
 
@@ -1545,9 +1594,20 @@ docker compose -f compose.yaml -f compose.observability.yaml up --build
 curl http://127.0.0.1:8080/v1/status
 # Grafana http://127.0.0.1:3000 (user admin): dashboard "Forge application",
 # Explore > Tempo (traces), Explore > Loki (logs); Prometheus http://127.0.0.1:9090
+# Alert rules (observability/alerts.yml): http://127.0.0.1:9090/alerts
 # compose interpolates the whole file, so GRAFANA_ADMIN_PASSWORD must be set for down too
 docker compose -f compose.yaml -f compose.observability.yaml down      # add -v to delete the data
 ```
+
+Prometheus also loads `observability/alerts.yml`: scrape target down or no
+metrics arriving, more than 5% of requests failing with 5xx, p95 latency over
+500 ms, database pool over 90% in use or callers waiting for a connection,
+queue jobs that died, scheduled jobs that failed. Open
+http://127.0.0.1:9090/alerts to see which fire; edit the thresholds in the file
+and `docker compose -f compose.yaml -f compose.observability.yaml restart prometheus`.
+The stack has no Alertmanager, and a framework test fails if a rule uses a
+metric or label Forge does not export
+([the rules](docs/OBSERVABILITY.md#alert-rules)).
 
 The default `docker compose up` does not start it. See
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md#local-stack-grafana-prometheus-tempo-and-loki)

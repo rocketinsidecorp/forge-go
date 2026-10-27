@@ -154,6 +154,8 @@ var files = []file{
 	{"bootstrap_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "bootstrap_test.go")), everyApplication},
 	// The routes the generators add (see routes.go); empty at first.
 	{routesTemplate, fixed(RoutesFile), everyApplication},
+	// The dependency rules of the rings, as a test (see the file's comment).
+	{"architecture_test.go.tmpl", fixed(filepath.Join("app", "architecture_test.go")), everyApplication},
 	{"welcome.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome.go")), everyApplication},
 	{"welcome_test.go.tmpl", fixed(filepath.Join("app", "bootstrap", "welcome_test.go")), everyApplication},
 	{"app_assets.go.tmpl", fixed(filepath.Join("app", "assets", "assets.go")), withViews},
@@ -187,6 +189,8 @@ var files = []file{
 	{"ci.yml.tmpl", fixed(filepath.Join(".github", "workflows", "ci.yml")), everyApplication},
 	{"dependabot.yml.tmpl", fixed(filepath.Join(".github", "dependabot.yml")), everyApplication},
 	{"README.md.tmpl", fixed("README.md"), everyApplication},
+	// The guide for AI coding agents (the repository convention: AGENTS.md only).
+	{"AGENTS.md.tmpl", fixed("AGENTS.md"), everyApplication},
 	{"env.development.tmpl", fixed(".env.development"), everyApplication},
 	{"env.local.tmpl", fixed(".env.local"), withDatabase},
 	{"db.go.tmpl", fixed(filepath.Join("db", "db.go")), withDatabase},

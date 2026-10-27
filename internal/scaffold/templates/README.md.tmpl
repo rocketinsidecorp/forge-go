@@ -514,9 +514,11 @@ forge generate authentication --api-auth
 | `db/migrations` | SQL migrations, embedded in the binary |
 | `db/seeds.go` | Idempotent seed data for `seed` |
 {{- end}}
+| `app/architecture_test.go` | Test that enforces the dependency rules of the rings (see Architecture) |
+| `AGENTS.md` | Guide for AI coding agents: the rings, the `forge` commands, the routes seam, security defaults, tests |
 | `Dockerfile` | Production image: static binary, distroless, non-root |
 | `compose.yaml` | Local stack running the same image in development mode |
-| `compose.observability.yaml`, `observability/` | Opt-in Grafana, Prometheus, Tempo, Loki and OpenTelemetry Collector stack, preconfigured |
+| `compose.observability.yaml`, `observability/` | Opt-in Grafana, Prometheus (with alert rules), Tempo, Loki and OpenTelemetry Collector stack, preconfigured |
 | `.env.development` | Development settings for the `forge` commands (no secrets) |
 {{- if and .DB .DB.Identity}}
 | `.env.local` | Git-ignored local MFA key and private overrides |
@@ -524,6 +526,35 @@ forge generate authentication --api-auth
 
 Domain, application, adapter and infrastructure packages live under `app/`
 and are added as the application grows.
+
+## Architecture
+
+Code is layered in rings and imports point inward only:
+
+| Ring | May import |
+| --- | --- |
+| `app/domain` | itself, the standard library without `net`, `net/http`, `database/sql`, `os`, `io/fs`, `io/ioutil`, `path/filepath`, `embed`, `html/template`, `unsafe` and cgo, and the framework's `uuid` and `fault` |
+| `app/application` | `app/domain`, itself, the same standard library subset, the framework's `uuid`, `fault`, `pagination` and `tenancy` |
+| `app/adapters` | the inner rings and the framework; never `app/bootstrap` |
+| `app/bootstrap` | everything: the only place that wires the application |
+
+`app/jobs`, `app/mailers`{{if not .API}}, `app/views`{{end}}, `db` and `config` sit outside the rings
+and, like the adapters, never import `app/bootstrap`. `app/architecture_test.go`
+parses the imports of every Go file, test files included, with the standard
+library and fails with the file, the line and the forbidden import. It runs with `forge test` and in CI.
+
+```bash
+forge test ./app/ -run TestArchitecture -v    # only the architecture test
+forge test                                    # everything, including it
+```
+
+To add a third-party package to the domain or application rings, list it in
+`extraAllowedImports` in that file, in a reviewed commit.
+
+`AGENTS.md` is the same rules, the commands, the routes seam and the security
+defaults written for AI coding agents; keep it in step when you change the
+layout. A tool that reads only `CLAUDE.md` can import it with a one-line
+`CLAUDE.md` that contains `@AGENTS.md`.
 {{- if and .DB .DB.Identity}}
 
 ## Identity
@@ -698,11 +729,21 @@ curl http://127.0.0.1:8080/v1/status
 #    Explore > Tempo                   traces; "Logs for this span" opens the matching log lines
 #    Explore > Loki                    logs; a trace_id links to its trace
 #    Explore > Prometheus              metrics, also at http://127.0.0.1:9090
+#    http://127.0.0.1:9090/alerts      the alert rules of observability/alerts.yml and whether each fires
 
 # 4. Stop it (keeps the data); add -v to delete traces, logs and metrics too
 # compose interpolates the whole file, so GRAFANA_ADMIN_PASSWORD must be set for down too
 docker compose -f compose.yaml -f compose.observability.yaml down
 ```
+
+`observability/alerts.yml` carries alert rules for the metrics the framework
+exports: a target down or no metrics arriving, more than 5% of requests failing
+with 5xx, p95 latency over 500 ms, database pool over 90% in use or callers
+waiting for a connection, queue jobs that died and scheduled jobs that failed.
+Edit the thresholds there and run `docker compose -f compose.yaml -f
+compose.observability.yaml restart prometheus`. There is no Alertmanager in this
+stack: see what fires at http://127.0.0.1:9090/alerts (details in the Forge
+observability guide, docs/OBSERVABILITY.md#alert-rules).
 
 The app sends traces, metrics and logs to the collector over OTLP
 (`FORGE_TELEMETRY_LOGS_EXPORTER=otlp` is set by the overlay), which forwards them

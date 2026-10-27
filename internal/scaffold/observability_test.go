@@ -24,6 +24,7 @@ var observabilityFiles = []string{
 	"compose.observability.yaml",
 	"observability/otel-collector.yaml",
 	"observability/prometheus.yml",
+	"observability/alerts.yml",
 	"observability/tempo.yaml",
 	"observability/loki.yaml",
 	"observability/grafana/provisioning/datasources/datasources.yaml",

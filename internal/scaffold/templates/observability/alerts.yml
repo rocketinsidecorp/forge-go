@@ -1,0 +1,121 @@
+# Prometheus alert rules for the local observability stack.
+#
+# They use only the metrics Forge exports (docs/OBSERVABILITY.md) under the
+# Prometheus names the OTLP receiver gives them. The stack has no
+# Alertmanager: firing alerts are listed at http://127.0.0.1:9090/alerts and in
+# Grafana (Alerting > Alert rules > Prometheus). Thresholds are starting
+# points for an SLO of roughly "95% of requests under 500 ms, under 5% errors":
+# change them to yours. Check the file with
+#   promtool check rules observability/alerts.yml
+# when promtool is installed.
+groups:
+  - name: forge-availability
+    rules:
+      # A scrape target is down. The local stack scrapes only Prometheus
+      # itself; this also covers the application's /metrics listener
+      # (FORGE_TELEMETRY_METRICS_ADDR) once you add it to scrape_configs.
+      - alert: ForgeTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Scrape target {{ $labels.job }} ({{ $labels.instance }}) is down"
+          description: "Prometheus has failed to scrape {{ $labels.instance }} of job {{ $labels.job }} for 2 minutes."
+
+      # The application pushes its metrics over OTLP, so there is no target
+      # to be "down": a stopped or disconnected application shows up as its
+      # always-present Go runtime gauge no longer arriving.
+      - alert: ForgeApplicationMetricsMissing
+        expr: absent_over_time(go_goroutine_count[5m])
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No metrics received from the application"
+          description: "No go_goroutine_count sample arrived for 5 minutes: the application is down, or it cannot reach the OpenTelemetry Collector (see forge_telemetry_export_errors_total)."
+
+  - name: forge-http
+    rules:
+      - alert: ForgeHighServerErrorRatio
+        expr: |
+          sum by (job) (rate(http_server_request_duration_seconds_count{http_response_status_class="5xx"}[5m]))
+            / sum by (job) (rate(http_server_request_duration_seconds_count[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "More than 5% of requests to {{ $labels.job }} fail with 5xx"
+          description: "The 5xx ratio of {{ $labels.job }} has been {{ $value | humanizePercentage }} over 5 minutes."
+
+      # Server-Sent Events (the generated GET /streams of scaffold --broadcast)
+      # keep a request open for as long as a browser tab is, and the request
+      # is recorded when it ends, so their durations would swamp the p95.
+      # They are left out by route; add your own long-lived routes to the
+      # http_route regular expression (an exact path, alternatives with |).
+      - alert: ForgeHighRequestLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum by (job, le) (rate(http_server_request_duration_seconds_bucket{http_route!~"/streams"}[5m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 request latency of {{ $labels.job }} is above 500 ms"
+          description: "The 95th percentile request duration of {{ $labels.job }}, without the /streams event stream, has been {{ $value | humanizeDuration }} for 10 minutes."
+
+  - name: forge-database
+    rules:
+      - alert: ForgeDatabasePoolSaturated
+        expr: |
+          sum by (job, db_system_name, db_client_connection_pool_name) (db_client_connection_count{db_client_connection_state="used"})
+            / sum by (job, db_system_name, db_client_connection_pool_name) (db_client_connection_max) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database pool {{ $labels.db_client_connection_pool_name }} of {{ $labels.job }} is over 90% in use"
+          description: "{{ $value | humanizePercentage }} of the {{ $labels.db_system_name }} pool's connections have been in use for 5 minutes."
+
+      - alert: ForgeDatabasePoolWaiters
+        expr: |
+          sum by (job, db_system_name, db_client_connection_pool_name) (rate(forge_db_pool_wait_duration_seconds_total[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Callers wait for a connection of pool {{ $labels.db_client_connection_pool_name }} of {{ $labels.job }}"
+          description: "On average more than half a caller has been blocked waiting for a database connection for 10 minutes: raise FORGE_DATABASE_MAX_CONNS or shorten the queries."
+
+  - name: forge-jobs
+    rules:
+      # A counter series is created by its first event, at the value 1, and
+      # increase() of a series with a single sample is empty: "increase(x[15m])
+      # > 0" alone never fires for the first dead job (or the first failure of
+      # a job) after the application started. "x unless x offset 15m" is the
+      # series that exists now and did not 15 minutes ago, that is, one born
+      # inside the window; the two halves together cover the first event and
+      # every later one. Both sum by the outcome label too, so a first
+      # "timeout" is not hidden by an older "failed" series of the same job.
+      # The value is not an event count (the second half is the counter
+      # itself), so the descriptions do not quote it.
+      - alert: ForgeQueueJobsDead
+        expr: |
+          (sum by (job, forge_job_kind) (increase(forge_queue_job_duration_seconds_count{forge_job_outcome="dead"}[15m])) > 0)
+            or (sum by (job, forge_job_kind) (forge_queue_job_duration_seconds_count{forge_job_outcome="dead"})
+              unless sum by (job, forge_job_kind) (forge_queue_job_duration_seconds_count{forge_job_outcome="dead"} offset 15m))
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue jobs of kind {{ $labels.forge_job_kind }} of {{ $labels.job }} failed for good"
+          description: "At least one job of this kind used up its attempts in the last 15 minutes."
+
+      - alert: ForgeScheduledJobFailing
+        expr: |
+          (sum by (job, forge_scheduler_job, forge_scheduler_outcome) (increase(forge_scheduler_job_duration_seconds_count{forge_scheduler_outcome=~"failed|timeout"}[15m])) > 0)
+            or (sum by (job, forge_scheduler_job, forge_scheduler_outcome) (forge_scheduler_job_duration_seconds_count{forge_scheduler_outcome=~"failed|timeout"})
+              unless sum by (job, forge_scheduler_job, forge_scheduler_outcome) (forge_scheduler_job_duration_seconds_count{forge_scheduler_outcome=~"failed|timeout"} offset 15m))
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scheduled job {{ $labels.forge_scheduler_job }} of {{ $labels.job }} is failing ({{ $labels.forge_scheduler_outcome }})"
+          description: "The job ended with this outcome at least once in the last 15 minutes."
