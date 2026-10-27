@@ -8,7 +8,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/auth/internal/backupcode"
-	"github.com/rocketinsidecorp/forge-go/internal/principalctx"
+	"github.com/rocketinsidecorp/forge-go/internal/principalctx/principalwrite"
 )
 
 // The tests of this package drive auth's services through its exported API.
@@ -24,7 +24,7 @@ const totpPeriodSeconds = 30
 
 // withPrincipal puts principal in ctx as Middleware.Authenticate does.
 func withPrincipal(ctx context.Context, principal auth.Principal) context.Context {
-	return principalctx.With(ctx, principal)
+	return principalwrite.With(ctx, principal)
 }
 
 // totpCode is the 6-digit code of secret for counter, through

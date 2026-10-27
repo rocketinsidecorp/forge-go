@@ -62,15 +62,18 @@ wrong way:
   under `cmd/` and the example applications import the root.
 - **`internal/langtag`** holds the locale grammar; `i18n.CanonicalLocale`
   and `config` share it, so `config` does not import `i18n`.
-- **`internal/principalctx`** holds the request-context key of the
-  authenticated principal. `auth.FromContext` reads it, `authhttp`'s
+- **`internal/principalctx`** reads the authenticated principal from the
+  request context and **`internal/principalctx/principalwrite`** writes it;
+  the key itself is in `internal/principalctx/internal/key`, which Go lets
+  only those two import. `auth.FromContext` reads it, `authhttp`'s
   middleware writes it, and `broadcast` keys `MaxPerPrincipal` by a small
   interface (`SubjectID() uuid.UUID`) that `auth.Principal` satisfies, so
   `broadcast` does not import `auth`. Being internal, applications cannot use
   it to forge a principal; within the framework only `auth`, `auth/authhttp`
-  and `broadcast` may import it, and only `auth/authhttp` (the middleware,
-  after resolving a session) may write it, so `AuthorizeMFAChange` sees only
-  principals that signed in.
+  and `broadcast` may import the reader, and only `auth/authhttp` (the
+  middleware, after resolving a session) may import the writer, so
+  `AuthorizeMFAChange` sees only principals that signed in. Both are import
+  rules, which an aliased import or a function value cannot dodge.
 - **`auth/internal/backupcode`** is the backup-code format (generation,
   parsing, digest), used by `auth` and by the tests of `authhttp`.
 - **`queue/internal/jobscmd`** implements the `jobs` command. The stores'
@@ -78,9 +81,8 @@ wrong way:
   stores nor `queuecmd` depends on the other.
 
 `architecture_test.go` enforces each direction (`TestImportRules`), with a
-unit test of the checker, and that only `auth/authhttp` calls
-`principalctx.With` (`TestOnlyTheAuthenticationMiddlewareWritesThePrincipal`);
-reintroducing any of the forbidden imports or writers fails them.
+unit test of the checker; reintroducing any of the forbidden imports fails
+it.
 
 ## Consequences
 

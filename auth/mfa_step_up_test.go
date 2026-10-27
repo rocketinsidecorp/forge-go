@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rocketinsidecorp/forge-go/internal/principalctx"
+	"github.com/rocketinsidecorp/forge-go/internal/principalctx/principalwrite"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
@@ -175,7 +175,7 @@ func TestAuthorizeMFAChangeBindsTheProofToTheSignedInPrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signedIn := principalctx.With(context.Background(), ada)
+	signedIn := principalwrite.With(context.Background(), ada)
 	var asked []uuid.UUID
 	allow := MFAChangeAuthorizerFunc(func(_ context.Context, principal Principal) error {
 		asked = append(asked, principal.SubjectID())

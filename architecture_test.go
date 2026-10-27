@@ -1,10 +1,7 @@
 package forge_test
 
 import (
-	"io/fs"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -40,6 +37,8 @@ var corePackages = []string{
 	modulePath + "/i18n",
 	modulePath + "/internal/langtag",
 	modulePath + "/internal/principalctx",
+	modulePath + "/internal/principalctx/internal/key",
+	modulePath + "/internal/principalctx/principalwrite",
 	modulePath + "/mail",
 	modulePath + "/mail/mailtest",
 	modulePath + "/jobs",
@@ -256,10 +255,21 @@ var importRules = []importRule{
 		Stop:      []string{modulePath + "/fault"},
 	},
 	{
+		// Writing the principal is how a request becomes authenticated, and
+		// auth.AuthorizeMFAChange trusts it: only the middleware that
+		// resolved the session may (an import rule, which no alias or
+		// function value can dodge).
+		Name:      "only auth/authhttp writes the principal (principalctx/principalwrite)",
+		From:      []string{modulePath + "/..."},
+		Forbidden: []string{modulePath + "/internal/principalctx/principalwrite"},
+		Except:    []string{modulePath + "/auth/authhttp"},
+		Direct:    true,
+	},
+	{
 		Name:      "only auth, auth/authhttp and broadcast read the principal's context key",
 		From:      []string{modulePath + "/..."},
 		Forbidden: []string{modulePath + "/internal/principalctx"},
-		Except:    []string{modulePath + "/auth", modulePath + "/auth/authhttp", modulePath + "/broadcast", modulePath + "/internal/principalctx"},
+		Except:    []string{modulePath + "/auth", modulePath + "/auth/authhttp", modulePath + "/broadcast", modulePath + "/internal/principalctx/..."},
 		Direct:    true,
 	},
 	{
@@ -392,90 +402,21 @@ func TestImportRuleViolationsFollowsImportsAndHonoursExceptions(t *testing.T) {
 		t.Fatalf("the allowed graph was refused: %v", problems)
 	}
 	for name, extra := range map[string]string{
-		"auth imports web":              modulePath + "/auth " + modulePath + "/web",
-		"auth reaches i18n":             modulePath + "/auth " + modulePath + "/tenancy2\n" + modulePath + "/tenancy2 " + modulePath + "/i18n",
-		"auth imports net/http":         modulePath + "/auth net/http",
-		"auth imports net/http/cookie":  modulePath + "/auth net/http/cookiejar",
-		"auth reaches net/http":         modulePath + "/auth " + modulePath + "/auth/internal/x\n" + modulePath + "/auth/internal/x net/http",
-		"views reads the principal key": modulePath + "/views " + modulePath + "/internal/principalctx",
-		"a framework package uses root": modulePath + "/migrate " + modulePath,
-		"command imports uuid":          modulePath + "/command " + modulePath + "/uuid",
-		"config reaches i18n":           modulePath + "/config " + modulePath + "/x\n" + modulePath + "/x " + modulePath + "/i18n",
-		"broadcast reaches auth":        modulePath + "/broadcast " + modulePath + "/views2\n" + modulePath + "/views2 " + modulePath + "/auth/authhttp",
-		"a queue store uses queuecmd":   modulePath + "/queue/sqlite " + modulePath + "/queue/queuecmd",
+		"auth imports web":               modulePath + "/auth " + modulePath + "/web",
+		"auth reaches i18n":              modulePath + "/auth " + modulePath + "/tenancy2\n" + modulePath + "/tenancy2 " + modulePath + "/i18n",
+		"auth imports net/http":          modulePath + "/auth net/http",
+		"auth imports net/http/cookie":   modulePath + "/auth net/http/cookiejar",
+		"auth reaches net/http":          modulePath + "/auth " + modulePath + "/auth/internal/x\n" + modulePath + "/auth/internal/x net/http",
+		"views reads the principal key":  modulePath + "/views " + modulePath + "/internal/principalctx",
+		"broadcast writes the principal": modulePath + "/broadcast " + modulePath + "/internal/principalctx/principalwrite",
+		"a framework package uses root":  modulePath + "/migrate " + modulePath,
+		"command imports uuid":           modulePath + "/command " + modulePath + "/uuid",
+		"config reaches i18n":            modulePath + "/config " + modulePath + "/x\n" + modulePath + "/x " + modulePath + "/i18n",
+		"broadcast reaches auth":         modulePath + "/broadcast " + modulePath + "/views2\n" + modulePath + "/views2 " + modulePath + "/auth/authhttp",
+		"a queue store uses queuecmd":    modulePath + "/queue/sqlite " + modulePath + "/queue/queuecmd",
 	} {
 		if problems := importRuleViolations(clean+extra+"\n", importRules); len(problems) != 1 {
 			t.Errorf("%s: problems %v, want exactly one", name, problems)
 		}
-	}
-}
-
-// principalWriters are the only packages whose code may put a principal in a
-// request context (principalctx.With): the authentication middleware. Any
-// other writer could hand auth.AuthorizeMFAChange a principal nobody signed
-// in as (ADR 0052).
-var principalWriters = []string{"auth/authhttp"}
-
-// principalWriteViolations lists the non-test Go files under root, outside
-// principalWriters, that call principalctx.With.
-func principalWriteViolations(root string) ([]string, error) {
-	var problems []string
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if name := entry.Name(); relative != "." && (strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" || name == "dist") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || slices.Contains(principalWriters, filepath.ToSlash(filepath.Dir(relative))) {
-			return nil
-		}
-		source, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if strings.Contains(string(source), "principalctx.With(") {
-			problems = append(problems, filepath.ToSlash(relative)+" writes the principal (principalctx.With); only "+strings.Join(principalWriters, ", ")+" may")
-		}
-		return nil
-	})
-	return problems, err
-}
-
-func TestOnlyTheAuthenticationMiddlewareWritesThePrincipal(t *testing.T) {
-	t.Parallel()
-	problems, err := principalWriteViolations(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, problem := range problems {
-		t.Error(problem)
-	}
-	root := t.TempDir()
-	for path, source := range map[string]string{
-		"auth/authhttp/middleware.go": "principalctx.With(ctx, p)",
-		"auth/authhttp/x_test.go":     "principalctx.With(ctx, p)",
-		"broadcast/x_test.go":         "principalctx.With(ctx, p)",
-		"broadcast/handler.go":        "principalctx.Value(ctx)",
-		"vendor/x/x.go":               "principalctx.With(ctx, p)",
-		"views/forge.go":              "principalctx.With(ctx, p)",
-	} {
-		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(path)), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(root, path), []byte(source), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	problems, err = principalWriteViolations(root)
-	if err != nil || len(problems) != 1 || !strings.HasPrefix(problems[0], "views/forge.go") {
-		t.Fatalf("problems %v (err %v), want views/forge.go only", problems, err)
 	}
 }

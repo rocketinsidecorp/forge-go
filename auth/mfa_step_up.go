@@ -229,9 +229,10 @@ func (fn MFAChangeAuthorizerFunc) AuthorizeMFAChange(ctx context.Context, princi
 // JSON two-factor routes, for the authenticated principal of ctx, and returns
 // the proof of the change it allowed, bound to that principal's account: it
 // carries no backup code. The principal comes only from ctx, where
-// authhttp.Middleware puts the principal of the session it resolved (nothing
-// else can put one there), so a proof is never given for an account other
-// than the signed-in one. Without a principal it is ErrCredentialsRequired; a
+// only the authentication middleware (authhttp.Middleware) puts the principal
+// of the session the application's Resolver returned (the framework's other
+// packages cannot import the writer), so a proof is never given for an
+// account other than the signed-in one. Without a principal it is ErrCredentialsRequired; a
 // nil authorizer is an error; an error of the authorizer refuses the change
 // and is returned as is.
 func AuthorizeMFAChange(ctx context.Context, authorizer MFAChangeAuthorizer) (MFAStepUpProof, error) {

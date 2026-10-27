@@ -168,10 +168,12 @@ one, in two ways:
   account (a TOTP code is used up; a backup code is used up by the change).
 - `auth.AuthorizeMFAChange(ctx, authorizer)`: the proof for the signed-in
   principal of the request context, after `authorizer` allowed the change.
-  The principal is read only from `ctx`, where `authhttp.Middleware` puts the
-  principal of the session it resolved; nothing else can put one there
-  (`architecture_test.go` enforces it), so a proof is never made for another
-  account. Without a principal it is `auth.ErrCredentialsRequired`; the
+  The principal is read only from `ctx`, and only the authentication
+  middleware (`authhttp.Middleware`) puts one there: the principal of the
+  session the application's `Resolver` returned (`architecture_test.go`
+  refuses any other writer in the framework, and applications cannot reach
+  the context key). So a proof is made only for the account the
+  application's own session resolution signed in. Without a principal it is `auth.ErrCredentialsRequired`; the
   authorizer's error refuses the change. The JSON handlers of `authhttp` use
   it.
 

@@ -9,7 +9,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/fault"
-	"github.com/rocketinsidecorp/forge-go/internal/principalctx"
+	"github.com/rocketinsidecorp/forge-go/internal/principalctx/principalwrite"
 	"github.com/rocketinsidecorp/forge-go/tenancy"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -115,7 +115,7 @@ func (m *Middleware) authenticateContext(r *http.Request, secret string) (contex
 	if err != nil {
 		return nil, fault.New("internal_error", "internal server error", fault.CategoryInternal, 0).WithCause(err)
 	}
-	ctx = principalctx.With(ctx, session.Principal)
+	ctx = principalwrite.With(ctx, session.Principal)
 	return ctx, nil
 }
 
