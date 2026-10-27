@@ -111,6 +111,9 @@ func Open(ctx context.Context, cfg config.Database, opts ...Option) (*DB, error)
 	if settings.lazy {
 		poolConfig.MinConns = 0
 	}
+	// A connection a cancellation fired on can hold pgx's stored i/o
+	// timeout for its next query: it is destroyed, never reused.
+	guardCancelledConnections(poolConfig)
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
