@@ -103,5 +103,7 @@ needed. It was replaced before release by recorded ticks, below.
   [forge-rust#80](https://github.com/rocketinsidecorp/forge-rust/issues/80)
   it has the same `LISTEN/NOTIFY` wake-up (`PgJobStore::notify(true)`,
   `FORGE_JOBS_NOTIFY`), a job batch bound of 10 and an outbox batch of 10
-  with a lease covering the batch. Go lacks the `FORGE_JOBS_NOTIFY` variable
+  with a lease covering the batch. Go reads `FORGE_JOBS_NOTIFY` too
+  (`config.Jobs.Notify`; unset keeps the code's choice, `false` turns an
+  announcing store off), as Rust does
   ([forge-go#72](https://github.com/rocketinsidecorp/forge-go/issues/72)).

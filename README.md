@@ -1615,6 +1615,15 @@ worker, err := queue.NewWorker(store, registry, queue.WorkerOptions{BatchSize: 1
 dispatcher, err := outboxpostgres.NewDispatcher(database.Pool(), handler, outboxpostgres.DispatcherOptions{Workers: 2, BatchSize: 50})
 ```
 
+`FORGE_JOBS_NOTIFY=true|false` switches the wake-up per deployment, with
+Forge-Rust's meaning: unset keeps the code's choice, `false` turns it off even
+where the code passes `WithNotify()` (`cfg.Jobs.Notifies(codeChoice)` decides):
+
+```sh
+FORGE_JOBS_NOTIFY=true forge dev          # enqueues announce; workers LISTEN
+FORGE_JOBS_NOTIFY=false ./bin/shop serve  # off, whatever the code chose
+```
+
 ```sh
 docker compose run --rm app jobs status                # ready, running and oldest-ready per queue: latency at a glance
 ```

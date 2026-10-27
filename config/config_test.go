@@ -300,6 +300,48 @@ func TestOpenAPIIsServedOnlyInDevelopmentAndTestByDefault(t *testing.T) {
 	}
 }
 
+// FORGE_JOBS_NOTIFY has Forge-Rust's meaning: unset keeps the code's choice,
+// true or false overrides it per deployment, anything else is refused
+// without echoing the value.
+func TestJobsNotifyOverridesTheCodesChoice(t *testing.T) {
+	t.Parallel()
+	load := func(values map[string]string) (config.Config, error) {
+		return config.LoadWithLookup(func(key string) (string, bool) { value, ok := values[key]; return value, ok })
+	}
+	for _, tt := range []struct {
+		name  string
+		value string
+		set   bool
+		code  bool
+		want  bool
+	}{
+		{"unset keeps off", "", false, false, false},
+		{"unset keeps the code's on", "", false, true, true},
+		{"true turns it on", "true", true, false, true},
+		{"1 turns it on", "1", true, false, true},
+		{"false overrides the code's on", "false", true, true, false},
+	} {
+		values := map[string]string{}
+		if tt.set {
+			values["FORGE_JOBS_NOTIFY"] = tt.value
+		}
+		cfg, err := load(values)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if got := cfg.Jobs.Notifies(tt.code); got != tt.want {
+			t.Errorf("%s: Notifies(%v) = %v, want %v", tt.name, tt.code, got, tt.want)
+		}
+	}
+	cfg, err := load(map[string]string{})
+	if err != nil || cfg.Jobs.Notify != nil {
+		t.Fatalf("unset: Notify = %v, err = %v; want nil", cfg.Jobs.Notify, err)
+	}
+	if _, err := load(map[string]string{"FORGE_JOBS_NOTIFY": "on"}); err == nil || !strings.Contains(err.Error(), "FORGE_JOBS_NOTIFY") || strings.Contains(err.Error(), "on\n") || !strings.Contains(err.Error(), "true or false") {
+		t.Fatalf("invalid value: err = %v", err)
+	}
+}
+
 // verify-ca checks the chain only; without sslrootcert pgx trusts the system
 // roots, so production refuses it, saying what to add and quoting no secret.
 func TestProductionVerifyCARequiresSSLRootCert(t *testing.T) {

@@ -143,6 +143,26 @@ type Config struct {
 	Log         Log
 	I18n        I18n
 	OpenAPI     OpenAPI
+	Jobs        Jobs
+}
+
+// Jobs configures durable jobs (package queue, ADR 0047).
+type Jobs struct {
+	// Notify is FORGE_JOBS_NOTIFY: enqueues announce due jobs and job workers
+	// LISTEN for them, the meaning of queuepostgres.WithNotify(). Nil (unset)
+	// keeps the code's choice; false turns an announcing store off per
+	// deployment. Only PostgreSQL has a wake-up.
+	Notify *bool
+}
+
+// Notifies reports whether job enqueues announce and workers listen: the
+// environment's FORGE_JOBS_NOTIFY when it is set, otherwise code, the choice
+// the application made in code (for example passing queuepostgres.WithNotify()).
+func (j Jobs) Notifies(code bool) bool {
+	if j.Notify != nil {
+		return *j.Notify
+	}
+	return code
 }
 
 // OpenAPI configures the GET /openapi.json route (package openapi, ADR 0043).

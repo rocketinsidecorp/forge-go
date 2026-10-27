@@ -123,7 +123,13 @@ func Configure(ctx context.Context, app *forge.App) error {
 
     // WithNotify: enqueues announce themselves (NOTIFY forge_jobs) and idle
     // workers wake at once instead of at their next poll (optional).
-    store, err := queuepostgres.NewStore(db, queuepostgres.WithNotify())
+    // FORGE_JOBS_NOTIFY=true|false overrides the code's choice per deployment
+    // (config.Jobs.Notifies: unset keeps the argument).
+    var storeOptions []queuepostgres.Option
+    if app.Config().Jobs.Notifies(true) {
+        storeOptions = append(storeOptions, queuepostgres.WithNotify())
+    }
+    store, err := queuepostgres.NewStore(db, storeOptions...)
     if err != nil { return err }
     registry := queue.NewRegistry()
     if err := registerJobs(registry, mailer); err != nil { return err }
@@ -186,6 +192,18 @@ needs a direct connection or session pooling (not PgBouncer transaction
 pooling); PostgreSQL serializes the commits of notifying transactions, which
 matters only at thousands of enqueues per second. Anyone who can `NOTIFY` on
 the database can wake workers, which then claim once.
+
+`FORGE_JOBS_NOTIFY=true|false` is the per-deployment switch, with the meaning
+it has in Forge-Rust: unset keeps the code's choice, `true` turns the wake-up
+on and `false` turns it off even where the code asks for it. The framework
+reads it into `config.Config.Jobs.Notify`; code that builds the store decides
+with `cfg.Jobs.Notifies(codeChoice)` (generated applications do this in
+`cmd/NAME/main.go`). Any other value is refused at start-up.
+
+```sh
+FORGE_JOBS_NOTIFY=true forge dev          # enqueues announce; workers LISTEN
+FORGE_JOBS_NOTIFY=false ./bin/shop serve  # off, even where the code opts in
+```
 
 Run job processing in dedicated replicas by starting the worker only in a
 second command or `Configure` branch selected by configuration; the queue

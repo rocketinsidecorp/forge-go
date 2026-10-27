@@ -161,6 +161,13 @@ func LoadWithLookup(lookup func(string) (string, bool)) (Config, error) {
 		}
 		cfg.OpenAPI.Enabled = &parsed
 	}
+	if value, ok := lookup("FORGE_JOBS_NOTIFY"); ok {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, invalidValue("FORGE_JOBS_NOTIFY", "true or false")
+		}
+		cfg.Jobs.Notify = &parsed
+	}
 	if err := loadTelemetry(lookup, &cfg.Telemetry); err != nil {
 		return Config{}, err
 	}
