@@ -1,8 +1,8 @@
 package terminal
 
-import "golang.org/x/sys/unix"
+import "syscall"
 
 const (
-	ioctlGetTermios = unix.TIOCGETA
-	ioctlSetTermios = unix.TIOCSETA
+	ioctlGetTermios = syscall.TIOCGETA
+	ioctlSetTermios = syscall.TIOCSETA
 )
