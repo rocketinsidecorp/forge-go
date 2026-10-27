@@ -228,6 +228,9 @@ func TestMFAStepUpWithNothingRegisteredIsAuditedAsFailed(t *testing.T) {
 	t.Parallel()
 	const action = SecurityMFAEnrollmentStarted
 	f := newFaultMFA(t)
+	// The fixture's hash is whatever HashPassword writes (PBKDF2 in a
+	// forge_pbkdf2 build): store an Argon2id one.
+	f.store.accounts[f.subject].hash = argon2Hash(mfaTestPassword, defaultArgon2Params, bytes.Repeat([]byte{8}, passwordSaltBytes), passwordKeyBytes)
 	login, err := NewLoginService(newAccountsStore(t, nil), &sessionStub{}, WithLoginPasswordHasher(unregisteredHasher(t)))
 	if err != nil {
 		t.Fatal(err)
