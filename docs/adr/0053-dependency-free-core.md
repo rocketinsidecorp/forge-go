@@ -94,7 +94,21 @@ afterwards the core needs nothing, which the later steps rely on.
 - **`internal/terminal` uses the standard library's `syscall`**: Linux
   `TCGETS`/`TCSETS`, macOS `TIOCGETA`/`TIOCSETA`, through
   `syscall.Syscall(SYS_IOCTL, …)`. The pseudo-terminal helper the tests
-  shared (three copies) is `internal/ptytest`.
+  shared (three copies) is `internal/ptytest`, on Linux (`TIOCSPTLCK`,
+  `TIOCGPTN`) and macOS (`TIOCPTYGRANT`, `TIOCPTYUNLK`, `TIOCPTYGNAME`), so
+  the echo-off test runs on both.
+  - On macOS `syscall.Syscall` is a raw kernel trap (`SVC 0x80` on arm64,
+    `SYSCALL` on amd64), not a call through libc, which is the only system
+    call interface Apple supports; `golang.org/x/sys/unix` goes through
+    libc. It is accepted because `ioctl` is BSD system call 54, unchanged in
+    XNU since the first macOS, the Go toolchain still ships and tests
+    `syscall.Syscall` on darwin, and a break fails closed:
+    `IsTerminal` reports false and `ReadSecret` refuses to read, so `forge
+    setup` asks for `--password-stdin` or `FORGE_SETUP_PASSWORD` and never
+    reads a password with echo on. The macOS CI job runs the echo-off test,
+    so a break shows there first. The alternative, if Apple ever breaks it,
+    is reading the terminal through `stty -echo` (`os/exec`) on darwin, or
+    letting the tools module own `x/sys` for the prompt.
 - **Shared packages become public or move with their only users:**
   `auth/internal/setupcmd` is `auth/authsetup`, `auth/internal/sqlidentity`
   is `auth/authsql` (their exported names unchanged, minus the few only
@@ -128,6 +142,9 @@ afterwards the core needs nothing, which the later steps rely on.
 - `internal/terminal` and `internal/ptytest` contain the core's only `unsafe`
   use (the pointer argument of the ioctl system call, in the form
   `unsafe.Pointer` rule 4 documents); the macOS CI job builds and tests it.
+- **Residual:** on macOS the terminal ioctls are raw system calls, an ABI
+  Apple does not promise (see above); a break disables the interactive
+  password prompt, it never echoes a password.
 - Until the root's repository-wide tests move under `cmd/`, the root
   package's test binary still links the CLI's packages; `rootToolTests`
   names them.

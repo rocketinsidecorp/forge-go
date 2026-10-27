@@ -1,3 +1,5 @@
+//go:build linux || darwin
+
 package ptytest_test
 
 import (

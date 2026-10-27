@@ -107,8 +107,9 @@ jobs:
     # Lean on purpose: no services, no Docker, no coverage, no race detector,
     # and only the packages whose tests are known to be portable (internal/devloop's
     # process tests are only proven on Linux; widen the list as macOS proves them).
-    # internal/terminal runs its termios ioctls through the syscall package
-    # (ADR 0053): its tests are the check that they work on macOS.
+    # internal/terminal runs its termios ioctls as raw system calls through
+    # the syscall package, not libc (ADR 0053): its echo-off test, on an
+    # internal/ptytest pseudo-terminal, is the check that they work on macOS.
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -121,7 +122,7 @@ jobs:
       - name: Build forge
         run: go build -o "$RUNNER_TEMP/forge" ./cmd/forge
       - name: Test (no database, no Docker)
-        run: go test -short -count=1 -timeout 20m ./router/... ./internal/deploy/... ./internal/terminal/...
+        run: go test -short -count=1 -timeout 20m ./router/... ./internal/deploy/... ./internal/terminal/... ./internal/ptytest/...
 
   generated:
     # forge new's applications, for every database: generated, vetted, built
