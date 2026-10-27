@@ -833,6 +833,7 @@ myapp/
   app/views/                   # layout, flash partial (and, with PostgreSQL, sessions/ and passwords/)
   db/db.go                     # embeds db/migrations into the binary
   db/seeds.go                  # db.Seed: idempotent seed data for `seed`
+  db/migration_sets_gen.go     # the migration sets migrate applies, the job queue's among them (generator-owned)
   db/migrations/.keep
   .env.development             # committed development settings; no secrets
   Dockerfile                   # multi-stage, distroless, nonroot
@@ -1611,7 +1612,7 @@ FORGE_DATABASE_URL=postgres://app:app@127.0.0.1:1/down forge routes   # still li
 | `migrate [status]`, `rollback [-steps N]` | Added by `<adapter>.Commands` (generated applications with a database); `rollback` reverts application migrations only |
 | `seed` | Added by `<adapter>.SeedCommand(db.Seed)`: the application's idempotent seed data in one transaction |
 | `setup [--org SLUG] --email EMAIL [--org-name NAME] [--password-stdin]` | Added by `auth<adapter>.SetupCommand(auth<adapter>.SetupOrganizations(Organizations))` in `app/bootstrap/app_gen.go` (applications with `--auth`): the first organization and owner, once |
-| `jobs status`, `jobs dead [-queue Q] [-kind K] [-limit N]`, `jobs show ID`, `jobs retry ID`, `jobs discard ID`, `jobs prune [-older D]` | Added by `queuepostgres.Commands()` (`queuemysql`, `queuesqlite` for the other databases) once the persistent job queue is wired ([JOBS](docs/JOBS.md)): inspect and repair the queue; payloads are never printed |
+| `jobs status`, `jobs dead [-queue Q] [-kind K] [-limit N]`, `jobs show ID`, `jobs retry ID`, `jobs discard ID`, `jobs prune [-older D]` | Added by `queuepostgres.Commands()` (`queuemysql`, `queuesqlite` for the other databases) (`forge new` wires them in every application with a database; [JOBS](docs/JOBS.md)): inspect and repair the queue; payloads are never printed |
 
 The `jobs` commands ship inside the production image, so operators need no
 extra tooling:
@@ -1640,7 +1641,9 @@ dispatcher, err := outboxpostgres.NewDispatcher(database.Pool(), handler, outbox
 
 `FORGE_JOBS_NOTIFY=true|false` switches the wake-up per deployment, with
 Forge-Rust's meaning: unset keeps the code's choice, `false` turns it off even
-where the code passes `WithNotify()` (`cfg.Jobs.Notifies(codeChoice)` decides):
+where the code passes `WithNotify()` (`cfg.Jobs.Notifies(codeChoice)` decides; the
+`QueueConfigure` that `forge new` generates asks it with `false`, so PostgreSQL
+applications wake only when it is true):
 
 ```sh
 FORGE_JOBS_NOTIFY=true forge dev          # enqueues announce; workers LISTEN

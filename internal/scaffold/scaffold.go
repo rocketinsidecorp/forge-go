@@ -664,7 +664,7 @@ func codeFile(name string, data templateData) ([]byte, error) {
 
 // appFeaturesOf is what app_gen.go says for a new application.
 func appFeaturesOf(data templateData) AppFeatures {
-	return AppFeatures{Module: data.Module, Adapter: data.DB.Adapter, Jobs: data.DB.Jobs, Identity: data.DB.Identity, Organizations: data.Tenants}
+	return AppFeatures{Module: data.Module, Adapter: data.DB.Adapter, Jobs: data.DB.Jobs, Queue: true, Identity: data.DB.Identity, Organizations: data.Tenants}
 }
 
 // hasIdentity reports whether the application gets Forge identity (the

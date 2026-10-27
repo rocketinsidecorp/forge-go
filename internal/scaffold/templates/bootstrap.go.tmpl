@@ -27,6 +27,11 @@ import (
 	"github.com/rocketinsidecorp/forge-go/openapi"
 {{- if .DB}}
 	"github.com/rocketinsidecorp/forge-go/{{.DB.Adapter}}"
+	"github.com/rocketinsidecorp/forge-go/queue"
+	queue{{.DB.Adapter}} "github.com/rocketinsidecorp/forge-go/queue/{{.DB.Adapter}}"
+{{- if ne .DB.Adapter "postgres"}}
+	"github.com/rocketinsidecorp/forge-go/sqldb"
+{{- end}}
 {{- end}}
 {{- if not .API}}
 	"github.com/rocketinsidecorp/forge-go/web"
@@ -97,6 +102,12 @@ func Configure(ctx context.Context, app *forge.App) error {
 	if err := {{.RoutesCall}}; err != nil {
 		return err
 	}
+	// The persistent job queue (its tables come with `migrate`, its
+	// `jobs` command with the binary): a worker for the jobs registered in
+	// QueueConfigure, started only while serving.
+	if err := QueueConfigure(ctx, app, database, queue.NewRegistry()); err != nil {
+		return err
+	}
 {{- if .DB.Jobs}}
 	// Recurring jobs. Their ticks are recorded in the database
 	// (forge_job_schedules), so with several replicas each tick of a job
@@ -129,6 +140,47 @@ func Configure(ctx context.Context, app *forge.App) error {
 	// The routes `forge generate controller` adds
 	// (app/bootstrap/routes_gen.go, which it rewrites; this file is yours).
 	return {{.RoutesCall}}
+}
+{{- end}}
+
+{{ if .DB}}
+// QueueConfigure runs the persistent job queue (package queue, docs/JOBS.md):
+// the tables are a migration set of this application (db.MigrationSets), so
+// `{{.Name}} migrate` creates them, and `{{.Name}} jobs status` inspects the queue.
+// Register handlers on registry (`forge generate job NAME --queue` writes
+// the typed handler and prints how); a worker for them starts only while the
+// application serves (app.Serving()), so `routes` and `openapi` claim no job,
+// and only once a handler exists: a worker without handlers refuses to start.
+// FORGE_JOBS_NOTIFY=true wakes idle workers on enqueue (PostgreSQL only);
+// unset keeps polling. Shutdown stops claiming and lets running jobs finish
+// within the shutdown budget.
+func QueueConfigure(ctx context.Context, app *forge.App, database {{if eq .DB.Adapter "postgres"}}*postgres.DB{{else}}*sqldb.DB{{end}}, registry *queue.Registry) error {
+{{- if eq .DB.Adapter "postgres"}}
+	var options []queuepostgres.Option
+	if app.Config().Jobs.Notifies(false) {
+		options = append(options, queuepostgres.WithNotify())
+	}
+	store, err := queuepostgres.NewStore(database, options...)
+{{- else}}
+	store, err := queue{{.DB.Adapter}}.NewStore(database)
+{{- end}}
+	if err != nil {
+		return err
+	}
+	worker, err := queue.NewWorker(store, registry, queue.WorkerOptions{
+		Logger:    app.Logger(),
+		Telemetry: app.Telemetry(),
+	})
+	if err != nil {
+		return err
+	}
+	if !app.Serving() || len(registry.Kinds()) == 0 {
+		return nil
+	}
+	if err := worker.Start(ctx); err != nil {
+		return err
+	}
+	return app.OnShutdown(worker.Shutdown)
 }
 {{- end}}
 

@@ -719,19 +719,26 @@ forge generate job send_welcome user_id:uuid --queue --dry-run   # preview the t
 forge generate job send_welcome user_id:uuid --queue             # create app/jobs/send_welcome.go and its test
 ```
 
-Follow the printed wiring, and add the queue's tables and the `jobs` command
-to `cmd/{{.Name}}/main.go` (`queue{{.DB.Adapter}}.Migrations()` and
-`queue{{.DB.Adapter}}.Commands()`; see the
-[jobs guide](https://github.com/rocketinsidecorp/forge-go/blob/main/docs/JOBS.md)).
+`forge new` wires the queue already: `db.MigrationSets` includes its tables
+(`queue{{.DB.Adapter}}.Migrations()`, so `forge migrate` creates them), the
+binary has the `jobs` command (`queue{{.DB.Adapter}}.Commands()`), and
+`QueueConfigure` in `app/bootstrap/bootstrap.go` runs a worker for the
+handlers registered on its registry. The worker starts only while the
+application serves (`app.Serving()`; `routes` and `openapi` claim no job) and
+once a handler exists{{if eq .DB.Adapter "postgres"}}. `FORGE_JOBS_NOTIFY=true` wakes idle workers on
+enqueue (`LISTEN/NOTIFY`); unset keeps polling{{end}}. See the
+[jobs guide](https://github.com/rocketinsidecorp/forge-go/blob/main/docs/JOBS.md).
 Delivery is at least once: make handlers idempotent. A job out of attempts is
 `dead` until you act. The application binary's `jobs` command inspects and
 repairs the queue (payloads are never printed):
 
 ```bash
 {{- $app := "docker compose run --rm app"}}
+forge migrate                                             # creates the queue's tables with the rest of the schema
 {{- if .SkipDocker}}
 {{- $app = printf "bin/%s" .Name}}
 forge build                                               # the binary: bin/{{.Name}}
+set -a; . ./.env.development; set +a                      # the settings forge dev loads (and .env.local, if you use it)
 {{- end}}
 {{$app}} jobs status                   # jobs per queue and state
 {{$app}} jobs dead                     # dead jobs; also -queue Q, -kind K, -limit N

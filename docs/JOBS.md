@@ -17,6 +17,15 @@ queue is for work you hand off: send this email, build this report.)
 
 ## 1. Add the tables
 
+`forge new` with a database does this for you: `db/migration_sets_gen.go`
+composes the queue's migrations, `app/bootstrap/app_gen.go` adds the `jobs`
+command, and `QueueConfigure` in `app/bootstrap/bootstrap.go` builds the store
+and the worker (section 4), started only while serving and once a handler is
+registered. `forge migrate` then creates the tables and
+`docker compose run --rm app jobs status` prints `no jobs` on a fresh
+application. The rest of this section is for an application written by hand
+(or generated before `forge new` wired the queue).
+
 Each adapter embeds its migrations. Compose them with the application's own:
 
 ```go
@@ -197,8 +206,8 @@ the database can wake workers, which then claim once.
 it has in Forge-Rust: unset keeps the code's choice, `true` turns the wake-up
 on and `false` turns it off even where the code asks for it. The framework
 reads it into `config.Config.Jobs.Notify`; code that builds the store decides
-with `cfg.Jobs.Notifies(codeChoice)` (generated applications do this in
-`cmd/NAME/main.go`). Any other value is refused at start-up.
+with `cfg.Jobs.Notifies(codeChoice)` (the `QueueConfigure` of a generated
+application, in `app/bootstrap/bootstrap.go`, does this). Any other value is refused at start-up.
 
 ```sh
 FORGE_JOBS_NOTIFY=true forge dev          # enqueues announce; workers LISTEN

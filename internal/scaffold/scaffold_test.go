@@ -84,7 +84,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 		},
 		"db/migration_sets_gen.go": {
 			"package db",
-			"return []fs.FS{authpostgres.Migrations(), jobspostgres.Migrations(), Migrations()}",
+			"return []fs.FS{authpostgres.Migrations(), jobspostgres.Migrations(), queuepostgres.Migrations(), Migrations()}",
 		},
 		"app/bootstrap/app_gen.go": {
 			`authpostgres "github.com/rocketinsidecorp/forge-go/auth/postgres"`,
@@ -393,7 +393,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				"compose.yaml":                    {"image: mysql:8.4", "MYSQL_DATABASE: shop_development", "mysql:/var/lib/mysql", "FORGE_DATABASE_URL: mysql://shop:development@mysql:3306/shop_development", `"mysqladmin", "ping"`},
 				".env.development":                {"FORGE_DATABASE_URL=mysql://shop:development@127.0.0.1:", "FORGE_TEST_DATABASE_URL=mysql://root:development@127.0.0.1:"},
 				"app/bootstrap/app_gen.go":        {`"github.com/rocketinsidecorp/forge-go/mysql"`, "mysql.CommandsFromSets(db.MigrationSets()...)"},
-				"db/migration_sets_gen.go":        {"return []fs.FS{jobsmysql.Migrations(), Migrations()}"},
+				"db/migration_sets_gen.go":        {"return []fs.FS{jobsmysql.Migrations(), queuemysql.Migrations(), Migrations()}"},
 				"app/bootstrap/bootstrap.go":      {"mysql.Open(ctx, app.Config().Database, mysql.WithTelemetry(app.Telemetry()),\n\t\tmysql.Lazy(!app.Serving()))"},
 				"app/bootstrap/bootstrap_test.go": {`"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"`, "mysqltest.Config(t)"},
 				".github/workflows/ci.yml":        {"image: mysql:8.4", "MYSQL_ROOT_PASSWORD: forge", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
@@ -410,7 +410,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 			database: "mariadb",
 			want: map[string][]string{
 				"compose.yaml":             {"image: mariadb:11.8", "MARIADB_DATABASE: shop_development", "FORGE_DATABASE_URL: mysql://shop:development@mariadb:3306/shop_development", "healthcheck.sh"},
-				"db/migration_sets_gen.go": {"return []fs.FS{jobsmysql.Migrations(), Migrations()}"},
+				"db/migration_sets_gen.go": {"return []fs.FS{jobsmysql.Migrations(), queuemysql.Migrations(), Migrations()}"},
 				".github/workflows/ci.yml": {"image: mariadb:11.8", "MARIADB_ROOT_PASSWORD: forge", "healthcheck.sh --connect --innodb_initialized", "FORGE_TEST_DATABASE_URL: mysql://root:forge@127.0.0.1:3306/mysql"},
 				"README.md":                {"MariaDB 11.8"},
 			},
@@ -429,7 +429,7 @@ func TestGenerateForEveryDatabase(t *testing.T) {
 				".gitignore":                      {"/storage/"},
 				".dockerignore":                   {"storage"},
 				"app/bootstrap/app_gen.go":        {"sqlite.CommandsFromSets(db.MigrationSets()...)"},
-				"db/migration_sets_gen.go":        {"return []fs.FS{Migrations()}"},
+				"db/migration_sets_gen.go":        {"return []fs.FS{queuesqlite.Migrations(), Migrations()}"},
 				"README.md":                       {"queuesqlite.Commands()", "docker compose run --rm app jobs dead"},
 				"app/bootstrap/bootstrap_test.go": {"sqlitetest.Config(t)"},
 			},
