@@ -1,0 +1,4 @@
+# app/javascript is written by forge with LF line ends: the TypeScript sources,
+# the declarations and the compiled dist. The freshness test hashes them, so a
+# Windows checkout (core.autocrlf=true) must not turn them into CRLF.
+app/javascript/** text eol=lf

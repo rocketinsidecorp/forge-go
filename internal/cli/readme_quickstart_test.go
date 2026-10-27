@@ -208,6 +208,19 @@ func testReadmeQuickstart(t *testing.T, frameworkPath, database string) {
 		t.Fatalf("GET /v1/products = %+v (%v)", list, err)
 	}
 	browser.expect(http.MethodGet, "/products", nil, http.StatusOK, "Chair")
+
+	// The front end is TypeScript: the page loads the compiled JavaScript, with
+	// no types left, and forge dev embeds it with an inline source map.
+	_, hello := assertServesCompiledJavaScript(t, func(path string) (string, string) {
+		response, content := browser.do(http.MethodGet, path, "", nil, http.Header{"Accept": {"*/*"}})
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s = %d", path, response.StatusCode)
+		}
+		return string(content), response.Header.Get("Content-Type")
+	}, "/products")
+	if !strings.Contains(hello, "//# sourceMappingURL=data:application/json;base64,") {
+		t.Errorf("forge dev serves the controller without a source map:\n%s", hello)
+	}
 }
 
 // createQuickstartDatabase does what the compose service's init.sql does,

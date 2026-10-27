@@ -3,6 +3,7 @@ module github.com/rocketinsidecorp/forge-go
 go 1.27.3
 
 require (
+	github.com/evanw/esbuild v0.28.2
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.11.0
 	go.yaml.in/yaml/v3 v3.0.5

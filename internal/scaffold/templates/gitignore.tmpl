@@ -1,4 +1,8 @@
 /bin/
+{{- if .TypeScript}}
+# Only needed if you install the TypeScript checker locally (npm install typescript).
+/node_modules/
+{{- end}}
 /tmp/
 coverage.out
 *.prof
