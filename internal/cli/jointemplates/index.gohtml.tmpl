@@ -7,17 +7,20 @@
 <ul>
 	{{range .Items}}<li id="{{domID "[[.Right.Name]]" .ID}}">
 		<a href="/[[.Right.Plural]]/{{.ID}}" data-turbo-frame="_top">{{.Label}}</a>
+		{{- if can "[[.Left.Plural]]:write"}}
 		<form method="post" action="{{$.Path}}/{{.ID}}" class="inline">
 			{{csrfField}}
 			{{methodField "DELETE"}}
 			<button type="submit">{{t "[[.Plural]].index.remove"}}</button>
 		</form>
+		{{- end}}
 	</li>{{end}}
 </ul>
 {{if .NextCursor}}<p><a href="{{.Path}}?cursor={{.NextCursor}}">{{t "[[.Plural]].index.next_page"}}</a></p>{{end}}
 {{else}}
 <p>{{t "[[.Plural]].index.empty"}}</p>
 {{end}}
+{{if can "[[.Left.Plural]]:write"}}
 <form method="post" action="{{.Path}}">
 	{{csrfField}}
 	<label for="[[.Name]]_[[.Right.Field.Name]]">{{t "[[.Plural]].form.label"}}</label>
@@ -27,6 +30,7 @@
 	</select>
 	<button type="submit">{{t "[[.Plural]].form.submit"}}</button>
 </form>
+{{end}}
 <p><a href="/[[.Left.Plural]]/{{.[[.Left.Title]]ID}}" data-turbo-frame="_top">{{t "[[.Plural]].back"}}</a></p>
 </turbo-frame>
 {{end}}

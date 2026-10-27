@@ -147,6 +147,15 @@ func planJoinSpec(projectRoot *os.Root, root string, request joinRequest, env []
 			return resourceSpec{}, fmt.Errorf("%s already creates %s: the join's table and Go names (%s) would collide with it", resource.file, resource.request.Plural, exportedName(spec.Name))
 		}
 	}
+	joins, err := recordedJoins(projectRoot)
+	if err != nil {
+		return resourceSpec{}, err
+	}
+	for _, join := range joins {
+		if join.left == request.right && join.right == request.left {
+			return resourceSpec{}, fmt.Errorf("%s already joins %s and %s (forge generate join %s %s): a second join the other way round would be a second table for the same pairs. Use that one; a %s's %s are listed from it too", join.file, join.left, join.right, join.left, join.right, request.left, pluralize(request.right))
+		}
+	}
 	if spec.references, err = resolveFields(resources, spec.resourceRequest, spec.Organizations, nil); err != nil {
 		return resourceSpec{}, err
 	}
@@ -591,7 +600,11 @@ func planDestroyJoin(args []string, root string, env []string, now time.Time) (d
 		return destroyPlan{}, err
 	}
 	view := newJoinView(spec)
-	plan := destroyPlan{files: files, dryRun: request.dryRun, unwire: "the join wiring:\n" + joinWiring(spec, view).Usage, rewrites: spec.rewrites}
+	keys, err := keyDependentsRefusal(root, spec, true)
+	if err != nil {
+		return destroyPlan{}, err
+	}
+	plan := destroyPlan{files: files, dryRun: request.dryRun, unwire: "the join wiring:\n" + joinWiring(spec, view).Usage, rewrites: spec.rewrites, keyDependents: keys}
 	if spec.Seam {
 		wiring, err := planJoinSeam(root, spec, view, true)
 		if err != nil {

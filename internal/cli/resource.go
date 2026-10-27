@@ -514,10 +514,12 @@ func parseField(declaration string, table bool) (resourceField, error) {
 }
 
 // validateIdentifierLengths keeps generated constraint and index names within
-// the 63-byte PostgreSQL and 64-character MySQL limits.
+// the 63-byte PostgreSQL and 64-character MySQL limits. The longest name a
+// table gets is its unique key, PLURAL_org_id_id_key, which a references
+// field to it declares (uniqueKeyName).
 func validateIdentifierLengths(request resourceRequest) error {
 	const limit = 63
-	longest := len(request.Plural) + len("_org_id_idx")
+	longest := len(uniqueKeyName(request.Plural))
 	for _, field := range request.Fields {
 		longest = max(longest, len(request.Plural)+1+len(field.Name)+len("_length"))
 	}

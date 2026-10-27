@@ -19,9 +19,15 @@ import (
 	"[[.Module]]/app/domain"
 	appviews "[[.Module]]/app/views"
 	"[[.Module]]/config/locales"
+[[- if .Identity]]
+	"github.com/rocketinsidecorp/forge-go/auth"
+[[- end]]
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/csrf"
 	"github.com/rocketinsidecorp/forge-go/i18n"
+[[- if .Identity]]
+	"github.com/rocketinsidecorp/forge-go/tenancy"
+[[- end]]
 	"github.com/rocketinsidecorp/forge-go/uuid"
 	"github.com/rocketinsidecorp/forge-go/web"
 )
@@ -210,3 +216,60 @@ func Test[[.Title]]PageRefusals(t *testing.T) {
 		t.Fatal("Register accepted no router, service, renderer or guard")
 	}
 }
+[[- if .Identity]]
+
+
+// [[.Camel]]As serves handler to a signed-in principal holding only
+// permissions, as the application's authentication middleware does.
+func [[.Camel]]As(t *testing.T, handler http.Handler, permissions ...string) http.Handler {
+	t.Helper()
+	tenant, err := tenancy.New(uuid.MustNew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var granted []auth.Permission
+	for _, name := range permissions {
+		permission, err := auth.NewPermission(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		granted = append(granted, permission)
+	}
+	principal, err := auth.NewPrincipal(uuid.MustNew(), tenant, granted...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := auth.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := auth.NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
+		return auth.Session{Principal: principal, ExpiresAt: time.Now().Add(time.Hour)}, true, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticated := middleware.Authenticate(handler)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+token.Reveal())
+		authenticated.ServeHTTP(w, r)
+	})
+}
+
+// A caller who may read but not change the [[.Left.Human]] sees its [[.Right.Plural]] without the
+// forms to add or remove one.
+func Test[[.Title]]PageHidesTheFormsWithoutTheWritePermission(t *testing.T) {
+	t.Parallel()
+	browser := new[[.Title]]Browser(t)
+	page := "/[[.Left.Plural]]/" + uuid.MustNew().String() + "/[[.Right.Plural]]"
+	writer := browser.handler
+	browser.handler = [[.Camel]]As(t, writer, "[[.Left.Plural]]:read", "[[.Right.Plural]]:read")
+	if body := browser.request(http.MethodGet, page, nil).Body.String(); strings.Contains(body, `<form`) {
+		t.Fatalf("a reader sees the forms:\n%s", body)
+	}
+	browser.handler = [[.Camel]]As(t, writer, "[[.Left.Plural]]:read", "[[.Left.Plural]]:write", "[[.Right.Plural]]:read")
+	if body := browser.request(http.MethodGet, page, nil).Body.String(); !strings.Contains(body, `<form method="post" action="`+page+`">`) {
+		t.Fatalf("a writer does not see the form:\n%s", body)
+	}
+}
+[[- end]]

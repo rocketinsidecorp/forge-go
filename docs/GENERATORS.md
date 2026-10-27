@@ -460,9 +460,18 @@ and, when the first side is a scaffold, the page `/posts/{post_id}/tags` with
 forms to tag and untag that the post's page shows. A model on either side is
 refused (the join answers through both sides' JSON types).
 
-`forge destroy join post tag` reverses it. `forge destroy` of a resource that
-a references field or a join still names is refused, with the list: destroy
-those first (rolling their migrations back and passing `--migrations`).
+`forge destroy join post tag` reverses it, and `forge generate join tag post`
+is refused once `post tag` exists. `forge destroy` of a resource that a
+references field or a join still names is refused, with the list: destroy
+those first (rolling their migrations back and passing `--migrations`). With
+organizations, `--migrations` is also refused for the child or join whose
+migration declares the parent's `UNIQUE (org_id, id)` while other
+associations to that parent rely on it.
+
+Pages show what the caller may use (the views helper `can`, display only):
+the parent select only with the parent's read permission (else the id is
+typed in), each frame only with its page's read permission, and the join's
+forms only with the first side's write permission.
 `forge generate tenancy` refuses an application with associations: their
 foreign keys would have to become composite, which SQLite cannot do to an
 existing table; convert before generating them, or create the application

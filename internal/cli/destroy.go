@@ -65,6 +65,10 @@ type destroyPlan struct {
 	// "unwire"): it is written once the files are removed.
 	routes     []byte
 	routesVerb string
+	// keyDependents, when set, says why the generation's migration may not
+	// be removed (--migrations): it declares a unique key that other
+	// associations' foreign keys reference.
+	keyDependents string
 	// rewrites take a scaffold's frame out of the referenced scaffolds'
 	// _associations.gohtml.
 	rewrites []fileRewrite
@@ -90,12 +94,16 @@ func planDestroy(generator string, args []string, root string, env []string, now
 		if err != nil {
 			return destroyPlan{}, err
 		}
+		keys, err := keyDependentsRefusal(root, spec, false)
+		if err != nil {
+			return destroyPlan{}, err
+		}
 		line := fmt.Sprintf("%sService, err := %s", lowerCamel(spec.Name), serviceConstructor(spec))
 		owned, err := httpLayerOf(root, "model", spec.Name)
 		if err != nil {
 			return destroyPlan{}, err
 		}
-		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + spec.Name + " use cases you built: " + line, ownedElsewhere: owned}, nil
+		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + spec.Name + " use cases you built: " + line, ownedElsewhere: owned, keyDependents: keys}, nil
 	case "resource", "scaffold":
 		usage := resourceUsage
 		if generator == "scaffold" {
@@ -124,7 +132,11 @@ func planDestroy(generator string, args []string, root string, env []string, now
 				return destroyPlan{}, err
 			}
 		}
-		plan := destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + generator + " wiring:\n" + buildResourceWiring(spec).Usage, ownedElsewhere: owned, rewrites: spec.rewrites}
+		keys, err := keyDependentsRefusal(root, spec, false)
+		if err != nil {
+			return destroyPlan{}, err
+		}
+		plan := destroyPlan{files: files, dryRun: request.DryRun, unwire: "the " + generator + " wiring:\n" + buildResourceWiring(spec).Usage, ownedElsewhere: owned, rewrites: spec.rewrites, keyDependents: keys}
 		if spec.Seam {
 			wiring, err := planResourceSeam(root, spec, true)
 			if err != nil {
@@ -310,6 +322,11 @@ func applyDestroy(stdout io.Writer, rootPath string, plan destroyPlan, force, mi
 	defer func() { _ = root.Close() }()
 	if plan.ownedElsewhere != "" && !force {
 		return errors.New("refusing to destroy, nothing was removed: " + plan.ownedElsewhere)
+	}
+	if plan.keyDependents != "" && migrations {
+		// --force does not override it: it is about the database, not
+		// about edited files.
+		return errors.New("refusing to destroy with --migrations, nothing was removed: " + plan.keyDependents)
 	}
 
 	var actions []destroyAction

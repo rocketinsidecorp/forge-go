@@ -95,6 +95,19 @@ accepted.
    `pagination.MaxLimit` parents of the caller's organization (the row the
    form already names stays selectable).
 
+   What a page shows follows the caller's permissions through the views
+   helper `can` (display only; the routes still authorize): the select lists
+   the posts only with `posts:read` (otherwise the post id is typed in, and
+   no title is shown), a frame appears only with its page's read permission
+   (`comments:read`, `tags:read`; Turbo would otherwise show "Content
+   missing"), and the join's forms only with `posts:write`. The nested lists
+   need the child's read permission alone: `GET /v1/posts/{id}/comments`
+   answers 404 for a post the caller's organization does not have and an
+   empty page for one without comments, so a member with `comments:read`
+   learns whether a post id exists in their own organization. Their
+   comments already carry `post_id`, so this tells them nothing their
+   permission does not; another organization's posts are always 404.
+
 6. **Deleting a referenced row.** Every resource now maps a foreign key that
    refuses its delete to a typed `ErrPostInUse` (`post_in_use`, 409; the
    pages redirect to the post with an alert), whatever references it,
@@ -120,7 +133,13 @@ accepted.
 
 8. **Destroy and tenancy.** `forge destroy` of a resource that a references
    field or a join still names is refused, listing them: their foreign keys
-   need its table. `forge generate tenancy` refuses an application with
+   need its table. `forge destroy --migrations` of a child or a join whose
+   migration declares a parent's `UNIQUE (org_id, id)` is refused while
+   another association to that parent exists: removing the migration would
+   leave their keys without it. Destroy those first, or keep the migration
+   (destroy without `--migrations`). A join the other way round (`join tag
+   post` after `join post tag`) is refused: it would be a second table for
+   the same pairs. `forge generate tenancy` refuses an application with
    associations: converting them means replacing every plain foreign key by
    a composite one, and SQLite changes a foreign key only by rebuilding the
    table. Converting before generating associations, or starting with

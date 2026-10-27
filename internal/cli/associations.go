@@ -259,6 +259,9 @@ type associationEntry struct {
 	frame, src, title string
 	// top makes the frame's links and forms navigate the whole page.
 	top bool
+	// permission is what the frame's page needs: without it the frame is
+	// left out (the page would answer 403, and Turbo show "Content missing").
+	permission string
 }
 
 // associationsPath is the partial a scaffold's show page includes.
@@ -269,21 +272,23 @@ func associationsPath(plural string) string {
 // childEntry is the frame of a scaffold whose references field names parent.
 func childEntry(parent resourceRequest, child resourceRequest, migration string) associationEntry {
 	return associationEntry{
-		sort:  path.Base(migration),
-		frame: parent.Name + "_" + child.Plural,
-		src:   "/" + parent.Plural + "/{{.Item.ID}}/" + child.Plural,
-		title: child.Plural + ".by_" + parent.Name + ".title",
-		top:   true,
+		sort:       path.Base(migration),
+		frame:      parent.Name + "_" + child.Plural,
+		src:        "/" + parent.Plural + "/{{.Item.ID}}/" + child.Plural,
+		title:      child.Plural + ".by_" + parent.Name + ".title",
+		top:        true,
+		permission: child.Plural + ":read",
 	}
 }
 
 // joinEntry is the frame of the join between left (parent) and right.
 func joinEntry(left resourceRequest, right resourceRequest, migration string) associationEntry {
 	return associationEntry{
-		sort:  path.Base(migration),
-		frame: joinTable(left, right),
-		src:   "/" + left.Plural + "/{{.Item.ID}}/" + right.Plural,
-		title: joinTable(left, right) + ".index.title",
+		sort:       path.Base(migration),
+		frame:      joinTable(left, right),
+		src:        "/" + left.Plural + "/{{.Item.ID}}/" + right.Plural,
+		title:      joinTable(left, right) + ".index.title",
+		permission: right.Plural + ":read",
 	}
 }
 
@@ -337,8 +342,9 @@ func renderAssociations(parent resourceRequest, entries []associationEntry) stri
 	var out strings.Builder
 	fmt.Fprintf(&out, "{{/* forge:associations %s\n", parent.Plural)
 	fmt.Fprintf(&out, "What references a %s, on its page (%s/show includes this partial). Each\n", strings.ReplaceAll(parent.Name, "_", " "), parent.Plural)
-	out.WriteString("Turbo Frame loads the page that lists it. Generators rewrite this file when an\n")
-	out.WriteString("association is generated or destroyed, and refuse when it was edited. */}}\n")
+	out.WriteString("Turbo Frame loads the page that lists it, shown to callers who may read it.\n")
+	out.WriteString("Generators rewrite this file when an association is generated or destroyed,\n")
+	out.WriteString("and refuse when it was edited. */}}\n")
 	if len(entries) == 0 {
 		return out.String()
 	}
@@ -348,7 +354,7 @@ func renderAssociations(parent resourceRequest, entries []associationEntry) stri
 		if entry.top {
 			target = ` target="_top"`
 		}
-		fmt.Fprintf(&out, "<turbo-frame id=\"%s\" src=\"%s\"%s>\n\t<a href=\"%s\">{{t %q}}</a>\n</turbo-frame>\n", entry.frame, entry.src, target, entry.src, entry.title)
+		fmt.Fprintf(&out, "{{if can %q}}\n<turbo-frame id=\"%s\" src=\"%s\"%s>\n\t<a href=\"%s\">{{t %q}}</a>\n</turbo-frame>\n{{end}}\n", entry.permission, entry.frame, entry.src, target, entry.src, entry.title)
 	}
 	out.WriteString("</section>\n")
 	return out.String()
@@ -464,4 +470,66 @@ func parentRewrites(projectRoot *os.Root, spec resourceSpec) ([]fileRewrite, err
 		}
 	}
 	return rewrites, nil
+}
+
+// keyDependents lists what relies on the (org_id, id) unique keys that the
+// migration of spec (a resource, or a join when join is set) declares: the
+// other resources with a references field to the same table, and the joins
+// that name it. Removing that migration would leave their composite foreign
+// keys without the key they reference, so `forge destroy --migrations`
+// refuses while any exists.
+func keyDependents(projectRoot *os.Root, spec resourceSpec, join bool) ([]string, error) {
+	var found []string
+	for _, reference := range spec.references {
+		if !reference.addsKey {
+			continue
+		}
+		parent := reference.parent.Name
+		resources, err := recordedResources(projectRoot)
+		if err != nil {
+			return nil, err
+		}
+		for _, resource := range resources {
+			if !join && resource.request.Name == spec.Name {
+				continue
+			}
+			for _, field := range resource.request.Fields {
+				if field.References == parent {
+					found = append(found, fmt.Sprintf("%s (%s:references, %s)", resource.request.Plural, parent, resource.file))
+				}
+			}
+		}
+		joins, err := recordedJoins(projectRoot)
+		if err != nil {
+			return nil, err
+		}
+		for _, other := range joins {
+			self := join && other.left == spec.references[0].parent.Name && other.right == spec.references[1].parent.Name
+			if !self && (other.left == parent || other.right == parent) {
+				found = append(found, fmt.Sprintf("the join %s %s (%s)", other.left, other.right, other.file))
+			}
+		}
+	}
+	return found, nil
+}
+
+// keyDependentsRefusal is the reason `forge destroy --migrations` refuses to
+// remove a migration that declares unique keys others rely on, or "".
+func keyDependentsRefusal(root string, spec resourceSpec, join bool) (string, error) {
+	projectRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = projectRoot.Close() }()
+	found, err := keyDependents(projectRoot, spec, join)
+	if err != nil || len(found) == 0 {
+		return "", err
+	}
+	var keys []string
+	for _, reference := range spec.references {
+		if reference.addsKey {
+			keys = append(keys, uniqueKeyName(reference.parent.Plural))
+		}
+	}
+	return fmt.Sprintf("the %s migration declares %s, the unique key that the composite foreign keys of %s reference too: removing it would leave them without it (the next forge migrate would fail on PostgreSQL and MySQL, and SQLite would refuse every delete from the table). Destroy those first (with --migrations), or destroy this one without --migrations and keep its migration", "create_"+spec.Plural, strings.Join(keys, " and "), strings.Join(found, ", ")), nil
 }
