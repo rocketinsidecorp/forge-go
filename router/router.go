@@ -269,11 +269,31 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	r.mux.ServeHTTP(w, request)
-	// A redirect (a missing trailing slash) is answered by the mux itself, in
-	// place of a route handler, and still names the pattern it redirects to.
-	if request.Pattern != catchAll {
+	// A matched route recorded itself (routeHandler) before it ran, and that
+	// label must stand: a handler such as http.StripPrefix(inner router) has
+	// recorded a more precise one since. A redirect for a missing trailing
+	// slash is answered by the mux itself, in place of a route handler, and
+	// still names the pattern it redirects to.
+	if redirected(request) {
 		web.RecordRoute(request.Context(), request.Pattern)
 	}
+}
+
+// redirected reports whether the mux answered the request, which it has just
+// served, with its redirect to the path plus a trailing slash, rather than
+// with a route's handler. That happens when request.Pattern ("GET /tree/",
+// "GET /files/{path...}", "GET /a/{$}") matches the path only with a slash
+// added: the path has no trailing slash and one segment fewer than the
+// pattern's, where a request such a pattern serves is as deep as the pattern
+// or deeper, and any other pattern serves exactly its own depth. It reads two
+// strings and takes no lock.
+func redirected(request *http.Request) bool {
+	_, pattern, found := strings.Cut(request.Pattern, " ")
+	if !found {
+		return false
+	}
+	path := request.URL.EscapedPath()
+	return !strings.HasSuffix(path, "/") && strings.Count(path, "/")+1 == strings.Count(pattern, "/")
 }
 
 // plainRequest reports whether the mux handles the request without rewriting
