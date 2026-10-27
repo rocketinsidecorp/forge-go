@@ -16,7 +16,7 @@ applications `forge new` generates
 | Pull request, push to `main` | `ci.yml` job `quality` | `govulncheck` (pinned version), lint, race tests. |
 | Nightly 03:17 UTC, or by hand | `fuzz.yml` | Each fuzz target on its own runner for 10 minutes (input `fuzztime`), with its corpus cached between nights. |
 | Weekly, Monday 04:41 UTC, or by hand | `scorecard.yml` | OpenSSF Scorecard; results stay in the run (artifact `scorecard`, summary). |
-| Push of a `v*` tag, only | `release.yml` | Builds, pushes and signs `ghcr.io/rocketinsidecorp/forge-proxy` and `ghcr.io/rocketinsidecorp/forge-example`; builds the `forge` and `forge-proxy` archives for 6 platforms, with SBOMs, `checksums.txt` signed with cosign and a build provenance attestation per file; drafts the GitHub release. |
+| Push of a `v*` tag, only | `release.yml` | Builds, pushes and signs `ghcr.io/rocketinsidecorp/forge-proxy` and `ghcr.io/rocketinsidecorp/forge-example`; builds the `forge` and `forge-proxy` archives for 6 platforms, with SBOMs, `checksums.txt` signed with cosign and one build provenance attestation covering every file; drafts the GitHub release. |
 | Weekly | Dependabot | Go modules, GitHub Actions (SHA pins included) and Docker base images. |
 
 Nothing publishes outside a tag push, and even then the GitHub release is a
@@ -175,8 +175,9 @@ same name with the binary, `LICENSE` and `README.md`.
   (`cosign sign-blob --bundle checksums.txt.sigstore.json`): the certificate
   in the bundle names the workflow file and the tag, the signature is logged
   in Rekor, and no key exists. The job verifies its own signature.
-- **Provenance.** `actions/attest-build-provenance` attests every file of
-  `checksums.txt` (SLSA build provenance: repository, workflow, tag, commit),
+- **Provenance.** `actions/attest-build-provenance` makes one attestation
+  whose subjects are every file `checksums.txt` lists (SLSA build provenance:
+  repository, workflow, tag, commit),
   stored by GitHub and kept in the release as `provenance.jsonl` for offline
   checks.
 - **Draft release.** The `draft` job downloads what `binaries` built and runs
@@ -220,10 +221,13 @@ sha256sum -c --ignore-missing checksums.txt
 #    macOS has shasum, not --ignore-missing:
 grep " forge_${VERSION}_${OS}_${ARCH}" checksums.txt | shasum -a 256 -c
 
-# 3. GitHub's provenance: built by this repository's release.yml at that tag
-gh attestation verify "forge_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go
+# 3. GitHub's provenance: --repo alone checks only that the attestation names this repository;
+#    --signer-workflow and --source-ref also pin the workflow file and the tag it ran for
+gh attestation verify "forge_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go \
+  --signer-workflow rocketinsidecorp/forge-go/.github/workflows/release.yml --source-ref "refs/tags/$VERSION"
 #    offline, from the bundle kept in the release:
-gh attestation verify "forge_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go --bundle provenance.jsonl
+gh attestation verify "forge_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go \
+  --signer-workflow rocketinsidecorp/forge-go/.github/workflows/release.yml --source-ref "refs/tags/$VERSION" --bundle provenance.jsonl
 
 # 4. The binary says what it is, and the commit is the tag's
 tar -xzf "forge_${VERSION}_${OS}_${ARCH}.tar.gz"
@@ -235,8 +239,8 @@ go version -m "./forge_${VERSION}_${OS}_${ARCH}/forge"   # modules linked, vcs.r
 Step 1 accepts any `v*` tag built by that workflow. To accept exactly one
 release, replace `--certificate-identity-regexp` with
 `--certificate-identity https://github.com/rocketinsidecorp/forge-go/.github/workflows/release.yml@refs/tags/v0.1.0`;
-for the attestation, `gh attestation verify` can also take
-`--signer-workflow rocketinsidecorp/forge-go/.github/workflows/release.yml`.
+the attestation command above already pins the tag with `--source-ref`; drop
+that flag to accept any release of this repository.
 A checksum file or a bundle from any other repository, workflow, branch or
 pull request fails step 1. `forge-proxy_<version>_<os>_<arch>` and the SBOMs
 (`*.cdx.json`, in `checksums.txt`) verify the same way; the container images
@@ -365,8 +369,19 @@ sha256sum "/tmp/rebuilt/x/forge_${VERSION}_${OS}_${ARCH}/forge" "./forge_${VERSI
     wholesale or by computed name;
   - any `secrets.NAME` read other than `secrets.GITHUB_TOKEN` in
     `release.yml`;
+  - a `run:` script that contains `${{ }}` (in any workflow or generated
+    file): GitHub pastes the expression's value into the shell text, so a
+    tag, branch name or commit message would run as code. Scripts read values
+    through `env:` (`env: NAME: ${{ github.ref_name }}`, then `"$NAME"`), and
+    the list of safe contexts is empty
+    (`TestRunScriptsRefuseInterpolatedExpressions`);
+  - a document that installs a literal version
+    (`go install .../cmd/forge@v0.1.0`): documents use `@latest` or a
+    `vX.Y.Z` placeholder, since no tag may be assumed to exist
+    (`TestDocsNeverInstallAVersionThatIsNotATag`);
   - a release workflow without its signing and verification steps
-    (`releaseViolations`; for the framework's, `binaryReleaseViolations`: the
+    (`releaseViolations`; for the framework's, `binaryReleaseViolations`, which
+    reads code, never comments: `cache: false` on every setup-go step, the
     build, checksum and draft scripts, `cosign sign-blob` and `verify-blob`,
     the provenance attestation of `checksums.txt`, and a draft script that
     creates a draft, verifies the tag, and never edits, uploads to or

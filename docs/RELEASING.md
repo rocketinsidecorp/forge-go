@@ -7,7 +7,7 @@ cosign and attestations, no pipe-to-shell installer). What the workflow does
 and why it can be trusted: [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md#signed-release-binaries).
 
 A release is the tag `vMAJOR.MINOR.PATCH` (or `vMAJOR.MINOR.PATCH-rc.1`, which
-becomes a pre-release). It is also the module version `go install ...@v0.1.0`
+becomes a pre-release). It is also the module version `go install ...@vX.Y.Z`
 resolves, so a tag is never moved or reused: a bad release is superseded by the
 next patch.
 
@@ -24,8 +24,10 @@ scripts/release-build.sh v0.1.0-rc.0 /tmp/release-dry   # optional: the archives
 
 - The commit is on `main` and its CI run is green (`release.yml` refuses a tag
   whose commit is not on the default branch).
-- `README.md` and the docs show the version you are about to tag (`go install
-  ...@vX.Y.Z`), and the framework version `forge new` pins is the tag
+- `README.md` and the docs never name a version that does not exist: they
+  use `@latest` and `vX.Y.Z` placeholders
+  (`TestDocsNeverInstallAVersionThatIsNotATag` enforces it), so tagging needs
+  no documentation bump. The framework version `forge new` pins is the tag
   (`forge version` reports it; a binary installed with `go install ...@vX.Y.Z`
   and one from the archive agree).
 - Repository settings: a ruleset protects `v*` tags (only maintainers create
@@ -65,8 +67,10 @@ cosign verify-blob --bundle checksums.txt.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 sha256sum -c checksums.txt                          # every file; all OK
-gh attestation verify "forge_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go
-gh attestation verify "forge-proxy_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go
+for archive in "forge_${VERSION}_${OS}_${ARCH}.tar.gz" "forge-proxy_${VERSION}_${OS}_${ARCH}.tar.gz"; do
+  gh attestation verify "$archive" --repo rocketinsidecorp/forge-go \
+    --signer-workflow rocketinsidecorp/forge-go/.github/workflows/release.yml --source-ref "refs/tags/$VERSION"
+done
 
 tar -xzf "forge_${VERSION}_${OS}_${ARCH}.tar.gz"
 "./forge_${VERSION}_${OS}_${ARCH}/forge" version    # forge v0.1.0 (<12 hex>, <commit time>, go1.27.3 linux/amd64)
@@ -99,7 +103,7 @@ gh release edit "$VERSION" --repo rocketinsidecorp/forge-go --draft=false --late
 Then, from a clean directory and a clean `GOPATH`, confirm the public path:
 
 ```sh
-go install github.com/rocketinsidecorp/forge-go/cmd/forge@v0.1.0 && forge version
+go install "github.com/rocketinsidecorp/forge-go/cmd/forge@$VERSION" && forge version
 curl -sSLO https://github.com/rocketinsidecorp/forge-go/releases/download/v0.1.0/checksums.txt   # anonymous download works
 ```
 

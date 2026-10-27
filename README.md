@@ -106,26 +106,30 @@ into applications, [ADR 0030](docs/adr/0030-forge-deploy.md)).
 
 Forge-Go ships as a Go module and, from a `v*` tag, as signed binaries. There is
 no installer script to pipe into a shell: you either build a pinned version
-with Go or download an archive and verify it first. Replace `v0.1.0` with the
-release you want ([releases](https://github.com/rocketinsidecorp/forge-go/releases)).
+with Go or download an archive and verify it first.
 
-With Go 1.27.3+, pinned to a version (not `@latest`); the Go checksum database
-verifies the module:
+With Go 1.27.3+; the Go checksum database verifies the module:
 
 ```sh
-go install github.com/rocketinsidecorp/forge-go/cmd/forge@v0.1.0
-forge version                   # forge v0.1.0 (3f2a9c1d07be, 2026-10-27T12:00:00Z, go1.27.3 linux/amd64)
+go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest
+forge version                   # forge v0.1.0 (unknown, unknown, go1.27.3 linux/amd64)
 ```
+
+To pin a release, `go install github.com/rocketinsidecorp/forge-go/cmd/forge@vX.Y.Z`
+with a version from the [releases](https://github.com/rocketinsidecorp/forge-go/releases).
+A build from the module proxy reports `unknown` for the commit and the date;
+they are stamped into the release archives below, which is why `forge version`
+there shows both.
 
 Without Go, from a release archive: `forge` and `forge-proxy` for `linux`,
 `darwin` and `windows` on `amd64` and `arm64` (`.tar.gz`, `.zip` on Windows),
 named `forge_<version>_<os>_<arch>`. Each release carries `checksums.txt`
 (SHA-256 of every archive and SBOM), `checksums.txt.sigstore.json` (its keyless
-cosign signature) and a GitHub build provenance attestation per file. Download,
+cosign signature) and a GitHub build provenance attestation that covers every archive and SBOM. Download,
 verify (cosign v3+, [gh](https://cli.github.com) 2.49+), then install:
 
 ```sh
-VERSION=v0.1.0 OS=linux ARCH=amd64        # OS: linux, darwin, windows; ARCH: amd64, arm64
+VERSION=vX.Y.Z OS=linux ARCH=amd64        # a release tag; OS: linux, darwin, windows; ARCH: amd64, arm64
 BASE=https://github.com/rocketinsidecorp/forge-go/releases/download/$VERSION
 curl -sSLO "$BASE/forge_${VERSION}_${OS}_${ARCH}.tar.gz"
 curl -sSLO "$BASE/checksums.txt"
@@ -138,8 +142,9 @@ cosign verify-blob --bundle checksums.txt.sigstore.json \
   checksums.txt
 # 2. the archive is the one checksums.txt lists (macOS: grep " forge_${VERSION}_${OS}_${ARCH}" checksums.txt | shasum -a 256 -c)
 sha256sum -c --ignore-missing checksums.txt
-# 3. GitHub built it from this repository's workflow, at that tag
-gh attestation verify "forge_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go
+# 3. GitHub attests this repository's release.yml built it, from the tag $VERSION
+gh attestation verify "forge_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go \
+  --signer-workflow rocketinsidecorp/forge-go/.github/workflows/release.yml --source-ref "refs/tags/$VERSION"
 
 tar -xzf "forge_${VERSION}_${OS}_${ARCH}.tar.gz"        # Windows: Expand-Archive forge_..._windows_amd64.zip
 sudo install -m 0755 "forge_${VERSION}_${OS}_${ARCH}/forge" /usr/local/bin/forge
@@ -157,7 +162,7 @@ Requires Go 1.27.3+ and Docker with BuildKit and Compose, and the `forge`
 command ([Install](#install)).
 
 ```sh
-go install github.com/rocketinsidecorp/forge-go/cmd/forge@v0.1.0
+go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest
 forge new myapp                 # SQLite; or -d postgresql, -d mysql, -d mariadb, -d none
 cd myapp
 docker compose up --build       # or, without Docker: forge migrate && forge dev

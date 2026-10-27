@@ -398,6 +398,56 @@ func TestNoDocumentTellsToPipeADownloadIntoAShell(t *testing.T) {
 	}
 }
 
+// installedRef is the version of a `go install .../forge-go/cmd/<name>@REF`
+// in a document.
+var installedRef = regexp.MustCompile(`forge-go/cmd/[A-Za-z0-9-]+@([^\s"'\x60)]+)`)
+
+// placeholderRefs are the only refs a document may install: the newest
+// release, or a placeholder the reader replaces. A document that names a real
+// version (@v0.1.0) is wrong before that tag exists, and stale after the next.
+var placeholderRefs = []string{"latest", "vX.Y.Z", "VERSION", "$VERSION"}
+
+// installRefViolations returns the `go install` refs of text that are not
+// placeholders, as "line: ref".
+func installRefViolations(path, text string) []string {
+	var violations []string
+	for number, line := range strings.Split(text, "\n") {
+		for _, match := range installedRef.FindAllStringSubmatch(line, -1) {
+			if !slices.Contains(placeholderRefs, match[1]) {
+				violations = append(violations, fmt.Sprintf("%s:%d: installs @%s; use @latest or a placeholder (vX.Y.Z, VERSION) (no tag may be assumed to exist)", path, number+1, match[1]))
+			}
+		}
+	}
+	return violations
+}
+
+// TestDocsNeverInstallAVersionThatIsNotATag: the README and the docs install
+// `@latest` or a `vX.Y.Z` placeholder, never a literal version, so no copyable
+// command fails with "unknown revision" before a release exists (and none
+// goes stale after it).
+func TestDocsNeverInstallAVersionThatIsNotATag(t *testing.T) {
+	t.Parallel()
+	var documents []string
+	for _, pattern := range []string{"*.md", filepath.Join("docs", "*.md"), filepath.Join("docs", "adr", "*.md")} {
+		found, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		documents = append(documents, found...)
+	}
+	for _, path := range documents {
+		for _, violation := range installRefViolations(path, readText(t, path)) {
+			t.Error(violation)
+		}
+	}
+	// The README and Getting started do install the CLI, with @latest.
+	for _, path := range []string{"README.md", filepath.Join("docs", "GETTING_STARTED.md")} {
+		if !strings.Contains(readText(t, path), "forge-go/cmd/forge@latest") {
+			t.Errorf("%s: no `go install ...forge-go/cmd/forge@latest`", path)
+		}
+	}
+}
+
 // TestReleaseWorkflowsRunOnlyForVersionTags keeps publishing out of pull
 // requests, branch pushes, schedules and manual runs.
 func TestReleaseWorkflowsRunOnlyForVersionTags(t *testing.T) {

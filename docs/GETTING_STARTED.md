@@ -65,14 +65,14 @@ deploy`) and runs the observability stack; none of the rest needs it.
 ## 2. Install the CLI
 
 ```sh
-go install github.com/rocketinsidecorp/forge-go/cmd/forge@v0.1.0
+go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest
 forge help            # the command list
 forge help new        # one command's flags and examples (also: forge new --help)
 ```
 
 `go install` puts `forge` in `$(go env GOPATH)/bin` (usually `~/go/bin`); make
-sure that directory is on your `PATH`. Replace `v0.1.0` with the release you
-want. To install a signed prebuilt binary instead, with its checksum, signature
+sure that directory is on your `PATH`. To pin a release, use `@vX.Y.Z` with a
+version from the releases page. To install a signed prebuilt binary instead, with its checksum, signature
 and provenance verified, follow [Install in the README](../README.md#install).
 
 ## 3. Create the application

@@ -568,6 +568,83 @@ func TestBinaryReleaseRuleRejectsAMissingGuarantee(t *testing.T) {
 	}
 }
 
+func TestBinaryReleaseRuleReadsCodeNotComments(t *testing.T) {
+	t.Parallel()
+	workflow := readText(t, frameworkReleasePath)
+	draft := readText(t, filepath.Join("scripts", "release-draft.sh"))
+	for _, step := range binaryReleaseSteps {
+		// The step survives only as a comment.
+		commented := strings.Replace(workflow, step, "echo skipped # "+step, 1)
+		if len(binaryReleaseViolations(frameworkReleasePath, commented, draft)) == 0 {
+			t.Errorf("a release whose %q is only a comment was accepted", step)
+		}
+	}
+	for _, flag := range []string{"--draft", "--verify-tag", "--generate-notes", "gh release create"} {
+		commented := strings.ReplaceAll(draft, flag, "") + "\n# " + flag + "\n"
+		if len(binaryReleaseViolations(frameworkReleasePath, workflow, commented)) == 0 {
+			t.Errorf("a draft script with %q only in a comment was accepted", flag)
+		}
+	}
+	// A refused command in a comment is not a command.
+	if violations := binaryReleaseViolations(frameworkReleasePath, workflow, draft+"\n# gh release edit v1 --draft=false\n"); len(violations) != 0 {
+		t.Errorf("a comment was read as a command: %v", violations)
+	}
+}
+
+func TestReleaseSetupGoRuleRequiresCleanCaches(t *testing.T) {
+	t.Parallel()
+	workflow := readText(t, frameworkReleasePath)
+	if violations := releaseSetupGoViolations(frameworkReleasePath, workflow); len(violations) != 0 {
+		t.Fatalf("the release is rejected: %v", violations)
+	}
+	if n := strings.Count(workflow, "          cache: false\n"); n < 2 {
+		t.Fatalf("want cache: false on the sbom and binaries jobs, found %d", n)
+	}
+	for _, replacement := range []string{"", "          cache: true\n"} {
+		// Each setup-go step in turn loses `cache: false`.
+		for index := 0; index < strings.Count(workflow, "          cache: false\n"); index++ {
+			mutated, seen := "", 0
+			for _, part := range strings.SplitAfter(workflow, "          cache: false\n") {
+				if strings.HasSuffix(part, "          cache: false\n") {
+					if seen == index {
+						part = strings.TrimSuffix(part, "          cache: false\n") + replacement
+					}
+					seen++
+				}
+				mutated += part
+			}
+			if len(releaseSetupGoViolations(frameworkReleasePath, mutated)) == 0 {
+				t.Errorf("setup-go number %d with %q was accepted", index, replacement)
+			}
+		}
+	}
+}
+
+func TestInstallRefRule(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@v0.1.0",
+		"`go install github.com/rocketinsidecorp/forge-go/cmd/forge-proxy@v1.2.3-rc.1`",
+		"go install \"github.com/rocketinsidecorp/forge-go/cmd/forge@v0.0.0\"",
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@main",
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@0.1.0",
+	} {
+		if len(installRefViolations("d.md", rejected)) == 0 {
+			t.Errorf("accepted: %q", rejected)
+		}
+	}
+	for _, accepted := range []string{
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest",
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@vX.Y.Z",
+		"go install \"github.com/rocketinsidecorp/forge-go/cmd/forge@$VERSION\"",
+		"go get github.com/rocketinsidecorp/forge-go@v0.1.0",
+	} {
+		if violations := installRefViolations("d.md", accepted); len(violations) != 0 {
+			t.Errorf("rejected %q: %v", accepted, violations)
+		}
+	}
+}
+
 func TestPipeToShellRule(t *testing.T) {
 	t.Parallel()
 	for _, rejected := range []string{

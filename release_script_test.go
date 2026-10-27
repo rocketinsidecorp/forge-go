@@ -290,3 +290,133 @@ func TestReleaseChecksumsRenamesTheSBOMsAndRefusesAnEmptyRelease(t *testing.T) {
 		t.Fatalf("second release-checksums.sh: %v\n%s", err, output)
 	}
 }
+
+// TestReleaseBuildRefusesADirtyTreeOfATag: a release is built from exactly the
+// tagged commit. In a scratch repository, a change to a tracked file makes the
+// build of the tag's version fail before anything is built, while an untagged
+// version is let through (and would be stamped -dirty).
+func TestReleaseBuildRefusesADirtyTreeOfATag(t *testing.T) {
+	t.Parallel()
+	requireReleaseTools(t)
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script, err := os.ReadFile(filepath.Join("scripts", "release-build.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string][]byte{
+		filepath.Join("scripts", "release-build.sh"): script,
+		"go.mod":    []byte("module example.com/x\n\ngo 1.27\n"),
+		"LICENSE":   []byte("MIT\n"),
+		"README.md": []byte("# x\n"),
+	} {
+		if err := os.WriteFile(filepath.Join(repo, name), content, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"}, args...)...)
+		command.Dir = repo
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	git("init", "-q")
+	git("add", ".")
+	git("commit", "-q", "-m", "x")
+	git("tag", "v1.0.0")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(version string) (string, error) {
+		command := exec.Command("bash", filepath.Join(repo, "scripts", "release-build.sh"), version, filepath.Join(t.TempDir(), "out"))
+		command.Dir = repo
+		command.Env = append(os.Environ(), "TARGETS=linux/amd64")
+		output, err := command.CombinedOutput()
+		return string(output), err
+	}
+	if output, err := run("v1.0.0"); err == nil || !strings.Contains(output, "working tree has changes") {
+		t.Errorf("a dirty tree of the tag was built: %v\n%s", err, output)
+	}
+	// An untagged version passes the check; the scratch module has no cmd/forge,
+	// so the build itself fails, after the check.
+	if output, err := run("v9.9.9"); err == nil || strings.Contains(output, "working tree has changes") {
+		t.Errorf("an untagged local build was refused as a release: %v\n%s", err, output)
+	}
+}
+
+// TestReleaseDraftStopsOnAnyProblemAndNeverPublishes runs release-draft.sh with
+// a fake gh: a failing build script, a missing asset and a bad checksum stop it
+// before gh runs; a complete release calls `gh release create --draft`.
+func TestReleaseDraftStopsOnAnyProblemAndNeverPublishes(t *testing.T) {
+	t.Parallel()
+	requireReleaseTools(t)
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	fake := "#!/bin/sh\necho \"$@\" >> " + calls + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(fake), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "GH_REPO=example/forge", "GITHUB_REPOSITORY="}
+	called := func() string {
+		content, _ := os.ReadFile(calls)
+		return string(content)
+	}
+	release := t.TempDir()
+	if output, err := releaseScript(t, env, "release-draft.sh", "not-a-version", release); err == nil || !strings.Contains(output, "refused") {
+		t.Errorf("a failing build script was swallowed: %v\n%s", err, output)
+	}
+	if output, err := releaseScript(t, env, "release-draft.sh", "v1.2.3", release); err == nil || !strings.Contains(output, "is missing") {
+		t.Errorf("a release without assets was accepted: %v\n%s", err, output)
+	}
+	names, err := releaseScript(t, []string{"DRY_RUN=1"}, "release-build.sh", "v1.2.3", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, name := range strings.Fields(names) {
+		if err := os.WriteFile(filepath.Join(release, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256([]byte(name))
+		lines = append(lines, hex.EncodeToString(sum[:])+"  "+name)
+	}
+	if err := os.WriteFile(filepath.Join(release, "checksums.txt.sigstore.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checksums := filepath.Join(release, "checksums.txt")
+	if err := os.WriteFile(checksums, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A tampered archive fails the checksum check.
+	tampered := filepath.Join(release, strings.Fields(names)[0])
+	if err := os.WriteFile(tampered, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := releaseScript(t, env, "release-draft.sh", "v1.2.3", release); err == nil {
+		t.Errorf("a tampered archive was drafted: %s", output)
+	}
+	if called() != "" {
+		t.Errorf("gh ran before the checks passed: %s", called())
+	}
+	if err := os.WriteFile(tampered, []byte(strings.Fields(names)[0]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := releaseScript(t, env, "release-draft.sh", "v1.2.3", release); err != nil {
+		t.Fatalf("a complete release was refused: %v\n%s", err, output)
+	}
+	got := called()
+	for _, want := range []string{"release create v1.2.3", "--draft", "--verify-tag", "--generate-notes", "--repo example/forge", "checksums.txt.sigstore.json"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("gh was called with %q, want it to contain %q", got, want)
+		}
+	}
+	for _, refused := range []string{"--prerelease", "release edit", "--latest"} {
+		if strings.Contains(got, refused) {
+			t.Errorf("gh was called with %q", got)
+		}
+	}
+}

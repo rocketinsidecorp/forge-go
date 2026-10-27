@@ -16,7 +16,9 @@
 #
 # TARGETS is a space-separated list of GOOS/GOARCH (default: linux, darwin
 # and windows on amd64 and arm64). Needs git, go, GNU tar (gtar on macOS),
-# gzip and, for windows targets, zip. The release workflow runs it, then
+# gzip and, for windows targets, zip. A tree with changes is refused when the
+# version is a tag of the checked-out commit (or in a tag run of the workflow);
+# a local build of an untagged version is stamped with a -dirty commit. The release workflow runs it, then
 # scripts/release-checksums.sh; docs/RELEASING.md has the whole procedure.
 set -euo pipefail
 export LC_ALL=C
@@ -67,6 +69,15 @@ fi
 module="$(awk '$1 == "module" { print $2; exit }' go.mod)"
 commit="$(git rev-parse HEAD)"
 if [ -n "$(git status --porcelain)" ]; then
+	# A release is built from exactly the tagged commit: refuse a tree with
+	# changes when the tag names this commit, or in a tag run of the workflow.
+	# A local build of a version nobody tagged here is stamped -dirty instead.
+	tagged="$(git rev-parse -q --verify "refs/tags/$version^{commit}" || true)"
+	if [ "$tagged" = "$commit" ] || [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+		echo "release-build: the working tree has changes; a release is built from the clean tag $version" >&2
+		git status --short >&2
+		exit 1
+	fi
 	commit="$commit-dirty"
 fi
 epoch="$(git log -1 --format=%ct)"

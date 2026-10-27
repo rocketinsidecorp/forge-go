@@ -847,25 +847,82 @@ var binaryReleaseSteps = []string{
 	"scripts/release-draft.sh \"$GITHUB_REF_NAME\"",
 }
 
+// withoutComments returns text with each line's comment removed, so a
+// required command that appears only in a comment does not count.
+func withoutComments(text string, strip func(string) string) string {
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
+		lines[index] = strip(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // binaryReleaseViolations requires binaryReleaseSteps in the framework's
-// release workflow, and the draft script to create a draft, verify the tag
-// and never publish.
+// release workflow, `cache: false` on its setup-go steps, and the draft script
+// to create a draft, verify the tag and never publish. Required text is looked
+// for in the code of the files, never in a comment.
 func binaryReleaseViolations(path, workflow, draftScript string) []string {
 	var violations []string
+	code := withoutComments(workflow, func(line string) string { code, _ := splitComment(line); return code })
 	for _, required := range binaryReleaseSteps {
-		if !strings.Contains(workflow, required) {
+		if !strings.Contains(code, required) {
 			violations = append(violations, fmt.Sprintf("%s: missing %q", path, required))
 		}
 	}
+	violations = append(violations, releaseSetupGoViolations(path, workflow)...)
+	script := withoutComments(draftScript, shellComment)
 	for _, required := range []string{"gh release create", "--draft", "--verify-tag", "--generate-notes"} {
-		if !strings.Contains(draftScript, required) {
+		if !strings.Contains(script, required) {
 			violations = append(violations, fmt.Sprintf("scripts/release-draft.sh: missing %q", required))
 		}
 	}
 	for _, refused := range []string{"--draft=false", "gh release edit", "gh release upload", "--latest"} {
-		if strings.Contains(draftScript, refused) {
+		if strings.Contains(script, refused) {
 			violations = append(violations, fmt.Sprintf("scripts/release-draft.sh: %q publishes or changes a release", refused))
 		}
+	}
+	return violations
+}
+
+// releaseSetupGoViolations requires every actions/setup-go step of the release
+// workflow to set `cache: false` (a release builds from a clean module and
+// build cache: a cache restored from another run is not part of the build the
+// tag names), and the `binaries` job to have one.
+func releaseSetupGoViolations(path, workflow string) []string {
+	documents, err := yamlDocuments(workflow, false)
+	if err != nil {
+		return []string{fmt.Sprintf("%s: %v", path, err)}
+	}
+	var violations []string
+	binariesBuilds := false
+	for _, document := range documents {
+		if document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
+			continue
+		}
+		jobs := yamlGet(document.Content[0], "jobs")
+		if jobs == nil || jobs.Kind != yaml.MappingNode {
+			continue
+		}
+		for index := 0; index+1 < len(jobs.Content); index += 2 {
+			name, steps := jobs.Content[index].Value, yamlGet(jobs.Content[index+1], "steps")
+			if steps == nil || steps.Kind != yaml.SequenceNode {
+				continue
+			}
+			for _, step := range steps.Content {
+				uses := yamlGet(step, "uses")
+				if uses == nil || !strings.HasPrefix(strings.ToLower(uses.Value), "actions/setup-go@") {
+					continue
+				}
+				if cache := yamlGet(yamlGet(step, "with"), "cache"); cache == nil || cache.Value != "false" {
+					violations = append(violations, fmt.Sprintf("%s:%d: job %q: setup-go must set `cache: false` in a release", path, uses.Line, name))
+				} else if name == "binaries" {
+					binariesBuilds = true
+				}
+			}
+		}
+	}
+	if !binariesBuilds {
+		violations = append(violations, path+": the binaries job has no setup-go step with `cache: false`")
 	}
 	return violations
 }
