@@ -26,7 +26,7 @@ From an empty directory to a working CRUD at `/products`, with no code to
 edit: the generators mount their routes in `app/bootstrap/routes_gen.go`.
 
 ```bash
-forge new {{.Name}}{{if ne .Database "postgresql"}} -d {{if eq .Database "sqlite"}}sqlite3{{else}}{{.Database}}{{end}}{{end}}{{if .APIAuth}} --api-auth{{end}}{{if ne .Locale "en"}} --locale {{.Locale}}{{end}}
+forge new {{.Name}}{{if ne .Database "postgresql"}} -d {{if eq .Database "sqlite"}}sqlite3{{else}}{{.Database}}{{end}}{{end}}{{if .APIAuth}} --api-auth{{end}}{{if ne .Locale "en"}} --locale {{.Locale}}{{end}}{{if .JS}} --js{{end}}
 cd {{.Name}}
 {{- if .DB.Server}}
 docker compose up -d --wait {{.DB.Service}}
@@ -165,7 +165,11 @@ forge dev
 
 ```bash
 forge test                               # go test ./... with .env.development loaded
+{{- if .TypeScript}}
+forge check                              # go build ./..., go vet ./... and, with tsc installed, tsc --noEmit
+{{- else}}
 forge check                              # go build ./... and go vet ./...
+{{- end}}
 forge format --check                     # list files that need gofmt; exit 1 if any (forge format rewrites them)
 forge lint                               # golangci-lint run ./... (install it first when missing)
 forge build                              # static binary in bin/{{.Name}}
@@ -270,7 +274,7 @@ development and test and fall back to the default locale in production. See
 the Forge i18n guide (`docs/I18N.md`).
 
 ## JavaScript and styles
-
+{{if .JS}}
 There is no Node toolchain. Static files are embedded in the binary and
 served with content-digested names (`/assets/application-<digest>.css`) and
 immutable caching; Turbo and Stimulus are vendored by Forge and loaded
@@ -296,6 +300,53 @@ and use it in a template with `data-controller="clipboard"`. Files in
 `controllers/` are embedded and pinned automatically; rebuild (`forge dev`
 does) to serve a change under its new digested URL. Real-time updates:
 `forge generate scaffold NAME ... --broadcast` (see `docs/VIEWS.md`).
+{{- else}}
+The front end is TypeScript. There is no Node toolchain and no bundler:
+`forge dev`, `forge build`, `forge test` and `forge check` strip the types
+with esbuild (built into `forge`) and write plain JavaScript to
+`app/javascript/dist`, which the binary embeds. Static files are embedded in
+the binary and served with content-digested names
+(`/assets/application-<digest>.css`) and immutable caching; Turbo and Stimulus
+are vendored by Forge and loaded through an import map (no inline scripts: the
+page policy allows the map by hash).
+
+| Path | Purpose |
+| ---- | ------- |
+| `app/assets/` | stylesheet and images (add the file name to the `go:embed` line in `assets.go`) |
+| `app/javascript/application.ts` | entry point: `import "@hotwired/turbo"` and `import "controllers"` |
+| `app/javascript/controllers/` | Stimulus controllers, one `NAME_controller.ts` each, registered in `index.ts` |
+| `app/javascript/dist/` | the compiled JavaScript the binary embeds: generated, committed, never edited |
+| `app/javascript/types/` | declarations of Turbo and Stimulus for `tsc`, copied unchanged from npm |
+| `tsconfig.json` | strict `tsc --noEmit` settings; the import map's bare names are `paths` |
+
+```bash
+forge dev      # recompiles on every change to a .ts file (inline source maps)
+forge build    # compiles app/javascript to dist, then builds bin/{{.Name}}
+forge check    # also runs tsc --noEmit when tsc is on PATH
+```
+
+esbuild only strips types; `tsc` checks them. Install it once with
+`npm install --global typescript@{{.TypeScriptVersion}}` (Node is needed for
+that and nothing else); without it `forge check` prints one note and skips the
+type check. The generated CI installs the same pinned version and runs
+`tsc --noEmit`, and `go test` fails when a `.ts` file changed and `dist` did
+not, so run `forge build` (or `forge test`) before you commit.
+
+Add a Stimulus controller:
+
+```bash
+cp app/javascript/controllers/hello_controller.ts app/javascript/controllers/clipboard_controller.ts
+# then add to app/javascript/controllers/index.ts:
+#   import ClipboardController from "controllers/clipboard_controller"
+#   application.register("clipboard", ClipboardController)
+forge build    # or let forge dev do it
+```
+
+and use it in a template with `data-controller="clipboard"`. Files in
+`controllers/` are compiled, embedded and pinned automatically. Real-time
+updates: `forge generate scaffold NAME ... --broadcast` (see `docs/VIEWS.md`).
+To keep plain JavaScript instead, create the application with `forge new --js`.
+{{- end}}
 {{- end}}
 {{- if and .DB .DB.Identity}}
 

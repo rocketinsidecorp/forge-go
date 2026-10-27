@@ -44,7 +44,9 @@ func toolError(name string, err error) error {
 
 // runCheck type-checks the application without producing a binary: go build
 // compiles every package, go vet type-checks the tests too and reports
-// suspicious constructs. It is the counterpart of Forge-Rust's `forge check`
+// suspicious constructs, and tsc --noEmit checks the TypeScript front end
+// when tsc is installed (the TypeScript is compiled first, so go build embeds
+// what the sources say). It is the counterpart of Forge-Rust's `forge check`
 // (cargo check --all-targets).
 func runCheck(args []string, stdout, stderr io.Writer) error {
 	if len(args) != 0 {
@@ -54,11 +56,17 @@ func runCheck(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	ctx := context.Background()
+	if err := compileFrontend(".", stdout); err != nil {
+		return err
+	}
 	for _, step := range [][]string{{"build", "./..."}, {"vet", "./..."}} {
 		fmt.Fprintf(stdout, "  run     go %s\n", strings.Join(step, " "))
 		if err := goCommand(ctx, ".", nil, stdout, stderr, step...).Run(); err != nil {
 			return toolError("go "+step[0], err)
 		}
+	}
+	if err := typeCheckFrontend(ctx, ".", stdout, stderr); err != nil {
+		return err
 	}
 	_, err := fmt.Fprintln(stdout, "check: ok")
 	return err

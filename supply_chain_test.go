@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rocketinsidecorp/forge-go/internal/frontend"
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
@@ -498,5 +499,37 @@ func TestDockerfilesPinBaseImagesByDigest(t *testing.T) {
 				t.Errorf("database %q: generated base image %q is not one Forge's own Dockerfiles pin", database, image)
 			}
 		}
+	}
+}
+
+// nodeTool matches the Node package managers a workflow could run.
+var nodeTool = regexp.MustCompile(`\b(npm|npx|yarn|pnpm|corepack|bun)\b`)
+
+// TestTypeScriptCheckerIsTheOnlyNpmPackageAndIsPinned (ADR 0049): the one thing
+// any workflow installs from npm is the TypeScript checker, at the exact
+// release frontend.TypeScriptVersion, without lifecycle scripts. The
+// framework's CI and the generated CI install the same one command, so an
+// update is a single reviewed change.
+func TestTypeScriptCheckerIsTheOnlyNpmPackageAndIsPinned(t *testing.T) {
+	t.Parallel()
+	want := "npm install --global --ignore-scripts typescript@" + frontend.TypeScriptVersion
+	installs := 0
+	for _, path := range workflowFiles(t) {
+		for number, line := range strings.Split(readText(t, path), "\n") {
+			code, _ := splitComment(line)
+			code = strings.ReplaceAll(code, "{{.TypeScriptVersion}}", frontend.TypeScriptVersion) // the template field
+			if !nodeTool.MatchString(code) {
+				continue
+			}
+			if strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(code), "run:")) != want {
+				t.Errorf("%s:%d runs %q: the only Node command allowed is %q", path, number+1, strings.TrimSpace(code), want)
+				continue
+			}
+			installs++
+		}
+	}
+	// The framework's generated job and the generated application's test job.
+	if installs != 2 {
+		t.Errorf("found %d installs of the TypeScript checker, want 2 (.github/workflows/ci.yml and the generated CI)", installs)
 	}
 }

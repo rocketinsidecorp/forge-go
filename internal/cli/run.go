@@ -108,12 +108,20 @@ func runTest(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		args = []string{"./..."}
 	}
+	// The tests embed app/javascript/dist (and check it against the sources).
+	if err := compileFrontend(".", stdout); err != nil {
+		return err
+	}
 	return goCommand(context.Background(), ".", env, stdout, stderr, append([]string{"test"}, args...)...).Run()
 }
 
 func runBuild(args []string, stdout, stderr io.Writer) error {
 	name, err := resolveCommand(".", args)
 	if err != nil {
+		return err
+	}
+	// The binary embeds app/javascript/dist: compile the TypeScript first.
+	if err := compileFrontend(".", stdout); err != nil {
 		return err
 	}
 	output := filepath.Join("bin", name)
@@ -155,6 +163,10 @@ func runApp(ctx context.Context, root, name string, args, env []string, stdout, 
 // runAppWithInput is runApp with standard input for the application; nil
 // means none.
 func runAppWithInput(ctx context.Context, root, name string, args, env []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	// The binary embeds app/javascript/dist: compile the TypeScript first.
+	if err := compileFrontend(root, stdout); err != nil {
+		return err
+	}
 	buildDir, err := os.MkdirTemp("", "forge-app-")
 	if err != nil {
 		return err

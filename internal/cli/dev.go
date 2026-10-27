@@ -17,6 +17,7 @@ import (
 
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/internal/devloop"
+	"github.com/rocketinsidecorp/forge-go/internal/frontend"
 )
 
 const (
@@ -210,11 +211,29 @@ type devApp struct {
 	running  bool
 }
 
+// build compiles the application. The TypeScript front end is compiled for
+// development (inline source maps) into a temporary directory and handed to
+// `go build -overlay`, so the binary embeds it where app/javascript/dist is
+// while the working tree, and the production output committed in it, stay as
+// they are. A TypeScript syntax error is a build failure like a Go one.
 func (a *devApp) build(ctx context.Context, output string) error {
 	var out cappedBuffer
-	command := goCommand(ctx, a.root, nil, &out, &out, "build", "-o", output, "./cmd/"+a.name)
+	args := []string{"build"}
+	scratch, err := os.MkdirTemp("", "forge-dev-js-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+	overlay, err := frontend.Overlay(a.root, scratch)
+	if err != nil {
+		return &devloop.BuildError{Output: err.Error()}
+	}
+	if overlay != "" {
+		args = append(args, "-overlay", overlay)
+	}
+	command := goCommand(ctx, a.root, nil, &out, &out, append(args, "-o", output, "./cmd/"+a.name)...)
 	devloop.IsolateCommand(command) // cancelling the build ends the compiler and linker too
-	err := command.Run()
+	err = command.Run()
 	if err == nil {
 		return nil
 	}

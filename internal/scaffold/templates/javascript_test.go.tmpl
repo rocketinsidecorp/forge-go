@@ -1,0 +1,101 @@
+package javascript
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+// header is the first line `forge build` writes into every compiled file.
+var header = regexp.MustCompile(`^// Compiled from (\S+) by forge \([a-z]+ [0-9.]+\); do not edit\. source-sha256: ([0-9a-f]{64})\n`)
+
+// TestCompiledJavaScriptMatchesTheTypeScript fails when a .ts file changed and
+// app/javascript/dist did not, or the other way round: the binary embeds dist,
+// so a stale file would serve code nobody wrote. Run `forge build` (or
+// `forge dev`, `forge check`, `forge test`) to compile again. The test reads
+// the sources and the header of each compiled file; it compiles nothing, so it
+// needs no tool besides Go.
+func TestCompiledJavaScriptMatchesTheTypeScript(t *testing.T) {
+	t.Parallel()
+	sources := map[string][]byte{}
+	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		slashed := filepath.ToSlash(path)
+		if entry.IsDir() {
+			if slashed == "dist" || slashed == "types" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(slashed, ".ts") && !strings.HasSuffix(slashed, ".d.ts") {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			sources[slashed] = content
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) == 0 {
+		t.Fatal("no TypeScript sources found: the test must run in app/javascript")
+	}
+	compiled := map[string]bool{}
+	for source, content := range sources {
+		name := strings.TrimSuffix(source, ".ts") + ".js"
+		output, err := os.ReadFile(filepath.Join("dist", filepath.FromSlash(name)))
+		if err != nil {
+			t.Errorf("%s has no compiled %s (run forge build): %v", source, "dist/"+name, err)
+			continue
+		}
+		compiled[name] = true
+		match := header.FindSubmatch(output)
+		sum := sha256.Sum256(content)
+		switch {
+		case match == nil:
+			t.Errorf("dist/%s does not start with the header forge build writes (run forge build)", name)
+		case string(match[1]) != source:
+			t.Errorf("dist/%s says it was compiled from %s, not %s (run forge build)", name, match[1], source)
+		case string(match[2]) != hex.EncodeToString(sum[:]):
+			t.Errorf("dist/%s is stale: %s changed since it was compiled (run forge build)", name, source)
+		}
+	}
+	err = filepath.WalkDir("dist", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() || !strings.HasSuffix(path, ".js") {
+			return walkErr
+		}
+		name := filepath.ToSlash(strings.TrimPrefix(path, "dist"+string(filepath.Separator)))
+		if !compiled[name] {
+			t.Errorf("dist/%s has no TypeScript source (run forge build to remove it)", name)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestFilesServesTheCompiledEntryPoints keeps the embedded layout the asset
+// bundle depends on: logical names without the dist/ prefix, and plain
+// JavaScript only (no TypeScript syntax reaches the browser).
+func TestFilesServesTheCompiledEntryPoints(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"application.js", "controllers/index.js", "controllers/application.js", "controllers/hello_controller.js"} {
+		content, err := fs.ReadFile(Files(), name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if strings.Contains(string(content), "declare ") || strings.Contains(string(content), ": HTMLInputElement") {
+			t.Errorf("%s still has TypeScript syntax:\n%s", name, content)
+		}
+	}
+}
