@@ -58,6 +58,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | Associations: belongs_to, has_many, many-to-many; canonical field types | `rails g scaffold comment post:references`, `has_many`, `has_and_belongs_to_many`, `dependent:` | Done (`field:references`/`belongs_to` with index and foreign key, composite `(org_id, post_id)` with organizations, `ON DELETE RESTRICT` or `--on-delete=cascade`, parent select, `/posts/{id}/comments` HTML and JSON, the parent page's Turbo Frames, `409 post_in_use`; `forge generate join post tag` and `forge destroy join`; field types `string text integer boolean timestamp uuid references` with `int bool time datetime belongs_to`, decisions D22 and D23, [ADR 0051](adr/0051-associations.md)) | Planned, after forge-go 100% (decision D37), [forge-rust#96](https://github.com/rocketinsidecorp/forge-rust/issues/96) |
 | README quickstart run end to end in CI | Rails Guides "Getting Started" | Done (the generated README's Quickstart block run as written by a real `forge`, then sign-in, CRUD and JSON over HTTP for SQLite `--auth`, MySQL/MariaDB `--auth` and PostgreSQL `--tenants` with a cross-organization `404` check: `TestGeneratedApplication/readme_quickstart_*`, CI jobs `generated` and `mariadb`) | In progress ([forge-rust#93](https://github.com/rocketinsidecorp/forge-rust/issues/93), before associations and v0.1.0) |
 | Continuous fuzzing, SBOM, signed images | — | Done (every fuzz target per PR and nightly, `scripts/fuzz.sh`; CycloneDX/SPDX SBOMs; keyless cosign-signed images from `v*` tags; [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), [ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)) | Done (`scripts/fuzz.sh`, `scripts/sbom.sh`, signed forge-proxy image, SHA/digest pins enforced by `crates/forge/tests/supply_chain.rs`, Forge-Rust ADR 0043) |
+| Signed release binaries, checksums, provenance | `gh release` assets by hand | In review (a `v*` tag builds `forge` and `forge-proxy` for linux, darwin and windows on amd64 and arm64 with `scripts/release-build.sh`, SHA-256 `checksums.txt` signed with keyless cosign, one GitHub build provenance attestation covering every file and a draft release; `forge version` and `forge-proxy version` print version, commit and Go toolchain; no installer script, pinned `go install ...@vX.Y.Z`; [RELEASING.md](RELEASING.md), [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md#signed-release-binaries), decision D24) | Planned, after forge-go 100% (decision D37): same archive names, `checksums.txt`, cosign and attestation commands, `forge version` fields and `forge-proxy version`; its release workflow signs only images today |
 | Architecture test in the generated application | Packwerk-style boundary specs (gems) | Done (`app/architecture_test.go` in every `forge new`: `go/parser` on the imports, `domain` and `application` import inward only, nothing but `app/bootstrap` composes, a failure names file, line and import; [ARCHITECTURE.md](ARCHITECTURE.md#architecture-test-of-the-generated-application)) | Planned, after forge-go 100% (decision D37) |
 | `AGENTS.md` for AI coding agents in the generated application | — | Done (`forge new` writes `AGENTS.md`, under 120 lines: rings, commands, routes seam, security defaults, tests; only what that application has; a test checks its commands and files; [AI_AGENT_GUIDE.md](AI_AGENT_GUIDE.md#the-generated-agentsmd)) | Planned, after forge-go 100% (decision D37) |
 | Published benchmarks | — | In review (`go test -bench`, `scripts/bench.sh`, [BENCHMARKS.md](BENCHMARKS.md)) | Done (`cargo bench -p forge-bench`, `scripts/bench.sh`) |
@@ -78,6 +79,18 @@ the work is finished and waiting for its review; **Planned** means not started.
   reaches 100% (decision D37), in
   [forge-rust#96](https://github.com/rocketinsidecorp/forge-rust/issues/96),
   with the same commands, names and generated routes.
+
+- Signed release binaries (forge-go decision D24,
+  [RELEASING.md](RELEASING.md)). Forge-Rust's `release.yml` publishes signed
+  images only. It still lacks: archives of `forge` and `forge-proxy` for
+  linux, darwin and windows on amd64 and arm64 named
+  `<command>_<version>_<os>_<arch>` with the same layout (binary, LICENSE,
+  README.md), a signed `checksums.txt`, build provenance attestations, a
+  draft release with the SBOMs, a `forge-proxy version` command, the Go
+  toolchain in `forge version` (Rust: the `rustc` version), the README
+  Install section and a `RELEASING.md`. Per decision D37 it follows after
+  Forge-Go reaches 100%; tracked in
+  [rocketinsidecorp/forge-rust#100](https://github.com/rocketinsidecorp/forge-rust/issues/100).
 
 - Opt-in authentication and organizations, SQLite by default (owner
   decisions D30, D31, D33-D36 of 2026-10-26, [ADR

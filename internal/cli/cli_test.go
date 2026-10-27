@@ -32,8 +32,8 @@ func TestRunVersion(t *testing.T) {
 	if code := Run([]string{"version"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.HasPrefix(stdout.String(), "forge ") {
-		t.Fatalf("stdout=%q", stdout.String())
+	if !strings.HasPrefix(stdout.String(), "forge ") || !strings.Contains(stdout.String(), " go1.") {
+		t.Fatalf("stdout=%q, want the version, commit, date and Go toolchain", stdout.String())
 	}
 }
 

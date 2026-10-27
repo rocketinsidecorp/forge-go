@@ -315,3 +315,33 @@ func TestAGeneratedToolConfigurationIsFoundAnywhereInTheApplication(t *testing.T
 		}
 	}
 }
+
+// A `run:` script never interpolates an expression: GitHub pastes the value
+// into the shell text, so an attacker-chosen tag, branch name or commit message
+// would run as code. The safe spelling passes the value through env:.
+func TestRunScriptsRefuseInterpolatedExpressions(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"steps:\n  - run: echo \"${{ github.ref_name }}\"\n",
+		"steps:\n  - run: echo '${{ github.event.head_commit.message }}'\n",
+		"steps:\n  - run: |\n      set -e\n      echo ${{ github.event.pull_request.title }}\n",
+		"steps:\n  - run: >-\n      go run ./cmd/forge new x --database \"${{ matrix.database }}\"\n",
+		"steps:\n  - name: x\n    run: echo $\\{{ x }}${{github.head_ref}}\n",
+		"steps:\n  - run: echo ${{github.ref_name}}\n",
+		"steps:\n  - run: echo ${{ env.A }}\n    shell: bash\n",
+	} {
+		if len(closedListViolations("w.yml", rejected)) == 0 {
+			t.Errorf("accepted: %q", rejected)
+		}
+	}
+	for _, accepted := range []string{
+		"steps:\n  - env:\n      NAME: ${{ github.ref_name }}\n    run: echo \"$NAME\"\n",
+		"steps:\n  - name: ${{ matrix.image }}\n    run: echo hi\n    working-directory: ${{ runner.temp }}/x\n",
+		"steps:\n  - uses: actions/upload-artifact@x\n    with:\n      name: a-${{ github.ref_name }}\n",
+		"steps:\n  - if: ${{ github.event_name == 'push' }}\n    run: echo hi\n",
+	} {
+		if violations := closedListViolations("w.yml", accepted); len(violations) != 0 {
+			t.Errorf("rejected %q: %v", accepted, violations)
+		}
+	}
+}

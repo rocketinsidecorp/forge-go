@@ -489,3 +489,189 @@ func TestYAMLSubsetRefusesEscapesInDoubleQuotedValues(t *testing.T) {
 		}
 	}
 }
+
+// TestWriteScopesBelongToTheFrameworkRelease: `contents` and `attestations`
+// are writable only in the framework's own release workflow, never in the
+// generated application's or in another workflow.
+func TestWriteScopesBelongToTheFrameworkRelease(t *testing.T) {
+	t.Parallel()
+	workflow := "permissions: {}\njobs:\n  a:\n    permissions:\n      contents: write\n      attestations: write\n      id-token: write\n"
+	if violations := treeViolations(frameworkReleasePath, workflow, true); len(violations) != 0 {
+		t.Errorf("rejected in the framework release: %v", violations)
+	}
+	for _, path := range []string{"internal/scaffold/templates/github/release.yml", "generated .github/workflows/release.yml", ".github/workflows/ci.yml"} {
+		if len(treeViolations(path, workflow, filepath.Base(path) == "release.yml")) == 0 {
+			t.Errorf("%s: contents: write and attestations: write were accepted", path)
+		}
+	}
+	for _, scope := range []string{"actions", "checks", "deployments", "packages", "pull-requests", "security-events", "statuses"} {
+		text := "permissions: {}\njobs:\n  a:\n    permissions:\n      " + scope + ": write\n"
+		if scope == "packages" {
+			continue // the image job's scope
+		}
+		if len(treeViolations(frameworkReleasePath, text, true)) == 0 {
+			t.Errorf("%s: write was accepted in the release workflow", scope)
+		}
+	}
+}
+
+func TestReleasePermissionsRuleRejectsDrift(t *testing.T) {
+	t.Parallel()
+	good := "permissions: {}\njobs:\n  verify:\n    permissions:\n      contents: read\n  images:\n    permissions:\n      contents: read\n      packages: write\n      id-token: write\n  sbom:\n    permissions:\n      contents: read\n  binaries:\n    permissions:\n      contents: read\n      id-token: write\n      attestations: write\n  draft:\n    permissions:\n      contents: write\n"
+	check := func(text string) []string {
+		documents, err := yamlDocuments(text, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return releasePermissionViolations("release.yml", documents)
+	}
+	if violations := check(good); len(violations) != 0 {
+		t.Fatalf("rejected the expected permissions: %v", violations)
+	}
+	for name, text := range map[string]string{
+		"top-level permissions":      strings.Replace(good, "permissions: {}\njobs", "permissions:\n  contents: read\njobs", 1),
+		"no top-level permissions":   strings.Replace(good, "permissions: {}\n", "", 1),
+		"the draft job also signs":   strings.Replace(good, "  draft:\n    permissions:\n      contents: write\n", "  draft:\n    permissions:\n      contents: write\n      id-token: write\n", 1),
+		"the binary job writes":      strings.Replace(good, "      attestations: write\n", "      attestations: write\n      packages: write\n", 1),
+		"the binary job cannot sign": strings.Replace(good, "      id-token: write\n      attestations: write\n", "      attestations: write\n", 1),
+		"a new job":                  good + "  extra:\n    permissions:\n      contents: read\n",
+		"a job without permissions":  strings.Replace(good, "  sbom:\n    permissions:\n      contents: read\n", "  sbom:\n    runs-on: x\n", 1),
+		"a job is gone":              strings.Replace(good, "  draft:\n    permissions:\n      contents: write\n", "", 1),
+	} {
+		if len(check(text)) == 0 {
+			t.Errorf("accepted: %s", name)
+		}
+	}
+}
+
+func TestBinaryReleaseRuleRejectsAMissingGuarantee(t *testing.T) {
+	t.Parallel()
+	workflow := readText(t, frameworkReleasePath)
+	draft := readText(t, filepath.Join("scripts", "release-draft.sh"))
+	if violations := binaryReleaseViolations(frameworkReleasePath, workflow, draft); len(violations) != 0 {
+		t.Fatalf("the release is rejected: %v", violations)
+	}
+	for _, step := range binaryReleaseSteps {
+		if len(binaryReleaseViolations(frameworkReleasePath, strings.Replace(workflow, step, "echo skipped", 1), draft)) == 0 {
+			t.Errorf("a release without %q was accepted", step)
+		}
+	}
+	for _, flag := range []string{"--draft", "--verify-tag", "--generate-notes"} {
+		if len(binaryReleaseViolations(frameworkReleasePath, workflow, strings.ReplaceAll(draft, flag, ""))) == 0 {
+			t.Errorf("a draft script without %q was accepted", flag)
+		}
+	}
+	for _, publishing := range []string{"gh release edit v1 --draft=false", "gh release create v1 --latest"} {
+		if len(binaryReleaseViolations(frameworkReleasePath, workflow, draft+"\n"+publishing+"\n")) == 0 {
+			t.Errorf("a script that runs %q was accepted", publishing)
+		}
+	}
+}
+
+func TestBinaryReleaseRuleReadsCodeNotComments(t *testing.T) {
+	t.Parallel()
+	workflow := readText(t, frameworkReleasePath)
+	draft := readText(t, filepath.Join("scripts", "release-draft.sh"))
+	for _, step := range binaryReleaseSteps {
+		// The step survives only as a comment.
+		commented := strings.Replace(workflow, step, "echo skipped # "+step, 1)
+		if len(binaryReleaseViolations(frameworkReleasePath, commented, draft)) == 0 {
+			t.Errorf("a release whose %q is only a comment was accepted", step)
+		}
+	}
+	for _, flag := range []string{"--draft", "--verify-tag", "--generate-notes", "gh release create"} {
+		commented := strings.ReplaceAll(draft, flag, "") + "\n# " + flag + "\n"
+		if len(binaryReleaseViolations(frameworkReleasePath, workflow, commented)) == 0 {
+			t.Errorf("a draft script with %q only in a comment was accepted", flag)
+		}
+	}
+	// A refused command in a comment is not a command.
+	if violations := binaryReleaseViolations(frameworkReleasePath, workflow, draft+"\n# gh release edit v1 --draft=false\n"); len(violations) != 0 {
+		t.Errorf("a comment was read as a command: %v", violations)
+	}
+}
+
+func TestReleaseSetupGoRuleRequiresCleanCaches(t *testing.T) {
+	t.Parallel()
+	workflow := readText(t, frameworkReleasePath)
+	if violations := releaseSetupGoViolations(frameworkReleasePath, workflow); len(violations) != 0 {
+		t.Fatalf("the release is rejected: %v", violations)
+	}
+	if n := strings.Count(workflow, "          cache: false\n"); n < 2 {
+		t.Fatalf("want cache: false on the sbom and binaries jobs, found %d", n)
+	}
+	for _, replacement := range []string{"", "          cache: true\n"} {
+		// Each setup-go step in turn loses `cache: false`.
+		for index := 0; index < strings.Count(workflow, "          cache: false\n"); index++ {
+			mutated, seen := "", 0
+			for _, part := range strings.SplitAfter(workflow, "          cache: false\n") {
+				if strings.HasSuffix(part, "          cache: false\n") {
+					if seen == index {
+						part = strings.TrimSuffix(part, "          cache: false\n") + replacement
+					}
+					seen++
+				}
+				mutated += part
+			}
+			if len(releaseSetupGoViolations(frameworkReleasePath, mutated)) == 0 {
+				t.Errorf("setup-go number %d with %q was accepted", index, replacement)
+			}
+		}
+	}
+}
+
+func TestInstallRefRule(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@v0.1.0",
+		"`go install github.com/rocketinsidecorp/forge-go/cmd/forge-proxy@v1.2.3-rc.1`",
+		"go install \"github.com/rocketinsidecorp/forge-go/cmd/forge@v0.0.0\"",
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@main",
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@0.1.0",
+	} {
+		if len(installRefViolations("d.md", rejected)) == 0 {
+			t.Errorf("accepted: %q", rejected)
+		}
+	}
+	for _, accepted := range []string{
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@latest",
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@vX.Y.Z",
+		"go install \"github.com/rocketinsidecorp/forge-go/cmd/forge@$VERSION\"",
+		"go get github.com/rocketinsidecorp/forge-go@v0.1.0",
+	} {
+		if violations := installRefViolations("d.md", accepted); len(violations) != 0 {
+			t.Errorf("rejected %q: %v", accepted, violations)
+		}
+	}
+}
+
+func TestPipeToShellRule(t *testing.T) {
+	t.Parallel()
+	for _, rejected := range []string{
+		"curl -fsSL https://example.com/install.sh | sh",
+		"curl -fsSL https://example.com/install.sh | bash -s -- --yes",
+		"curl https://example.com/i | sudo bash",
+		"wget -qO- https://example.com/i | sudo -E sh",
+		"wget -qO- https://example.com/i | /bin/sh",
+		"CURL -sSf https://example.com | ZSH",
+		"bash <(curl -s https://example.com/i)",
+		"sh -c \"$(curl -fsSL https://example.com/i)\"",
+		"curl -sSf https://sh.rustup.rs | sh",
+	} {
+		if !pipeToShell.MatchString(rejected) {
+			t.Errorf("accepted: %q", rejected)
+		}
+	}
+	for _, accepted := range []string{
+		"curl -s http://127.0.0.1:8080/v1/status | jq .",
+		"curl -s http://127.0.0.1:8080/health | head",
+		"cosign verify-blob --bundle b checksums.txt && sha256sum -c checksums.txt",
+		"go install github.com/rocketinsidecorp/forge-go/cmd/forge@v0.1.0",
+		"curl -sSLO https://example.com/forge.tar.gz",
+		"forge new shop --auth | tee log",
+	} {
+		if pipeToShell.MatchString(accepted) {
+			t.Errorf("rejected: %q", accepted)
+		}
+	}
+}

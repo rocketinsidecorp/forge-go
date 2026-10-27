@@ -44,6 +44,7 @@ var allowedVariables = map[string]string{
 	"GRAFANA_ADMIN_PASSWORD": anyValue,
 	// Read by the go command and Syft: fixed values.
 	"GOARCH":                    "${{ matrix.arch }}",
+	"DATABASE":                  "${{ matrix.database }}",
 	"SYFT_CHECK_FOR_APP_UPDATE": "false",
 	// Inputs of the workflows' own steps and scripts.
 	"PACKAGE":        anyValue,
@@ -53,6 +54,12 @@ var allowedVariables = map[string]string{
 	"NAME":           anyValue,
 	"IMAGE":          anyValue,
 	"DIGEST":         anyValue,
+	// The release workflow's binary steps: the attestation bundle to keep
+	// with the release, and gh's token (the only secret release.yml may
+	// read) and repository for the draft release.
+	"BUNDLE":   "${{ steps.attest.outputs.bundle-path }}",
+	"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
+	"GH_REPO":  "${{ github.repository }}",
 	// Shell locals of `run` scripts (and curl's `query=` argument, which
 	// reads like an assignment).
 	"module":  anyValue,
@@ -440,6 +447,15 @@ func closedListViolations(path, text string) []string {
 			case "run":
 				if value.Kind != yaml.ScalarNode {
 					continue
+				}
+				// No expression is interpolated into a script: GitHub expands
+				// `${{ }}` into the text bash runs, so a tag, branch name,
+				// commit message or PR title would become code. Everything a
+				// script reads goes through `env:` (whose names and values
+				// the allowlists read) and is used as "$NAME". The list of
+				// safe contexts is empty on purpose.
+				if strings.Contains(value.Value, "${{") {
+					refuse(value.Line, "a `run:` script interpolates an expression (`${{ }}`); pass it through env: and read it as a shell variable")
 				}
 				// A listed runner-file line is reviewed as a whole: it must be
 				// a complete logical line, and every other line that names a

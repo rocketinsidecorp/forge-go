@@ -3,6 +3,7 @@ package forge_test
 import (
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 
 	"github.com/rocketinsidecorp/forge-go/internal/frontend"
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
@@ -115,6 +118,17 @@ func localActionTree(files []string, read func(string) string, isFile func(strin
 	return actions, problems
 }
 
+// releaseScripts are the shell scripts the release and CI workflows run. They
+// are read for the pins and the go-command redirects the gate refuses (not as
+// YAML); what a script does inside is left to review (docs/SUPPLY_CHAIN.md,
+// "Threat model and residual risk").
+var releaseScripts = []string{
+	filepath.Join("scripts", "sbom.sh"),
+	filepath.Join("scripts", "release-build.sh"),
+	filepath.Join("scripts", "release-checksums.sh"),
+	filepath.Join("scripts", "release-draft.sh"),
+}
+
 // TestWorkflowsPinThirdPartyCode keeps every action pinned to a commit SHA
 // with its version in a comment, every container a workflow runs pinned by
 // digest, and every checkout free of credentials: a moved tag cannot change
@@ -124,12 +138,13 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 	references := map[*regexp.Regexp]map[string]bool{syftImage: {}, syftScanner: {}}
 	used := map[string]bool{}
 	workflows := workflowFiles(t)
-	files := append(append(workflows, localActionFiles(t, workflows)...), filepath.Join("scripts", "sbom.sh"))
+	files := append(append(workflows, localActionFiles(t, workflows)...), releaseScripts...)
 	for _, path := range files {
 		text := readText(t, path)
 		violations := append(pinViolations(path, text), checkoutViolations(path, text)...)
 		violations = append(violations, allowlistViolations(path, text)...)
-		if path != filepath.Join("scripts", "sbom.sh") {
+		script := slices.Contains(releaseScripts, path)
+		if !script {
 			violations = append(violations, yamlSubsetViolations(path, text)...)
 			violations = append(violations, parserViolations(path, text)...)
 			violations = append(violations, treeViolations(path, text, filepath.Base(path) == "release.yml")...)
@@ -138,7 +153,7 @@ func TestWorkflowsPinThirdPartyCode(t *testing.T) {
 		// D8: the closed allowlists read workflows and local actions as
 		// written; a template is read as rendered
 		// (TestGeneratedWorkflowsPassTheGate).
-		if path != filepath.Join("scripts", "sbom.sh") && !strings.HasSuffix(path, ".tmpl") {
+		if !script && !strings.HasSuffix(path, ".tmpl") {
 			violations = append(violations, closedListViolations(filepath.ToSlash(path), text)...)
 		}
 		if strings.HasSuffix(path, ".tmpl") {
@@ -224,14 +239,16 @@ func TestWorkflowPermissionsAreLeastPrivilege(t *testing.T) {
 			code := lineComment.ReplaceAllString(line, "")
 			for _, match := range writePermission.FindAllStringSubmatch(code, -1) {
 				scope := match[1]
-				if !release || (scope != "id-token" && scope != "packages") {
+				if !slices.Contains(writeScopesOf(path, release), scope) {
 					t.Errorf("%s:%d: %q is not allowed", path, number+1, scope+": write")
 				}
 			}
 		}
+		// The framework's release workflow holds several write scopes in
+		// several jobs: TestReleaseJobsHoldOnlyTheirPermissions fixes them.
 		for _, permission := range []string{"id-token: write", "packages: write"} {
 			count := strings.Count(text, permission)
-			if (release && count != 1) || (!release && count != 0) {
+			if (release && count != 1 && filepath.ToSlash(path) != frameworkReleasePath) || (!release && count != 0) {
 				t.Errorf("%s: %q appears %d times", path, permission, count)
 			}
 		}
@@ -243,6 +260,190 @@ func TestWorkflowPermissionsAreLeastPrivilege(t *testing.T) {
 			if !release || reference != "secrets.GITHUB_TOKEN" {
 				t.Errorf("%s: unexpected %q", path, reference)
 			}
+		}
+	}
+}
+
+// frameworkReleasePermissions are the permissions each job of the framework's
+// release workflow holds, exactly: adding a job or a scope is a reviewed
+// change to this table and to docs/SUPPLY_CHAIN.md. Least privilege: only
+// the image job writes packages, only the binary job attests, and only the
+// draft job can write contents (create a draft release); the draft job signs
+// nothing and the signing jobs cannot touch the release.
+var frameworkReleasePermissions = map[string]map[string]string{
+	"verify":   {"contents": "read"},
+	"images":   {"contents": "read", "packages": "write", "id-token": "write"},
+	"sbom":     {"contents": "read"},
+	"binaries": {"contents": "read", "id-token": "write", "attestations": "write"},
+	"draft":    {"contents": "write"},
+}
+
+// TestReleaseJobsHoldOnlyTheirPermissions reads the parsed release workflow:
+// no permissions at the top, and every job exactly the permissions of
+// frameworkReleasePermissions.
+func TestReleaseJobsHoldOnlyTheirPermissions(t *testing.T) {
+	t.Parallel()
+	documents, err := yamlDocuments(readText(t, frameworkReleasePath), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, problem := range releasePermissionViolations(frameworkReleasePath, documents) {
+		t.Error(problem)
+	}
+}
+
+// releasePermissionViolations compares the release workflow's top-level and
+// per-job permissions with frameworkReleasePermissions.
+func releasePermissionViolations(path string, documents []*yaml.Node) []string {
+	var violations []string
+	if len(documents) != 1 || documents[0].Kind != yaml.DocumentNode || len(documents[0].Content) != 1 {
+		return []string{path + ": want one YAML document"}
+	}
+	root := documents[0].Content[0]
+	if top := yamlGet(root, "permissions"); top == nil || top.Kind != yaml.MappingNode || len(top.Content) != 0 {
+		violations = append(violations, path+": the top-level permissions must be {}")
+	}
+	jobs := yamlGet(root, "jobs")
+	if jobs == nil || jobs.Kind != yaml.MappingNode {
+		return append(violations, path+": no jobs")
+	}
+	seen := map[string]bool{}
+	for index := 0; index+1 < len(jobs.Content); index += 2 {
+		name, job := jobs.Content[index].Value, jobs.Content[index+1]
+		seen[name] = true
+		want, listed := frameworkReleasePermissions[name]
+		if !listed {
+			violations = append(violations, fmt.Sprintf("%s: job %q is not in frameworkReleasePermissions", path, name))
+			continue
+		}
+		got := map[string]string{}
+		permissions := yamlGet(job, "permissions")
+		if permissions == nil || permissions.Kind != yaml.MappingNode {
+			violations = append(violations, fmt.Sprintf("%s: job %q has no permissions mapping", path, name))
+			continue
+		}
+		for entry := 0; entry+1 < len(permissions.Content); entry += 2 {
+			got[permissions.Content[entry].Value] = permissions.Content[entry+1].Value
+		}
+		if !maps.Equal(got, want) {
+			violations = append(violations, fmt.Sprintf("%s: job %q holds %v, want %v", path, name, got, want))
+		}
+	}
+	for name := range frameworkReleasePermissions {
+		if !seen[name] {
+			violations = append(violations, fmt.Sprintf("%s: job %q is gone", path, name))
+		}
+	}
+	return violations
+}
+
+// TestReleaseWorkflowShipsSignedChecksummedBinaries keeps the pieces that make
+// the binary release verifiable, and every action of the workflow pinned.
+func TestReleaseWorkflowShipsSignedChecksummedBinaries(t *testing.T) {
+	t.Parallel()
+	workflow := readText(t, frameworkReleasePath)
+	for _, violation := range binaryReleaseViolations(frameworkReleasePath, workflow, readText(t, filepath.Join("scripts", "release-draft.sh"))) {
+		t.Error(violation)
+	}
+	for _, violation := range pinViolations(frameworkReleasePath, workflow) {
+		t.Error(violation)
+	}
+	// Every uses: of the workflow is a full commit SHA.
+	for number, line := range strings.Split(workflow, "\n") {
+		code, _ := splitComment(line)
+		for _, reference := range keyValues(code, "uses") {
+			if !pinnedUses.MatchString(reference) {
+				t.Errorf("%s:%d: %q is not pinned by a full commit SHA", frameworkReleasePath, number+1, reference)
+			}
+		}
+	}
+}
+
+// pipeToShell is a download piped into a shell, in the spellings an
+// installer one-liner takes: `curl ... | sh`, `wget -qO- ... | sudo bash`,
+// `bash <(curl ...)` and `sh -c "$(curl ...)"`.
+var pipeToShell = regexp.MustCompile(`(?i)\b(?:curl|wget)\b[^\n]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:env\s+\S+\s+)?(?:/\S*/)?(?:ba|z|da|k|c|fi)?sh\b|\b(?:ba|z|da|k)?sh\s+(?:-\S+\s+)*(?:<\(|"?\$\()\s*(?:curl|wget)\b`)
+
+// TestNoDocumentTellsToPipeADownloadIntoAShell: Forge ships no installer
+// script. Its install instructions download an archive, verify it and then
+// run it (README.md, docs/SUPPLY_CHAIN.md): no document may teach the
+// opposite, which would also be the first thing an attacker copies.
+func TestNoDocumentTellsToPipeADownloadIntoAShell(t *testing.T) {
+	t.Parallel()
+	var documents []string
+	for _, pattern := range []string{"*.md", filepath.Join("docs", "*.md"), filepath.Join("docs", "adr", "*.md")} {
+		found, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		documents = append(documents, found...)
+	}
+	if !slices.Contains(documents, "README.md") {
+		t.Fatal("README.md not found")
+	}
+	for _, path := range documents {
+		for number, line := range strings.Split(readText(t, path), "\n") {
+			if pipeToShell.MatchString(line) {
+				t.Errorf("%s:%d: a download piped into a shell: %q", path, number+1, strings.TrimSpace(line))
+			}
+		}
+	}
+	// No script of the repository is the installer either.
+	for _, name := range []string{"install.sh", "install", "get.sh"} {
+		for _, dir := range []string{".", "scripts"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				t.Errorf("%s: Forge has no installer script (docs/SUPPLY_CHAIN.md)", filepath.Join(dir, name))
+			}
+		}
+	}
+}
+
+// installedRef is the version of a `go install .../forge-go/cmd/<name>@REF`
+// in a document.
+var installedRef = regexp.MustCompile(`forge-go/cmd/[A-Za-z0-9-]+@([^\s"'\x60)]+)`)
+
+// placeholderRefs are the only refs a document may install: the newest
+// release, or a placeholder the reader replaces. A document that names a real
+// version (@v0.1.0) is wrong before that tag exists, and stale after the next.
+var placeholderRefs = []string{"latest", "vX.Y.Z", "VERSION", "$VERSION"}
+
+// installRefViolations returns the `go install` refs of text that are not
+// placeholders, as "line: ref".
+func installRefViolations(path, text string) []string {
+	var violations []string
+	for number, line := range strings.Split(text, "\n") {
+		for _, match := range installedRef.FindAllStringSubmatch(line, -1) {
+			if !slices.Contains(placeholderRefs, match[1]) {
+				violations = append(violations, fmt.Sprintf("%s:%d: installs @%s; use @latest or a placeholder (vX.Y.Z, VERSION) (no tag may be assumed to exist)", path, number+1, match[1]))
+			}
+		}
+	}
+	return violations
+}
+
+// TestDocsNeverInstallAVersionThatIsNotATag: the README and the docs install
+// `@latest` or a `vX.Y.Z` placeholder, never a literal version, so no copyable
+// command fails with "unknown revision" before a release exists (and none
+// goes stale after it).
+func TestDocsNeverInstallAVersionThatIsNotATag(t *testing.T) {
+	t.Parallel()
+	var documents []string
+	for _, pattern := range []string{"*.md", filepath.Join("docs", "*.md"), filepath.Join("docs", "adr", "*.md")} {
+		found, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatal(err)
+		}
+		documents = append(documents, found...)
+	}
+	for _, path := range documents {
+		for _, violation := range installRefViolations(path, readText(t, path)) {
+			t.Error(violation)
+		}
+	}
+	// The README and Getting started do install the CLI, with @latest.
+	for _, path := range []string{"README.md", filepath.Join("docs", "GETTING_STARTED.md")} {
+		if !strings.Contains(readText(t, path), "forge-go/cmd/forge@latest") {
+			t.Errorf("%s: no `go install ...forge-go/cmd/forge@latest`", path)
 		}
 	}
 }

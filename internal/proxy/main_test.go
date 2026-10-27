@@ -66,6 +66,13 @@ func TestMainClientCommands(t *testing.T) {
 	if code, _, _ := run("bogus"); code != ExitUsage {
 		t.Fatalf("unknown command exit %d", code)
 	}
+	var version, versionErr bytes.Buffer
+	if code := Main(ctx, []string{"version"}, &version, &versionErr); code != ExitOK || !strings.HasPrefix(version.String(), "forge-proxy ") || !strings.Contains(version.String(), "go1.") {
+		t.Fatalf("version exit %d: %q", code, version.String())
+	}
+	if code := Main(ctx, []string{"version", "extra"}, &version, &versionErr); code != ExitUsage || !strings.Contains(versionErr.String(), "accepts no arguments") {
+		t.Fatalf("version with an argument exit %d: %q", code, versionErr.String())
+	}
 	if code := Main(ctx, []string{"healthcheck", "-control", filepath.Join(dir, "missing.sock")}, &stdout, &stderr); code != ExitFailed {
 		t.Fatalf("healthcheck without proxy exit %d", code)
 	}
