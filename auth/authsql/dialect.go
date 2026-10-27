@@ -31,7 +31,13 @@ import (
 	"github.com/rocketinsidecorp/forge-go/sqldb"
 )
 
-// Dialect is what differs between the databases the store runs on.
+// Dialect is what differs between the databases the store runs on. A
+// Dialect is trusted code, like a database driver: its SQL fragments are
+// spliced into every statement unescaped, and the store's guarantees (one
+// owner per setup, credential changes that revoke sessions, single-use
+// recovery tokens and MFA challenges) rest on Lock, Tx and SetupLock doing
+// what they say. Build one from your own code, never from configuration or
+// input; auth/sqlite and auth/mysql each define theirs.
 type Dialect struct {
 	// Name is "sqlite" or "mysql", for messages.
 	Name string
@@ -46,7 +52,12 @@ type Dialect struct {
 	Time func(t time.Time) any
 	// Lock is the suffix of a read that locks the rows it returns until the
 	// transaction ends (" FOR UPDATE"), empty where the transaction itself
-	// holds the database's write lock (SQLite's BEGIN IMMEDIATE).
+	// holds the database's write lock (SQLite's BEGIN IMMEDIATE). It must
+	// give that exclusion: the store reads a user's credential version,
+	// a recovery token or an MFA challenge with it and then changes or
+	// spends it, and only the lock stops two transactions from both
+	// succeeding (a token used twice, a session issued from a credential
+	// changed meanwhile).
 	Lock string
 	// SkipLocked is the suffix of a locking read that skips rows another
 	// transaction holds, for the pruning batches.
@@ -58,7 +69,11 @@ type Dialect struct {
 	// columns in key) unchanged.
 	InsertIgnore func(table string, columns, key []string, rows int) string
 	// SetupLock runs fn in a transaction that no other setup runs
-	// concurrently with, on any process.
+	// concurrently with, on any process sharing the database (MySQL's
+	// GET_LOCK, SQLite's write lock), and releases the lock when fn's
+	// transaction ends. It is what makes forge setup create one first
+	// owner: two concurrent runs must not both find no owner and both
+	// provision one.
 	SetupLock func(ctx context.Context, db *sqldb.DB, name string, opts sqldb.TxOptions, fn func(*sql.Tx) error) error
 	// IsUniqueViolation reports a duplicate key error.
 	IsUniqueViolation func(error) bool
