@@ -11,7 +11,7 @@ the work is finished and waiting for its review; **Planned** means not started.
 | --- | --- | --- | --- |
 | New application with Docker and CI | `rails new` | Done | Done |
 | Database selection | `rails new -d` | Done (SQLite by default, PostgreSQL with `--tenants`; MySQL, MariaDB; [ADR 0050](adr/0050-opt-in-authentication-and-organizations.md)) | Done (PostgreSQL default; SQLite default and `--tenants` pending, see Parity follow-ups) |
-| Authentication and organizations opt-in | `rails new` + `rails g authentication` | Done (`forge new --auth`, `--tenants`; `forge generate authentication` wires itself; `forge generate tenancy` converts; Forge identity on PostgreSQL, MySQL, MariaDB and SQLite; `org_id`/`--org-scoped`, `forge setup [--org]`) | Pending (see Parity follow-ups) |
+| Authentication and organizations opt-in | `rails new` + `rails g authentication` | Done (`forge new --auth`, `--tenants`; `forge generate authentication` wires itself; `forge generate tenancy` converts; Forge identity on PostgreSQL, MySQL, MariaDB and SQLite; `org_id`/`--org-scoped`, `forge setup [--org]`) | Pending ([forge-rust#95](https://github.com/rocketinsidecorp/forge-rust/issues/95), see Parity follow-ups) |
 | Server-rendered HTML, layouts, partials, forms, flash, CSRF | Action View | Done | Done |
 | API-only application | `rails new --api` | Done (`forge new --api [-d DB]`: JSON `GET /`, `/v1/status`, health and OpenAPI; no identity schema (authentication is opt-in, ADR 0050); no `app/views`, `app/assets`, `app/javascript`, `config/locales`, sign-in pages or browser middleware; `--api-auth` and `--locale` conflict with it; `generate view\|scaffold\|authentication` and HTML `controller` refuse it, [GENERATORS.md](GENERATORS.md#in-an-api-only-application)) | Done (`forge new --api`: same flag, conflicts and refusals; `generate resource` and `controller --api` are refused too, see the follow-ups) |
 | HTML + JSON CRUD generator | `rails g scaffold` | Done | Done |
@@ -70,8 +70,8 @@ the work is finished and waiting for its review; **Planned** means not started.
   `--org-scoped` in generated code, a self-wiring `forge generate
   authentication`, and `forge generate tenancy`. Per the owner's decision D37
   of 2026-10-27, Forge-Rust takes no new package until Forge-Go reaches 100%;
-  this follows then, tracked in a Forge-Rust issue opened with the AUTH-OPT
-  pull request.
+  this follows then, tracked in
+  [forge-rust#95](https://github.com/rocketinsidecorp/forge-rust/issues/95).
 
 - Rails-style development log (forge-go decision D28,
   [OBSERVABILITY.md](OBSERVABILITY.md#development-log)). Forge-Rust has none:

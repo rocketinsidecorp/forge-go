@@ -4,7 +4,7 @@
 // auth core package; auth/authtest is the contract suite it shares with
 // auth/postgres.
 //
-// MySQL and MariaDB has no row-level security. The identity store's own queries are keyed
+// MySQL and MariaDB have no row-level security. The identity store's own queries are keyed
 // by user, membership or token and join the membership's tenant explicitly;
 // the generated repositories of an application filter every
 // organization-scoped query by the tenant in the request context and refuse
