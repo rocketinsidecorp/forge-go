@@ -118,8 +118,13 @@ func TestARegisteredArgon2idThatChangesTheDefaultCostIsIgnoredAtFirstUse(t *test
 	var reported atomic.Int32
 	registry := &argon2Registry{mismatch: func() { reported.Add(1) }}
 	registry.register(fakeArgon2idKDF)
-	if registry.load() == nil || registry.load() == nil || reported.Load() != 0 {
-		t.Fatal("a sound implementation was refused")
+	for range 2 {
+		if registry.load() == nil {
+			t.Fatal("a sound implementation was refused")
+		}
+	}
+	if reported.Load() != 0 {
+		t.Fatal("a sound implementation was reported")
 	}
 }
 
