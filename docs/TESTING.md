@@ -95,7 +95,7 @@ COVERAGE_PROFILE=cover.out scripts/coverage.sh     # report and gate an existing
   `dist/coverage` (the raw profile, the gross merged profile
   `coverage-gross.out` and the gated one `coverage.out`).
 - **Two totals.** The script prints both. The *gross* total counts every
-  package except the four exclusions below. The *gated* total, the one the
+  package except the three exclusions below. The *gated* total, the one the
   floor checks, also leaves out the contract and test kits listed under
   "Contract and test kits".
 - **The floor only rises.** It is 96.0%, raised from 95.0% on 2026-10-26
@@ -143,7 +143,6 @@ COVERAGE_PROFILE=cover.out scripts/coverage.sh     # report and gate an existing
   | --- | --- |
   | `cmd/*/main.go` | The `main` shims of `forge` and `forge-proxy`: one call each into `internal/cli.Run` and `internal/proxy.Main`, which are measured. A `main` function cannot run inside a test binary. |
   | `examples/**` | Example applications that show the framework in use; they are not framework code (their packages still build and test in CI). |
-  | `internal/version` | Three variables the linker sets with `-ldflags -X`; there are no statements to run. |
   | `internal/deploy/internal/fakedocker` | The docker stand-in the deploy tests execute as a separate process over SSH; coverage of another process is not recorded in the test binary's profile. It is test code, not shipped behaviour. |
 
 ### Contract and test kits (decision D7)

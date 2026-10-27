@@ -1,11 +1,20 @@
 name: Release
 
-# Publishes the forge-proxy and example images for a version tag, and only
-# for one: no pull request, branch push or schedule runs this workflow. Each
-# image is pushed to ghcr.io with SLSA provenance and an SPDX SBOM attached by
-# BuildKit, then signed keyless with Sigstore cosign through GitHub's OIDC
-# token: the signature's certificate names this workflow file and the tag.
-# Verify with the cosign verify command in docs/SUPPLY_CHAIN.md.
+# Builds a release for a version tag, and only for one: no pull request,
+# branch push or schedule runs this workflow.
+#
+# - Images: the forge-proxy and example images are pushed to ghcr.io with SLSA
+#   provenance and an SPDX SBOM attached by BuildKit, then signed keyless with
+#   Sigstore cosign through GitHub's OIDC token: the signature's certificate
+#   names this workflow file and the tag.
+# - Binaries: forge and forge-proxy archives for linux, darwin and windows on
+#   amd64 and arm64 (scripts/release-build.sh, plain go build), the binary
+#   SBOMs, and checksums.txt over all of them, signed keyless with cosign
+#   (checksums.txt.sigstore.json) and attested with GitHub build provenance.
+# - Release: a DRAFT GitHub release with those files. Nothing is published
+#   until a maintainer verifies it and publishes the draft (docs/RELEASING.md).
+#
+# Verify with the commands in docs/SUPPLY_CHAIN.md.
 on:
   push:
     tags: ["v*"]
@@ -154,3 +163,87 @@ jobs:
           path: ${{ runner.temp }}/sbom
           if-no-files-found: error
           retention-days: 90
+
+  binaries:
+    name: Binaries, checksums and provenance
+    needs: [verify, sbom]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write # keyless signing and attestations: Sigstore certifies this workflow's identity
+      attestations: write # store the build provenance attestations of the release files
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          # A release builds from a clean module and build cache.
+          cache: false
+      - name: Build the archives
+        # forge and forge-proxy for 6 platforms: static, -trimpath, with the
+        # tag, commit and commit time stamped in; reproducible bytes.
+        run: scripts/release-build.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/release"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sbom-${{ github.ref_name }}-linux-*
+          path: ${{ runner.temp }}/sbom
+      - name: Checksums of the archives and SBOMs
+        run: |
+          scripts/release-checksums.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/release" "$RUNNER_TEMP/sbom"
+          { echo '```'; cat "$RUNNER_TEMP/release/checksums.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign the checksums
+        # Keyless, like the images: the certificate in the bundle names this
+        # workflow file and the tag, and the signature is logged in Rekor.
+        run: cosign sign-blob --yes --bundle "$RUNNER_TEMP/release/checksums.txt.sigstore.json" "$RUNNER_TEMP/release/checksums.txt"
+      - name: Verify the signature
+        run: |
+          cosign verify-blob \
+            --bundle "$RUNNER_TEMP/release/checksums.txt.sigstore.json" \
+            --certificate-identity "${GITHUB_SERVER_URL}/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$RUNNER_TEMP/release/checksums.txt"
+      - name: Attest the build provenance
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          # One attestation per line of checksums.txt: every archive and SBOM.
+          subject-checksums: ${{ runner.temp }}/release/checksums.txt
+      - name: Keep the attestations with the release
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        # For offline verification: gh attestation verify FILE --bundle provenance.jsonl
+        run: cp "$BUNDLE" "$RUNNER_TEMP/release/provenance.jsonl"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ github.ref_name }}
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          retention-days: 90
+
+  draft:
+    name: Draft the GitHub release
+    needs: [images, binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the draft release and attach its files; nothing else
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ github.ref_name }}
+          path: ${{ runner.temp }}/release
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        # A draft only: it is published by hand after the verification in
+        # docs/RELEASING.md. The tag already exists; --verify-tag keeps gh
+        # from creating one.
+        run: scripts/release-draft.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/release"

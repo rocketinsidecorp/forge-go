@@ -174,7 +174,7 @@ func runVersion(args []string, output io.Writer) error {
 	if len(args) != 0 {
 		return usageError{"version accepts no arguments"}
 	}
-	_, err := fmt.Fprintf(output, "forge %s (%s, %s)\n", effectiveVersion(version.Version, readBuildInfo), version.Commit, version.Date)
+	_, err := fmt.Fprintln(output, version.Describe("forge", effectiveVersion(version.Version, readBuildInfo)))
 	return err
 }
 

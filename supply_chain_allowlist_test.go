@@ -53,6 +53,12 @@ var allowedVariables = map[string]string{
 	"NAME":           anyValue,
 	"IMAGE":          anyValue,
 	"DIGEST":         anyValue,
+	// The release workflow's binary steps: the attestation bundle to keep
+	// with the release, and gh's token (the only secret release.yml may
+	// read) and repository for the draft release.
+	"BUNDLE":   "${{ steps.attest.outputs.bundle-path }}",
+	"GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
+	"GH_REPO":  "${{ github.repository }}",
 	// Shell locals of `run` scripts (and curl's `query=` argument, which
 	// reads like an assignment).
 	"module":  anyValue,

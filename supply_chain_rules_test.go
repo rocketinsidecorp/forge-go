@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"text/template/parse"
@@ -112,8 +114,10 @@ func pinViolations(path, text string) []string {
 // actions are checked as files of their own; `docker://` actions are not
 // allowed.
 var allowedActions = []string{
+	"actions/attest-build-provenance",
 	"actions/cache",
 	"actions/checkout",
+	"actions/download-artifact",
 	"actions/setup-go",
 	"actions/upload-artifact",
 	"docker/build-push-action",
@@ -453,10 +457,35 @@ func parsedUses(text string, template bool) ([]string, error) {
 	return found, nil
 }
 
+// releaseWriteScopes are the `write` permissions any release workflow (the
+// framework's and the generated application's) may grant its jobs: the OIDC
+// token for keyless signing and the registry for the images.
+// frameworkReleaseWriteScopes are those the framework's own release workflow
+// may grant besides: `attestations` (GitHub build provenance of the binary
+// archives) and `contents` (the draft release). The scopes each job holds are
+// fixed by TestReleaseJobsHoldOnlyTheirPermissions.
+var (
+	releaseWriteScopes          = []string{"id-token", "packages"}
+	frameworkReleaseWriteScopes = []string{"attestations", "contents", "id-token", "packages"}
+	frameworkReleasePath        = ".github/workflows/release.yml"
+)
+
+// writeScopesOf returns the write scopes a gated file's permissions may
+// grant: none outside a release workflow.
+func writeScopesOf(path string, release bool) []string {
+	switch {
+	case !release:
+		return nil
+	case filepath.ToSlash(path) == frameworkReleasePath:
+		return frameworkReleaseWriteScopes
+	}
+	return releaseWriteScopes
+}
+
 // treeViolations reads the parsed tree: every step that uses
 // actions/checkout (any case) sets `with: persist-credentials: false`
-// itself, and no `permissions` grants `write` beyond the release job's
-// `id-token` and `packages` (or `write-all`).
+// itself, and no `permissions` grants `write` beyond writeScopesOf (or
+// `write-all`).
 func treeViolations(path, text string, release bool) []string {
 	documents, err := yamlDocuments(text, strings.HasSuffix(path, ".tmpl"))
 	if err != nil {
@@ -487,7 +516,7 @@ func treeViolations(path, text string, release bool) []string {
 			for index := 0; index+1 < len(permissions.Content); index += 2 {
 				scope, access := permissions.Content[index], permissions.Content[index+1]
 				allowed := access.Kind == yaml.ScalarNode && (access.Value == "read" || access.Value == "none" ||
-					(access.Value == "write" && release && (scope.Value == "id-token" || scope.Value == "packages")))
+					(access.Value == "write" && slices.Contains(writeScopesOf(path, release), scope.Value)))
 				if !allowed {
 					violations = append(violations, fmt.Sprintf("%s:%d: %s: %s is not allowed", path, scope.Line, scope.Value, access.Value))
 				}
@@ -796,6 +825,46 @@ func releaseViolations(path, text string) []string {
 	} {
 		if !strings.Contains(text, required) {
 			violations = append(violations, fmt.Sprintf("%s: missing %q", path, required))
+		}
+	}
+	return violations
+}
+
+// binaryReleaseSteps are the steps the framework's release workflow needs to
+// ship signed, checksummed, attested binaries as a draft release: the build
+// script, the checksums and their signature (cosign, keyless, verified by the
+// job itself), the provenance attestation of every file the checksums list,
+// and a draft (never a published) release. Dropping one removes a guarantee
+// docs/SUPPLY_CHAIN.md makes.
+var binaryReleaseSteps = []string{
+	"scripts/release-build.sh \"$GITHUB_REF_NAME\"",
+	"scripts/release-checksums.sh \"$GITHUB_REF_NAME\"",
+	"cosign sign-blob --yes --bundle \"$RUNNER_TEMP/release/checksums.txt.sigstore.json\" \"$RUNNER_TEMP/release/checksums.txt\"",
+	"cosign verify-blob",
+	"--bundle \"$RUNNER_TEMP/release/checksums.txt.sigstore.json\" \\",
+	"actions/attest-build-provenance@",
+	"subject-checksums: ${{ runner.temp }}/release/checksums.txt",
+	"scripts/release-draft.sh \"$GITHUB_REF_NAME\"",
+}
+
+// binaryReleaseViolations requires binaryReleaseSteps in the framework's
+// release workflow, and the draft script to create a draft, verify the tag
+// and never publish.
+func binaryReleaseViolations(path, workflow, draftScript string) []string {
+	var violations []string
+	for _, required := range binaryReleaseSteps {
+		if !strings.Contains(workflow, required) {
+			violations = append(violations, fmt.Sprintf("%s: missing %q", path, required))
+		}
+	}
+	for _, required := range []string{"gh release create", "--draft", "--verify-tag", "--generate-notes"} {
+		if !strings.Contains(draftScript, required) {
+			violations = append(violations, fmt.Sprintf("scripts/release-draft.sh: missing %q", required))
+		}
+	}
+	for _, refused := range []string{"--draft=false", "gh release edit", "gh release upload", "--latest"} {
+		if strings.Contains(draftScript, refused) {
+			violations = append(violations, fmt.Sprintf("scripts/release-draft.sh: %q publishes or changes a release", refused))
 		}
 	}
 	return violations

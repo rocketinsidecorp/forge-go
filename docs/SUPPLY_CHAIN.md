@@ -1,7 +1,8 @@
-# Supply chain: fuzzing, SBOM, signed images
+# Supply chain: fuzzing, SBOM, signed images and binaries
 
 How Forge-Go checks its parsers continuously, describes what it ships, and
-signs what it publishes, for the framework repository and for the
+signs what it publishes (container images and the `forge` and `forge-proxy`
+binaries), for the framework repository and for the
 applications `forge new` generates
 ([ADR 0044](adr/0044-continuous-fuzzing-sbom-signed-images.md)).
 
@@ -15,10 +16,11 @@ applications `forge new` generates
 | Pull request, push to `main` | `ci.yml` job `quality` | `govulncheck` (pinned version), lint, race tests. |
 | Nightly 03:17 UTC, or by hand | `fuzz.yml` | Each fuzz target on its own runner for 10 minutes (input `fuzztime`), with its corpus cached between nights. |
 | Weekly, Monday 04:41 UTC, or by hand | `scorecard.yml` | OpenSSF Scorecard; results stay in the run (artifact `scorecard`, summary). |
-| Push of a `v*` tag, only | `release.yml` | Builds, pushes and signs `ghcr.io/rocketinsidecorp/forge-proxy` and `ghcr.io/rocketinsidecorp/forge-example`; binary SBOMs. |
+| Push of a `v*` tag, only | `release.yml` | Builds, pushes and signs `ghcr.io/rocketinsidecorp/forge-proxy` and `ghcr.io/rocketinsidecorp/forge-example`; builds the `forge` and `forge-proxy` archives for 6 platforms, with SBOMs, `checksums.txt` signed with cosign and a build provenance attestation per file; drafts the GitHub release. |
 | Weekly | Dependabot | Go modules, GitHub Actions (SHA pins included) and Docker base images. |
 
-Nothing publishes outside a tag push: no pull request, branch, schedule or
+Nothing publishes outside a tag push, and even then the GitHub release is a
+draft a maintainer verifies and publishes ([RELEASING.md](RELEASING.md)): no pull request, branch, schedule or
 manual run can reach `release.yml`, and it refuses a tag that is not a
 version (`v1.2.3`, `v1.2.3-rc.1`), whose major version does not match the
 module path of `go.mod` (from v2 on the path must end in `/vN`, or `go get`
@@ -79,7 +81,10 @@ Go module dependency:
   the module information the Go toolchain embeds in each binary, so it lists
   exactly the linked modules and the Go version. `scripts/sbom.sh` builds
   the binaries like a release (static, `-trimpath`) and runs Syft from its
-  image, pinned by digest, with `--network none`.
+  image, pinned by digest, with `--network none`. A release carries them as
+  `forge_<version>_linux_<arch>.cdx.json` and
+  `forge-proxy_<version>_linux_<arch>.cdx.json`, listed in `checksums.txt`
+  and attested like the archives.
 - **Published images**: an SPDX SBOM attestation that BuildKit's Syft
   scanner (pinned by digest) attaches to the image index, with SLSA
   provenance (`mode=max`), during the release build.
@@ -92,8 +97,9 @@ Go module dependency:
 scripts/sbom.sh dist/sbom
 jq -r '.components[] | "\(.name) \(.version)"' dist/sbom/forge-proxy.cdx.json
 
-# binaries, from CI or a release
+# binaries, from CI, or from a release (verify it first, below)
 gh run download <run-id> --name sbom-binaries --dir dist/sbom
+gh release download v0.1.0 --repo rocketinsidecorp/forge-go --pattern '*.cdx.json'
 
 # a published image: SBOM and provenance of the linux/amd64 variant
 docker buildx imagetools inspect ghcr.io/rocketinsidecorp/forge-proxy:v0.1.0 \
@@ -141,6 +147,112 @@ Generated applications get the same workflow as
 repository variable `FORGE_RELEASE_IMAGES` is `true`, and then only for `v*`
 tags on the default branch. Its README shows the commands.
 
+## Signed release binaries
+
+`release.yml` also builds the command-line programs. The `binaries` job runs
+`scripts/release-build.sh` (plain `go build`, no release tool) for `forge` and
+`forge-proxy` on `linux`, `darwin` and `windows`, each on `amd64` and `arm64`:
+twelve archives named `<command>_<version>_<os>_<arch>.tar.gz` (`.zip` on
+Windows, the version is the tag, `v0.1.0`), each holding a directory of the
+same name with the binary, `LICENSE` and `README.md`.
+
+- **Static, no cgo.** `CGO_ENABLED=0`: SQLite is the pure-Go
+  `modernc.org/sqlite`, so one binary runs on any libc (or none) of its
+  platform and no C toolchain takes part in the build.
+- **Reproducible.** `-trimpath`, the tag, the commit and the commit's time
+  stamped through `internal/version` (and the toolchain's own VCS stamp,
+  `-buildvcs=true`, read by `go version -m`), sorted tar entries, the commit
+  time as every modification time, no owner, gzip without name or time. The
+  same commit with the same Go toolchain (`go.mod`) gives the same binaries,
+  and on one machine the same archives, byte for byte
+  (`TestReleaseBuildProducesReproducibleArchivesForTheHost` builds twice and
+  compares); the deflate stream is the system `gzip`'s, so another machine's
+  archive may differ while the binaries inside do not.
+- **Checksums.** `scripts/release-checksums.sh` writes `checksums.txt`, the
+  SHA-256 of every archive and of the four binary SBOMs, in `sha256sum`
+  format.
+- **Signature.** The job signs `checksums.txt` keyless with cosign
+  (`cosign sign-blob --bundle checksums.txt.sigstore.json`): the certificate
+  in the bundle names the workflow file and the tag, the signature is logged
+  in Rekor, and no key exists. The job verifies its own signature.
+- **Provenance.** `actions/attest-build-provenance` attests every file of
+  `checksums.txt` (SLSA build provenance: repository, workflow, tag, commit),
+  stored by GitHub and kept in the release as `provenance.jsonl` for offline
+  checks.
+- **Draft release.** The `draft` job downloads what `binaries` built and runs
+  `scripts/release-draft.sh`: `gh release create --draft --verify-tag
+  --generate-notes` with the archives, `checksums.txt`,
+  `checksums.txt.sigstore.json`, the SBOMs and `provenance.jsonl`. It never
+  publishes; a maintainer publishes the draft after verifying it
+  ([RELEASING.md](RELEASING.md)).
+
+Least privilege, per job (`TestReleaseJobsHoldOnlyTheirPermissions`, a table
+that fails on any difference, new job included): top-level `permissions: {}`;
+`binaries` holds `contents: read`, `id-token: write` (keyless signing) and
+`attestations: write`, and nothing that can touch a release; `draft` holds only
+`contents: write` and signs nothing; `images` keeps `packages: write` and
+`id-token: write`; `verify` and `sbom` are read-only. No Forge installer
+script exists (`TestNoDocumentTellsToPipeADownloadIntoAShell` refuses a
+download piped into a shell in any Markdown document, and an `install`,
+`install.sh` or `get.sh` at the top level or in `scripts/`): you download an
+archive and verify it.
+
+## Verify a release
+
+Needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
+v3 or later and, for the attestation, the GitHub CLI (`gh`) 2.49 or later.
+Start from the release page or:
+
+```sh
+VERSION=v0.1.0 OS=linux ARCH=amd64        # OS: linux, darwin, windows; ARCH: amd64, arm64
+gh release download "$VERSION" --repo rocketinsidecorp/forge-go \
+  --pattern "forge_${VERSION}_${OS}_${ARCH}.*" --pattern 'checksums.txt*' --pattern provenance.jsonl
+# (or curl -sSLO https://github.com/rocketinsidecorp/forge-go/releases/download/$VERSION/<file>)
+
+# 1. The signature: checksums.txt comes from this repository's release workflow at a v* tag
+cosign verify-blob --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/rocketinsidecorp/forge-go/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+
+# 2. The archive is the one the signed checksums list
+sha256sum -c --ignore-missing checksums.txt
+#    macOS has shasum, not --ignore-missing:
+grep " forge_${VERSION}_${OS}_${ARCH}" checksums.txt | shasum -a 256 -c
+
+# 3. GitHub's provenance: built by this repository's release.yml at that tag
+gh attestation verify "forge_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go
+#    offline, from the bundle kept in the release:
+gh attestation verify "forge_${VERSION}_${OS}_${ARCH}.tar.gz" --repo rocketinsidecorp/forge-go --bundle provenance.jsonl
+
+# 4. The binary says what it is, and the commit is the tag's
+tar -xzf "forge_${VERSION}_${OS}_${ARCH}.tar.gz"
+"./forge_${VERSION}_${OS}_${ARCH}/forge" version         # forge v0.1.0 (3f2a9c1d07be, 2026-10-27T12:00:00Z, go1.27.3 linux/amd64)
+git ls-remote https://github.com/rocketinsidecorp/forge-go "refs/tags/$VERSION" "refs/tags/$VERSION^{}"   # starts with the commit above
+go version -m "./forge_${VERSION}_${OS}_${ARCH}/forge"   # modules linked, vcs.revision, -trimpath, CGO_ENABLED=0
+```
+
+Step 1 accepts any `v*` tag built by that workflow. To accept exactly one
+release, replace `--certificate-identity-regexp` with
+`--certificate-identity https://github.com/rocketinsidecorp/forge-go/.github/workflows/release.yml@refs/tags/v0.1.0`;
+for the attestation, `gh attestation verify` can also take
+`--signer-workflow rocketinsidecorp/forge-go/.github/workflows/release.yml`.
+A checksum file or a bundle from any other repository, workflow, branch or
+pull request fails step 1. `forge-proxy_<version>_<os>_<arch>` and the SBOMs
+(`*.cdx.json`, in `checksums.txt`) verify the same way; the container images
+have their own signature (above).
+
+To rebuild and compare (the Go version of the `go` line of `go.mod`, which
+`forge version` also shows; compare the binaries, which do not depend on the
+`gzip` that compressed them):
+
+```sh
+git clone --branch "$VERSION" https://github.com/rocketinsidecorp/forge-go && cd forge-go
+TARGETS="${OS}/${ARCH}" scripts/release-build.sh "$VERSION" /tmp/rebuilt
+mkdir /tmp/rebuilt/x && tar -xzf "/tmp/rebuilt/forge_${VERSION}_${OS}_${ARCH}.tar.gz" -C /tmp/rebuilt/x
+sha256sum "/tmp/rebuilt/x/forge_${VERSION}_${OS}_${ARCH}/forge" "./forge_${VERSION}_${OS}_${ARCH}/forge"   # the two lines agree
+```
+
 ## Pinning policy
 
 - Every third-party action is pinned to a full commit SHA with the version in
@@ -151,7 +263,8 @@ tags on the default branch. Its README shows the commands.
 - Every container a workflow runs (Syft, BuildKit's scanner, CI database
   services) and the base images of the published Dockerfiles are pinned by
   the digest of their multi-architecture index.
-- New pins use releases at least a week old, so a compromised release has
+- New pins use releases at least two weeks old (`actions/attest-build-provenance`
+  v4.2.2 of 2026-08-06, `actions/download-artifact` v8.0.2 of 2026-10-07), so a compromised release has
   time to be noticed and withdrawn before Forge runs it.
 - `go run golang.org/x/vuln/cmd/govulncheck@v1.9.0` names a version, which
   the Go checksum database pins; the vulnerability database itself is read
@@ -167,8 +280,9 @@ tags on the default branch. Its README shows the commands.
     `- { uses: ... }`, an anchor or alias), and a `docker://` action without
     a digest; a local `./` action's `action.yml` is checked like a workflow;
   - an action outside the allowlist (`allowedActions` in
-    `supply_chain_rules_test.go`, compared without case: `actions/checkout`,
-    `actions/cache`, `actions/setup-go`, `actions/upload-artifact`,
+    `supply_chain_rules_test.go`, compared without case:
+    `actions/attest-build-provenance`, `actions/checkout`, `actions/cache`,
+    `actions/download-artifact`, `actions/setup-go`, `actions/upload-artifact`,
     `docker/setup-buildx-action`, `docker/login-action`,
     `docker/build-push-action`, `golangci/golangci-lint-action`,
     `ossf/scorecard-action`, `sigstore/cosign-installer`, plus local `./`
@@ -240,17 +354,28 @@ tags on the default branch. Its README shows the commands.
     containers);
   - every `<scope>: write` permission, in block or flow style
     (`permissions: { contents: write }`), except `id-token` and `packages`
-    in `release.yml`, and `write-all` everywhere;
+    in a release workflow and, in the framework's own `release.yml` only,
+    `attestations` and `contents` (and there each job holds exactly its
+    listed permissions, `TestReleaseJobsHoldOnlyTheirPermissions`), and
+    `write-all` everywhere;
   - `pull_request_target`, which runs fork code with the repository's
     secrets;
   - `secrets[`, `toJSON(secrets)`, `join(secrets, ...)`, `secrets }` and
     `secrets: inherit` in any case or spacing, which hand secrets on
     wholesale or by computed name;
   - any `secrets.NAME` read other than `secrets.GITHUB_TOKEN` in
-    `release.yml`.
+    `release.yml`;
+  - a release workflow without its signing and verification steps
+    (`releaseViolations`; for the framework's, `binaryReleaseViolations`: the
+    build, checksum and draft scripts, `cosign sign-blob` and `verify-blob`,
+    the provenance attestation of `checksums.txt`, and a draft script that
+    creates a draft, verifies the tag, and never edits, uploads to or
+    un-drafts a release).
 - Permissions are read-only by default (`contents: read`, or `{}` in
-  `release.yml` and `scorecard.yml`); only the release image job holds
-  `packages: write` and `id-token: write`.
+  `release.yml` and `scorecard.yml`); in the release workflow only the image
+  job holds `packages: write` and `id-token: write`, only the binary job
+  `id-token: write` and `attestations: write`, and only the draft job
+  `contents: write`.
 
 To update a pin by hand:
 
@@ -316,7 +441,9 @@ set of closed allowlists in `supply_chain_allowlist_test.go`, so it converges
 instead of chasing new redirects; growing a list is a reviewed change to that
 file.
 
-- Variables (`allowedVariables`): a gated file sets only listed names, in an
+- Variables (`allowedVariables`): a gated file sets only listed names (the
+  release workflow's `GH_TOKEN`, `GH_REPO` and `BUNDLE` take one exact
+  expression each), in an
   `env:` key at any level (workflow, job, step, container, service; plain,
   quoted or flow) or in `run` text (`NAME=`, `NAME+=`, `NAME[i]=`, `export`,
   `env`, `sudo`, `declare`, `typeset`, `readonly`, `local`, `read`,
@@ -369,7 +496,8 @@ file.
 
 Accepted residual risk, left to review: names the shell builds at run time
 (`eval`, a `printf`-built or `$(...)`-built name), the content of the scripts
-the workflows call (`scripts/*.sh`), and what an allowlisted action does
+the workflows call (`scripts/*.sh`, the release scripts included, which are
+only checked for the redirecting variables and pins above), and what an allowlisted action does
 internally with its pinned inputs. Reviews of the gate judge it against this
 model: a bypass inside the lists' scope is a defect to fix in the gate.
 
@@ -398,5 +526,20 @@ model: a bypass inside the lists' scope is a defect to fix in the gate.
   install. It affects type checking only, never what is built or shipped.
 - Signatures prove which workflow built an image from which commit, not that
   the commit is benign: review still guards `main`.
-- Binary SBOMs are workflow artifacts (90 days for releases); they are not
-  attached to a GitHub release.
+- The draft job runs `scripts/release-draft.sh` from the tagged commit with
+  `contents: write`, and a maintainer who can push `v*` tags chooses that
+  commit: protect `v*` tags with a ruleset, and read the diff of
+  `.github/workflows/release.yml` and `scripts/release-*.sh` before tagging.
+- Build provenance attestations need a public repository (or GitHub
+  Enterprise Cloud for a private one); on a plan without them the `binaries`
+  job fails at the attestation step, before anything is drafted. The cosign
+  signature on `checksums.txt` is logged in the public Rekor transparency log
+  either way, as the image signatures already are.
+- `checksums.txt` and the provenance prove which workflow built which bytes,
+  not that the source is benign, and the release archives are not signed one
+  by one: the signed checksums vouch for them. Windows and macOS binaries are
+  not code-signed or notarized by an OS vendor: Gatekeeper and SmartScreen may
+  warn, and the verification above is how a user gains trust instead.
+- `scripts/sbom.sh` builds the SBOM's binaries separately, without the version
+  stamp, so an SBOM describes the modules a release links (they are the same)
+  but is not a hash of the archive's binary.

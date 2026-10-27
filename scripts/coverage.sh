@@ -16,7 +16,6 @@
 # reason in docs/TESTING.md, and nothing else:
 #   - cmd/*/main.go, the main shims of the two binaries;
 #   - examples/**, the example applications;
-#   - internal/version, the variables the linker sets;
 #   - internal/deploy/internal/fakedocker, the docker stand-in the deploy
 #     tests run as a separate process.
 # The gross total is that measurement. The GATED total, the one the floor
@@ -65,7 +64,7 @@ kits=(
 	dbtest
 )
 
-# Gross total floor: the measurement of every package but the four exclusions,
+# Gross total floor: the measurement of every package but the three exclusions,
 # kits included. It only rises.
 gross_floor=95.0
 
@@ -139,7 +138,7 @@ awk -v module="$module/" '
 		file = substr($1, 1, index($1, ":") - 1)
 		path = substr(file, length(module) + 1)
 		if (path ~ /^cmd\/[^\/]+\/main\.go$/ || path ~ /^examples\// ||
-			path ~ /^internal\/version\// || path ~ /^internal\/deploy\/internal\/fakedocker\//) {
+			path ~ /^internal\/deploy\/internal\/fakedocker\//) {
 			next
 		}
 		if (!($1 in statements)) {
