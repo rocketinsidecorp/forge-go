@@ -1,6 +1,7 @@
 package javascript
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"io/fs"
@@ -12,7 +13,15 @@ import (
 )
 
 // header is the first line `forge build` writes into every compiled file.
-var header = regexp.MustCompile(`^// Compiled from (\S+) by forge \([a-z]+ [0-9.]+\); do not edit\. source-sha256: ([0-9a-f]{64}) output-sha256: ([0-9a-f]{64})\n`)
+var header = regexp.MustCompile(`^// Compiled from (\S+) by forge \([a-z]+ [0-9.]+\); do not edit\. source-sha256: ([0-9a-f]{64}) output-sha256: ([0-9a-f]{64})\r?\n`)
+
+// hashOf is the SHA-256 of b with CRLF line ends read as LF, as forge computes
+// it: Git on Windows (core.autocrlf) may check files out with either, and the
+// check must not flip with it (.gitattributes asks for LF anyway).
+func hashOf(b []byte) string {
+	sum := sha256.Sum256(bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")))
+	return hex.EncodeToString(sum[:])
+}
 
 // TestCompiledJavaScriptMatchesTheTypeScript fails when a .ts file changed and
 // app/javascript/dist did not, or the other way round: the binary embeds dist,
@@ -61,26 +70,31 @@ func TestCompiledJavaScriptMatchesTheTypeScript(t *testing.T) {
 		}
 		compiled[name] = true
 		match := header.FindSubmatch(output)
-		sum := sha256.Sum256(content)
 		switch {
 		case match == nil:
 			t.Errorf("dist/%s does not start with the header forge build writes (run forge build)", name)
 		case string(match[1]) != source:
 			t.Errorf("dist/%s says it was compiled from %s, not %s (run forge build)", name, match[1], source)
-		case string(match[2]) != hex.EncodeToString(sum[:]):
+		case string(match[2]) != hashOf(content):
 			t.Errorf("dist/%s is stale: %s changed since it was compiled (run forge build)", name, source)
 		default:
-			body := sha256.Sum256(output[len(match[0]):])
-			if string(match[3]) != hex.EncodeToString(body[:]) {
+			if string(match[3]) != hashOf(output[len(match[0]):]) {
 				t.Errorf("dist/%s is not what forge build wrote: its content does not match the hash in its header (run forge build)", name)
 			}
 		}
 	}
 	err = filepath.WalkDir("dist", func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil || entry.IsDir() || !strings.HasSuffix(path, ".js") {
+		if walkErr != nil || entry.IsDir() {
 			return walkErr
 		}
 		name := filepath.ToSlash(strings.TrimPrefix(path, "dist"+string(filepath.Separator)))
+		if !strings.HasSuffix(name, ".js") {
+			// The javascript package embeds all of dist, and the asset
+			// pipeline serves what is embedded: a stray README.txt here would
+			// be public.
+			t.Errorf("dist/%s is not compiled JavaScript: dist is generated and embedded whole (run forge build to remove it)", name)
+			return nil
+		}
 		if !compiled[name] {
 			t.Errorf("dist/%s has no TypeScript source (run forge build to remove it)", name)
 		}

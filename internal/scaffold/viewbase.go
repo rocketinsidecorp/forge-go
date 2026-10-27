@@ -37,6 +37,11 @@ func ViewBase(name, module string) ([]BaseFile, error) {
 		return nil, err
 	}
 	for _, asset := range append(slices.Clone(assets), frontend...) {
+		if asset.target == ".gitattributes" {
+			// A project's own .gitattributes is not ours to overwrite or
+			// merge: only forge new writes it.
+			continue
+		}
 		content, err := templateFS.ReadFile(asset.source)
 		if err != nil {
 			return nil, fmt.Errorf("read asset %s: %w", asset.source, err)

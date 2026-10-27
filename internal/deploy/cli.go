@@ -106,8 +106,21 @@ func closeRunner(d *Deployer) {
 	}
 }
 
+// BeforeBuild is run by RunDeployWith when `forge deploy` builds the image from
+// the working tree: after the configuration is read and validated, before the
+// version is resolved. It may change the working tree (forge recompiles the
+// front end). A non-empty note is added to the refusal of a working tree with
+// uncommitted changes, which is the one error a change made here can cause.
+type BeforeBuild func() (note string, err error)
+
 // RunDeploy implements `forge deploy [SUBCOMMAND]`.
 func RunDeploy(args []string, stdout, stderr io.Writer) error {
+	return RunDeployWith(args, stdout, stderr, nil)
+}
+
+// RunDeployWith is RunDeploy with a BeforeBuild step for the bare command; it
+// is not run for subcommands, --skip-build or --dry-run.
+func RunDeployWith(args []string, stdout, stderr io.Writer, before BeforeBuild) error {
 	ctx, stop := signalContext()
 	defer stop()
 	sub := ""
@@ -116,7 +129,7 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 	}
 	switch sub {
 	case "":
-		return runDeployCommand(ctx, args, stdout, stderr)
+		return runDeployCommand(ctx, args, stdout, stderr, before)
 	case "init":
 		return runInit(args, stdout, stderr)
 	case "setup", "prune":
@@ -134,7 +147,7 @@ func RunDeploy(args []string, stdout, stderr io.Writer) error {
 	}
 }
 
-func runDeployCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func runDeployCommand(ctx context.Context, args []string, stdout, stderr io.Writer, before BeforeBuild) error {
 	flags, common := newFlags("deploy", stderr, true)
 	version := flags.String("version", "", "image tag to deploy (default: abbreviated git commit)")
 	skipBuild := flags.Bool("skip-build", false, "deploy an image already pushed to the registry")
@@ -150,8 +163,17 @@ func runDeployCommand(ctx context.Context, args []string, stdout, stderr io.Writ
 		return err
 	}
 	defer closeRunner(d)
+	note := ""
+	if before != nil && !*skipBuild && !common.dryRun {
+		if note, err = before(); err != nil {
+			return err
+		}
+	}
 	resolved, err := ResolveVersion(ctx, d.Local, ".", *version)
 	if err != nil {
+		if note != "" && errors.Is(err, ErrUncommittedChanges) {
+			err = fmt.Errorf("%w\n(%s)", err, note)
+		}
 		return err
 	}
 	report, err := d.Deploy(ctx, DeployOptions{Version: resolved, SkipBuild: *skipBuild})

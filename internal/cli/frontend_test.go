@@ -368,53 +368,6 @@ func TestNewJSFlagAndItsConflicts(t *testing.T) {
 	}
 }
 
-func TestDeployCompilesTheTypeScriptBeforeBuildingTheImage(t *testing.T) {
-	for args, want := range map[string]bool{
-		"":                      true,
-		"--version 1.2.3":       true,
-		"--skip-build":          false,
-		"--dry-run":             false,
-		"--skip-build=true":     false,
-		"--help":                false,
-		"setup":                 false,
-		"rollback --dry-run":    false,
-		"--version v --json":    true,
-		"details":               false,
-		"--version v -h":        false,
-		"--version v --dry-run": false,
-	} {
-		if got := deployBuilds(strings.Fields(args)); got != want {
-			t.Errorf("deployBuilds(%q) = %v, want %v", args, got, want)
-		}
-	}
-	root := typeScriptProject(t, true)
-	t.Chdir(root)
-	var stdout, stderr strings.Builder
-	// The image is built from the working tree: a source error stops the
-	// deploy before anything else runs, and the compiled files are current.
-	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "class {")
-	if code := Run([]string{"deploy"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "compile app/javascript") {
-		t.Fatalf("exit %d, stderr %q", code, stderr.String())
-	}
-	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "import \"controllers\"\n")
-	stderr.Reset()
-	// No config/deploy.yml: deploy itself fails, after the compilation, and
-	// the error says that the recompiled dist needs committing (deploy refuses
-	// a working tree with uncommitted changes).
-	if code := Run([]string{"deploy"}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "read deploy config") ||
-		!strings.Contains(stderr.String(), "forge recompiled app/javascript/dist before deploying") || !strings.Contains(stderr.String(), "commit the compiled files") {
-		t.Fatalf("exit %d, stderr %q", code, stderr.String())
-	}
-	// Nothing changed the second time: the deploy error is not annotated.
-	stderr.Reset()
-	if code := Run([]string{"deploy"}, &stdout, &stderr); code == 0 || strings.Contains(stderr.String(), "recompiled") {
-		t.Fatalf("exit %d, stderr %q", code, stderr.String())
-	}
-	if !strings.Contains(readFile(t, filepath.Join(root, "app", "javascript", "dist", "application.js")), `import "controllers";`) {
-		t.Error("forge deploy did not compile first")
-	}
-}
-
 // TestRunAppServesTheDevelopmentBuildLikeForgeDev keeps `forge dev --no-reload`
 // consistent with the reloading mode: the binary embeds the TypeScript compiled
 // for development, with inline source maps, through the overlay, and the
@@ -441,5 +394,93 @@ func TestRunAppServesTheDevelopmentBuildLikeForgeDev(t *testing.T) {
 	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "class {")
 	if err := runApp(context.Background(), root, "shop", nil, nil, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "application.ts") {
 		t.Errorf("a syntax error: %v", err)
+	}
+}
+
+const deployTestConfig = `service: shop
+image: registry.example.com/shop
+registry:
+  server: registry.example.com
+proxy:
+  image: registry.example.com/forge-proxy:1
+ssh:
+  user: deploy
+servers:
+  web:
+    hosts: [127.0.0.1]
+`
+
+// gitIn runs git in dir with a fixed identity.
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), "git", append([]string{"-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+	command.Dir = dir
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+}
+
+// TestDeployCompilesAfterTheConfigurationAndExplainsTheRefusalItCaused: a
+// missing or invalid configuration stops forge deploy before anything is
+// compiled; when the compilation wrote files, only the uncommitted-changes
+// refusal (which the written files cause) says so.
+func TestDeployCompilesAfterTheConfigurationAndExplainsTheRefusalItCaused(t *testing.T) {
+	root := typeScriptProject(t, true)
+	if _, err := frontend.Sync(root); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "config", "deploy.yml"), deployTestConfig)
+	secrets := filepath.Join(t.TempDir(), "secrets")
+	writeFile(t, secrets, "")
+	gitIn(t, root, "init", "-q")
+	gitIn(t, root, "add", "-A")
+	gitIn(t, root, "commit", "-q", "-m", "initial")
+	t.Chdir(root)
+	dist := filepath.Join(root, "app", "javascript", "dist", "application.js")
+	committed := readFile(t, dist)
+
+	// A source edit that dist does not have yet, and no configuration: the
+	// configuration error comes first and nothing is compiled.
+	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "import \"controllers\"\nimport \"more\"\n")
+	var stdout, stderr strings.Builder
+	if code := Run([]string{"deploy", "--config", "absent.yml", "--secrets", secrets}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "absent.yml") || strings.Contains(stderr.String(), "compile") || strings.Contains(stderr.String(), "recompiled") {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	if readFile(t, dist) != committed {
+		t.Error("forge deploy compiled before it read its configuration")
+	}
+
+	// A valid configuration: it compiles, the tree is dirty, and the refusal
+	// carries the explanation.
+	stderr.Reset()
+	if code := Run([]string{"deploy", "--secrets", secrets}, &stdout, &stderr); code != 1 ||
+		!strings.Contains(stderr.String(), "uncommitted changes") || !strings.Contains(stderr.String(), "forge recompiled app/javascript/dist before deploying") || !strings.Contains(stderr.String(), "commit the compiled files") {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	if !strings.Contains(readFile(t, dist), `import "more";`) {
+		t.Error("forge deploy did not compile")
+	}
+
+	// --dry-run and --skip-build compile nothing.
+	writeFile(t, filepath.Join(root, "app", "javascript", "application.ts"), "import \"controllers\"\nimport \"other\"\n")
+	for _, flag := range []string{"--dry-run", "--skip-build"} {
+		stderr.Reset()
+		_ = Run([]string{"deploy", flag, "--version", "v1", "--secrets", secrets}, &stdout, &stderr)
+		if strings.Contains(readFile(t, dist), `import "other";`) || strings.Contains(stderr.String(), "recompiled") {
+			t.Errorf("forge deploy %s compiled", flag)
+		}
+	}
+
+	// An unrelated uncommitted change, with nothing to compile: the refusal is
+	// the plain one, without the explanation.
+	if _, err := frontend.Sync(root); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, root, "add", "-A")
+	gitIn(t, root, "commit", "-q", "-m", "recompiled")
+	writeFile(t, filepath.Join(root, "cmd", "shop", "main.go"), "package main\n\nfunc main() {}\n")
+	stderr.Reset()
+	if code := Run([]string{"deploy", "--secrets", secrets}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "uncommitted changes") || strings.Contains(stderr.String(), "recompiled") {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 }

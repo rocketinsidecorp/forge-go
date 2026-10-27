@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 const controllerSource = `import { Controller } from "@hotwired/stimulus"
@@ -255,7 +256,7 @@ func TestSyncWritesChangedFilesAndRemovesOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(changed, " ") != "application.js controllers/gone_controller.js controllers/index.js" {
+	if strings.Join(changed, " ") != "application.js controllers/gone_controller.js controllers/index.js notes.txt" {
 		t.Errorf("changed = %v", changed)
 	}
 	if got := read(t, root, "app/javascript/dist/controllers/index.js"); !strings.Contains(got, "const x = 1;") || !strings.HasPrefix(got, "// Compiled from controllers/index.ts by forge") {
@@ -264,8 +265,10 @@ func TestSyncWritesChangedFilesAndRemovesOrphans(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "app", "javascript", "dist", "controllers", "gone_controller.js")); !os.IsNotExist(err) {
 		t.Errorf("the orphan was kept: %v", err)
 	}
-	if got := read(t, root, "app/javascript/dist/notes.txt"); got != "mine\n" {
-		t.Errorf("a file that is not compiled output was touched: %q", got)
+	// dist is generated and embedded whole: a file forge did not write (a
+	// README.txt would be served as an asset) is removed.
+	if _, err := os.Stat(filepath.Join(root, "app", "javascript", "dist", "notes.txt")); !os.IsNotExist(err) {
+		t.Errorf("a file that is not compiled output was kept: %v", err)
 	}
 
 	// Nothing changed: nothing is written (the timestamp proves it).
@@ -645,12 +648,16 @@ func TestWriteAtomicReportsFailuresAndLeavesNoTemporaryFile(t *testing.T) {
 	if err := writeAtomic(project, "missing/y.js", []byte("a")); err == nil {
 		t.Error("writing below a missing directory succeeded")
 	}
-	// A stale temporary file of an interrupted run is replaced.
-	if err := os.WriteFile(filepath.Join(dir, ".z.js.forge-tmp"), []byte("old"), 0o600); err != nil {
+	// Temporary names are random: two writers of the same file do not clash.
+	if err := writeAtomic(project, "z.js", []byte("one")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeAtomic(project, "z.js", []byte("new")); err != nil || read(t, dir, "z.js") != "new" {
-		t.Errorf("stale temporary file: %v", err)
+	if err := writeAtomic(project, "z.js", []byte("two")); err != nil || read(t, dir, "z.js") != "two" {
+		t.Errorf("second write: %v", err)
+	}
+	left, _ := filepath.Glob(filepath.Join(dir, ".z.js.*"+tempSuffix))
+	if len(left) != 0 {
+		t.Errorf("temporary files left: %v", left)
 	}
 }
 
@@ -687,5 +694,85 @@ func TestOverlayReportsAMissingWorkingDirectory(t *testing.T) {
 	}
 	if _, err := Overlay("app", t.TempDir()); err == nil {
 		t.Error("Overlay accepted a relative path without a working directory")
+	}
+}
+
+// TestSyncRemovesStrayFilesAndStaleTemporaryFilesButNotFreshOnes: dist is
+// embedded whole, so anything in it that forge did not write goes, including
+// the leftover of an interrupted run; a fresh temporary file may belong to a
+// forge running at the same time and stays.
+func TestSyncRemovesStrayFilesAndStaleTemporaryFilesButNotFreshOnes(t *testing.T) {
+	t.Parallel()
+	root := writeApp(t, map[string]string{
+		"app/javascript/application.ts":                       "export {}\n",
+		"app/javascript/dist/README.txt":                      "served as /assets/README-<digest>.txt\n",
+		"app/javascript/dist/controllers/data.json":           "{}\n",
+		"app/javascript/dist/.application.js.old.forge-tmp":   "interrupted\n",
+		"app/javascript/dist/.application.js.fresh.forge-tmp": "in flight\n",
+	})
+	stale := filepath.Join(root, "app", "javascript", "dist", ".application.js.old.forge-tmp")
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(stale, past, past); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := Sync(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(changed, " ") != ".application.js.old.forge-tmp README.txt application.js controllers/data.json" {
+		t.Errorf("changed = %v", changed)
+	}
+	for _, gone := range []string{"README.txt", "controllers/data.json", ".application.js.old.forge-tmp"} {
+		if _, err := os.Stat(filepath.Join(root, "app", "javascript", "dist", filepath.FromSlash(gone))); !os.IsNotExist(err) {
+			t.Errorf("%s was kept: %v", gone, err)
+		}
+	}
+	if got := read(t, root, "app/javascript/dist/.application.js.fresh.forge-tmp"); got != "in flight\n" {
+		t.Errorf("a fresh temporary file was touched: %q", got)
+	}
+	// The overlay hides them from the build too.
+	scratch := t.TempDir()
+	overlay, err := Overlay(root, scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct{ Replace map[string]string }
+	if err := jsonUnmarshal(read(t, scratch, filepath.Base(overlay)), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	absolute, _ := filepath.Abs(root)
+	hidden, ok := decoded.Replace[filepath.Join(absolute, "app", "javascript", "dist", ".application.js.fresh.forge-tmp")]
+	if !ok || hidden != "" {
+		t.Errorf("the overlay does not hide stray files: %v", decoded.Replace)
+	}
+}
+
+// TestHashesIgnoreLineEndStyle: Git on Windows (core.autocrlf) checks files out
+// with CRLF; the freshness check must not flip with it.
+func TestHashesIgnoreLineEndStyle(t *testing.T) {
+	t.Parallel()
+	lf := "import { Controller } from \"@hotwired/stimulus\"\nexport default class extends Controller {}\n"
+	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+	if SourceHash([]byte(lf)) != SourceHash([]byte(crlf)) {
+		t.Error("the hash of a source depends on its line ends")
+	}
+	fromLF, err := Compile("a.ts", []byte(lf), Production)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromCRLF, err := Compile("a.ts", []byte(crlf), Production)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hashLF, _, _ := ParseHeader(fromLF)
+	_, hashCRLF, _, _ := ParseHeader(fromCRLF)
+	if hashLF != hashCRLF {
+		t.Errorf("source hashes differ: %s %s", hashLF, hashCRLF)
+	}
+	// The compiled file itself, checked out with CRLF everywhere (header
+	// line included), is still the file forge wrote.
+	converted := []byte(strings.ReplaceAll(string(fromLF), "\n", "\r\n"))
+	if name, hash, intact, ok := ParseHeader(converted); !ok || !intact || name != "a.ts" || hash != hashLF {
+		t.Errorf("a CRLF checkout of dist: %q %q intact=%v ok=%v", name, hash, intact, ok)
 	}
 }

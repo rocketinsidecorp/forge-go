@@ -2,6 +2,7 @@ package frontend
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,23 +12,47 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // compiledPath is the slash-separated path of a compiled file below the
 // application root.
 func compiledPath(name string) string { return path.Join(SourceDir, DistDir, name) }
 
-// existingDist lists the compiled .js files already on disk, as paths below
-// app/javascript/dist. A missing directory has none.
-func existingDist(root fs.FS) ([]string, error) {
-	var found []string
-	err := fs.WalkDir(root, path.Join(SourceDir, DistDir), func(name string, entry fs.DirEntry, walkErr error) error {
+// distEntry is a file or other non-directory already in dist.
+type distEntry struct {
+	name    string // below app/javascript/dist, slash-separated
+	modTime time.Time
+}
+
+// tempSuffix ends the names of the temporary files writeAtomic makes.
+const tempSuffix = ".forge-tmp"
+
+// tempGrace is how long a temporary file is left alone before Sync removes it
+// as the leftover of an interrupted run: a concurrent forge may be about to
+// rename it.
+const tempGrace = 10 * time.Minute
+
+// existingDist lists everything in dist that is not a directory: compiled
+// files, and anything else. dist is generated and the javascript package embeds
+// all of it (a README.txt there would be served as an asset), so whatever forge
+// did not write is not wanted. A missing directory has none.
+func existingDist(root fs.FS) ([]distEntry, error) {
+	var found []distEntry
+	prefix := path.Join(SourceDir, DistDir)
+	err := fs.WalkDir(root, prefix, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.Type().IsRegular() && strings.HasSuffix(name, ".js") {
-			found = append(found, strings.TrimPrefix(name, path.Join(SourceDir, DistDir)+"/"))
+		if entry.IsDir() {
+			return nil
 		}
+		// An entry whose time cannot be read counts as old.
+		var modTime time.Time
+		if info, err := entry.Info(); err == nil {
+			modTime = info.ModTime()
+		}
+		found = append(found, distEntry{name: strings.TrimPrefix(name, prefix+"/"), modTime: modTime})
 		return nil
 	})
 	if errors.Is(err, fs.ErrNotExist) {
@@ -63,13 +88,14 @@ func requireRealDirs(project *os.Root, dir string) error {
 	return nil
 }
 
-// writeAtomic writes content to target through a temporary file in the same
-// directory and a rename, so a reader (go build, an interrupted forge) sees the
+// writeAtomic writes content to target through a temporary file (a random name
+// in the same directory) and a rename, so a reader (go build, an interrupted forge) sees the
 // old file or the new one, never half of it, and a symlink at target is
 // replaced rather than written through.
 func writeAtomic(project *os.Root, target string, content []byte) (err error) {
-	temporary := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+".forge-tmp")
-	_ = project.Remove(temporary)
+	// A random name, so two forge runs writing the same file do not clash;
+	// O_EXCL refuses a name that is somehow taken.
+	temporary := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+"."+rand.Text()[:13]+tempSuffix)
 	file, err := project.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
@@ -133,14 +159,17 @@ func Sync(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range existing {
-		if _, wanted := outputs[name]; wanted {
+	for _, entry := range existing {
+		if _, wanted := outputs[entry.name]; wanted {
 			continue
 		}
-		if err := project.Remove(filepath.FromSlash(compiledPath(name))); err != nil {
+		if strings.HasSuffix(entry.name, tempSuffix) && time.Since(entry.modTime) < tempGrace {
+			continue // possibly another forge's file, about to be renamed
+		}
+		if err := project.Remove(filepath.FromSlash(compiledPath(entry.name))); err != nil {
 			return nil, err
 		}
-		changed = append(changed, name)
+		changed = append(changed, entry.name)
 	}
 	slices.Sort(changed)
 	return changed, nil
@@ -192,14 +221,16 @@ func Overlay(dir, outDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, name := range existing {
-		if _, wanted := outputs[name]; !wanted {
+	for _, entry := range existing {
+		if _, wanted := outputs[entry.name]; !wanted {
 			// An empty path deletes the file for the build.
-			replace[filepath.Join(absolute, filepath.FromSlash(compiledPath(name)))] = ""
+			replace[filepath.Join(absolute, filepath.FromSlash(compiledPath(entry.name)))] = ""
 		}
 	}
-	// Marshalling a map of strings cannot fail.
-	encoded, _ := json.Marshal(map[string]map[string]string{"Replace": replace})
+	encoded, err := json.Marshal(map[string]map[string]string{"Replace": replace})
+	if err != nil { // a map of strings cannot fail to marshal; there is no seam to test the branch
+		return "", fmt.Errorf("encode overlay: %w", err)
+	}
 	overlay := filepath.Join(outDir, overlayFile)
 	if err := os.WriteFile(overlay, encoded, 0o600); err != nil {
 		return "", err

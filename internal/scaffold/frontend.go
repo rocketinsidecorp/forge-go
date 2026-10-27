@@ -19,7 +19,8 @@ const typescriptDir = "templates/typescript"
 
 // frontendAssets are the files of the application's front end that are
 // copied unchanged: JavaScript with --js, else the TypeScript sources,
-// tsconfig.json and the type declarations.
+// tsconfig.json, the type declarations and a .gitattributes that keeps
+// app/javascript at LF (the compiled files carry hashes).
 func frontendAssets(opts Options) ([]asset, error) {
 	if opts.JS {
 		return javascriptAssets, nil
@@ -33,7 +34,11 @@ func frontendAssets(opts Options) ([]asset, error) {
 		target := filepath.FromSlash(relative)
 		// Sources and declarations live below app/javascript; tsconfig.json
 		// sits at the application root next to go.mod.
-		if relative != "tsconfig.json" {
+		switch relative {
+		case "tsconfig.json":
+		case "gitattributes":
+			target = ".gitattributes"
+		default:
 			target = filepath.Join("app", "javascript", target)
 		}
 		result = append(result, asset{source: source, target: target})

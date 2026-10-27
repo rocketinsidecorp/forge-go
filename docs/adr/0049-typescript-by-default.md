@@ -76,12 +76,13 @@ MySQL; tests assert the `--js` file set and contents).
    precompiled, digested JavaScript; nothing compiles at runtime.
 
 `forge build`, `forge test`, `forge check` and `forge deploy` (which builds the
-image from the working tree, unless `--skip-build` or `--dry-run`) compile
-before building (`frontend.Sync`: only files whose content changed are
+image from the working tree, unless `--skip-build` or `--dry-run`; it compiles
+after `config/deploy.yml` is read and validated, so a bad configuration changes
+nothing) compile before building (`frontend.Sync`: only files whose content changed are
 written, files whose source is gone are removed). The compile notice goes to
 stderr. `forge deploy` refuses a working tree with uncommitted changes, so when
-it had to recompile it adds to its error that the recompiled `dist` needs
-committing. The commands that run the application without serving a page
+it had to recompile, that refusal (and only that one) adds that the recompiled
+`dist` needs committing. The commands that run the application without serving a page
 (`forge migrate`, `rollback`, `setup`, `seed`, `routes`, `openapi`) compile
 nothing and print nothing of their own: they embed the committed `dist`, so
 their stdout is exactly the application's (a regression test pins it for
@@ -106,7 +107,17 @@ others with an error). Those are the names the asset table accepts, what
 below it must be real directories: `forge` refuses to write or remove through a
 symlink there (a `dist -> ../../public` link would otherwise make orphan
 removal delete files of `public/`), and writes each file through a temporary
-file and a rename.
+file (a random name, so concurrent runs do not clash) and a rename.
+
+`dist/` is generated and embedded whole, so `forge` removes from it everything
+it did not write, including a stray `README.txt` that the asset pipeline would
+otherwise serve as `/assets/README-<digest>.txt` (and leftover temporary files
+older than ten minutes), and the generated freshness test fails on any file
+there that is not compiled `.js`. Line ends: the hashes read CRLF as LF, and
+`forge new` writes a `.gitattributes` with `app/javascript/** text eol=lf`
+(only for a new application: `forge generate` never edits a project's own
+`.gitattributes`), so a Windows checkout with `core.autocrlf=true` does not make
+the freshness test fail or flip.
 
 The `javascript` package embeds all of `dist/`. Every compiled file is served
 with a digested URL; only `application.js` and `controllers/*` are pinned in the

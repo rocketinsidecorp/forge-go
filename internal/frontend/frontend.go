@@ -16,6 +16,7 @@
 package frontend
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -72,7 +73,7 @@ const (
 const tsconfigRaw = `{"compilerOptions":{"target":"es2022","useDefineForClassFields":true,"verbatimModuleSyntax":true}}`
 
 // headerPattern matches the first line of a Production output.
-var headerPattern = regexp.MustCompile(`^// Compiled from (\S+) by forge \([a-z]+ [0-9.]+\); do not edit\. source-sha256: ([0-9a-f]{64}) output-sha256: ([0-9a-f]{64})\n`)
+var headerPattern = regexp.MustCompile(`^// Compiled from (\S+) by forge \([a-z]+ [0-9.]+\); do not edit\. source-sha256: ([0-9a-f]{64}) output-sha256: ([0-9a-f]{64})\r?\n`)
 
 // sourceName is what a source path below app/javascript may look like. It is
 // what the header can carry (no whitespace), what the asset table accepts as a
@@ -89,9 +90,11 @@ func Header(name string, source, body []byte) string {
 	return fmt.Sprintf("// Compiled from %s by forge (esbuild %s); do not edit. source-sha256: %s output-sha256: %s\n", name, EsbuildVersion, SourceHash(source), SourceHash(body))
 }
 
-// SourceHash is the lowercase hex SHA-256 of a source file.
+// SourceHash is the lowercase hex SHA-256 of a source file or a compiled body,
+// with CRLF line ends read as LF: Git on Windows (core.autocrlf) may check the
+// same file out with either, and the hash must not flip with it.
 func SourceHash(source []byte) string {
-	sum := sha256.Sum256(source)
+	sum := sha256.Sum256(bytes.ReplaceAll(source, []byte("\r\n"), []byte("\n")))
 	return hex.EncodeToString(sum[:])
 }
 

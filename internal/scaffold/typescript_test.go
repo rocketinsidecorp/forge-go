@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -241,5 +242,103 @@ func assertFilesContain(t *testing.T, dir string, expectations map[string][]stri
 				t.Errorf("%s lacks %q", file, text)
 			}
 		}
+	}
+}
+
+func TestGenerateWritesGitattributesForTypeScriptOnly(t *testing.T) {
+	t.Parallel()
+	dir, paths := generateApp(t, Options{Database: "sqlite"})
+	if !slices.Contains(paths, ".gitattributes") {
+		t.Fatal(".gitattributes was not generated")
+	}
+	assertFilesContain(t, dir, map[string][]string{".gitattributes": {"app/javascript/** text eol=lf"}})
+	for name, opts := range map[string]Options{"--js": {Database: "sqlite", JS: true}, "--api": {Database: "sqlite", API: true}} {
+		_, paths := generateApp(t, opts)
+		if slices.Contains(paths, ".gitattributes") {
+			t.Errorf("%s generated .gitattributes", name)
+		}
+	}
+	// The generators that add the views base to an existing application leave
+	// the project's own .gitattributes alone.
+	base, err := ViewBase("shop", "shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range base {
+		if file.Path == ".gitattributes" {
+			t.Error("ViewBase writes .gitattributes")
+		}
+	}
+}
+
+// goTestJavascript runs the generated freshness test of the application at dir.
+func goTestJavascript(t *testing.T, dir string) (string, error) {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), "go", "test", "-count=1", "./app/javascript")
+	command.Dir = dir
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+// TestGeneratedFreshnessTestCatchesStrayHandEditedAndTruncatedFilesAndSurvivesCRLF
+// runs the freshness test that ships in the application (stdlib only).
+func TestGeneratedFreshnessTestCatchesStrayHandEditedAndTruncatedFilesAndSurvivesCRLF(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the go toolchain on a generated project")
+	}
+	t.Parallel()
+	dir, _ := generateApp(t, Options{Database: "sqlite"})
+	if output, err := goTestJavascript(t, dir); err != nil {
+		t.Fatalf("a fresh application fails its own freshness test: %v\n%s", err, output)
+	}
+	dist := filepath.Join(dir, "app", "javascript", "dist")
+
+	// Anything in dist that is not compiled JavaScript would be embedded and served.
+	stray := filepath.Join(dist, "README.txt")
+	if err := os.WriteFile(stray, []byte("public?\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := goTestJavascript(t, dir); err == nil || !strings.Contains(output, "dist/README.txt is not compiled JavaScript") {
+		t.Errorf("a stray file in dist: %v\n%s", err, output)
+	}
+	if err := os.Remove(stray); err != nil {
+		t.Fatal(err)
+	}
+
+	// A hand-edited and a truncated compiled file.
+	hello := filepath.Join(dist, "controllers", "hello_controller.js")
+	original, err := os.ReadFile(hello)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tampered := range map[string][]byte{"hand edit": append(append([]byte{}, original...), "alert(1)\n"...), "truncation": original[:len(original)-12]} {
+		if err := os.WriteFile(hello, tampered, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := goTestJavascript(t, dir); err == nil || !strings.Contains(output, "is not what forge build wrote") {
+			t.Errorf("%s: %v\n%s", name, err, output)
+		}
+	}
+	if err := os.WriteFile(hello, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A Windows checkout with core.autocrlf=true: every source and compiled
+	// file with CRLF line ends, header included. Still fresh.
+	err = filepath.WalkDir(filepath.Join(dir, "app", "javascript"), func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() || strings.HasSuffix(path, ".d.ts") || (!strings.HasSuffix(path, ".ts") && !strings.HasSuffix(path, ".js")) || strings.Contains(path, string(filepath.Separator)+"types"+string(filepath.Separator)) {
+			return walkErr
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte(strings.ReplaceAll(string(content), "\n", "\r\n")), 0o600)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output, err := goTestJavascript(t, dir); err != nil {
+		t.Errorf("a CRLF checkout fails the freshness test: %v\n%s", err, output)
 	}
 }

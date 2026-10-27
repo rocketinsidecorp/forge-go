@@ -8,8 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"strings"
 
 	"github.com/rocketinsidecorp/forge-go/internal/deploy"
 	"github.com/rocketinsidecorp/forge-go/internal/frontend"
@@ -37,23 +35,20 @@ func compileFrontend(root string, notices io.Writer) (int, error) {
 	return len(changed), err
 }
 
-// runDeploy is `forge deploy`: when it builds the image from the working tree
-// the TypeScript is compiled first, so an edited .ts file does not deploy as
-// the old JavaScript. forge deploy refuses a working tree with uncommitted
-// changes, so a recompiled dist says what to do about it.
+// runDeploy is `forge deploy`. When it builds the image from the working tree,
+// the TypeScript is compiled after the configuration is read and validated, so
+// an edited .ts file does not deploy as the old JavaScript and a bad
+// configuration changes nothing. forge deploy refuses a working tree with
+// uncommitted changes, so when the compilation wrote files, that refusal says
+// what happened and what to do.
 func runDeploy(args []string, stdout, stderr io.Writer) error {
-	changed := 0
-	if deployBuilds(args) {
-		var err error
-		if changed, err = compileFrontend(".", stderr); err != nil {
-			return err
+	return deploy.RunDeployWith(args, stdout, stderr, func() (string, error) {
+		changed, err := compileFrontend(".", stderr)
+		if err != nil || changed == 0 {
+			return "", err
 		}
-	}
-	err := deploy.RunDeploy(args, stdout, stderr)
-	if err != nil && changed > 0 {
-		err = fmt.Errorf("%w\n(forge recompiled %s/%s before deploying: %d file(s) changed because the TypeScript changed since dist was compiled; commit the compiled files with their sources, then deploy again)", err, frontend.SourceDir, frontend.DistDir, changed)
-	}
-	return err
+		return fmt.Sprintf("forge recompiled %s/%s before deploying: %d file(s) changed because the TypeScript changed since dist was compiled; commit the compiled files with their sources, then deploy again", frontend.SourceDir, frontend.DistDir, changed), nil
+	})
 }
 
 // typeCheckFrontend runs `tsc --noEmit` on the application's TypeScript, with
@@ -89,18 +84,4 @@ func typeCheckFrontend(ctx context.Context, root string, stdout, stderr io.Write
 		return toolError("tsc", err)
 	}
 	return nil
-}
-
-// deployBuilds reports whether `forge deploy ARGS` builds the image from the
-// working tree: the bare command, without --skip-build or --dry-run. The
-// image embeds app/javascript/dist, so a TypeScript application is compiled
-// first, or an edited .ts file would deploy as the old JavaScript.
-func deployBuilds(args []string) bool {
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		return false // a subcommand: setup, rollback, prune, details, lock, maintenance, init
-	}
-	return !slices.ContainsFunc(args, func(arg string) bool {
-		name, _, _ := strings.Cut(arg, "=")
-		return name == "--skip-build" || name == "--dry-run" || name == "-h" || name == "--help"
-	})
 }
