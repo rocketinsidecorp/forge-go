@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/rocketinsidecorp/forge-go/internal/pgurl"
+	"github.com/rocketinsidecorp/forge-go/postgres/internal/pgurl"
 )
 
 func parse(t *testing.T, raw string, scope pgurl.Scope) (*pgconn.Config, *pgurl.Isolated) {

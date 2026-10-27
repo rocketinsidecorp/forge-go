@@ -1989,7 +1989,7 @@ contract test kits) with a per-package table, and fails when the gated total is
 below `.coverage-floor`, the gross total is below 95.0%, or one of the
 security-relevant packages (`auth`, `auth/postgres`, `auth/mysql`,
 `auth/sqlite`, `auth/internal/sqlidentity`, `credentials`, `csrf`,
-`encryption`, `internal/pgurl`, `postgres`) is below 95% of its own statements
+`encryption`, `postgres/internal/pgurl`, `postgres`) is below 95% of its own statements
 ([docs/TESTING.md](docs/TESTING.md#coverage)).
 
 CI (`.github/workflows/ci.yml`):

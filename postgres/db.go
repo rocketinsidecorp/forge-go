@@ -23,7 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rocketinsidecorp/forge-go/config"
-	"github.com/rocketinsidecorp/forge-go/internal/pgurl"
+	"github.com/rocketinsidecorp/forge-go/postgres/internal/pgurl"
 	"github.com/rocketinsidecorp/forge-go/sqldb"
 )
 

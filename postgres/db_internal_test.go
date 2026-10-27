@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/config"
-	"github.com/rocketinsidecorp/forge-go/internal/pgurl"
+	"github.com/rocketinsidecorp/forge-go/postgres/internal/pgurl"
 )
 
 // encodeQuery percent-encodes a space as %20: pgx keeps the "+" of

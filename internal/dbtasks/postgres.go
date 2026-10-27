@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/rocketinsidecorp/forge-go/internal/pgurl"
+	"github.com/rocketinsidecorp/forge-go/postgres"
 )
 
 const (
@@ -63,7 +63,7 @@ func (t *Target) pgConnConfig(name string) (*pgx.ConnConfig, error) {
 	u.Path, u.RawPath = "/"+name, ""
 	cfg, err := parsePgConfig(u.String())
 	if err != nil {
-		var refused *pgurl.RefusedError
+		var refused *postgres.URLRefusedError
 		if errors.As(err, &refused) {
 			return nil, refused
 		}
@@ -98,7 +98,7 @@ func (t *Target) pgConnConfig(name string) (*pgx.ConnConfig, error) {
 // straight from the process environment as defaults for what the URL leaves
 // unset, and has no option to ignore them. They are not unset around the
 // parse (that would edit the environment of the whole process under every
-// concurrent reader): pgurl.Isolate writes the libpq default of each such
+// concurrent reader): postgres.IsolatedConnConfig writes the libpq default of each such
 // parameter the environment sets into the URL, which pgx prefers to the
 // environment, and a service named by PGSERVICE is replaced by an empty one.
 // A URL without sslmode therefore gets the libpq default (prefer) from both
@@ -108,25 +108,7 @@ func (t *Target) pgConnConfig(name string) (*pgx.ConnConfig, error) {
 // it has no neutral value, and ignoring it could weaken verification. Session settings the URL does not name (PGOPTIONS,
 // PGTZ, PGAPPNAME) are removed after the parse.
 func parsePgConfig(connString string) (*pgx.ConnConfig, error) {
-	allowed := append([]string{"host", "port", "database"}, pgOptionKeys...)
-	iso, err := pgurl.Isolate(connString, pgurl.Everything, allowed)
-	if err != nil {
-		var refused *pgurl.RefusedError
-		if errors.As(err, &refused) {
-			// Names variables and parameters, never a value or the URL.
-			return nil, refused
-		}
-		return nil, errors.New("the PostgreSQL connection URL is not valid")
-	}
-	defer iso.Close()
-	cfg, err := pgx.ParseConfigWithOptions(iso.URL, pgx.ParseConfigOptions{
-		ParseConfigOptions: pgconn.ParseConfigOptions{ConnStringAllowedKeys: append(allowed, iso.PinnedKeys()...)},
-	})
-	if err != nil {
-		return nil, err
-	}
-	iso.StripSession(cfg.RuntimeParams)
-	return cfg, nil
+	return postgres.IsolatedConnConfig(connString, append([]string{"host", "port", "database"}, pgOptionKeys...))
 }
 
 // pgAdmin connects to a maintenance database: the one place from which the

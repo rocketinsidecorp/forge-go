@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rocketinsidecorp/forge-go/internal/pgurl"
+	"github.com/rocketinsidecorp/forge-go/postgres/internal/pgurl"
 )
 
 // A query string net/url parses but ParseQuery rejects (a bad escape, a
