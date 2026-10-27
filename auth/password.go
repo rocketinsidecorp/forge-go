@@ -395,9 +395,12 @@ func (h *PasswordHasher) writing(kdf argon2idKDF) PasswordAlgorithm {
 }
 
 // dummy returns the hash an unknown account is verified against: one in
-// the writing algorithm, which nothing matches.
+// the writing algorithm, which nothing matches. With no Argon2id usable it is
+// PBKDF2 even for a hasher set to Argon2id: such a hasher still verifies
+// PBKDF2 accounts (a wrong password is ErrCredentialsInvalid), so an unknown
+// account must fail the same way, not with ErrPasswordAlgorithmUnavailable.
 func (h *PasswordHasher) dummy() string {
-	if h.Algorithm() == PasswordAlgorithmPBKDF2SHA256 {
+	if kdf := h.kdfs.load(); kdf == nil || h.writing(kdf) == PasswordAlgorithmPBKDF2SHA256 {
 		return h.pbkdf2Dummy
 	}
 	return h.argon2Dummy

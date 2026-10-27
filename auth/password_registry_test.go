@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/rocketinsidecorp/forge-go/fault"
+	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
 // The first registration wins: a later one, or a nil function, changes
@@ -224,8 +225,10 @@ func TestArgon2idWithNothingRegisteredFailsClosed(t *testing.T) {
 	if hash, err := strict.Hash(ctx, "secret"); hash != "" || !errors.Is(err, ErrPasswordAlgorithmUnavailable) {
 		t.Fatalf("Argon2id hasher without an implementation: Hash = %q, %v", hash, err)
 	}
-	if err := strict.verifyDummy(ctx, "secret"); !errors.Is(err, ErrPasswordAlgorithmUnavailable) {
-		t.Fatalf("Argon2id hasher without an implementation: dummy = %v", err)
+	// Its unknown accounts verify against the PBKDF2 dummy: the hasher
+	// still verifies PBKDF2 accounts, and an unknown one must fail like them.
+	if err := strict.verifyDummy(ctx, "secret"); err != nil || !strings.HasPrefix(strict.dummy(), "$pbkdf2-sha256$") {
+		t.Fatalf("Argon2id hasher without an implementation: dummy %q = %v, want the PBKDF2 dummy", strict.dummy(), err)
 	}
 }
 
@@ -290,6 +293,43 @@ func TestLoginSkipsTheRehashWhenArgon2idIsNotRegistered(t *testing.T) {
 	if _, err := service.Login(context.Background(), LoginInput{Email: "ada@example.com", Password: "wrong password", TenantSlug: "acme"}); !errors.Is(err, ErrCredentialsInvalid) {
 		t.Fatalf("wrong password: %v, want ErrCredentialsInvalid", err)
 	}
+}
+
+// With a hasher set to Argon2id and nothing registered, an unknown account
+// and a known PBKDF2 account with a wrong password get the same error
+// (ErrCredentialsInvalid), so the answer tells nobody which accounts exist.
+func TestUnknownAndKnownAccountsFailAlikeWhenArgon2idIsNotRegistered(t *testing.T) {
+	t.Parallel()
+	legacy, err := hashPassword("correct horse battery staple", DefaultPasswordIterations, bytes.NewReader(make([]byte, passwordSaltBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasher := unregisteredHasher(t, WithPasswordAlgorithm(PasswordAlgorithmArgon2id), WithLegacyHashTimingFloor(false))
+	service, err := NewLoginService(newRehashStore(t, legacy), &sessionStub{}, WithLoginPasswordHasher(hasher))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, input := range map[string]LoginInput{
+		"known account, wrong password": {Email: "ada@example.com", Password: "wrong password", TenantSlug: "acme"},
+		"unknown account":               {Email: "nobody@example.com", Password: "wrong password", TenantSlug: "acme"},
+		"unknown tenant":                {Email: "ada@example.com", Password: "wrong password", TenantSlug: "other"},
+		"malformed login":               {Email: "not a login", Password: "wrong password", TenantSlug: "acme"},
+	} {
+		if _, err := service.Login(context.Background(), input); !errors.Is(err, ErrCredentialsInvalid) || errors.Is(err, ErrPasswordAlgorithmUnavailable) {
+			t.Errorf("%s: %v, want ErrCredentialsInvalid", name, err)
+		}
+	}
+	// The MFA step-up's unknown subject likewise.
+	if _, ok, err := verifySubjectPassword(context.Background(), hasher, mfaAccountsStoreless{}, uuid.MustNew(), "wrong password"); ok || err != nil {
+		t.Errorf("step-up of an unknown subject: ok=%v err=%v, want a plain miss", ok, err)
+	}
+}
+
+// mfaAccountsStoreless is a SubjectPasswordStore that knows nobody.
+type mfaAccountsStoreless struct{}
+
+func (mfaAccountsStoreless) LookupSubjectPassword(context.Context, uuid.UUID) (SubjectPassword, bool, error) {
+	return SubjectPassword{}, false, nil
 }
 
 // The MFA step-up against an Argon2id hash with nothing registered fails

@@ -96,7 +96,8 @@ afterwards the core needs nothing, which the later steps rely on.
     no verification and writes PBKDF2. A hasher set to Argon2id with nothing
     registered skips the rehash of a verified PBKDF2 hash (as when hashing
     is saturated), so a right password is not told from a wrong one by a
-    `503`. It is a `fault.Error` of category
+    `503`, and verifies unknown accounts against the PBKDF2 dummy, so they
+    fail like a known PBKDF2 account with a wrong password. It is a `fault.Error` of category
     `unavailable`, so the HTTP adapters answer `503` through `web.Error`,
     which logs its cause naming the fix (link an identity store or call
     `auth.RegisterArgon2id(argon2.IDKey)`). A hasher set to Argon2id with
