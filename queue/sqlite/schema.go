@@ -5,7 +5,7 @@ import (
 	"embed"
 	"io/fs"
 
-	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/queue"
 	"github.com/rocketinsidecorp/forge-go/queue/queuecmd"
@@ -27,7 +27,7 @@ func Migrations() fs.FS {
 }
 
 // Commands returns the "jobs" operator command (see queuecmd).
-func Commands() []forge.Command {
+func Commands() []command.Command {
 	return queuecmd.Commands(func(ctx context.Context, cfg config.Database) (queue.Admin, func() error, error) {
 		db, err := forgesqlite.Open(ctx, cfg)
 		if err != nil {

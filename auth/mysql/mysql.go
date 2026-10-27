@@ -16,10 +16,10 @@ import (
 	"io/fs"
 	"time"
 
-	forge "github.com/rocketinsidecorp/forge-go"
 	"github.com/rocketinsidecorp/forge-go/auth"
 	"github.com/rocketinsidecorp/forge-go/auth/internal/setupcmd"
 	"github.com/rocketinsidecorp/forge-go/auth/internal/sqlidentity"
+	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/config"
 	forgemysql "github.com/rocketinsidecorp/forge-go/mysql"
 	"github.com/rocketinsidecorp/forge-go/sqldb"
@@ -109,7 +109,7 @@ func SetupOrganizations(enabled bool) SetupOption {
 //
 // The password comes from FORGE_SETUP_PASSWORD, one line of standard input
 // (--password-stdin) or a terminal prompt, never an argument.
-func SetupCommand(options ...SetupOption) forge.Command {
+func SetupCommand(options ...SetupOption) command.Command {
 	config := setupcmd.Config{Organizations: true, Provision: sqlidentity.Provision(open, dialect)}
 	for _, option := range options {
 		if option != nil {

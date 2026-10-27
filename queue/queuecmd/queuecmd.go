@@ -21,7 +21,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	forge "github.com/rocketinsidecorp/forge-go"
+	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/queue"
 	"github.com/rocketinsidecorp/forge-go/uuid"
@@ -38,20 +38,20 @@ const (
 )
 
 // Commands returns the "jobs" command backed by open.
-func Commands(open Opener) []forge.Command {
-	return []forge.Command{{
+func Commands(open Opener) []command.Command {
+	return []command.Command{{
 		Name:    "jobs",
 		Summary: "inspect and repair the background job queue (status, dead, show, retry, discard, prune)",
-		Run: func(ctx context.Context, env forge.CommandEnv, args []string) (err error) {
+		Run: func(ctx context.Context, env command.Env, args []string) (err error) {
 			if len(args) == 0 {
-				return fmt.Errorf("%w: %s", forge.ErrUsage, usage)
+				return fmt.Errorf("%w: %s", command.ErrUsage, usage)
 			}
 			if env.Config.Database.URL.IsZero() {
 				return errors.New("database is not configured: set FORGE_DATABASE_URL")
 			}
 			sub, rest := args[0], args[1:]
 			if !validSubcommand(sub) {
-				return fmt.Errorf("%w: %s", forge.ErrUsage, usage)
+				return fmt.Errorf("%w: %s", command.ErrUsage, usage)
 			}
 			// Parse arguments before connecting: a typo must not cost a
 			// database round trip.
@@ -79,7 +79,7 @@ func validSubcommand(name string) bool {
 
 type action func(ctx context.Context, admin queue.Admin) error
 
-func parse(sub string, args []string, env forge.CommandEnv) (action, error) {
+func parse(sub string, args []string, env command.Env) (action, error) {
 	flags := flag.NewFlagSet("jobs "+sub, flag.ContinueOnError)
 	flags.SetOutput(env.Stderr)
 	var (
@@ -89,35 +89,35 @@ func parse(sub string, args []string, env forge.CommandEnv) (action, error) {
 		older     = flags.Duration("older", 24*time.Hour, "minimum age of finished jobs")
 	)
 	if err := flags.Parse(args); err != nil {
-		return nil, fmt.Errorf("%w: %w", forge.ErrUsage, err)
+		return nil, fmt.Errorf("%w: %w", command.ErrUsage, err)
 	}
 	out := env.Stdout
 	switch sub {
 	case "status":
 		if flags.NArg() != 0 {
-			return nil, fmt.Errorf("%w: jobs status", forge.ErrUsage)
+			return nil, fmt.Errorf("%w: jobs status", command.ErrUsage)
 		}
 		return func(ctx context.Context, admin queue.Admin) error { return status(ctx, admin, out) }, nil
 	case "dead":
 		if flags.NArg() != 0 || *limit < 1 || *limit > maxListLimit {
-			return nil, fmt.Errorf("%w: jobs dead [-queue Q] [-kind K] [-limit 1-%d]", forge.ErrUsage, maxListLimit)
+			return nil, fmt.Errorf("%w: jobs dead [-queue Q] [-kind K] [-limit 1-%d]", command.ErrUsage, maxListLimit)
 		}
 		return func(ctx context.Context, admin queue.Admin) error {
 			return dead(ctx, admin, out, *queueName, *kind, *limit)
 		}, nil
 	case "prune":
 		if flags.NArg() != 0 || *older <= 0 {
-			return nil, fmt.Errorf("%w: jobs prune [-older D] with D > 0", forge.ErrUsage)
+			return nil, fmt.Errorf("%w: jobs prune [-older D] with D > 0", command.ErrUsage)
 		}
 		return func(ctx context.Context, admin queue.Admin) error { return prune(ctx, admin, out, *older) }, nil
 	}
 	// show, retry, discard take one ID.
 	if flags.NArg() != 1 {
-		return nil, fmt.Errorf("%w: jobs %s ID", forge.ErrUsage, sub)
+		return nil, fmt.Errorf("%w: jobs %s ID", command.ErrUsage, sub)
 	}
 	id, err := uuid.Parse(flags.Arg(0))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %q is not a job ID (UUIDv7)", forge.ErrUsage, flags.Arg(0))
+		return nil, fmt.Errorf("%w: %q is not a job ID (UUIDv7)", command.ErrUsage, flags.Arg(0))
 	}
 	switch sub {
 	case "show":
