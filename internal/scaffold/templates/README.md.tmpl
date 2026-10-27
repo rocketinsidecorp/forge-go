@@ -716,7 +716,7 @@ Work that must survive restarts and retry runs on the persistent job queue
 
 ```bash
 forge generate job send_welcome user_id:uuid --queue --dry-run   # preview the typed handler and its tests
-forge generate job send_welcome user_id:uuid --queue             # create app/jobs/send_welcome.go and its test
+forge generate job send_welcome user_id:uuid --queue             # create app/jobs/send_welcome.go and its test, and register it in app/bootstrap/routes_gen.go
 ```
 
 `forge new` wires the queue already: `db.MigrationSets` includes its tables

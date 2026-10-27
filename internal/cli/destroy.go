@@ -174,9 +174,17 @@ func planDestroy(generator string, args []string, root string, env []string, now
 		if err != nil {
 			return destroyPlan{}, err
 		}
-		return destroyPlan{files: files, dryRun: request.DryRun, unwire: "the mailer wiring:\n" + buildMailerWiring(request, mailerModule(root)).Usage}, nil
+		plan := destroyPlan{files: files, dryRun: request.DryRun, unwire: "the mailer wiring:\n" + buildMailerWiring(request, mailerModule(root)).Usage}
+		wiring, wired, err := planMailerSeam(root, request, env, true)
+		if err != nil {
+			return destroyPlan{}, err
+		}
+		if wired {
+			plan.routes, plan.routesVerb, plan.unwire = wiring.content, wiring.verb, ""
+		}
+		return plan, nil
 	case "job":
-		return planDestroyJob(args, root)
+		return planDestroyJob(args, root, env)
 	case "view":
 		return planDestroyView(args, root)
 	case "join":
@@ -233,7 +241,7 @@ func httpLayerOf(root, generator, name string) (string, error) {
 	return "", nil
 }
 
-func planDestroyJob(args []string, root string) (destroyPlan, error) {
+func planDestroyJob(args []string, root string, env []string) (destroyPlan, error) {
 	if slices.Contains(args, "--queue") {
 		request, err := parseQueueJobArgs(args)
 		if err != nil {
@@ -244,7 +252,15 @@ func planDestroyJob(args []string, root string) (destroyPlan, error) {
 		if err != nil {
 			return destroyPlan{}, err
 		}
-		return destroyPlan{files: files, dryRun: request.DryRun, unwire: fmt.Sprintf("the registration: jobs.Register%s(registry)", exportedName(request.Name))}, nil
+		plan := destroyPlan{files: files, dryRun: request.DryRun, unwire: fmt.Sprintf("the registration: jobs.Register%s(registry)", exportedName(request.Name))}
+		wiring, wired, err := planQueueJobSeam(root, request, env, true)
+		if err != nil {
+			return destroyPlan{}, err
+		}
+		if wired {
+			plan.routes, plan.routesVerb, plan.unwire = wiring.content, wiring.verb, ""
+		}
+		return plan, nil
 	}
 	flags, positional, err := splitFlags(args, generateUsage, "--dry-run")
 	if err != nil {

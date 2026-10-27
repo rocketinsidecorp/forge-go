@@ -83,7 +83,8 @@ Generated tables are plain tables.
 
 ## Routes seam
 
-Generators mount their routes in `app/bootstrap/routes_gen.go`, in blocks that start with `// forge:`. Never edit
+Generators mount their routes, mailers (the sender and the previews) and queue job registrations in
+`app/bootstrap/routes_gen.go`, in blocks that start with `// forge:`. Never edit
 that file by hand: it carries a checksum, the generators refuse to touch it after a hand edit, and `forge destroy`
 removes their blocks. Change `app/bootstrap/bootstrap.go` for your own wiring. To replace a generated guard
 function, copy it out of `routes_gen.go` into another file of package `bootstrap`, change it there and run any

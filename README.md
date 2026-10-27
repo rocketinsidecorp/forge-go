@@ -760,7 +760,11 @@ detected by its checksum and refused, never overwritten; to replace a guard
 (`protect`, `protectCookie`, `protectPlatformWrite`, `public`), declare a
 function of that name in another file of `app/bootstrap`. Applications
 generated before the seam (no `generatedRoutes` call in `bootstrap.go`) still
-get the wiring printed to paste. The mailer and job generators print theirs. Fields are
+get the wiring printed to paste, and so do those created before `forge new` passed
+the job registry to the seam (for `generate job --queue`). The mailer and job
+generators wire themselves into the seam too: `generate mailer` writes the mail
+sender and the previews, `generate job --queue` the handler's registration on
+the queue registry, and `destroy` takes them out again. Fields are
 `name:type` with `type` one of `string`, `text`, `int`, `bool`, `time`, `uuid`
 (a trailing `?` makes one optional; quote it in shells that expand `?`). The
 full reference is [docs/GENERATORS.md](docs/GENERATORS.md).
@@ -797,7 +801,7 @@ forge routes
 # Mailer: typed methods, text and HTML templates, browser previews, tests
 forge generate mailer user welcome:name,url password_reset:name,reset_url
 FORGE_MAIL_URL=file:tmp/mails FORGE_MAIL_FROM='App <app@example.com>' FORGE_MAIL_PREVIEW=true forge dev
-#   http://localhost:8080/_mail/user/   (after pasting the printed wiring)
+#   http://localhost:8080/_mail/user/   (the generator already wired the previews)
 
 # Job: a typed handler for the persistent queue with its enqueue function and tests
 forge generate job send_welcome user_id:uuid --queue
@@ -815,8 +819,9 @@ unchanged: a file you edited is listed, nothing is removed, and `--force`
 overrides. The same goes for files a bigger generation still needs: a model
 inside a resource or scaffold, a view a controller renders. Migrations are kept unless `--migrations` (run `forge rollback`
 first if they ran), shared files such as the views base are never removed, and
-the routes are taken out of `app/bootstrap/routes_gen.go` (in an application
-without it, the wiring to take out of `bootstrap.go` is printed).
+the routes, mailers and job registrations are taken out of
+`app/bootstrap/routes_gen.go` (in an application without it, the wiring to take
+out of `bootstrap.go` is printed).
 
 `forge new myapp` generates:
 

@@ -100,10 +100,10 @@ func TestNewApplicationsCallTheEmptySeam(t *testing.T) {
 		options scaffold.Options
 		app     scaffold.RoutesApp
 	}{
-		{scaffold.Options{Database: "postgresql"}, scaffold.RoutesApp{Adapter: "postgres", Identity: true}},
-		{scaffold.Options{Database: "mysql"}, scaffold.RoutesApp{Adapter: "mysql"}},
-		{scaffold.Options{Database: "sqlite"}, scaffold.RoutesApp{Adapter: "sqlite"}},
-		{scaffold.Options{Database: "postgresql", API: true}, scaffold.RoutesApp{Adapter: "postgres", API: true}},
+		{scaffold.Options{Database: "postgresql"}, scaffold.RoutesApp{Adapter: "postgres", Identity: true, Queue: true}},
+		{scaffold.Options{Database: "mysql"}, scaffold.RoutesApp{Adapter: "mysql", Queue: true}},
+		{scaffold.Options{Database: "sqlite"}, scaffold.RoutesApp{Adapter: "sqlite", Queue: true}},
+		{scaffold.Options{Database: "postgresql", API: true}, scaffold.RoutesApp{Adapter: "postgres", API: true, Queue: true}},
 		{scaffold.Options{}, scaffold.RoutesApp{}},
 		{scaffold.Options{API: true}, scaffold.RoutesApp{API: true}},
 	} {

@@ -50,6 +50,12 @@ type RoutesApp struct {
 	// block (IdentityBlock), which mounts the sign-in pages and declares the
 	// session store and middleware the guards use.
 	Identity bool
+	// Queue reports that bootstrap.go passes the job registry (`registry
+	// *queue.Registry`, after the database): the blocks of `forge generate
+	// job --queue` register their handlers on it. Applications generated
+	// before the queue was wired do not, and their generator prints the
+	// registration instead.
+	Queue bool
 }
 
 // IdentityBlock is the seam's first block in an application with Forge
@@ -68,8 +74,8 @@ var IdentityBlock = RouteBlock{Kind: "identity", Name: "repository", Body: `	// 
 
 // RouteBlock is one block of routes_gen.go.
 type RouteBlock struct {
-	// Kind is guard, signer, renderer or streams for the shared blocks,
-	// resource, scaffold or controller for a generator's own.
+	// Kind is guard, signer, renderer, streams or mail for the shared blocks,
+	// resource, scaffold, controller, mailer or job for a generator's own.
 	Kind string
 	// Name is the variable a shared block declares, or the plural (resource,
 	// scaffold) or name (controller) of a generated one.
@@ -94,7 +100,7 @@ func (b RouteBlock) ID() string { return b.Kind + " " + b.Name }
 // than written for one of them.
 func (b RouteBlock) Shared() bool {
 	switch b.Kind {
-	case "guard", "signer", "renderer", "streams", "identity":
+	case "guard", "signer", "renderer", "streams", "identity", "mail":
 		return true
 	}
 	return false
@@ -118,6 +124,7 @@ var markerLine = regexp.MustCompile(`^\t// forge:([a-z]+) ([A-Za-z_][A-Za-z0-9_]
 func routesPackages(module, adapter string) map[string]string {
 	packages := map[string]string{
 		"context":     "context",
+		"errors":      "errors",
 		"http":        "net/http",
 		"os":          "os",
 		"time":        "time",
@@ -126,6 +133,8 @@ func routesPackages(module, adapter string) map[string]string {
 		"broadcast":   FrameworkModule + "/broadcast",
 		"fault":       FrameworkModule + "/fault",
 		"i18n":        FrameworkModule + "/i18n",
+		"mail":        FrameworkModule + "/mail",
+		"queue":       FrameworkModule + "/queue",
 		"sqldb":       FrameworkModule + "/sqldb",
 		"uuid":        FrameworkModule + "/uuid",
 		"web":         FrameworkModule + "/web",
@@ -133,6 +142,8 @@ func routesPackages(module, adapter string) map[string]string {
 		"htmlstreams": module + "/app/adapters/htmlstreams",
 		"htmlui":      module + "/app/adapters/htmlui",
 		"httpapi":     module + "/app/adapters/httpapi",
+		"jobs":        module + "/app/jobs",
+		"mailers":     module + "/app/mailers",
 		"persistence": module + "/app/adapters/persistence",
 		"views":       module + "/app/views",
 	}
@@ -156,6 +167,9 @@ func RoutesParameters(app RoutesApp) string {
 	default:
 		parameters = append(parameters, "database *sqldb.DB")
 	}
+	if app.Queue {
+		parameters = append(parameters, "registry *queue.Registry")
+	}
 	if !app.API {
 		parameters = append(parameters, "translator *i18n.Translator")
 	}
@@ -167,6 +181,9 @@ func RoutesCall(app RoutesApp) string {
 	arguments := []string{"ctx", "app"}
 	if app.Adapter != "" {
 		arguments = append(arguments, "database")
+	}
+	if app.Queue {
+		arguments = append(arguments, "registry")
 	}
 	if !app.API {
 		arguments = append(arguments, "translator")
@@ -398,7 +415,7 @@ func routesFile(data templateData) ([]byte, error) {
 func routesAppOf(data templateData) RoutesApp {
 	app := RoutesApp{Module: data.Module, API: data.API}
 	if data.DB != nil {
-		app.Adapter, app.Identity = data.DB.Adapter, data.DB.Identity
+		app.Adapter, app.Identity, app.Queue = data.DB.Adapter, data.DB.Identity, true
 	}
 	return app
 }

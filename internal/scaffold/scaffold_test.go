@@ -101,7 +101,7 @@ func TestGenerateCreatesDockerizedApplication(t *testing.T) {
 			"\tif !app.Serving() {\n\t\t// `routes` and `openapi` only describe the application: no job",
 			"Open refuses a role that could bypass\n\t// row-level security",
 			`app.Readiness("database", database.Ping)`,
-			"if err := generatedRoutes(ctx, app, database, translator); err != nil",
+			"if err := generatedRoutes(ctx, app, database, registry, translator); err != nil",
 		},
 		"app/bootstrap/identity.go": {
 			"\tif app.Serving() {\n\t\tif err := recoveryQueue.Start(recoveryService); err != nil {",

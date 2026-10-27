@@ -93,7 +93,12 @@ func Configure(ctx context.Context, app *forge.App) error {
 		return err
 	}
 {{- end}}
-	// The routes `forge generate scaffold`, `resource` and `controller` add
+	// The persistent job queue's handlers: `forge generate job NAME --queue`
+	// registers each on this registry from the routes seam, and QueueConfigure
+	// below runs a worker for them.
+	registry := queue.NewRegistry()
+	// The routes `forge generate scaffold`, `resource`, `controller` and
+	// `mailer` add, and the job handlers `forge generate job --queue` registers
 	// (app/bootstrap/routes_gen.go, which they rewrite; this file is yours).
 {{- if .DB.Identity}}
 	// The seam mounts the sign-in pages first (identityRoutes, identity.go)
@@ -103,9 +108,9 @@ func Configure(ctx context.Context, app *forge.App) error {
 		return err
 	}
 	// The persistent job queue (its tables come with `migrate`, its
-	// `jobs` command with the binary): a worker for the jobs registered in
-	// QueueConfigure, started only while serving.
-	if err := QueueConfigure(ctx, app, database, queue.NewRegistry()); err != nil {
+	// `jobs` command with the binary): a worker for the registered jobs,
+	// started only while serving.
+	if err := QueueConfigure(ctx, app, database, registry); err != nil {
 		return err
 	}
 {{- if .DB.Jobs}}

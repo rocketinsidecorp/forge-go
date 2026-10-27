@@ -352,10 +352,11 @@ func TestApplicationStartsWithoutMailConfigured(t *testing.T) {
 }
 `
 
-// TestGeneratedMailersBuildWireAndPass generates mailers, pastes the printed
-// wiring into bootstrap.go and requires the application to vet, build, lint
-// and pass its tests, including delivery through the framework's recorder and
-// the previews served by the wired application.
+// TestGeneratedMailersBuildWireAndPass generates mailers, which wire
+// themselves into the routes seam (nothing is pasted), and requires the
+// application to vet, build, lint and pass its tests, including delivery
+// through the framework's recorder and the previews served by the wired
+// application.
 func TestGeneratedMailersBuildWireAndPass(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the go toolchain on generated projects")
@@ -369,15 +370,9 @@ func TestGeneratedMailersBuildWireAndPass(t *testing.T) {
 		t.Run(database.name, func(t *testing.T) {
 			t.Parallel()
 			dir := matrixApplicationFor(t, database.name, "mailer", requests)
-			var parts []resourceWiringParts
-			for _, args := range requests {
-				request, err := parseMailerArgs(args)
-				if err != nil {
-					t.Fatal(err)
-				}
-				parts = append(parts, buildMailerWiring(request, "example.com/mx"))
+			if seam := readFile(t, filepath.Join(dir, "app", "bootstrap", "routes_gen.go")); !strings.Contains(seam, "// forge:mailer user") || !strings.Contains(seam, "// forge:mailer order_notice") {
+				t.Fatalf("the mailers did not wire themselves into the seam:\n%s", seam)
 			}
-			wireParts(t, dir, parts)
 			imports, configuration := wiredTestConfig(database.name)
 			writeFile(t, filepath.Join(dir, "app", "bootstrap", "mailers_wired_test.go"), fmt.Sprintf(mailerWiredTest, imports, configuration,
 				quoted("/_mail/user/", "/_mail/user/welcome", "/_mail/user/password_reset", "/_mail/order_notice/shipped")))
