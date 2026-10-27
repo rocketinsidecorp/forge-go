@@ -13,11 +13,12 @@ FORGE_TEST_REQUIRE_DATABASE=true go test -race ./...   # with the database tests
 FORGE_TEST_REQUIRE_SSHD=true go test ./internal/deploy/  # deploy over a real sshd
 npm install --global --ignore-scripts typescript@6.0.3   # the TypeScript checker (optional locally)
 FORGE_TEST_REQUIRE_TSC=true go test -run TypeScript ./internal/cli   # type-check a generated application with tsc
+FORGE_TEST_REQUIRE_PTY=true go test ./internal/terminal/ ./internal/ptytest/   # the echo-off prompt on a real pseudo-terminal
 ```
 
-`FORGE_TEST_REQUIRE_DATABASE=true`, `FORGE_TEST_REQUIRE_SSHD=true` and
-`FORGE_TEST_REQUIRE_TSC=true` turn a missing server, `sshd` or `tsc` into a
-failure instead of a skip; CI sets them, so these tests can never silently stop
+`FORGE_TEST_REQUIRE_DATABASE=true`, `FORGE_TEST_REQUIRE_SSHD=true`,
+`FORGE_TEST_REQUIRE_TSC=true` and `FORGE_TEST_REQUIRE_PTY=true` turn a missing
+server, `sshd`, `tsc` or pseudo-terminal into a failure instead of a skip; CI sets them, so these tests can never silently stop
 running there (the generated application's TypeScript is type-checked in the
 `generated` job, [ADR 0049](adr/0049-typescript-by-default.md)).
 

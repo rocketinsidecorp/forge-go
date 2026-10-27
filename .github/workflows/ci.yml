@@ -49,6 +49,9 @@ jobs:
       # forge deploy's SSH tests (internal/deploy) fail instead of skipping
       # when sshd, ssh or ssh-keygen is missing.
       FORGE_TEST_REQUIRE_SSHD: "true"
+      # The pseudo-terminal tests (internal/ptytest: the echo-off prompt, the
+      # colored log) fail instead of skipping when no pty can be set up.
+      FORGE_TEST_REQUIRE_PTY: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,6 +115,10 @@ jobs:
     # internal/ptytest pseudo-terminal, is the check that they work on macOS.
     runs-on: macos-latest
     timeout-minutes: 30
+    env:
+      # A pseudo-terminal that cannot be set up (a broken raw ioctl) fails the
+      # job instead of skipping the echo-off test.
+      FORGE_TEST_REQUIRE_PTY: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
