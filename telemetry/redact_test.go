@@ -25,14 +25,18 @@ func allFormats(out *bytes.Buffer, extra ...string) map[string]*slog.Logger {
 }
 
 func TestRedactorHidesEveryDefaultKey(t *testing.T) {
-	keys := []string{"password", "passwd", "secret", "token", "authorization", "cookie", "api_key", "apikey", "session", "email", "phone", "cpf", "cnpj"}
+	keys := []string{
+		"password", "passwd", "secret", "token", "authorization", "cookie", "api_key", "api-key", "apikey",
+		"access_key", "private_key", "credential", "session", "csrf", "jwt", "otp", "dsn", "database_url",
+		"email", "phone", "cpf", "cnpj",
+	}
 	if len(keys) != len(DefaultRedactKeys) {
 		t.Fatalf("the default list changed: %v", DefaultRedactKeys)
 	}
 	for _, key := range keys {
 		// The key alone, as a fragment of a longer one, in another case, and
 		// as the sibling of an unrelated attribute.
-		for _, variant := range []string{key, "user_" + key + "_hash", strings.ToUpper(key), strings.ToUpper(key[:1]) + key[1:], "x." + key} {
+		for _, variant := range []string{key, "user_" + key + "_hash", strings.ToUpper(key), strings.ToUpper(key[:1]) + key[1:], "x." + key, "x-" + key} {
 			var out bytes.Buffer
 			for format, logger := range allFormats(&out) {
 				out.Reset()

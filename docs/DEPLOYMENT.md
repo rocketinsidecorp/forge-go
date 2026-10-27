@@ -177,6 +177,10 @@ value. Durations use Go syntax (`500ms`, `15s`, `1m`).
 | `FORGE_STREAMS_PREVIOUS_KEYS`       | (empty)          | While `FORGE_STREAMS_KEY` is rotated: up to 3 older keys, comma-separated, in the same format. They only verify, so pages open during the rotation keep updating. Rotate in two redeploys, new key as a previous key first ([VIEWS.md](VIEWS.md#rotating-the-stream-signing-key)); unset them after the token lifetime (24 hours by default). Secret, never echoed (an error names the key's position only). Needs `FORGE_STREAMS_KEY`. |
 | `FORGE_I18N_DEFAULT_LOCALE`         | (empty)          | Default locale, canonically spelled (`en`, `pt-BR`); empty uses the application's `locales.DefaultLocale` (`forge new --locale`). It needs a `config/locales/LOCALE.json` ([I18N.md](I18N.md)) |
 | `FORGE_OPENAPI_ENABLED`             | (empty)          | `GET /openapi.json`: empty serves it in `development` and `test` only, `true` everywhere (it lists every documented route; a startup warning outside development and test), `false` never ([OPENAPI.md](OPENAPI.md)) |
+| `FORGE_LOG_FORMAT`                  | `auto`           | `pretty`, `text`, `json` or `auto` (`json` in `staging` and `production`; keep it there: log stores parse it). `NO_COLOR` turns colors off. |
+| `FORGE_LOG_LEVEL`                   | `info`           | `debug`, `info`, `warn` or `error`. The request, SQL and job lines are Debug outside `development`: `debug` turns them on (JSON, `duration` in nanoseconds). |
+| `FORGE_LOG_SLOW_QUERY`              | `100ms`          | A SQL line slower than this carries `slow=true` |
+| `FORGE_LOG_REDACT_KEYS`             | (empty)          | Comma-separated key fragments hidden as `[REDACTED]` on top of the defaults (`password`, `token`, `session`, `email`...). By key only: messages and values are not inspected. |
 | `FORGE_TELEMETRY_ENABLED`           | `true`           | Traces, metrics and log correlation; `false` costs nothing |
 | `FORGE_TELEMETRY_SERVICE_NAME`      | `unknown_service:<binary>` | `service.name` of exported telemetry |
 | `FORGE_TELEMETRY_SERVICE_VERSION`   | (empty)          | `service.version` |
@@ -475,6 +479,12 @@ set `FORGE_TELEMETRY_METRICS_ADDR=0.0.0.0:9464` with
 the internal network only; to ship traces, point
 `FORGE_TELEMETRY_OTLP_ENDPOINT` at an OpenTelemetry Collector. Details,
 collector and Prometheus configuration: [OBSERVABILITY.md](OBSERVABILITY.md).
+
+Logs are JSON in staging and production. Values under keys such as `password`,
+`token`, `session`, `email` and `authorization` are written as `[REDACTED]`
+(extend with `FORGE_LOG_REDACT_KEYS`); redaction is by key only, so log
+identifiers, not objects. `FORGE_LOG_LEVEL=debug` adds a line per request and
+per SQL statement (statement text without arguments) while you investigate.
 
 ## Health checks
 

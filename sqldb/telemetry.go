@@ -156,7 +156,7 @@ func (obs Observation) End(err error) {
 	elapsed := time.Since(obs.start)
 	o.duration.Record(elapsed.Seconds(), o.system, obs.operation, errorType)
 	telemetry.CountQuery(obs.ctx)
-	o.queryLog.Log(obs.ctx, obs.query, elapsed, errorType)
+	o.queryLog.Log(obs.ctx, o.system, obs.query, elapsed, errorType)
 	if !telemetry.SpanContextFromContext(obs.ctx).IsValid() {
 		return
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -228,13 +229,22 @@ func take(attrs []prettyAttr, key string) (slog.Value, []prettyAttr, bool) {
 	return slog.Value{}, attrs, false
 }
 
-// drop removes every attribute named in keys.
+// lastSegment is the part of a dotted key after its group path: a logger
+// under WithGroup("g") writes g.trace_id.
+func lastSegment(key string) string {
+	if i := strings.LastIndexByte(key, '.'); i >= 0 {
+		return key[i+1:]
+	}
+	return key
+}
+
+// drop removes every attribute named in keys, in whatever group.
 func drop(attrs []prettyAttr, keys ...string) []prettyAttr {
 	kept := make([]prettyAttr, 0, len(attrs))
 next:
 	for _, attr := range attrs {
 		for _, key := range keys {
-			if attr.key == key {
+			if lastSegment(attr.key) == key {
 				continue next
 			}
 		}
@@ -368,7 +378,7 @@ func (o *prettyOutput) writeAttrs(line *strings.Builder, attrs []prettyAttr) {
 		} else {
 			line.WriteByte(' ')
 		}
-		switch attr.key {
+		switch lastSegment(attr.key) {
 		case "request_id", LogTraceIDKey, LogSpanIDKey:
 			// Correlation IDs are for searching, not reading.
 			line.WriteString(o.paint(ansiDim, clean(attr.key)+"="+formatValue(attr.value)))
@@ -418,35 +428,54 @@ func formatDuration(d time.Duration) string {
 	return strings.TrimSuffix(strings.TrimSuffix(strconv.FormatFloat(d.Seconds(), 'f', 2, 64), "0"), ".0") + "s"
 }
 
+// hasControl reports whether s holds anything a terminal or a reader could
+// misread as more than text: a rune that is not printable (the C0 and C1
+// controls, among them the 8-bit CSI, OSC and ST; bidirectional overrides and
+// other format characters; separators other than the space) or invalid UTF-8.
+// It is the rule of slog's text handler.
 func hasControl(s string) bool {
-	for _, r := range s {
-		if r < 0x20 || r == 0x7f || r == utf8.RuneError {
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError || (r != ' ' && !unicode.IsPrint(r)) {
 			return true
 		}
+		i += size
 	}
 	return false
 }
 
-// clean returns s with control characters escaped (\n, \x1b), so that text
-// from a request or a job can neither end the line nor drive the terminal.
+// clean returns s with every rune hasControl names escaped (\n, \x1b,
+// \u009b, \u202e, \xff for a byte of invalid UTF-8), so that text from a
+// request or a job can neither end the line nor drive the terminal.
 func clean(s string) string {
 	if !hasControl(s) {
 		return s
 	}
 	var out strings.Builder
-	for _, r := range s {
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
 		switch {
+		case r == utf8.RuneError:
+			// Invalid UTF-8 (one byte), or a literal U+FFFD (three).
+			for _, b := range []byte(s[i : i+size]) {
+				out.WriteString(`\x` + strconv.FormatInt(int64(b)+0x100, 16)[1:])
+			}
 		case r == '\n':
 			out.WriteString(`\n`)
 		case r == '\r':
 			out.WriteString(`\r`)
 		case r == '\t':
 			out.WriteString(`\t`)
+		case r == ' ' || unicode.IsPrint(r):
+			out.WriteRune(r)
 		case r < 0x20 || r == 0x7f:
 			out.WriteString(`\x` + strconv.FormatInt(int64(r)+0x100, 16)[1:])
+		case r < 0x10000:
+			out.WriteString(`\u` + strconv.FormatInt(int64(r)+0x10000, 16)[1:])
 		default:
-			out.WriteRune(r)
+			out.WriteString(`\U` + strconv.FormatInt(int64(r)+0x100000000, 16)[1:])
 		}
+		i += size
 	}
 	return out.String()
 }

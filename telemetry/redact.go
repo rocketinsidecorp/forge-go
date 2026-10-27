@@ -10,10 +10,14 @@ const Redacted = "[REDACTED]"
 
 // DefaultRedactKeys are the key fragments whose attributes are never logged
 // with their value: a key that contains one of them, whatever its case, is
-// redacted ("db_password", "Authorization", "user.email").
+// redacted ("db_password", "Authorization", "x-api-key", "user.email"). A
+// fragment matches inside longer words too ("otp" also redacts "footprint"):
+// over-redacting costs a log line, under-redacting a secret.
 var DefaultRedactKeys = []string{
 	"password", "passwd", "secret", "token", "authorization", "cookie",
-	"api_key", "apikey", "session", "email", "phone", "cpf", "cnpj",
+	"api_key", "api-key", "apikey", "access_key", "private_key", "credential",
+	"session", "csrf", "jwt", "otp", "dsn", "database_url",
+	"email", "phone", "cpf", "cnpj",
 }
 
 // Redactor returns a slog.HandlerOptions.ReplaceAttr that replaces the value

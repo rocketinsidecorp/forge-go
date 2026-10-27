@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 var prettyTime = time.Date(2026, 10, 27, 12, 4, 5, 123_000_000, time.UTC)
@@ -376,5 +377,86 @@ func TestNewOutputHandlerPretty(t *testing.T) {
 	slog.New(NewOutputHandler(&out, LogFormatPretty, nil)).InfoContext(ctx, "traced")
 	if !strings.Contains(out.String(), "trace_id="+span.SpanContext().TraceID.String()) {
 		t.Fatalf("%q", out.String())
+	}
+}
+
+// The 8-bit C1 controls (CSI U+009B, OSC U+009D, ST U+009C), bidirectional
+// overrides and invalid UTF-8 are escaped like the C0 ones: a terminal
+// obeys them, and a request path can carry them.
+func TestPrettyEscapesC1BidiAndInvalidUTF8(t *testing.T) {
+	hostile := map[string]string{
+		"CSI":     "\u009b2J",
+		"OSC":     "\u009d0;PWNED\u009c",
+		"RLO":     "a\u202eevil",
+		"LRI":     "a\u2066b",
+		"ZWSP":    "a\u200bb",
+		"NBSP":    "a\u00a0b",
+		"LS":      "a\u2028b",
+		"astral":  "a\U000e0001b",
+		"invalid": "a\xffb\xc3",
+	}
+	forbidden := []string{"\u009b", "\u009d", "\u009c", "\u202e", "\u2066", "\u200b", "\u00a0", "\u2028", "\U000e0001", "\xff", "\xc3("}
+	check := func(what, got string) {
+		t.Helper()
+		if strings.Count(got, "\n") != 1 {
+			t.Errorf("%s: more than one line: %q", what, got)
+		}
+		if !utf8Valid(got) {
+			t.Errorf("%s: invalid UTF-8 written: %q", what, got)
+		}
+		for _, bad := range forbidden {
+			if strings.Contains(got, bad) {
+				t.Errorf("%s: raw %q reached the output: %q", what, bad, got)
+			}
+		}
+	}
+	for name, text := range hostile {
+		check(name+" message", prettyLine(t, PrettyOptions{Color: true}, slog.LevelWarn, text, slog.String("k", "v")))
+		check(name+" key", prettyLine(t, PrettyOptions{}, slog.LevelInfo, "m", slog.String(text, "v")))
+		check(name+" value", prettyLine(t, PrettyOptions{}, slog.LevelInfo, "m", slog.String("k", text)))
+		check(name+" any", prettyLine(t, PrettyOptions{}, slog.LevelInfo, "m", slog.Any("k", errors.New(text))))
+		check(name+" http", prettyLine(t, PrettyOptions{}, slog.LevelInfo, LogEventHTTP,
+			slog.String("method", text), slog.String("route", text), slog.Int("status", 200), slog.Duration("duration", time.Millisecond), slog.String("request_id", text)))
+		check(name+" sql", prettyLine(t, PrettyOptions{}, slog.LevelInfo, LogEventSQL,
+			slog.String("statement", text), slog.Duration("duration", time.Millisecond), slog.String("error", text)))
+		check(name+" job", prettyLine(t, PrettyOptions{}, slog.LevelError, "job", jobAttrs(text, slog.String("error", text))...))
+	}
+	// The exact escapes.
+	got := prettyLine(t, PrettyOptions{}, slog.LevelWarn, "/\u009b2J\u009d0;PWNED\u009c"+string(rune(0x202e))+"evil\xff", slog.String("k", "\u009b"))
+	want := `12:04:05.123  WARN  /\u009b2J\u009d0;PWNED\u009c\u202eevil\xff  k="\u009b"` + "\n"
+	if got != want {
+		t.Fatalf("%q want %q", got, want)
+	}
+	// Printable text, accented, CJK and emoji, is left alone.
+	got = prettyLine(t, PrettyOptions{}, slog.LevelInfo, "ação 日本語 😀 ünï")
+	if got != "12:04:05.123  INFO  ação 日本語 😀 ünï\n" {
+		t.Fatalf("%q", got)
+	}
+	// A literal U+FFFD is escaped byte by byte too.
+	if got := clean("a\ufffdb"); got != `a\xef\xbf\xbdb` {
+		t.Fatalf("%q", got)
+	}
+}
+
+func utf8Valid(s string) bool { return utf8.ValidString(s) }
+
+// A logger under WithGroup writes g.trace_id; the event lines still hide it.
+func TestPrettyHidesTraceIDsInGroups(t *testing.T) {
+	var out bytes.Buffer
+	logger := slog.New(fixedTime{NewPrettyHandler(&out, PrettyOptions{})}).WithGroup("g").With(LogTraceIDKey, "t1", LogSpanIDKey, "s1", "request_id", "r1")
+	logger.LogAttrs(context.Background(), slog.LevelInfo, LogEventSQL, slog.String("statement", "SELECT 1"), slog.Duration("duration", time.Millisecond))
+	// Grouped attributes are not the event's own: it is a plain line, with the
+	// correlation IDs shown.
+	if !strings.Contains(out.String(), "g.trace_id=t1") {
+		t.Fatalf("%q", out.String())
+	}
+	got := prettyLine(t, PrettyOptions{}, slog.LevelInfo, LogEventHTTP,
+		slog.String("method", "GET"), slog.Int("status", 200), slog.Duration("duration", time.Millisecond),
+		slog.String("g.trace_id", "t1"), slog.String("x.span_id", "s1"))
+	if strings.Contains(got, "trace_id") || strings.Contains(got, "span_id") {
+		t.Fatalf("%q", got)
+	}
+	if kept := drop([]prettyAttr{{key: "g.component"}, {key: "component"}, {key: "g.other"}}, "component"); len(kept) != 1 || kept[0].key != "g.other" {
+		t.Fatalf("%v", kept)
 	}
 }

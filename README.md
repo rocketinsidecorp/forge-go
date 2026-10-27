@@ -1385,9 +1385,11 @@ cannot exceed `FORGE_HTTP_MAX_BODY_BYTES`.
 ### Development log
 
 `forge dev` writes a Rails-style log: one line per request (method, route
-pattern, status, time, number of SQL queries, request ID), per SQL statement
-(text and time, never the arguments; yellow when slow) and per job attempt, in
-color on a terminal. Production keeps JSON with the same event names.
+pattern, status, time, number of SQL queries, request ID) and per SQL statement
+(text and time, never the arguments; yellow when slow), in color on a
+terminal. Job lines show failures and retries always; successes only when the
+worker is built with `LogSuccesses` (below). Production keeps JSON with the
+same event names (`duration` is in nanoseconds there).
 
 ```bash
 forge dev                                  # pretty on a terminal: nothing to set
@@ -1409,7 +1411,10 @@ FORGE_LOG_REDACT_KEYS=iban,card forge dev  # more keys to hide, on top of the de
 
 The value of every log attribute whose key contains `password`, `passwd`,
 `secret`, `token`, `authorization`, `cookie`, `api_key`, `apikey`, `session`,
-`email`, `phone`, `cpf` or `cnpj` is written as `[REDACTED]` in every format.
+`email`, `phone`, `cpf` or `cnpj` (and `api-key`, `access_key`, `private_key`,
+`credential`, `csrf`, `jwt`, `otp`, `dsn`, `database_url`) is written as
+`[REDACTED]` in every format. Redaction is by key only: messages and values
+(structs, headers) are not inspected, so log identifiers, not objects.
 A worker you build logs its successes at Info in development with
 `queue.WorkerOptions{LogSuccesses: cfg.EventLevel() == slog.LevelInfo}`. The
 layout, the variables, the redaction rules and the JSON events:

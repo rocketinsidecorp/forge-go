@@ -113,3 +113,59 @@ func TestDisabledTelemetryAddsNoAllocations(t *testing.T) {
 		t.Fatalf("disabled telemetry allocates %v per request, baseline %v", got, want)
 	}
 }
+
+// developmentApp is the application as `forge dev` runs it: the development
+// environment, so every request writes its line (telemetry.AccessLog), in the
+// pretty layout, to a discarded output.
+func developmentApp(tb testing.TB, tel *telemetry.Telemetry) http.Handler {
+	tb.Helper()
+	logger := slog.New(telemetry.NewPrettyOutputHandler(io.Discard, telemetry.PrettyOptions{}))
+	app, err := forge.New(forge.WithConfig(config.Default()), forge.WithLogger(logger), forge.WithTelemetry(tel))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if err := app.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }); err != nil {
+		tb.Fatal(err)
+	}
+	return app.Handler()
+}
+
+// BenchmarkDevelopmentAccessLog measures what the development log adds to a
+// request: "quiet" is the same chain at the test environment's Debug level,
+// which the logger drops, "request_line" writes the HTTP line.
+func BenchmarkDevelopmentAccessLog(b *testing.B) {
+	request := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+	for _, tc := range []struct {
+		name    string
+		handler http.Handler
+	}{
+		{"quiet", benchmarkApp(b, nil)},
+		{"request_line", developmentApp(b, nil)},
+		{"request_line_with_telemetry", developmentApp(b, benchmarkTelemetry(b, nil))},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				serve(tc.handler, request)
+			}
+		})
+	}
+}
+
+// maxAccessLogAllocations bounds what the request line adds to a request, so a
+// change that makes the development log costlier fails here instead of being
+// noticed in a profile. It adds 20 today (headroom for a Go upgrade).
+const maxAccessLogAllocations = 24
+
+func TestDevelopmentAccessLogAllocationsAreBounded(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/users/42", nil)
+	quiet, logged := benchmarkApp(t, nil), developmentApp(t, nil)
+	serve(quiet, request)
+	serve(logged, request)
+	base := testing.AllocsPerRun(200, func() { serve(quiet, request) })
+	got := testing.AllocsPerRun(200, func() { serve(logged, request) })
+	t.Logf("quiet %v allocations per request, with the request line %v", base, got)
+	if added := got - base; added > maxAccessLogAllocations {
+		t.Fatalf("the development request line adds %v allocations per request, more than %d", added, maxAccessLogAllocations)
+	}
+}

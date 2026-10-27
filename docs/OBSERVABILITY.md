@@ -105,24 +105,34 @@ terminal; the layout does not:
   request, with a blank time column. It carries the statement text, **never
   the arguments**, and masks the literals of a statement an application built
   by concatenation (`'ana@example.com'` becomes `'?'`, `42` becomes `?`),
-  collapses whitespace and cuts it at 240 characters. The duration is yellow
+  collapses whitespace and cuts it at 240 characters. The masking follows the
+  database's own lexical rules: on MySQL and MariaDB `"..."` is a string and a
+  backslash escapes; on PostgreSQL a backslash escapes only in `E'...'` and
+  `$tag$...$tag$` is a string; on SQLite neither. Anything unterminated masks the
+  rest of the statement. It is a lexer, not a parser: use placeholders. The duration is yellow
   when the statement is slower than `FORGE_LOG_SLOW_QUERY`, red when it failed
   (the line then ends with `error=unique_violation`, the class and never the
   database's message, which quotes the value).
 * **JOB** is the outcome of one attempt of a persistent job: green when it
   succeeded, red when it failed (retry scheduled, or dead), with queue,
-  attempt and duration. A failure also carries the job ID and the sanitized
-  error. A successful job is logged at Info only when the worker is built with
-  `queue.WorkerOptions{LogSuccesses: true}` (the development default is
-  `cfg.EventLevel() == slog.LevelInfo`); otherwise it is Debug, so a
-  production worker does not write a line per job.
+  attempt and duration. Failures and retries always appear (Warn and Error),
+  with the job ID and the sanitized error; a **success** appears only when the
+  worker is built with `queue.WorkerOptions{LogSuccesses: true}` (Info; the
+  development default is `cfg.EventLevel() == slog.LevelInfo`), and is Debug
+  otherwise, so a production worker does not write a line per job. Generated
+  applications build no worker: the scheduler's jobs have their own log lines.
 * Every other record reads `time LEVEL message key=value`, the level colored.
-  Control characters in messages and values are escaped (`\n`, `\x1b`), so
-  request input cannot forge a line or send terminal escapes.
+  Every character that is not printable (the C0 and C1 controls, which
+  include the 8-bit CSI, OSC and ST, bidirectional overrides such as U+202E,
+  other format and separator characters) and every invalid UTF-8 byte is
+  escaped (`\n`, `\x1b`, `\u009b`, `\u202e`, `\xff`), the rule of slog's
+  text handler, so request input (a path that reaches a log line) cannot forge
+  a line or send terminal escapes.
 
 The lines are the same events in every format. In JSON they are
 `"msg":"http request"` (`method`, `route`, `status`, `duration`, `queries`,
-`request_id`, `trace_id`), `"msg":"sql query"` (`statement`, `duration`,
+`request_id`, `trace_id`; `duration` is in **nanoseconds**, as slog's JSON
+handler writes every `time.Duration`), `"msg":"sql query"` (`statement`, `duration`,
 `slow`, `error`, `request_id`) and the worker's `"msg":"job succeeded"` (and
 its failure siblings), with the request's `trace_id` and `span_id` when
 telemetry traces the request.
@@ -145,8 +155,12 @@ say) without a code change.
 Every format (pretty, text and JSON, and so the log exporter too) replaces the
 value of an attribute with `[REDACTED]` when its key contains one of these
 fragments, whatever its case: `password`, `passwd`, `secret`, `token`,
-`authorization`, `cookie`, `api_key`, `apikey`, `session`, `email`, `phone`,
-`cpf`, `cnpj`. `user_password_hash`, `Authorization` and `x.api_key` match; an
+`authorization`, `cookie`, `api_key`, `api-key` (so `X-Api-Key` too), `apikey`,
+`access_key`, `private_key`, `credential`, `session`, `csrf`, `jwt`, `otp`,
+`dsn`, `database_url`, `email`, `phone`, `cpf` and `cnpj`. A fragment matches
+inside longer words (`otp` also hides `footprint`): over-redacting costs a log
+line, under-redacting a secret. `user_password_hash`, `Authorization` and
+`x.api_key` match; an
 attribute inside a group matches by its own key or by the name of a group it
 is in (`slog.Group("cookie", ...)`). Add more with
 `FORGE_LOG_REDACT_KEYS=iban,card`, or in code:
