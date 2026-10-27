@@ -210,7 +210,11 @@ SQLite tests use temporary files and need none of these.
 
 Run `forge doctor` with the same environment to validate a configuration
 before deploying; it prints the database URL without the password and
-without query parameters other than `sslmode`. Note
+without query parameters other than `sslmode`, and it checks that the database
+server answers: a TCP connection to its host and port within 3 seconds (never
+a login; SQLite reports whether the file exists, a PostgreSQL socket is not
+checked). It exits 1 when the configuration is invalid or the server does not
+answer, so run it where the database is reachable. Note
 that `forge doctor` also reads `.env.development` and `.env.local` from the
 current directory.
 

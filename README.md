@@ -1075,7 +1075,7 @@ response against the document. Details, type mapping and tags:
 | `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...`, `forge app shell [--image IMAGE]` | Run a command or a shell next to the deployed application |
 | `forge credentials init \| edit \| show \| rotate-key [--environment E]` | Encrypted credentials: create a key and skeleton, edit in `$EDITOR` (plaintext shredded on every exit path), show redacted (`--reveal` on a terminal only), rotate the key. See [docs/CREDENTIALS.md](docs/CREDENTIALS.md) |
 | `forge i18n check [--json]` | Read-only: list the translations each locale in `config/locales` lacks (keys of the other locales and literal keys used by `t` and `i18n.T`), missing CLDR plural forms and unused keys; exit 1 when anything is missing. See [Translations](#translations-i18n) |
-| `forge doctor [--json]` | Load and validate configuration; JSON mode emits versioned, secret-safe diagnostics with remediation codes |
+| `forge doctor [--json]` | Load and validate configuration and check that the database server answers (a TCP connection within 3 seconds, no login; SQLite: the file); exits 1 when anything is wrong. JSON mode emits versioned, secret-safe diagnostics with remediation codes |
 | `forge inspect --json` | Read-only, versioned inventory of commands, migrations, static routes, modules and database adapter |
 | `forge routes [NAME]` | Table of every route registered while the application composes (HTML and JSON, including the `/v1/<plural>` routes of generated resources) with its resource action and the source line that registered it, plus Forge's built-in routes. Builds `cmd/NAME` and runs its `routes` command without serving HTTP: `Configure` sees `app.Serving()` false, so a generated application opens its PostgreSQL or MySQL pool lazily (`postgres.Lazy`, `mysql.Lazy`) and starts no scheduler or worker, and the command works with the database stopped and records no job tick; `NAME` picks `cmd/NAME` when there are several binaries. When the application cannot be built or configured it says why on stderr and lists what a scan of the source finds (literal paths only). Try `forge routes \| grep /v1` |
 | `forge openapi [--output FILE \| --check FILE]` | Build the application and run its `openapi` command with the development environment: print or write the OpenAPI 3.1 document of the described routes, list undescribed ones on stderr; `--check` exits 1 when FILE is out of date. See [OpenAPI](#openapi) |
@@ -1555,6 +1555,15 @@ number, never its content.
 
 `.env.development` is committed and must not contain real secrets; put
 personal overrides in `.env.local`, which is git-ignored.
+
+`forge doctor` validates that configuration and checks that the database
+server answers: a TCP connection to its host within 3 seconds, never a login
+(SQLite: whether the file exists). It exits 1 when anything is wrong:
+
+```bash
+forge doctor          # configuration: ok ... database reachability: the server accepts connections
+forge doctor --json   # {"ok":true,...}; database.unreachable when the server does not answer
+```
 
 ### Application binary commands
 

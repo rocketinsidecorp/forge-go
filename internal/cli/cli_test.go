@@ -231,12 +231,13 @@ func TestRunDoctorJSONReportsHealthyConfigurationWithoutDatabaseSecrets(t *testi
 
 	root := t.TempDir()
 	var stdout bytes.Buffer
+	server := listenForDoctor(t)
 	if err := runDoctorAt([]string{"--json"}, &stdout, root, []string{
-		"FORGE_DATABASE_URL=postgres://alice:super-secret@db.example/app?sslmode=verify-full",
+		"FORGE_DATABASE_URL=postgres://alice:super-secret@" + server + "/app?sslmode=verify-full",
 	}); err != nil {
 		t.Fatalf("run doctor: %v", err)
 	}
-	if strings.Contains(stdout.String(), "super-secret") || strings.Contains(stdout.String(), "db.example") {
+	if strings.Contains(stdout.String(), "super-secret") || strings.Contains(stdout.String(), server) {
 		t.Fatalf("JSON doctor leaked database URL details: %s", stdout.String())
 	}
 	var report doctorReport

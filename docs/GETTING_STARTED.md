@@ -883,7 +883,13 @@ environment: development
 http address: 127.0.0.1:8080
 transport: plain
 database: postgres://blog@127.0.0.1:27521/blog_development?sslmode=disable
+database reachability: the server accepts connections
 ```
+
+The last line is a TCP connection to the database host within 3 seconds; the
+doctor never logs in. When the server does not answer it prints
+`database reachability: unreachable (connection refused)` and an `error:` line,
+and exits 1 (`--json` reports the diagnostic `database.unreachable`).
 
 `forge db rollback`/`forge rollback` revert your newest migration, never a
 framework table. The generated `.github/workflows/ci.yml` runs gofmt, vet, the
