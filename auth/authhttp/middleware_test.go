@@ -120,12 +120,17 @@ func TestMiddlewareConstructionAndFailureModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var withoutTenant bool
 	call := func(session auth.Session, found bool, resolveErr error) int {
 		middleware, err := NewMiddleware(auth.ResolverFunc(func(context.Context, auth.Digest) (auth.Session, bool, error) {
 			return session, found, resolveErr
 		}), WithClock(func() time.Time { return now }))
 		if err != nil {
 			t.Fatal(err)
+		}
+		if withoutTenant {
+			// A principal whose tenant is missing, which only auth could build.
+			middleware.tenantOf = func(auth.Principal) tenancy.Tenant { return tenancy.Tenant{} }
 		}
 		handler := middleware.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if _, ok := auth.FromContext(r.Context()); !ok {
@@ -148,12 +153,14 @@ func TestMiddlewareConstructionAndFailureModes(t *testing.T) {
 	if code := call(auth.Session{Principal: valid, ExpiresAt: now}, true, nil); code != http.StatusUnauthorized {
 		t.Errorf("expired session: status=%d", code)
 	}
-	// A resolver returning a principal without a valid subject is a server
-	// fault, never an authenticated request. (auth.NewPrincipal makes no
-	// principal without a tenant; the middleware still refuses one, but only
-	// package auth can build it.)
+	// A resolver returning a principal without a valid subject, or one
+	// without a tenant, is a server fault, never an authenticated request.
 	if code := call(auth.Session{Principal: auth.Principal{}, ExpiresAt: now.Add(time.Hour)}, true, nil); code != http.StatusInternalServerError {
 		t.Errorf("invalid principal: status=%d", code)
+	}
+	withoutTenant = true
+	if code := call(auth.Session{Principal: valid, ExpiresAt: now.Add(time.Hour)}, true, nil); code != http.StatusInternalServerError {
+		t.Errorf("principal without tenant: status=%d", code)
 	}
 }
 

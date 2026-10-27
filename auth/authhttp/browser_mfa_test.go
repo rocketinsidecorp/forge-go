@@ -835,3 +835,81 @@ func TestBrowserMFAFailedChangeKeepsTheStepUpBackupCode(t *testing.T) {
 		t.Fatalf("rotation confirm status=%d error=%q", rotated.Code, rotated.Header().Get("X-Error"))
 	}
 }
+
+// TestBrowserMFAChangesRefuseARequestWithoutAVerifiedCSRFToken: every
+// two-factor change checks csrf.Verified itself, before the throttle, the
+// password or the store: a route mounted without csrf.Protection, or exempted
+// from it, refuses the change and starts, uses up and records nothing.
+func TestBrowserMFAChangesRefuseARequestWithoutAVerifiedCSRFToken(t *testing.T) {
+	t.Parallel()
+	f := newMFASettingsFixture(t, auth.DefaultMFAThrottleConfig())
+	_, backup := f.enable(f.bob)
+	before := len(f.events)
+	login := browserLogin(t, knownIdentity(t, mfaTestPassword, false), &sessionStub{})
+	browser, err := NewBrowser(BrowserOptions{Login: login, Sessions: &browserRevoker{}, MFA: f.mfa, Passwords: f.accounts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant, err := tenancy.New(uuid.MustNew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// request is a signed-in POST carrying a CSRF cookie and the same token
+	// in the form, but that never went through csrf.Protection.
+	request := func(subject uuid.UUID) *http.Request {
+		principal, err := auth.NewPrincipal(subject, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := csrf.NewToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		form := url.Values{"password": {mfaTestPassword}, "code": {backup[0]}, csrf.FormField: {token}}
+		r := httptest.NewRequest(http.MethodPost, browserSite+"/mfa", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.AddCookie(&http.Cookie{Name: csrf.CookieName, Value: token})
+		return r.WithContext(withPrincipal(r.Context(), principal))
+	}
+	proof := auth.MFAStepUp{Password: mfaTestPassword, Code: backup[0]}
+	for name, change := range map[string]func(w http.ResponseWriter) error{
+		"begin enrollment": func(w http.ResponseWriter) error {
+			_, err := browser.BeginMFAEnrollment(w, request(f.ada), "Forge", proof)
+			return err
+		},
+		"confirm enrollment": func(w http.ResponseWriter) error {
+			_, err := browser.ConfirmMFAEnrollment(w, request(f.ada), "Forge", proof, "000000")
+			return err
+		},
+		"begin rotation": func(w http.ResponseWriter) error {
+			_, err := browser.BeginMFARotation(w, request(f.bob), "Forge", proof)
+			return err
+		},
+		"confirm rotation": func(w http.ResponseWriter) error {
+			_, err := browser.ConfirmMFARotation(w, request(f.bob), "Forge", proof, "000000")
+			return err
+		},
+		"regenerate backup codes": func(w http.ResponseWriter) error {
+			_, err := browser.RegenerateMFABackupCodes(w, request(f.bob), proof)
+			return err
+		},
+		"disable": func(w http.ResponseWriter) error { return browser.DisableMFA(w, request(f.bob), proof) },
+	} {
+		recorder := httptest.NewRecorder()
+		if err := change(recorder); !errors.Is(err, ErrCSRFInvalid) {
+			t.Errorf("%s: err=%v, want ErrCSRFInvalid", name, err)
+		}
+		if recorder.Header().Get("Cache-Control") != "no-store" || len(recorder.Result().Cookies()) != 0 {
+			t.Errorf("%s: headers %v", name, recorder.Header())
+		}
+	}
+	if ada := f.accounts.account(f.ada); ada.pending != nil || ada.factor != nil {
+		t.Error("an enrollment was started or confirmed without a verified CSRF token")
+	}
+	if bob := f.accounts.account(f.bob); bob.pending != nil || bob.factor == nil || f.status(f.bob).BackupCodesRemaining != auth.DefaultMFABackupCodeCount {
+		t.Error("bob's factor or backup codes changed without a verified CSRF token")
+	}
+	if len(f.events) != before {
+		t.Errorf("refusals before the step-up were audited or throttled: %+v", f.events[before:])
+	}
+}

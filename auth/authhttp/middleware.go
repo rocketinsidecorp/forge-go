@@ -20,6 +20,10 @@ type Middleware struct {
 	resolver auth.Resolver
 	auditor  auth.SecurityAuditor
 	now      func() time.Time
+	// tenantOf is the tenant a principal acts in: Principal.Tenant. auth
+	// never builds a principal without a tenant, so only the tests of this
+	// package replace it, to prove such a principal is refused.
+	tenantOf func(auth.Principal) tenancy.Tenant
 }
 
 // Option configures a Middleware.
@@ -53,7 +57,7 @@ func NewMiddleware(resolver auth.Resolver, options ...Option) (*Middleware, erro
 	if resolver == nil {
 		return nil, errors.New("session resolver is required")
 	}
-	middleware := &Middleware{resolver: resolver, now: time.Now}
+	middleware := &Middleware{resolver: resolver, now: time.Now, tenantOf: auth.Principal.Tenant}
 	for _, option := range options {
 		if option == nil {
 			return nil, errors.New("nil authentication option")
@@ -107,7 +111,7 @@ func (m *Middleware) authenticateContext(r *http.Request, secret string) (contex
 		return nil, fault.New("internal_error", "internal server error", fault.CategoryInternal, 0).
 			WithCause(errors.New("session resolver returned an invalid principal"))
 	}
-	ctx, err := tenancy.WithContext(r.Context(), session.Principal.Tenant())
+	ctx, err := tenancy.WithContext(r.Context(), m.tenantOf(session.Principal))
 	if err != nil {
 		return nil, fault.New("internal_error", "internal server error", fault.CategoryInternal, 0).WithCause(err)
 	}
