@@ -100,12 +100,14 @@ type BrowserOptions struct {
 // method that sets cookies succeeds, redirect: the CSRF token was rotated, so
 // a page rendered in the same response would embed the old one.
 type Browser struct {
-	login     *LoginService
-	sessions  SessionRevoker
-	mfa       *MFAService
-	passwords SubjectPasswordStore
-	recovery  *RecoveryService
-	auditor   SecurityAuditor
+	login    *LoginService
+	sessions SessionRevoker
+	mfa      *MFAService
+	recovery *RecoveryService
+	auditor  SecurityAuditor
+	// stepUpGate re-authenticates before a two-factor change; nil without
+	// MFA or Passwords.
+	stepUpGate *MFAStepUpGate
 }
 
 // NewBrowser validates options.
@@ -116,14 +118,21 @@ func NewBrowser(opts BrowserOptions) (*Browser, error) {
 	if opts.Sessions == nil {
 		return nil, errors.New("auth: browser sign-out needs a session revoker")
 	}
-	return &Browser{
-		login:     opts.Login,
-		sessions:  opts.Sessions,
-		mfa:       opts.MFA,
-		passwords: opts.Passwords,
-		recovery:  opts.Recovery,
-		auditor:   opts.Auditor,
-	}, nil
+	browser := &Browser{
+		login:    opts.Login,
+		sessions: opts.Sessions,
+		mfa:      opts.MFA,
+		recovery: opts.Recovery,
+		auditor:  opts.Auditor,
+	}
+	if opts.MFA != nil && opts.Passwords != nil {
+		gate, err := NewMFAStepUpGate(opts.Login, opts.MFA, opts.Passwords)
+		if err != nil {
+			return nil, err
+		}
+		browser.stepUpGate = gate
+	}
+	return browser, nil
 }
 
 // MFAEnabled reports whether accounts with a second factor can sign in.

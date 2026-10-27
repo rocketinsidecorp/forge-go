@@ -3,9 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
-	"net/http"
 	"runtime"
-	"strconv"
 	"sync"
 	"time"
 
@@ -28,9 +26,9 @@ const (
 	// ErrPasswordHashingUnavailable.
 	DefaultPasswordWorkWait = 2 * time.Second
 
-	// passwordWorkRetryAfter is the Retry-After of the 503 a saturated
+	// PasswordWorkRetryAfter is the Retry-After of the 503 a saturated
 	// limiter causes.
-	passwordWorkRetryAfter = 5 * time.Second
+	PasswordWorkRetryAfter = 5 * time.Second
 )
 
 // ErrPasswordHashingUnavailable means every password-hashing slot stayed busy
@@ -117,12 +115,4 @@ func (l *PasswordWorkLimiter) Do(ctx context.Context, work func()) error {
 	defer func() { <-l.slots }()
 	work()
 	return nil
-}
-
-// setPasswordWorkRetryAfter sets Retry-After when err is a saturated
-// PasswordWorkLimiter, whose 503 the caller then writes.
-func setPasswordWorkRetryAfter(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrPasswordHashingUnavailable) {
-		w.Header().Set("Retry-After", strconv.Itoa(int(passwordWorkRetryAfter/time.Second)))
-	}
 }
