@@ -173,17 +173,75 @@ func TestLoginWithAnArgon2idHashAndNothingRegisteredIsUnavailable(t *testing.T) 
 	}
 	for _, password := range []string{"correct horse battery staple", "wrong password"} {
 		result, err := service.Login(context.Background(), LoginInput{Email: "ada@example.com", Password: password, TenantSlug: "acme"})
-		if !errors.Is(err, ErrPasswordAlgorithmUnavailable) || errors.Is(err, ErrCredentialsInvalid) || result.Token.Reveal() != "" {
+		if !errors.Is(err, ErrPasswordAlgorithmUnavailable) || errors.Is(err, ErrCredentialsInvalid) || !result.ExpiresAt.IsZero() {
 			t.Fatalf("%q: Login = %+v, %v; want ErrPasswordAlgorithmUnavailable", password, result, err)
 		}
 	}
 	if len(store.replaced) != 0 || store.identity.PasswordHash != stored {
 		t.Fatalf("the Argon2id hash was rewritten: %v", store.replaced)
 	}
+	// Each attempt is audited as a login that failed (it could not be
+	// checked), never as denied (a wrong password) or succeeded.
+	if len(auditor.events) != 2 {
+		t.Fatalf("audited %+v, want two events", auditor.events)
+	}
 	for _, event := range auditor.events {
-		if event.Kind == SecurityLoginFailed || event.Kind == SecurityLoginSucceeded {
-			t.Fatalf("audited %s for a sign-in that could not be checked", event.Kind)
+		if event.Kind != SecurityLoginFailed || event.Outcome != SecurityOutcomeFailed || event.SubjectID != store.identity.SubjectID {
+			t.Fatalf("audited %+v, want auth.login.failed with the outcome failed for the account", event)
 		}
+	}
+}
+
+// A hasher set to Argon2id with nothing registered still verifies PBKDF2
+// hashes. The right password signs in and the hash is left as it is (the
+// rehash cannot run); answering it 503 only after the password matched
+// would tell a right password from a wrong one, which gets the usual
+// ErrCredentialsInvalid.
+func TestLoginSkipsTheRehashWhenArgon2idIsNotRegistered(t *testing.T) {
+	t.Parallel()
+	legacy, err := hashPassword("correct horse battery staple", minAcceptedPasswordIterations, bytes.NewReader(make([]byte, passwordSaltBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newRehashStore(t, legacy)
+	hasher := unregisteredHasher(t, WithPasswordAlgorithm(PasswordAlgorithmArgon2id), WithLegacyHashTimingFloor(false))
+	sessions := &sessionStub{}
+	service, err := NewLoginService(store, sessions, WithLoginPasswordHasher(hasher))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Login(context.Background(), LoginInput{Email: "ada@example.com", Password: "correct horse battery staple", TenantSlug: "acme"})
+	if err != nil || result.ExpiresAt.IsZero() || sessions.membership != store.identity.MembershipID {
+		t.Fatalf("right password: %+v, %v; want a session for the account", result, err)
+	}
+	if len(store.replaced) != 0 || store.identity.PasswordHash != legacy {
+		t.Fatalf("the PBKDF2 hash was rewritten: %v", store.replaced)
+	}
+	if _, err := service.Login(context.Background(), LoginInput{Email: "ada@example.com", Password: "wrong password", TenantSlug: "acme"}); !errors.Is(err, ErrCredentialsInvalid) {
+		t.Fatalf("wrong password: %v, want ErrCredentialsInvalid", err)
+	}
+}
+
+// The MFA step-up against an Argon2id hash with nothing registered fails
+// with ErrPasswordAlgorithmUnavailable and is audited as failed, not denied.
+func TestMFAStepUpWithNothingRegisteredIsAuditedAsFailed(t *testing.T) {
+	t.Parallel()
+	const action = SecurityMFAEnrollmentStarted
+	f := newFaultMFA(t)
+	login, err := NewLoginService(newAccountsStore(t, nil), &sessionStub{}, WithLoginPasswordHasher(unregisteredHasher(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := NewMFAStepUpGate(login, f.service, f.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = gate.Check(context.Background(), f.subject, "192.0.2.1", action, MFAStepUp{Password: mfaTestPassword}, false, nil)
+	if !errors.Is(err, ErrPasswordAlgorithmUnavailable) {
+		t.Fatalf("Check = %v, want ErrPasswordAlgorithmUnavailable", err)
+	}
+	if len(f.audits) != 1 || f.audits[0].Kind != action || f.audits[0].Outcome != SecurityOutcomeFailed || deniedAudits(f, action) != 0 {
+		t.Fatalf("audits %+v, want one %s with the outcome failed", f.audits, action)
 	}
 }
 

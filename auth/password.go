@@ -92,9 +92,11 @@ var (
 	// ErrPasswordAlgorithmUnavailable is returned for a stored $argon2id$
 	// hash, or an Argon2id hasher asked to hash, while no Argon2id
 	// implementation is registered (RegisterArgon2id). It fails closed: it
-	// is not a wrong password, the hash is never rewritten, and HTTP
-	// adapters answer 503 through web.Error, which logs the Cause naming
-	// the fix. It is a deployment error, not a transient one.
+	// is not a wrong password, the sign-in neither rewrites the hash nor
+	// issues a session (it audits auth.login.failed with the outcome
+	// failed), and HTTP adapters answer 503 through web.Error, which logs
+	// the Cause naming the fix. It is a deployment error, not a transient
+	// one. (A password reset, which needs no verification, writes PBKDF2.)
 	ErrPasswordAlgorithmUnavailable = &fault.Error{
 		Code:     "password_algorithm_unavailable",
 		Message:  "service temporarily unavailable",

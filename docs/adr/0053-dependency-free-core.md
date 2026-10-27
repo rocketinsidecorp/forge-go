@@ -76,7 +76,12 @@ afterwards the core needs nothing, which the later steps rely on.
     iterations (the format and parameters of ADR 0048's PBKDF2), and
     verifying a stored `$argon2id$` hash fails closed with
     `auth.ErrPasswordAlgorithmUnavailable`: before any hashing, never a
-    mismatch, never a rehash. It is a `fault.Error` of category
+    mismatch, never a rehash at sign-in, audited as `auth.login.failed` (or
+    the step-up's event) with the outcome `failed`. A password reset needs
+    no verification and writes PBKDF2. A hasher set to Argon2id with nothing
+    registered skips the rehash of a verified PBKDF2 hash (as when hashing
+    is saturated), so a right password is not told from a wrong one by a
+    `503`. It is a `fault.Error` of category
     `unavailable`, so the HTTP adapters answer `503` through `web.Error`,
     which logs its cause naming the fix (link an identity store or call
     `auth.RegisterArgon2id(argon2.IDKey)`). A hasher set to Argon2id with

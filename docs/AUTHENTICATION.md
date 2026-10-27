@@ -116,10 +116,14 @@ registered:
   verifies;
 - verifying an existing `$argon2id$` hash fails closed with
   `auth.ErrPasswordAlgorithmUnavailable`: the sign-in (or step-up) answers
-  `503` and the request log names the fix; it is never counted as a wrong
-  password and the hash is never rewritten. A hasher built with
+  `503`, the request log names the fix and the attempt is audited
+  (`auth.login.failed`, or the step-up's event, with the outcome `failed`);
+  it is never counted as a wrong password, and the sign-in never rewrites the
+  hash. A password reset still works and writes the new password as PBKDF2,
+  which replaces the Argon2id hash. A hasher built with
   `auth.WithPasswordAlgorithm(auth.PasswordAlgorithmArgon2id)` refuses to hash
-  the same way. Register Argon2id (or link an identity store) and restart.
+  the same way (it still verifies PBKDF2 hashes and then skips the rehash).
+  Register Argon2id (or link an identity store) and restart.
 
 Either framework verifies the other's hashes (a test verifies a hash written
 by Forge-Rust). Verification uses the cost the stored hash names, within

@@ -222,8 +222,12 @@ func NewLoginService(passwords PasswordStore, sessions CredentialSessionCreator,
 // Login returns ctx's error (joined with any audit error). A successful
 // check is not padded; the first one of a PBKDF2 account costs PBKDF2 plus
 // the Argon2id rehash. A rehash refused because hashing is saturated
-// (ErrPasswordHashingUnavailable) is skipped, not an error: the password was
-// right, and the next sign-in tries again.
+// (ErrPasswordHashingUnavailable), or because the hasher is set to Argon2id
+// and none is registered (ErrPasswordAlgorithmUnavailable), is skipped, not
+// an error: the password was right, and the next sign-in tries again. A
+// stored Argon2id hash with none registered fails the sign-in with
+// ErrPasswordAlgorithmUnavailable, audited as auth.login.failed with the
+// outcome failed.
 func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult, error) {
 	if input.Password == "" || len(input.Password) > maxPasswordBytes {
 		return LoginResult{}, ErrCredentialsInvalid
@@ -260,7 +264,7 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 		// A miss verifies against a hash of the current cost that nothing
 		// matches, so it costs what a known account costs.
 		if verifyErr := s.hasher.verifyDummy(ctx, input.Password); verifyErr != nil {
-			return LoginResult{}, verifyErr
+			return LoginResult{}, s.unavailable(ctx, verifyErr, uuid.UUID{}, uuid.UUID{}, throttleKey)
 		}
 		// Audited before the padding, so a client that hangs up during it
 		// (having learned the guess was wrong) still leaves the record.
@@ -278,7 +282,7 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 
 	match, needsRehash, err := s.hasher.Verify(ctx, identity.PasswordHash, input.Password)
 	if err != nil {
-		return LoginResult{}, err
+		return LoginResult{}, s.unavailable(ctx, err, identity.SubjectID, identity.MembershipID, throttleKey)
 	}
 	if !match {
 		auditErr := s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeDenied, identity.SubjectID, identity.MembershipID, throttleKey)
@@ -326,11 +330,26 @@ func (s *LoginService) Login(ctx context.Context, input LoginInput) (LoginResult
 	return LoginResult{Token: token, ExpiresAt: expiresAt}, nil
 }
 
+// unavailable returns err, a failed password check, and when it is
+// ErrPasswordAlgorithmUnavailable (an Argon2id hash in a process with no
+// Argon2id registered) audits it first as a login that failed, not one that
+// was denied: the password was never checked.
+func (s *LoginService) unavailable(ctx context.Context, err error, subjectID, membershipID uuid.UUID, key LoginThrottleKey) error {
+	if !errors.Is(err, ErrPasswordAlgorithmUnavailable) {
+		return err
+	}
+	return errors.Join(err, s.recordLoginEvent(ctx, SecurityLoginFailed, SecurityOutcomeFailed, subjectID, membershipID, key))
+}
+
 // rehash stores password in the hasher's current algorithm and parameters
-// if the credential is still the one verified. Saturated hashing skips it.
+// if the credential is still the one verified. Saturated hashing skips it,
+// and so does a hasher set to Argon2id with no Argon2id registered
+// (ErrPasswordAlgorithmUnavailable): the password was verified, and failing
+// the sign-in only then would tell a right password (503) from a wrong one
+// (401).
 func (s *LoginService) rehash(ctx context.Context, identity PasswordIdentity, password string, throttleKey LoginThrottleKey) error {
 	nextHash, err := s.hasher.Hash(ctx, password)
-	if errors.Is(err, ErrPasswordHashingUnavailable) {
+	if errors.Is(err, ErrPasswordHashingUnavailable) || errors.Is(err, ErrPasswordAlgorithmUnavailable) {
 		return nil
 	}
 	if err != nil {
