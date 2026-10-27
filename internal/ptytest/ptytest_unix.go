@@ -25,7 +25,7 @@ func Open(t testing.TB) (master, slave *os.File) {
 	if err != nil {
 		t.Skipf("cannot set up the pseudo-terminal: %v", err)
 	}
-	slave, err = os.OpenFile(name, os.O_RDWR|syscall.O_NOCTTY, 0)
+	slave, err = os.OpenFile(name, os.O_RDWR|syscall.O_NOCTTY, 0) // #nosec G304 -- the slave path the kernel named for this master
 	if err != nil {
 		t.Skipf("cannot open the pseudo-terminal: %v", err)
 	}
