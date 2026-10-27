@@ -942,14 +942,15 @@ func [[.Camel]]As(t *testing.T, handler http.Handler, permissions ...string) htt
 func Test[[$.Title]]FormHides[[.PluralTitle]]WithoutTheirPermission(t *testing.T) {
 	t.Parallel()
 	browser := new[[$.Title]]Browser(t, [[$.Camel]]AllowAll)
-	browser.handler = [[$.Camel]]As(t, browser.handler, "[[$.Plural]]:read", "[[$.Plural]]:write")
+	pages := browser.handler
+	browser.handler = [[$.Camel]]As(t, pages, "[[$.Plural]]:read", "[[$.Plural]]:write")
 	form := browser.get("/[[$.Plural]]/new?[[.Field.Name]]=" + [[.KnownVar]].String())
 	[[$.Camel]]Expect(t, form, http.StatusOK)
 	if strings.Contains(form.Body.String(), "<select id=\"[[$.Name]]_[[.Field.Name]]\"") {
 		t.Fatalf("the form lists the [[.Plural]] to a caller without [[.Plural]]:read:\n%s", form.Body)
 	}
 	[[$.Camel]]Contains(t, form, `id="[[$.Name]]_[[.Field.Name]]" name="[[.Field.Name]]" value="`+[[.KnownVar]].String()+`"`)
-	browser.handler = [[$.Camel]]As(t, browser.handler, "[[$.Plural]]:read", "[[$.Plural]]:write", "[[.Plural]]:read")
+	browser.handler = [[$.Camel]]As(t, pages, "[[$.Plural]]:read", "[[$.Plural]]:write", "[[.Plural]]:read")
 	[[$.Camel]]Contains(t, browser.get("/[[$.Plural]]/new"), "<select id=\"[[$.Name]]_[[.Field.Name]]\"")
 }
 [[- end]]

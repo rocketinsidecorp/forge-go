@@ -72,6 +72,7 @@ func TestGeneratedAssociationsBuildLintAndPass(t *testing.T) {
 				"--- PASS: TestArchitecture", "--- PASS: TestCommentServiceRefusesAMissingPost", "--- PASS: TestCommentBelongsPost",
 				"--- PASS: TestCommentPagesBelongToPost", "--- PASS: TestPostTagPage", "--- PASS: TestPostTagRoutes",
 				"--- PASS: TestReplyServiceListByComment",
+				"--- PASS: TestCommentFormHidesPostsWithoutTheirPermission", "--- PASS: TestPostTagPageHidesTheFormsWithoutTheWritePermission",
 			}
 			if databaseAvailable(variant.database) {
 				want = append(want, "--- PASS: TestCommentRepositoryRefusesAMissingPost", "--- PASS: TestCommentDeletingPostWithComments",
