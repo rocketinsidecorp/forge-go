@@ -53,12 +53,16 @@ security hardening remain planned. See [docs/ROADMAP.md](docs/ROADMAP.md) for th
 Core packages import only the standard library and each other; a test
 (`architecture_test.go`) enforces this
 ([ADR 0007](docs/adr/0007-postgresql-adapter-with-pgx.md),
-[ADR 0009](docs/adr/0009-multiple-databases.md)).
+[ADR 0009](docs/adr/0009-multiple-databases.md)), and the dependency
+directions of [ADR 0052](docs/adr/0052-import-boundaries.md): `auth` speaks no
+HTTP, and only applications import the root `forge` package.
 
 | Package      | Purpose |
 | ------------ | ------- |
 | `forge`      | `forge.Main` entrypoint, `App` composition, shutdown hooks, binary subcommands, health routes |
-| `auth`       | Opaque bearer-session tokens, current-session resolver middleware, principals and deny-by-default permissions; browser sign-in, sign-out, MFA and password-reset flows (`auth.Browser`) and sign-in redirects for HTML pages |
+| `command`    | `Command`, `Env` and `ErrUsage`, the contract of binary subcommands (`forge.Command` is the same type) |
+| `auth`       | Opaque session tokens, principals and deny-by-default permissions, password hashing, sign-in, MFA, password recovery, throttling and the security audit, with the identity-store ports; no HTTP |
+| `auth/authhttp` | The HTTP side of `auth`: bearer and cookie session middleware (`authhttp.NewMiddleware`), `Require`/`RequireAudited`/`RequireCSRF`, the JSON sign-in, MFA and recovery handlers with their OpenAPI, browser sign-in, sign-out, MFA and password-reset flows (`authhttp.Browser`) and sign-in redirects for HTML pages |
 | `agent`      | Provider-neutral allowlisted action pipeline with policy, validation, principal permissions, explicit approval and mandatory journaling |
 | `tenancy`    | Fail-closed tenant context; used by authentication and tenant-aware database transactions |
 | `config`     | Environment configuration with fail-fast validation; database selection by URL scheme; `config.Secret` for redacted values |
@@ -1272,11 +1276,11 @@ the routes in `app/bootstrap/routes_gen.go`. `RegisterProducts` needs a
 `protect` function and asks it for `products:read` or `products:write` per
 route, so the endpoints are never public by accident. With Forge identity
 (`--auth`) the migration adds those permissions to `forge_permissions`, grants
-them to the `owner` role, and `protect` uses `auth.RequireAudited`: behind the
+them to the `owner` role, and `protect` uses `authhttp.RequireAudited`: behind the
 bearer token of `POST /auth/login` in an application created with
 `--api-auth` (or given it by `forge generate authentication --api-auth`), and
 otherwise behind the session cookie of the sign-in page, with the CSRF token
-required in the `X-CSRF-Token` header of every change (`auth.RequireCSRF`):
+required in the `X-CSRF-Token` header of every change (`authhttp.RequireCSRF`):
 
 ```sh
 forge generate authentication --api-auth   # paste the JSON authentication wiring it prints
