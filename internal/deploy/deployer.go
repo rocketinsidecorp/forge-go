@@ -283,6 +283,26 @@ func parseLockInfo(stdout string) LockInfo {
 	return info
 }
 
+// maxHeldDetail bounds the remote diagnostic appended to a held message.
+const maxHeldDetail = 512
+
+// heldLockInfo is parseLockInfo for a lock another claimant holds, plus what
+// the remote said. A lock without a record, with a stderr behind it, is not an
+// interrupted acquire: ln failed (a file system without hard links) and the
+// takeover would fail the same way, so the redacted stderr is appended to the
+// message instead of leaving the false "taken over once it is a minute old".
+func heldLockInfo(stdout, stderr string) LockInfo {
+	info := parseLockInfo(stdout)
+	detail := strings.Join(strings.Fields(stderr), " ")
+	if text := strings.TrimSpace(stdout); (text == "" || text == "{}") && detail != "" {
+		if len(detail) > maxHeldDetail {
+			detail = detail[:maxHeldDetail] + "..."
+		}
+		info.Message += "; the remote said: " + detail
+	}
+	return info
+}
+
 func (d *Deployer) acquire(ctx context.Context, hosts []string, message string) (func(), error) {
 	record, err := json.Marshal(LockInfo{Holder: d.Performer, Message: message, AcquiredAt: d.Now().UTC()})
 	if err != nil {
@@ -304,7 +324,7 @@ func (d *Deployer) acquire(ctx context.Context, hosts []string, message string) 
 				d.logf("warning", "%s: %s", host, staleLockNotice)
 			}
 		case errors.As(err, &remote) && remote.ExitCode == lockHeldExitStatus:
-			held[host] = parseLockInfo(result.Stdout)
+			held[host] = heldLockInfo(result.Stdout, remote.Stderr)
 			return nil
 		}
 		return err

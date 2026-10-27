@@ -766,7 +766,7 @@ exact containers that would be stopped or pruned.
 | `forge deploy details [--json]` | Containers and versions per host and role, proxy routing and maintenance, lock holder, last deploys. |
 | `forge deploy lock status\|acquire\|release [--message M] [--force]` | Inspect or hold the lock (for maintenance windows). `release` removes only a lock this performer holds, and only while its record is unchanged; it refuses one held by someone else (or without a record) unless `--force`. |
 | `forge deploy maintenance on\|off` | Serve forge-proxy's static 503 page (with `Retry-After`) instead of the application. |
-| `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream `docker logs` of the current role container from every matching host, each line prefixed `host\|`. `--grep` filters locally. Ctrl-C stops the remote `docker logs` processes too. |
+| `forge logs [-f] [--role R] [--host H] [--since 1h] [--grep REGEX] [--lines N]` | Stream `docker logs` of the current role container from every matching host, each line prefixed `host\|`. Without `-f` at most `parallelism` hosts are read at once; with `-f` every matching host streams at once (narrow with `--role` and `--host`). `--grep` filters locally. Ctrl-C stops the remote `docker logs` processes too. |
 | `forge app exec [--role R] [--host H] [--interactive] [--reuse] CMD...` | Run CMD on one host (the first of the role unless `--host`): by default in a one-off container of the image the role currently runs, with its env file, where CMD goes to the image entrypoint (`forge app exec migrate status`); `--reuse` runs inside the running container (`forge app exec --reuse /app/server healthcheck`). |
 | `forge app shell [--image IMAGE]` | Interactive shell over `ssh -t`. Distroless images have no shell: `--image busybox:1.37` starts a sidecar sharing the container's network and process namespaces, without the application's environment. |
 
@@ -806,8 +806,9 @@ printed on stdout also on failure, with `ok`, `error` and `exit_code`.
    The lock needs `~/.forge` on every host to be on a file system that
    supports hard links (any local Linux file system does). Without them
    `ln` fails and every acquire reports the lock as held, which fails
-   closed: nothing deploys. The acquire prints `ln`'s own error on stderr
-   in that case, and an empty lock directory may be left behind (clear it
+   closed: nothing deploys. The held message then ends with `the remote
+   said:` and `ln`'s own redacted error (instead of the interrupted-acquire
+   hint, which would be false there), and an empty lock directory may be left behind (clear it
    with `lock release --force`). On NFS, `link(2)` is atomic on a correctly
    configured server, but client caching can delay what other hosts see;
    keep `~/.forge` on local disk.
