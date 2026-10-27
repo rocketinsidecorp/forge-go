@@ -1512,9 +1512,20 @@ docker compose -f compose.yaml -f compose.observability.yaml up --build
 curl http://127.0.0.1:8080/v1/status
 # Grafana http://127.0.0.1:3000 (user admin): dashboard "Forge application",
 # Explore > Tempo (traces), Explore > Loki (logs); Prometheus http://127.0.0.1:9090
+# Alert rules (observability/alerts.yml): http://127.0.0.1:9090/alerts
 # compose interpolates the whole file, so GRAFANA_ADMIN_PASSWORD must be set for down too
 docker compose -f compose.yaml -f compose.observability.yaml down      # add -v to delete the data
 ```
+
+Prometheus also loads `observability/alerts.yml`: scrape target down or no
+metrics arriving, more than 5% of requests failing with 5xx, p95 latency over
+500 ms, database pool over 90% in use or callers waiting for a connection,
+queue jobs that died, scheduled jobs that failed. Open
+http://127.0.0.1:9090/alerts to see which fire; edit the thresholds in the file
+and `docker compose -f compose.yaml -f compose.observability.yaml restart prometheus`.
+The stack has no Alertmanager, and a framework test fails if a rule uses a
+metric or label Forge does not export
+([the rules](docs/OBSERVABILITY.md#alert-rules)).
 
 The default `docker compose up` does not start it. See
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md#local-stack-grafana-prometheus-tempo-and-loki)

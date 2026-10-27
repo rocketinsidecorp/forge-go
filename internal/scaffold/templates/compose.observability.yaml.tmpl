@@ -7,6 +7,7 @@
 #   export GRAFANA_ADMIN_PASSWORD="$(openssl rand -base64 18)"   # required; or put it in .env
 #   docker compose -f compose.yaml -f compose.observability.yaml up --build
 #   open http://127.0.0.1:3000          # Grafana: user admin, the password above
+#   open http://127.0.0.1:9090/alerts   # Prometheus: the alert rules (observability/alerts.yml)
 #   docker compose -f compose.yaml -f compose.observability.yaml down     # keeps the data; add -v to delete it
 #
 # How the data flows:
@@ -50,6 +51,7 @@ services:
       - --web.enable-otlp-receiver
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     ports:
       - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"

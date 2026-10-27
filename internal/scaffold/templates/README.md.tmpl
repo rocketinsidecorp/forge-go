@@ -463,7 +463,7 @@ forge generate authentication --api-auth
 | `app/architecture_test.go` | Test that enforces the dependency rules of the rings (see Architecture) |
 | `Dockerfile` | Production image: static binary, distroless, non-root |
 | `compose.yaml` | Local stack running the same image in development mode |
-| `compose.observability.yaml`, `observability/` | Opt-in Grafana, Prometheus, Tempo, Loki and OpenTelemetry Collector stack, preconfigured |
+| `compose.observability.yaml`, `observability/` | Opt-in Grafana, Prometheus (with alert rules), Tempo, Loki and OpenTelemetry Collector stack, preconfigured |
 | `.env.development` | Development settings for the `forge` commands (no secrets) |
 {{- if and .DB .DB.Identity}}
 | `.env.local` | Git-ignored local MFA key and private overrides |
@@ -669,11 +669,21 @@ curl http://127.0.0.1:8080/v1/status
 #    Explore > Tempo                   traces; "Logs for this span" opens the matching log lines
 #    Explore > Loki                    logs; a trace_id links to its trace
 #    Explore > Prometheus              metrics, also at http://127.0.0.1:9090
+#    http://127.0.0.1:9090/alerts      the alert rules of observability/alerts.yml and whether each fires
 
 # 4. Stop it (keeps the data); add -v to delete traces, logs and metrics too
 # compose interpolates the whole file, so GRAFANA_ADMIN_PASSWORD must be set for down too
 docker compose -f compose.yaml -f compose.observability.yaml down
 ```
+
+`observability/alerts.yml` carries alert rules for the metrics the framework
+exports: a target down or no metrics arriving, more than 5% of requests failing
+with 5xx, p95 latency over 500 ms, database pool over 90% in use or callers
+waiting for a connection, queue jobs that died and scheduled jobs that failed.
+Edit the thresholds there and run `docker compose -f compose.yaml -f
+compose.observability.yaml restart prometheus`. There is no Alertmanager in this
+stack: see what fires at http://127.0.0.1:9090/alerts (details in the Forge
+observability guide, docs/OBSERVABILITY.md#alert-rules).
 
 The app sends traces, metrics and logs to the collector over OTLP
 (`FORGE_TELEMETRY_LOGS_EXPORTER=otlp` is set by the overlay), which forwards them
