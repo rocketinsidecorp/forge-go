@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rocketinsidecorp/forge-go/internal/frontend"
 	"github.com/rocketinsidecorp/forge-go/internal/scaffold"
 )
 
@@ -498,5 +499,79 @@ func TestDockerfilesPinBaseImagesByDigest(t *testing.T) {
 				t.Errorf("database %q: generated base image %q is not one Forge's own Dockerfiles pin", database, image)
 			}
 		}
+	}
+}
+
+// nodeTool matches the Node package managers a workflow could run.
+var nodeTool = regexp.MustCompile(`\b(npm|npx|yarn|pnpm|corepack|bun)\b`)
+
+// TestTypeScriptCheckerIsTheOnlyNpmPackageAndIsPinned (ADR 0049): the one thing
+// any workflow installs from npm is the TypeScript checker, at the exact
+// release frontend.TypeScriptVersion, without lifecycle scripts. The
+// framework's CI and the generated CI install the same one command, so an
+// update is a single reviewed change.
+func TestTypeScriptCheckerIsTheOnlyNpmPackageAndIsPinned(t *testing.T) {
+	t.Parallel()
+	want := "npm install --global --ignore-scripts typescript@" + frontend.TypeScriptVersion
+	installs := 0
+	for _, path := range workflowFiles(t) {
+		for number, line := range strings.Split(readText(t, path), "\n") {
+			code, _ := splitComment(line)
+			code = strings.ReplaceAll(code, "{{.TypeScriptVersion}}", frontend.TypeScriptVersion) // the template field
+			if !nodeTool.MatchString(code) {
+				continue
+			}
+			if strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(code), "run:")) != want {
+				t.Errorf("%s:%d runs %q: the only Node command allowed is %q", path, number+1, strings.TrimSpace(code), want)
+				continue
+			}
+			installs++
+		}
+	}
+	// The framework's generated job and the generated application's test job.
+	if installs != 2 {
+		t.Errorf("found %d installs of the TypeScript checker, want 2 (.github/workflows/ci.yml and the generated CI)", installs)
+	}
+}
+
+// TestTypeScriptTestsRunInTheJobThatPinsTsc keeps TestGeneratedTypeScript*
+// (which run the real tsc) out of the race job, where tsc is whatever the
+// runner has and a missing one skips, and in the `generated` job, which
+// installs the pinned tsc and sets FORGE_TEST_REQUIRE_TSC.
+func TestTypeScriptTestsRunInTheJobThatPinsTsc(t *testing.T) {
+	t.Parallel()
+	lines := strings.Split(readText(t, filepath.Join(".github", "workflows", "ci.yml")), "\n")
+	jobOf := func(line int) string {
+		for ; line >= 0; line-- {
+			if l := lines[line]; strings.HasPrefix(l, "  ") && !strings.HasPrefix(l, "   ") && strings.HasSuffix(l, ":") {
+				return strings.TrimSpace(strings.TrimSuffix(l, ":"))
+			}
+		}
+		return ""
+	}
+	var race, generated, install, require string
+	for number, line := range lines {
+		code, _ := splitComment(line)
+		switch {
+		case strings.Contains(code, "go test -race") && strings.Contains(code, "-skip") && strings.Contains(code, "TestGeneratedApplication"):
+			race = jobOf(number) + ": " + code
+		case strings.Contains(code, "go test") && strings.Contains(code, "-run '^(TestGeneratedApplication"):
+			generated = jobOf(number) + ": " + code
+		case strings.Contains(code, "npm install --global --ignore-scripts typescript@"):
+			install = jobOf(number)
+		case strings.Contains(code, "FORGE_TEST_REQUIRE_TSC"):
+			require = jobOf(number)
+		}
+	}
+	const pattern = "TestGeneratedTypeScript.*"
+	if !strings.Contains(race, pattern) {
+		t.Errorf("the race job must skip %s (tsc is pinned in the generated job): %q", pattern, race)
+	}
+	if !strings.Contains(generated, pattern) {
+		t.Errorf("the generated job must run %s: %q", pattern, generated)
+	}
+	runJob, _, _ := strings.Cut(generated, ":")
+	if runJob == "" || runJob != install || runJob != require {
+		t.Errorf("the job that runs the TypeScript tests (%q) must install the pinned tsc (%q) and set FORGE_TEST_REQUIRE_TSC (%q)", runJob, install, require)
 	}
 }

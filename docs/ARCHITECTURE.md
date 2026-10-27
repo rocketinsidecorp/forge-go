@@ -535,12 +535,39 @@ As the application grows, code is placed in hexagonal layers
 | `app/infrastructure` | Technical resources: connection pools, clients, telemetry setup | framework, drivers |
 | `app/bootstrap`      | Composition root that wires everything into `forge.App`         | everything |
 
-These directories are not generated as empty scaffolding; the layer rules
-are conventions and are not enforced by a check. Generated applications open
-the database pool directly in `app/bootstrap`.
+These directories are not generated as empty scaffolding. Generated
+applications open the database pool directly in `app/bootstrap`. The layer
+rules are enforced in every generated application by `app/architecture_test.go`
+(see below).
 [`examples/basic-api`](../examples/basic-api) shows the layout with
 `app/domain`, `app/application`, `app/adapters/persistence`,
 `app/adapters/httpapi`, and `app/bootstrap`.
+
+### Architecture test of the generated application
+
+`forge new` writes `app/architecture_test.go`, a standard-library-only test
+(`go/parser` with `parser.ImportsOnly` over every Go file of the module,
+`vendor`, `node_modules`, `testdata` and dot or underscore directories
+skipped, `_test.go` files included: domain and application tests use in-memory fakes and do no I/O either; the
+`module` line of `go.mod` may be quoted or followed by a `//` comment) that fails on any import against the direction of the rings:
+
+| Ring (directory) | Rule |
+| ---------------- | ---- |
+| `app/domain` | Imports only `app/domain`, the standard library except `net`, `net/http`, `net/rpc`, `net/smtp`, `database/sql`, `os`, `io/ioutil`, `io/fs`, `path/filepath`, `embed`, `html/template`, `syscall`, `plugin` and `unsafe` (and everything below them), and cgo's `C`, and the framework's `uuid` and `fault`. No third-party package unless listed in `extraAllowedImports` |
+| `app/application` | Imports `app/domain` and `app/application`, the same standard library subset, and the framework's `uuid`, `fault`, `pagination` and `tenancy` |
+| `app/adapters` | Imports inward and any framework package; never `app/bootstrap` |
+| `app/bootstrap` | Unrestricted: the only ring that composes |
+| everything else (`app/jobs`, `app/mailers`, `app/views`, `db`, `config`) | Never `app/bootstrap` |
+
+Each failure reads `app/domain/product.go:5: imports "net/http": the domain
+ring must not do I/O or speak HTTP: move that code to app/adapters`. The test
+also checks its own rules against a table of allowed and forbidden imports, so
+a rule weakened by mistake fails the test. `internal/cli` generates an
+application with a scaffold, a model, a controller, a mailer and jobs, requires
+the test to pass, injects one forbidden import per rule (including with a
+module path without a dot) and requires the failure message to name the file
+and the import. Forge-Rust does not generate this test yet: it is planned
+after forge-go reaches 100% (decision D37, see [RAILS_PARITY.md](RAILS_PARITY.md)).
 
 ## Resource generator
 
@@ -642,6 +669,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0046](adr/0046-postgresql-runtime-and-migration-roles.md) | PostgreSQL runtime and migration roles; staging and production refuse a serving role that could bypass row-level security |
 | [0047](adr/0047-batch-claims-notify-and-recorded-ticks.md) | Batch claims for the queue and the outbox, PostgreSQL `LISTEN/NOTIFY` wake-up, scheduler ticks recorded once in the database |
 | [0048](adr/0048-argon2id-password-hashing.md) | Argon2id password hashing with Forge-Rust's parameters, PBKDF2 hashes upgraded at sign-in, a bound on concurrent hashing, `forge_pbkdf2` for FIPS builds; admits `x/crypto/argon2` to the core |
+| [0049](adr/0049-typescript-by-default.md) | TypeScript front end by default, compiled by `forge` with esbuild (no Node), `--js` to opt out; esbuild linked only by the CLI |
 
 ADR numbers 0027 and 0028 are unassigned: the rate limiting, cache and file
 storage ADRs were drafted as 0026-0028, 0026 turned out to be taken by other

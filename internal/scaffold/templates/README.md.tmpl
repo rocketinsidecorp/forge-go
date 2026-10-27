@@ -26,7 +26,7 @@ From an empty directory to a working CRUD at `/products`, with no code to
 edit: the generators mount their routes in `app/bootstrap/routes_gen.go`.
 
 ```bash
-forge new {{.Name}}{{if ne .Database "postgresql"}} -d {{if eq .Database "sqlite"}}sqlite3{{else}}{{.Database}}{{end}}{{end}}{{if .APIAuth}} --api-auth{{end}}{{if ne .Locale "en"}} --locale {{.Locale}}{{end}}
+forge new {{.Name}}{{if ne .Database "postgresql"}} -d {{if eq .Database "sqlite"}}sqlite3{{else}}{{.Database}}{{end}}{{end}}{{if .APIAuth}} --api-auth{{end}}{{if ne .Locale "en"}} --locale {{.Locale}}{{end}}{{if .JS}} --js{{end}}
 cd {{.Name}}
 {{- if .DB.Server}}
 docker compose up -d --wait {{.DB.Service}}
@@ -165,7 +165,11 @@ forge dev
 
 ```bash
 forge test                               # go test ./... with .env.development loaded
+{{- if .TypeScript}}
+forge check                              # go build ./..., go vet ./... and, with tsc installed, tsc --noEmit
+{{- else}}
 forge check                              # go build ./... and go vet ./...
+{{- end}}
 forge format --check                     # list files that need gofmt; exit 1 if any (forge format rewrites them)
 forge lint                               # golangci-lint run ./... (install it first when missing)
 forge build                              # static binary in bin/{{.Name}}
@@ -270,7 +274,7 @@ development and test and fall back to the default locale in production. See
 the Forge i18n guide (`docs/I18N.md`).
 
 ## JavaScript and styles
-
+{{if .JS}}
 There is no Node toolchain. Static files are embedded in the binary and
 served with content-digested names (`/assets/application-<digest>.css`) and
 immutable caching; Turbo and Stimulus are vendored by Forge and loaded
@@ -296,6 +300,56 @@ and use it in a template with `data-controller="clipboard"`. Files in
 `controllers/` are embedded and pinned automatically; rebuild (`forge dev`
 does) to serve a change under its new digested URL. Real-time updates:
 `forge generate scaffold NAME ... --broadcast` (see `docs/VIEWS.md`).
+{{- else}}
+The front end is TypeScript. There is no Node toolchain and no bundler:
+`forge dev`, `forge build`, `forge test` and `forge check` strip the types
+with esbuild (built into `forge`) and write plain JavaScript to
+`app/javascript/dist`, which the binary embeds. Static files are embedded in
+the binary and served with content-digested names
+(`/assets/application-<digest>.css`) and immutable caching; Turbo and Stimulus
+are vendored by Forge and loaded through an import map (no inline scripts: the
+page policy allows the map by hash).
+
+| Path | Purpose |
+| ---- | ------- |
+| `app/assets/` | stylesheet and images (add the file name to the `go:embed` line in `assets.go`) |
+| `app/javascript/application.ts` | entry point: `import "@hotwired/turbo"` and `import "controllers"` |
+| `app/javascript/controllers/` | Stimulus controllers, one `NAME_controller.ts` each, registered in `index.ts` |
+| `app/javascript/dist/` | the compiled JavaScript the binary embeds: generated, committed, never edited |
+| `app/javascript/types/` | declarations of Turbo and Stimulus for `tsc`, copied unchanged from npm |
+| `tsconfig.json` | strict `tsc --noEmit` settings; the import map's bare names are `paths` |
+
+```bash
+forge dev      # recompiles on every change to a .ts file (inline source maps)
+forge build    # compiles app/javascript to dist, then builds bin/{{.Name}}
+forge check    # also runs tsc --noEmit when tsc is on PATH
+```
+
+esbuild only strips types; `tsc` checks them. Install it once with
+`npm install --global --ignore-scripts typescript@{{.TypeScriptVersion}}` (Node is needed for
+that and nothing else); without it `forge check` prints one note and skips the
+type check. The generated CI installs the same pinned version and runs
+`tsc --noEmit`, and `go test` fails when a `.ts` file changed and `dist` did
+not, or when a compiled file is not the one `forge` wrote, so run `forge build`
+(or `forge test`) before you commit, and review `dist/` diffs like code. A `.ts`
+file outside `controllers/` is compiled and embedded too; pin it in
+`app/assets/assets.go` (`forgeassets.PinAllFrom(set, "lib")`) to import it by name.
+
+Add a Stimulus controller:
+
+```bash
+cp app/javascript/controllers/hello_controller.ts app/javascript/controllers/clipboard_controller.ts
+# then add to app/javascript/controllers/index.ts:
+#   import ClipboardController from "controllers/clipboard_controller"
+#   application.register("clipboard", ClipboardController)
+forge build    # or let forge dev do it
+```
+
+and use it in a template with `data-controller="clipboard"`. Files in
+`controllers/` are compiled, embedded and pinned automatically. Real-time
+updates: `forge generate scaffold NAME ... --broadcast` (see `docs/VIEWS.md`).
+To keep plain JavaScript instead, create the application with `forge new --js`.
+{{- end}}
 {{- end}}
 {{- if and .DB .DB.Identity}}
 
@@ -460,9 +514,11 @@ forge generate authentication --api-auth
 | `db/migrations` | SQL migrations, embedded in the binary |
 | `db/seeds.go` | Idempotent seed data for `seed` |
 {{- end}}
+| `app/architecture_test.go` | Test that enforces the dependency rules of the rings (see Architecture) |
+| `AGENTS.md` | Guide for AI coding agents: the rings, the `forge` commands, the routes seam, security defaults, tests |
 | `Dockerfile` | Production image: static binary, distroless, non-root |
 | `compose.yaml` | Local stack running the same image in development mode |
-| `compose.observability.yaml`, `observability/` | Opt-in Grafana, Prometheus, Tempo, Loki and OpenTelemetry Collector stack, preconfigured |
+| `compose.observability.yaml`, `observability/` | Opt-in Grafana, Prometheus (with alert rules), Tempo, Loki and OpenTelemetry Collector stack, preconfigured |
 | `.env.development` | Development settings for the `forge` commands (no secrets) |
 {{- if and .DB .DB.Identity}}
 | `.env.local` | Git-ignored local MFA key and private overrides |
@@ -470,6 +526,35 @@ forge generate authentication --api-auth
 
 Domain, application, adapter and infrastructure packages live under `app/`
 and are added as the application grows.
+
+## Architecture
+
+Code is layered in rings and imports point inward only:
+
+| Ring | May import |
+| --- | --- |
+| `app/domain` | itself, the standard library without `net`, `net/http`, `database/sql`, `os`, `io/fs`, `io/ioutil`, `path/filepath`, `embed`, `html/template`, `unsafe` and cgo, and the framework's `uuid` and `fault` |
+| `app/application` | `app/domain`, itself, the same standard library subset, the framework's `uuid`, `fault`, `pagination` and `tenancy` |
+| `app/adapters` | the inner rings and the framework; never `app/bootstrap` |
+| `app/bootstrap` | everything: the only place that wires the application |
+
+`app/jobs`, `app/mailers`{{if not .API}}, `app/views`{{end}}, `db` and `config` sit outside the rings
+and, like the adapters, never import `app/bootstrap`. `app/architecture_test.go`
+parses the imports of every Go file, test files included, with the standard
+library and fails with the file, the line and the forbidden import. It runs with `forge test` and in CI.
+
+```bash
+forge test ./app/ -run TestArchitecture -v    # only the architecture test
+forge test                                    # everything, including it
+```
+
+To add a third-party package to the domain or application rings, list it in
+`extraAllowedImports` in that file, in a reviewed commit.
+
+`AGENTS.md` is the same rules, the commands, the routes seam and the security
+defaults written for AI coding agents; keep it in step when you change the
+layout. A tool that reads only `CLAUDE.md` can import it with a one-line
+`CLAUDE.md` that contains `@AGENTS.md`.
 {{- if and .DB .DB.Identity}}
 
 ## Identity
@@ -644,11 +729,21 @@ curl http://127.0.0.1:8080/v1/status
 #    Explore > Tempo                   traces; "Logs for this span" opens the matching log lines
 #    Explore > Loki                    logs; a trace_id links to its trace
 #    Explore > Prometheus              metrics, also at http://127.0.0.1:9090
+#    http://127.0.0.1:9090/alerts      the alert rules of observability/alerts.yml and whether each fires
 
 # 4. Stop it (keeps the data); add -v to delete traces, logs and metrics too
 # compose interpolates the whole file, so GRAFANA_ADMIN_PASSWORD must be set for down too
 docker compose -f compose.yaml -f compose.observability.yaml down
 ```
+
+`observability/alerts.yml` carries alert rules for the metrics the framework
+exports: a target down or no metrics arriving, more than 5% of requests failing
+with 5xx, p95 latency over 500 ms, database pool over 90% in use or callers
+waiting for a connection, queue jobs that died and scheduled jobs that failed.
+Edit the thresholds there and run `docker compose -f compose.yaml -f
+compose.observability.yaml restart prometheus`. There is no Alertmanager in this
+stack: see what fires at http://127.0.0.1:9090/alerts (details in the Forge
+observability guide, docs/OBSERVABILITY.md#alert-rules).
 
 The app sends traces, metrics and logs to the collector over OTLP
 (`FORGE_TELEMETRY_LOGS_EXPORTER=otlp` is set by the overlay), which forwards them

@@ -548,6 +548,43 @@ logs included. The dashboard also has panels for the database connection pool
 (goroutines, heap, allocation rate, GC cycles and pause) and for dropped log
 records.
 
+### Alert rules
+
+`observability/alerts.yml` holds Prometheus alert rules; `prometheus.yml` lists
+it under `rule_files` and the overlay mounts it. They are starting points for
+an SLO of "95% of requests under 500 ms, under 5% errors": change the
+thresholds to yours. The stack has no Alertmanager, so a firing alert shows at
+`http://127.0.0.1:9090/alerts` (and in Grafana under Alerting, Alert rules);
+route notifications by adding an Alertmanager to your own deployment.
+
+| Alert | Fires when | Severity |
+| ----- | ---------- | -------- |
+| `ForgeTargetDown` | `up == 0` for 2 minutes: a scrape target is down (the local stack scrapes only Prometheus; add the application's `FORGE_TELEMETRY_METRICS_ADDR` listener to `scrape_configs` to cover it) | critical |
+| `ForgeApplicationMetricsMissing` | no `go_goroutine_count` sample for 5 minutes: the application pushes metrics over OTLP, so a stopped or disconnected application is a missing series, not a down target | critical |
+| `ForgeHighServerErrorRatio` | `5xx` responses are over 5% of `http_server_request_duration_seconds_count` for 5 minutes | critical |
+| `ForgeHighRequestLatencyP95` | p95 of `http_server_request_duration_seconds` over 500 ms for 10 minutes, without the route `/streams`: a Server-Sent Events request (`scaffold --broadcast`) is recorded when its connection ends, so it lasts as long as a browser tab does and would skew the percentile. Add your own long-lived routes to the `http_route!~"..."` expression in the rule | warning |
+| `ForgeDatabasePoolSaturated` | `db_client_connection_count{db_client_connection_state="used"}` over 90% of `db_client_connection_max` for 5 minutes, per pool | warning |
+| `ForgeDatabasePoolWaiters` | `rate(forge_db_pool_wait_duration_seconds_total)` over 0.5 (on average half a caller blocked waiting for a connection) for 10 minutes | warning |
+| `ForgeQueueJobsDead` | a queue job of some kind used up its attempts (`forge_job_outcome="dead"`) in the last 15 minutes, the first one included | warning |
+| `ForgeScheduledJobFailing` | a scheduled job ended `failed` or `timeout` (`forge_scheduler_outcome`) in the last 15 minutes, the first time included | warning |
+
+A counter series is created by its first event at the value 1, and `increase()`
+of a series with one sample is empty, so `increase(x[15m]) > 0` alone never
+fires for the first dead job or the first failure of a job after the
+application started. The two job rules therefore also fire for a series born
+inside the window, `x unless x offset 15m`, and sum by the outcome label so a
+first `timeout` is not hidden by an older `failed` series. Their annotations do
+not quote the value, which in that second half is the counter total.
+
+The rules use only the metrics in the table under [Metrics](#metrics), under
+the Prometheus names the OTLP receiver gives them. A framework test
+(`internal/scaffold/alerts_test.go`) finds every metric the framework registers
+with `Counter`, `Gauge` and `Histogram`, converts its name with
+`telemetry.PrometheusName`, and fails when an expression uses a metric, or a
+label of a metric, that the exporter does not have, or one this document does
+not list. Check the file with `promtool check rules observability/alerts.yml`
+when promtool is installed; the framework's tests do not run it.
+
 ## Propagation and sampling
 
 By default incoming `traceparent` and `tracestate` headers are ignored and

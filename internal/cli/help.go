@@ -190,7 +190,7 @@ func currentCommandCatalog() commandCatalog {
 			Name: "new", Usage: "forge new NAME [flags]",
 			Summary:     "Generate a Dockerized full-stack application skeleton (server-rendered views; --api for JSON only).",
 			SideEffects: []string{"filesystem_write", "subprocess", "network_optional"},
-			Examples:    []string{"forge new inventory", "forge new inventory --database sqlite", "forge new inventory --locale pt-BR", "forge new inventory --api-auth", "forge new inventory --api", "forge new inventory --api -d sqlite", "forge new inventory --skip-database --skip-deps"},
+			Examples:    []string{"forge new inventory", "forge new inventory --database sqlite", "forge new inventory --locale pt-BR", "forge new inventory --api-auth", "forge new inventory --js", "forge new inventory --api", "forge new inventory --api -d sqlite", "forge new inventory --skip-database --skip-deps"},
 			Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "Go dependency-resolution subprocesses inherit the caller environment; Forge runtime variables are not consumed by this command."},
 			Flags: []flagDetail{
 				{Name: "--module", Value: "PATH", Description: "Go module path; defaults to NAME."},
@@ -199,7 +199,8 @@ func currentCommandCatalog() commandCatalog {
 				{Name: "-d", Value: "DB", Default: "postgresql", Description: "Shorthand for --database."},
 				{Name: "--skip-database", Description: "Generate without a database; conflicts with an explicit --database."},
 				{Name: "--locale", Value: "LOCALE", Default: "en", Description: "Default locale of the generated pages: en, es or pt-BR. config/locales/en.json is always generated, plus LOCALE.json."},
-				{Name: "--api", Description: "Generate an API-only application, like rails new --api: JSON handlers (GET / names the service, GET /v1/status, the health routes and the OpenAPI document) without app/views, app/assets, app/javascript, config/locales, sign-in pages or browser middleware (CSRF, method override, flash). Conflicts with --api-auth and --locale. In such an application `forge generate view`, `scaffold`, `authentication` and an HTML `controller` refuse; `resource`, `model`, `controller --api`, `mailer`, `job` and `migration` work."},
+				{Name: "--api", Description: "Generate an API-only application, like rails new --api: JSON handlers (GET / names the service, GET /v1/status, the health routes and the OpenAPI document) without app/views, app/assets, app/javascript, config/locales, sign-in pages or browser middleware (CSRF, method override, flash). Conflicts with --api-auth, --locale and --js. In such an application `forge generate view`, `scaffold`, `authentication` and an HTML `controller` refuse; `resource`, `model`, `controller --api`, `mailer`, `job` and `migration` work."},
+				{Name: "--js", Description: "Keep the front end in plain JavaScript (app/javascript/application.js and controllers/*.js, served as written) instead of the default TypeScript (app/javascript/**/*.ts, tsconfig.json and declarations for Turbo and Stimulus, compiled by forge with esbuild into app/javascript/dist; no Node needed). Conflicts with --api."},
 				{Name: "--api-auth", Description: "Also mount the JSON authentication APIs (POST /auth/login, /auth/logout, /auth/cookie/login, /auth/cookie/logout, MFA completion, /auth/recovery/request, /auth/recovery/reset, GET /v1/auth/session). Without it the HTML sign-in pages are the only way to sign in. PostgreSQL only."},
 				{Name: "--forge-path", Value: "DIR", Description: "Use a local Forge checkout and vendor it."},
 				{Name: "--framework-path", Value: "DIR", Description: "Deprecated alias of --forge-path; prints a deprecation line and will be removed in the next minor version."},
@@ -211,10 +212,10 @@ func currentCommandCatalog() commandCatalog {
 		{Name: "test", Usage: "forge test [ARGS]", Summary: "Run Go tests with Forge environment files loaded.", SideEffects: []string{"subprocess", "application_defined"}, Examples: []string{"forge test", "forge test ./... -run TestHealth"}, Environment: testEnvironment()},
 		{
 			Name: "check", Usage: "forge check",
-			Summary:     "Type-check the application: go build ./... and go vet ./... (the counterpart of Forge-Rust's cargo check --all-targets).",
-			SideEffects: []string{"subprocess"},
+			Summary:     "Type-check the application: go build ./... and go vet ./..., and tsc --noEmit for a TypeScript front end when tsc is on PATH (the counterpart of Forge-Rust's cargo check --all-targets). The TypeScript is compiled first, so go build embeds what the sources say.",
+			SideEffects: []string{"subprocess", "filesystem_write"},
 			Examples:    []string{"forge check"},
-			Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "Runs the go tool in the current directory without a shell; it inherits the caller environment and writes no binary. Forge .env files are not loaded."},
+			Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "Runs the go tool (and tsc, when found) in the current directory without a shell; they inherit the caller environment and write no binary. A TypeScript front end is compiled into app/javascript/dist first (files are written only when their content changes). Without tsc on PATH the TypeScript is not type-checked and one note says how to install it (npm install --global --ignore-scripts typescript@6.0.3). Forge .env files are not loaded."},
 		},
 		{
 			Name: "format", Usage: "forge format [--check]",
@@ -231,7 +232,7 @@ func currentCommandCatalog() commandCatalog {
 			Examples:    []string{"forge lint"},
 			Environment: environmentInfo{Files: []string{".golangci.yml"}, Variables: []string{}, Notes: "golangci-lint is not part of the Go toolchain. Install it with `" + golangciLintInstall + "`. The counterpart of Forge-Rust's cargo clippy."},
 		},
-		{Name: "build", Usage: "forge build [NAME]", Summary: "Build the application binary under bin/.", SideEffects: []string{"filesystem_write", "subprocess"}, Examples: []string{"forge build", "forge build worker"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "The Go build subprocess inherits the caller environment; Forge .env files are not loaded."}},
+		{Name: "build", Usage: "forge build [NAME]", Summary: "Build the application binary under bin/, compiling a TypeScript front end into app/javascript/dist first.", SideEffects: []string{"filesystem_write", "subprocess"}, Examples: []string{"forge build", "forge build worker"}, Environment: environmentInfo{Files: []string{}, Variables: []string{}, Notes: "The Go build subprocess inherits the caller environment; Forge .env files are not loaded."}},
 		dbCommandDetail(),
 		{Name: "migrate", Usage: "forge migrate [status]", Summary: "Apply pending migrations or report migration status.", SideEffects: []string{"database_write", "database_read"}, Examples: []string{"forge migrate", "forge migrate status"}, Environment: migrationEnvironment()},
 		{

@@ -1,0 +1,322 @@
+package app_test
+
+// The architecture test enforces the dependency rules of the application's
+// rings (https://github.com/rocketinsidecorp/forge-go/blob/main/docs/ARCHITECTURE.md).
+// It parses the import lines of every Go file in this module with go/parser,
+// so it needs no tools and runs with `forge test` and in CI like any test.
+//
+//	app/domain       business rules. Imports only itself, the standard library
+//	                 (none of net, net/http, database/sql, os, io/fs,
+//	                 io/ioutil, path/filepath, embed, html/template, unsafe,
+//	                 cgo) and the framework's uuid and fault packages.
+//	app/application  use cases and ports. Imports app/domain and itself, the
+//	                 same standard library subset, and the framework's uuid,
+//	                 fault, pagination and tenancy.
+//	app/adapters     HTTP handlers, persistence, pages. Import inward, never
+//	                 app/bootstrap.
+//	app/bootstrap    the composition root: the only ring that wires the rest.
+//
+// Every other package (app/jobs, app/mailers{{if not .API}}, app/views{{end}}, db, config) is
+// outside the rings and, like the adapters, must not import app/bootstrap.
+// The rules apply to _test.go files too: a domain or application test does
+// no I/O either, it uses in-memory fakes. When a rule fails the message names
+// the file, the line and the import. Change a rule only deliberately, in a
+// reviewed commit.
+
+import (
+	"fmt"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+const frameworkModule = "github.com/rocketinsidecorp/forge-go"
+
+// extraAllowedImports lists third-party packages (module path or prefix) the
+// domain and application rings may import in addition to the framework's
+// value packages. Empty on purpose: add an entry only after deciding that the
+// business rules may depend on that library.
+var extraAllowedImports = []string{}
+
+// ring is the set of imports the packages under dir may have.
+type ring struct {
+	name string
+	dir  string
+	// allowLocal, when not nil, lists the only directories of this module
+	// the ring may import; denyLocal lists directories it must not import.
+	allowLocal []string
+	denyLocal  []string
+	// allowFramework, when not nil, lists the only framework packages (below
+	// frameworkModule) the ring may import.
+	allowFramework []string
+	// pure bans the standard library packages that do I/O or serve HTTP, and
+	// every third-party package not in extraAllowedImports.
+	pure bool
+}
+
+// rings are matched in order by directory; the last one takes the rest.
+var rings = []ring{
+	{
+		name: "domain", dir: "app/domain", pure: true,
+		allowLocal: []string{"app/domain"}, allowFramework: []string{"uuid", "fault"},
+	},
+	{
+		name: "application", dir: "app/application", pure: true,
+		allowLocal:     []string{"app/domain", "app/application"},
+		allowFramework: []string{"uuid", "fault", "pagination", "tenancy"},
+	},
+	{name: "adapters", dir: "app/adapters", denyLocal: []string{"app/bootstrap"}},
+	{name: "bootstrap", dir: "app/bootstrap"},
+	{name: "cmd", dir: "cmd"},
+	{name: "support package", dir: "", denyLocal: []string{"app/bootstrap"}},
+}
+
+// forbiddenStdlib are the standard library packages (and everything below
+// them) that the pure rings must not use, plus package net itself and cgo's
+// pseudo-package "C": file system, process, HTTP, SQL and unsafe access
+// belongs to the adapters.
+var forbiddenStdlib = []string{
+	"net/http", "net/rpc", "net/smtp", "database/sql", "os", "io/ioutil", "io/fs", "path/filepath",
+	"embed", "html/template", "syscall", "plugin", "unsafe",
+}
+
+func within(dir, parent string) bool {
+	return parent == "" || dir == parent || strings.HasPrefix(dir, parent+"/")
+}
+
+func anyWithin(dir string, parents []string) bool {
+	for _, parent := range parents {
+		if within(dir, parent) {
+			return true
+		}
+	}
+	return false
+}
+
+func ringOf(dir string) ring {
+	for _, candidate := range rings {
+		if within(dir, candidate.dir) {
+			return candidate
+		}
+	}
+	return rings[len(rings)-1]
+}
+
+// violation returns why a package in directory dir (relative to the module
+// root, slash-separated) may not import importPath, or "" when it may.
+func violation(module, dir, importPath string) string {
+	r := ringOf(dir)
+	switch {
+	case importPath == module || strings.HasPrefix(importPath, module+"/"):
+		local := strings.TrimPrefix(strings.TrimPrefix(importPath, module), "/")
+		if r.allowLocal != nil && !anyWithin(local, r.allowLocal) {
+			return fmt.Sprintf("the %s ring may import only %s of this module", r.name, strings.Join(r.allowLocal, ", "))
+		}
+		if anyWithin(local, r.denyLocal) {
+			return fmt.Sprintf("the %s ring must not import %s: only app/bootstrap composes the application", r.name, strings.Join(r.denyLocal, ", "))
+		}
+	case importPath == frameworkModule || strings.HasPrefix(importPath, frameworkModule+"/"):
+		sub := strings.TrimPrefix(strings.TrimPrefix(importPath, frameworkModule), "/")
+		if r.allowFramework != nil && (sub == "" || !anyWithin(sub, r.allowFramework)) {
+			return fmt.Sprintf("the %s ring may import only the framework's %s packages", r.name, strings.Join(r.allowFramework, ", "))
+		}
+	case !strings.Contains(strings.Split(importPath, "/")[0], "."):
+		if r.pure && (importPath == "net" || importPath == "C" || anyWithin(importPath, forbiddenStdlib)) {
+			return fmt.Sprintf("the %s ring must not do I/O or speak HTTP: move that code to app/adapters", r.name)
+		}
+	default:
+		if r.pure && !anyWithin(importPath, extraAllowedImports) {
+			return fmt.Sprintf("the %s ring must not depend on third-party packages: add the package to extraAllowedImports in this file if you decide it may", r.name)
+		}
+	}
+	return ""
+}
+
+// modulePath returns the path of the module directive of a go.mod file: the
+// first line "module PATH", where PATH may be quoted and a // comment may follow.
+func modulePath(goMod string) (string, bool) {
+	for line := range strings.Lines(goMod) {
+		line, _, _ = strings.Cut(line, "//")
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "module" {
+			continue
+		}
+		if unquoted, err := strconv.Unquote(fields[1]); err == nil {
+			return unquoted, true
+		}
+		return fields[1], true
+	}
+	return "", false
+}
+
+// moduleRoot returns the directory holding go.mod, above the test's
+// directory, and the module path it declares.
+func moduleRoot(t *testing.T) (root, module string) {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		content, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if err == nil {
+			if module, ok := modulePath(string(content)); ok {
+				return dir, module
+			}
+			t.Fatalf("%s/go.mod has no module line", dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found above the test directory")
+		}
+		dir = parent
+	}
+}
+
+// violations lists every forbidden import of the Go files under root, as
+// "file:line: imports "path": reason".
+func violations(t *testing.T, root, module string) (found []string, files int) {
+	t.Helper()
+	fset := token.NewFileSet()
+	err := filepath.WalkDir(root, func(file string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		name := entry.Name()
+		if entry.IsDir() {
+			if file != root && (strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "vendor" || name == "node_modules" || name == "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(name, ".go") {
+			return nil
+		}
+		parsed, err := parser.ParseFile(fset, file, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, file)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		files++
+		for _, spec := range parsed.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return err
+			}
+			if reason := violation(module, path.Dir(relative), importPath); reason != "" {
+				found = append(found, fmt.Sprintf("%s:%d: imports %q: %s", relative, fset.Position(spec.Pos()).Line, importPath, reason))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found, files
+}
+
+// TestArchitectureRings fails when a package imports against the direction
+// of the rings.
+func TestArchitectureRings(t *testing.T) {
+	root, module := moduleRoot(t)
+	found, files := violations(t, root, module)
+	if files == 0 {
+		t.Fatalf("no Go files found under %s", root)
+	}
+	for _, problem := range found {
+		t.Error(problem)
+	}
+}
+
+// TestArchitectureRulesReject proves each rule fires, so a rule that is
+// weakened by mistake fails here instead of passing silently.
+func TestArchitectureRulesReject(t *testing.T) {
+	const module = "example.com/shop"
+	for _, tc := range []struct {
+		dir, importPath string
+		rejected        bool
+	}{
+		{"app/domain", "net/http", true},
+		{"app/domain", "net/http/httptest", true},
+		{"app/domain", "net", true},
+		{"app/domain", "database/sql", true},
+		{"app/domain", "os", true},
+		{"app/domain", "os/exec", true},
+		{"app/domain", "io/ioutil", true},
+		{"app/domain", "io/fs", true},
+		{"app/domain", "path/filepath", true},
+		{"app/domain", "unsafe", true},
+		{"app/domain", "C", true},
+		{"app/domain", "io", false},
+		{"app/domain", "path", false},
+		{"app/application", "io/fs", true},
+		{"app/application", "path/filepath", true},
+		{"app/application", "unsafe", true},
+		{"app/adapters/storage", "path/filepath", false},
+		{"app/adapters/storage", "io/fs", false},
+		{"app/domain", "net/mail", false},
+		{"app/domain", "net/url", false},
+		{"app/domain", frameworkModule + "/web", true},
+		{"app/domain", frameworkModule + "/sqldb", true},
+		{"app/domain", frameworkModule, true},
+		{"app/domain", frameworkModule + "/uuid", false},
+		{"app/domain", module + "/app/application", true},
+		{"app/domain", module + "/app/adapters/httpapi", true},
+		{"app/domain", module + "/app/bootstrap", true},
+		{"app/domain", module + "/app/domain", false},
+		{"app/domain", "github.com/shopspring/decimal", true},
+		{"app/application", module + "/app/domain", false},
+		{"app/application", module + "/app/adapters/persistence", true},
+		{"app/application", module + "/app/bootstrap", true},
+		{"app/application", frameworkModule + "/pagination", false},
+		{"app/application", frameworkModule + "/router", true},
+		{"app/application", "net/http", true},
+		{"app/adapters/htmlui", module + "/app/application", false},
+		{"app/adapters/htmlui", module + "/app/bootstrap", true},
+		{"app/adapters/persistence", "database/sql", false},
+		{"app/adapters/httpapi", frameworkModule + "/web", false},
+		{"app/jobs", module + "/app/bootstrap", true},
+		{"db", module + "/app/bootstrap", true},
+		{"app/bootstrap", module + "/app/adapters/htmlui", false},
+		{"app/bootstrap", module + "/app/domain", false},
+		{"cmd/shop", module + "/app/bootstrap", false},
+	} {
+		got := violation(module, tc.dir, tc.importPath)
+		if (got != "") != tc.rejected {
+			t.Errorf("%s importing %s: rejected = %q, want rejected = %v", tc.dir, tc.importPath, got, tc.rejected)
+		}
+	}
+}
+
+// TestArchitectureModulePath reads the module directive the way go.mod allows.
+func TestArchitectureModulePath(t *testing.T) {
+	for goMod, want := range map[string]string{
+		"module demo\n":                                       "demo",
+		"module demo // the app\n":                            "demo",
+		"// header\nmodule example.com/shop\n\ngo 1.27\n":     "example.com/shop",
+		"module \"example.com/shop\"\n":                       "example.com/shop",
+		"module \"example.com/shop\" // quoted\n":             "example.com/shop",
+		"module `example.com/shop`\n":                         "example.com/shop",
+		"module\texample.com/shop\t// tab\n":                 "example.com/shop",
+		"go 1.27\n// module not.this\nmodule example.com/b\n": "example.com/b",
+	} {
+		if got, ok := modulePath(goMod); !ok || got != want {
+			t.Errorf("modulePath(%q) = %q, %v; want %q", goMod, got, ok, want)
+		}
+	}
+	for _, goMod := range []string{"", "go 1.27\n", "// module demo\n", "module\n"} {
+		if got, ok := modulePath(goMod); ok {
+			t.Errorf("modulePath(%q) = %q; want no module", goMod, got)
+		}
+	}
+}

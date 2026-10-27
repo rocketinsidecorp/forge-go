@@ -616,6 +616,8 @@ myapp/
   app/bootstrap/bootstrap.go   # opens the database, readiness check "database", GET /v1/status
   app/bootstrap/bootstrap_test.go
   app/bootstrap/routes_gen.go  # the routes generate scaffold/resource/controller add (generator-owned)
+  app/architecture_test.go     # enforces the ring dependency rules (see Architecture test)
+  AGENTS.md                    # guide for AI coding agents (see AGENTS.md for AI coding agents)
   app/adapters/htmlauth/       # PostgreSQL: sign-in, sign-out, two-factor and password-reset pages
   app/views/                   # layout, flash partial (and, with PostgreSQL, sessions/ and passwords/)
   db/db.go                     # embeds db/migrations into the binary
@@ -644,6 +646,53 @@ SQLite) and runs it in `gcr.io/distroless/static-debian12:nonroot`,
 configured for production behind a TLS-terminating proxy. See
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
 [docs/DATABASE.md](docs/DATABASE.md).
+
+### Architecture test
+
+Every generated application carries `app/architecture_test.go`, a test that
+enforces the dependency direction of its rings with the standard library
+(`go/parser` on the import lines, no tools to install). `app/domain` imports
+only itself, the standard library without `net`, `net/http`, `database/sql`,
+`os`, `io/fs`, `io/ioutil`, `path/filepath`, `embed`, `html/template`, `unsafe`
+and cgo, and Forge's `uuid` and `fault`;
+`app/application` imports `app/domain`, itself and Forge's `uuid`, `fault`,
+`pagination` and `tenancy`; `app/adapters` and every other package outside
+`app/bootstrap` never import `app/bootstrap`, the only composition root. Test
+files are checked too: domain and application tests use in-memory fakes. It
+passes on a fresh application and after every generator, and a violation
+fails with the file, the line and the import:
+
+```sh
+forge new myapp -d sqlite3 && cd myapp
+forge g scaffold product name:string --global
+forge test ./app/ -run TestArchitecture -v        # passes
+printf 'package domain\n\nimport _ "net/http"\n' > app/domain/leak.go
+forge test ./app/ -run TestArchitecture           # app/domain/leak.go:3: imports "net/http": the domain ring must not do I/O or speak HTTP: ...
+rm app/domain/leak.go
+```
+
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#architecture-test-of-the-generated-application)
+has the rules; `extraAllowedImports` in the test admits a third-party package
+to the inner rings on purpose.
+
+### AGENTS.md for AI coding agents
+
+Every generated application carries `AGENTS.md`, a guide of under 120 lines
+for AI coding agents (and new teammates): the rings and the architecture test,
+the `forge` commands (`generate`, `destroy`, `migrate`, `dev`, `test`, `check`,
+`build`), the routes seam (`app/bootstrap/routes_gen.go` is never edited by
+hand), the security defaults (CSRF, tenant scoping, secrets never logged) and
+how to run the tests. It describes only what that application has: an
+`--api` application has no CSRF or view paragraph, one without a database has
+no migration or tenant paragraph, and the sign-in paragraph appears only with
+PostgreSQL. A framework test checks that every command and file it names
+exists.
+
+```sh
+forge new myapp -d sqlite3 && cd myapp
+head -20 AGENTS.md                       # what an agent reads first
+printf '@AGENTS.md\n' > CLAUDE.md        # optional: tools that read only CLAUDE.md import it
+```
 
 ## Translations (i18n)
 
@@ -798,7 +847,7 @@ response against the document. Details, type mapping and tags:
 | `forge new NAME [--database DB] [--locale LOCALE] [--api-auth \| --api] [--module PATH] [--dir DIR] [--forge-path DIR] [--skip-deps \| --skip-lockfile] [--skip-database]` | Create an application. Refuses to write into a non-empty directory. `--skip-lockfile` is Forge-Rust's name for `--skip-deps` |
 | `forge dev [NAME] [--no-reload] [--poll-interval D] [--debounce D]` | Build and run `./cmd/<name>`; on a change to Go sources, templates, assets, migrations or `.env.*` files rebuild, restart gracefully and reload the browser (development only). A failed build leaves the running app alone. `--no-reload` builds and runs once |
 | `forge test [ARGS]` | `go test` with the development environment loaded; `ARGS` default to `./...` |
-| `forge check` | Type-check the application: `go build ./...` then `go vet ./...` (Forge-Rust: `cargo check --all-targets`) |
+| `forge check` | Type-check the application: compile its TypeScript, then `go build ./...`, `go vet ./...` and, when `tsc` is on PATH, `tsc --noEmit` (without `tsc` one note says how to install it; Forge-Rust: `cargo check --all-targets`) |
 | `forge format [--check]` | `gofmt -l -w` on the application's Go files (not `vendor/`, `testdata/` or nested modules), listing the files it rewrote; `--check` lists the files that need formatting, writes nothing and exits 1 when there are any (CI) |
 | `forge lint` | `golangci-lint run ./...` (with the application's `.golangci.yml` when it has one); fails with the install command when `golangci-lint` is not on `PATH` (Forge-Rust: `cargo clippy -D warnings`) |
 | `forge build [NAME]` | `go build -trimpath` into `bin/<name>` |
@@ -836,7 +885,7 @@ Check, format and lint an application, from its directory (the counterparts of
 Forge-Rust's `forge check`, `forge format` and `forge lint`):
 
 ```sh
-forge check             # go build ./... and go vet ./...: type-check, no binary written
+forge check             # go build ./..., go vet ./... and tsc --noEmit (if installed): type-check, no binary written
 forge format --check    # list the Go files that need gofmt and exit 1 if any; writes nothing (CI)
 forge format            # gofmt -l -w: rewrite them, listing each file
 forge lint              # golangci-lint run ./...; if it is missing, prints the go install command
@@ -860,6 +909,10 @@ Flags for `forge new`:
 - `--locale LOCALE` sets the default locale of the generated pages: `en`
   (default), `es` or `pt-BR`. `config/locales/en.json` is always generated,
   plus `LOCALE.json`.
+- `--js` keeps the front end in plain JavaScript (`app/javascript/*.js`,
+  served as written) instead of the default TypeScript; it cannot be combined
+  with `--api` (usage error, exit 2). See
+  [TypeScript front end](#typescript-front-end-the-default).
 - `--api-auth` also mounts the JSON authentication APIs (bearer and cookie
   login and logout, MFA completion, JSON password recovery,
   `GET /v1/auth/session`) beside the HTML sign-in pages; PostgreSQL only.
@@ -1063,6 +1116,61 @@ the `owner` role `forge setup` creates. `--public` (applications without
 Forge identity, global resources only) serves the pages and the JSON API to
 anyone instead. See [docs/VIEWS.md](docs/VIEWS.md#scaffold-a-crud).
 
+### TypeScript front end (the default)
+
+`forge new` generates the front end in TypeScript, because Rails' Turbo setup
+has no types ([ADR 0049](docs/adr/0049-typescript-by-default.md)). There is
+still no mandatory Node toolchain and no bundler: `forge` itself strips the
+types with esbuild's Go API (one pure-Go module, linked into the `forge`
+command only, never into your application), writes plain JavaScript to
+`app/javascript/dist`, and the binary embeds and serves that with digested
+URLs and the import map, as before. `tsc` only *checks* types, and only when
+you have it.
+
+```sh
+forge new myapp -d sqlite3 && cd myapp     # TypeScript by default
+ls app/javascript app/javascript/dist      # application.ts, controllers/*.ts -> dist/*.js
+forge dev                                  # recompiles on every .ts change, inline source maps
+forge build                                # compiles to dist, then bin/myapp serves the precompiled JS (forge deploy compiles first too)
+forge check                                # go build, go vet, and tsc --noEmit when tsc is installed
+npm install --global --ignore-scripts typescript@6.0.3      # optional: the type checker (Node is needed for this only)
+forge new myapp --js                       # opt out: plain JavaScript, exactly as before
+```
+
+What you get, beyond the sources: a strict `tsconfig.json` (`noEmit`, `strict`,
+`moduleResolution: "bundler"`, the import map's bare names as `paths`) and
+`app/javascript/types/`, the declarations of Turbo and Stimulus copied
+unchanged from npm (Stimulus 3.2.2's own, the exact version Forge serves;
+Turbo 8.0.x's from DefinitelyTyped, because Turbo ships none). Without `tsc`,
+`forge check` still compiles and says once how to install it. In production no
+compiler runs: `app/javascript/dist` is generated, committed, embedded by
+`go build` (so the Dockerfile and CI need nothing else), and a generated test
+fails when a `.ts` file changed and `dist` did not, or when a compiled file is
+not the one `forge` wrote (each header records the hashes of its source and of
+its body; review `dist/` diffs like code). In development `forge dev` and
+`forge dev --no-reload` hand `go build` the recompiled files through
+`-overlay`, so `dist` in your working tree stays the production output. Commands
+that only run the application (`forge migrate`, `seed`, `routes`, `openapi`)
+compile nothing and print nothing of their own. A `.ts` file outside
+`controllers/` (say `lib/format.ts`) is compiled and embedded; add
+`forgeassets.PinAllFrom(set, "lib")` in `app/assets/assets.go` to import it by name.
+
+Add a controller:
+
+```sh
+cp app/javascript/controllers/hello_controller.ts app/javascript/controllers/clipboard_controller.ts
+#   in app/javascript/controllers/index.ts:
+#     import ClipboardController from "controllers/clipboard_controller"
+#     application.register("clipboard", ClipboardController)
+forge build
+```
+
+The generated CI installs the same pinned `tsc` (`npm install --global
+--ignore-scripts typescript@6.0.3`, the one npm package any workflow installs)
+and runs `tsc --noEmit`. esbuild is pinned to 0.28.2 in `go.mod`; the update
+policy and the alternatives that were rejected are in the ADR, the supply-chain
+facts in [docs/SUPPLY_CHAIN.md](docs/SUPPLY_CHAIN.md#typescript-esbuild-and-tsc).
+
 ### Hotwire: JavaScript, Turbo and live updates
 
 Generated applications are full-stack like Rails 8, without Node. Static files
@@ -1073,16 +1181,17 @@ links work under Turbo Drive with no changes.
 
 ```sh
 forge new myapp && cd myapp
-cat app/javascript/application.js                       # import "@hotwired/turbo"; import "controllers"
-cat app/javascript/controllers/hello_controller.js      # a Stimulus controller
+cat app/javascript/application.ts                       # import "@hotwired/turbo"; import "controllers"
+cat app/javascript/controllers/hello_controller.ts      # a Stimulus controller (TypeScript; --js for JavaScript)
 curl -s localhost:8080/session/new | grep -E 'importmap|modulepreload|stylesheet'   # with forge dev running (PostgreSQL)
 
 # add a Stimulus controller
-cp app/javascript/controllers/hello_controller.js app/javascript/controllers/clipboard_controller.js
-#   in app/javascript/controllers/index.js:
+cp app/javascript/controllers/hello_controller.ts app/javascript/controllers/clipboard_controller.ts
+#   in app/javascript/controllers/index.ts:
 #     import ClipboardController from "controllers/clipboard_controller"
 #     application.register("clipboard", ClipboardController)
 #   in a template: <div data-controller="clipboard"> ... </div>
+forge build                                             # compile it (forge dev does on save)
 ```
 
 Real-time updates: Turbo Streams pushed to every open page over
@@ -1485,9 +1594,20 @@ docker compose -f compose.yaml -f compose.observability.yaml up --build
 curl http://127.0.0.1:8080/v1/status
 # Grafana http://127.0.0.1:3000 (user admin): dashboard "Forge application",
 # Explore > Tempo (traces), Explore > Loki (logs); Prometheus http://127.0.0.1:9090
+# Alert rules (observability/alerts.yml): http://127.0.0.1:9090/alerts
 # compose interpolates the whole file, so GRAFANA_ADMIN_PASSWORD must be set for down too
 docker compose -f compose.yaml -f compose.observability.yaml down      # add -v to delete the data
 ```
+
+Prometheus also loads `observability/alerts.yml`: scrape target down or no
+metrics arriving, more than 5% of requests failing with 5xx, p95 latency over
+500 ms, database pool over 90% in use or callers waiting for a connection,
+queue jobs that died, scheduled jobs that failed. Open
+http://127.0.0.1:9090/alerts to see which fire; edit the thresholds in the file
+and `docker compose -f compose.yaml -f compose.observability.yaml restart prometheus`.
+The stack has no Alertmanager, and a framework test fails if a rule uses a
+metric or label Forge does not export
+([the rules](docs/OBSERVABILITY.md#alert-rules)).
 
 The default `docker compose up` does not start it. See
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md#local-stack-grafana-prometheus-tempo-and-loki)

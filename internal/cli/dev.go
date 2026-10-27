@@ -55,7 +55,7 @@ func runDev(args []string, stdout, stderr io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if options.noReload {
-		return runAppWithInput(ctx, ".", name, nil, env, nil, stdout, stderr)
+		return runApp(ctx, ".", name, nil, env, stdout, stderr)
 	}
 	return devLoop(ctx, ".", name, env, options, stdout, stderr)
 }
@@ -210,11 +210,23 @@ type devApp struct {
 	running  bool
 }
 
+// build compiles the application. The TypeScript front end is compiled for
+// development (inline source maps) into a temporary directory and handed to
+// `go build -overlay`, so the binary embeds it where app/javascript/dist is
+// while the working tree, and the production output committed in it, stay as
+// they are. A TypeScript syntax error is a build failure like a Go one.
 func (a *devApp) build(ctx context.Context, output string) error {
 	var out cappedBuffer
-	command := goCommand(ctx, a.root, nil, &out, &out, "build", "-o", output, "./cmd/"+a.name)
+	args := []string{"build"}
+	overlay, cleanup, err := frontendOverlay(a.root)
+	if err != nil {
+		return &devloop.BuildError{Output: err.Error()}
+	}
+	defer cleanup()
+	args = append(args, overlay...)
+	command := goCommand(ctx, a.root, nil, &out, &out, append(args, "-o", output, "./cmd/"+a.name)...)
 	devloop.IsolateCommand(command) // cancelling the build ends the compiler and linker too
-	err := command.Run()
+	err = command.Run()
 	if err == nil {
 		return nil
 	}

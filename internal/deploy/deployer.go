@@ -163,6 +163,10 @@ func (d *Deployer) eachHost(ctx context.Context, hosts []string, fn func(context
 	return errors.Join(errs...)
 }
 
+// ErrUncommittedChanges is why ResolveVersion refuses a working tree that
+// differs from HEAD.
+var ErrUncommittedChanges = errors.New("the working tree has uncommitted changes; commit them or pass --version")
+
 // ResolveVersion returns explicit when set, else the abbreviated commit of
 // HEAD. A working tree with uncommitted changes needs an explicit version:
 // the image would not match any commit.
@@ -182,7 +186,7 @@ func ResolveVersion(ctx context.Context, local LocalRunner, root, explicit strin
 		return "", fmt.Errorf("check working tree: %w", err)
 	}
 	if strings.TrimSpace(status) != "" {
-		return "", errors.New("the working tree has uncommitted changes; commit them or pass --version")
+		return "", ErrUncommittedChanges
 	}
 	return strings.TrimSpace(head), nil
 }

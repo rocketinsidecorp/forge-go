@@ -32,7 +32,7 @@ func deployCommandDetails() []commandDetail {
 	return []commandDetail{
 		{
 			Name: "deploy", Usage: "forge deploy [init|setup|rollback VERSION|prune|details|lock status|acquire|release|maintenance on|off] [flags]",
-			Summary:     "Build, push and deploy the application image to hosts over SSH; health-gated zero-downtime switch through forge-proxy, migrations before the switch, all-or-nothing revert, deploy lock, retained versions for rollback.",
+			Summary:     "Build, push and deploy the application image to hosts over SSH (a TypeScript front end is compiled into app/javascript/dist first); health-gated zero-downtime switch through forge-proxy, migrations before the switch, all-or-nothing revert, deploy lock, retained versions for rollback.",
 			SideEffects: []string{"remote_write", "subprocess", "network", "database_write", "filesystem_write"},
 			Examples: []string{
 				"forge deploy init", "forge deploy setup", "forge deploy --dry-run", "forge deploy",

@@ -493,14 +493,33 @@ func TestRootAppNameDoesNotCollideWithDatabaseRoot(t *testing.T) {
 func TestGenerateServerRenderedHTML(t *testing.T) {
 	t.Parallel()
 	for _, database := range []string{"", "sqlite", "postgresql"} {
-		t.Run("database "+database, func(t *testing.T) {
+		for _, js := range []bool{false, true} {
+			testServerRenderedHTML(t, database, js)
+		}
+	}
+}
+
+// testServerRenderedHTML is one subtest of TestGenerateServerRenderedHTML: the
+// front end is TypeScript (compiled to app/javascript/dist) by default and
+// plain JavaScript with --js.
+func testServerRenderedHTML(t *testing.T, database string, js bool) {
+	{
+		name := "database " + database
+		if js {
+			name += " js"
+		}
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			dir := filepath.Join(t.TempDir(), "shop")
-			paths, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: database})
+			paths, err := scaffold.Generate(scaffold.Options{Name: "shop", Dir: dir, Database: database, JS: js})
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, required := range []string{"app/views/views.go", "app/views/views_test.go", "app/views/layouts/application.gohtml", "app/views/shared/_flash.gohtml", "app/assets/application.css", "app/assets/forge-go-logo.png", "app/assets/assets.go", "app/assets/assets_test.go", "app/javascript/javascript.go", "app/javascript/application.js", "app/javascript/controllers/index.js", "app/javascript/controllers/application.js", "app/javascript/controllers/hello_controller.js"} {
+			ext, entry, embedPattern := "ts", "application.ts", "//go:embed dist"
+			if js {
+				ext, entry, embedPattern = "js", "application.js", "//go:embed application.js controllers/*.js"
+			}
+			for _, required := range []string{"app/views/views.go", "app/views/views_test.go", "app/views/layouts/application.gohtml", "app/views/shared/_flash.gohtml", "app/assets/application.css", "app/assets/forge-go-logo.png", "app/assets/assets.go", "app/assets/assets_test.go", "app/javascript/javascript.go", "app/javascript/" + entry, "app/javascript/controllers/index." + ext, "app/javascript/controllers/application." + ext, "app/javascript/controllers/hello_controller." + ext} {
 				if !contains(paths, filepath.FromSlash(required)) {
 					t.Fatalf("missing %s in %v", required, paths)
 				}
@@ -517,14 +536,14 @@ func TestGenerateServerRenderedHTML(t *testing.T) {
 					`{{template "shared/_flash" .}}`,
 					`{{block "content" .}}{{end}}`,
 				},
-				"app/views/shared/_flash.gohtml":      {"{{range flashes}}", `role="{{if eq .Kind "alert"}}alert{{else}}status{{end}}"`, "{{.Text}}"},
-				"app/views/views.go":                  {"//go:embed */*.gohtml", "forgeviews.Load(files, opts)", "hotwire.StyleHashes()", "func WithStreams("},
-				"app/assets/assets.go":                {"//go:embed application.css forge-go-logo.png", "hotwire.Files()", `forgeassets.PinAllFrom(set, "controllers")`},
-				"app/javascript/javascript.go":        {"//go:embed application.js controllers/*.js"},
-				"app/javascript/application.js":       {`import "@hotwired/turbo"`, `import "controllers"`},
-				"app/javascript/controllers/index.js": {`application.register("hello", HelloController)`},
-				"app/bootstrap/welcome.go":            {`<meta name="turbo-visit-control" content="reload">`, `src="[[.Logo]]"`, `i18n.T(ctx, "welcome.title", "app", "shop")`, "var welcomeContentSecurityPolicy = ", "sha256.Sum256([]byte(style))"},
-				"app/bootstrap/welcome_test.go":       {"func TestWelcomePageContentSecurityPolicyHashesItsStylesheet(t *testing.T) {", "sha256.Sum256([]byte(styles[0][1]))"},
+				"app/views/shared/_flash.gohtml":          {"{{range flashes}}", `role="{{if eq .Kind "alert"}}alert{{else}}status{{end}}"`, "{{.Text}}"},
+				"app/views/views.go":                      {"//go:embed */*.gohtml", "forgeviews.Load(files, opts)", "hotwire.StyleHashes()", "func WithStreams("},
+				"app/assets/assets.go":                    {"//go:embed application.css forge-go-logo.png", "hotwire.Files()", `forgeassets.PinAllFrom(set, "controllers")`},
+				"app/javascript/" + entry:                 {`import "@hotwired/turbo"`, `import "controllers"`},
+				"app/javascript/controllers/index." + ext: {`application.register("hello", HelloController)`},
+				"app/javascript/javascript.go":            {embedPattern},
+				"app/bootstrap/welcome.go":                {`<meta name="turbo-visit-control" content="reload">`, `src="[[.Logo]]"`, `i18n.T(ctx, "welcome.title", "app", "shop")`, "var welcomeContentSecurityPolicy = ", "sha256.Sum256([]byte(style))"},
+				"app/bootstrap/welcome_test.go":           {"func TestWelcomePageContentSecurityPolicyHashesItsStylesheet(t *testing.T) {", "sha256.Sum256([]byte(styles[0][1]))"},
 				"app/bootstrap/bootstrap.go": {
 					"translator, err := locales.New(app.Config(), app.Logger())",
 					"if err := useBrowserPipeline(app, translator); err != nil {",
