@@ -3,6 +3,9 @@ package htmlui_test
 import (
 	"cmp"
 	"context"
+[[- if .Identity]]
+	"errors"
+[[- end]]
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -75,7 +78,7 @@ func (r *[[.Camel]]MemoryRepository) List[[.Right.PluralTitle]](_ context.Contex
 	}
 	return page, nil
 }
-[[.ReferenceStubs]]
+[[.GuardedReferenceStubs]]
 
 // [[.Camel]]Browser keeps cookies between requests, so the CSRF token travels
 // as it does in a browser.

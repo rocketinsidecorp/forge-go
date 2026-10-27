@@ -16,6 +16,9 @@ import (
 
 	"[[.Module]]/app/application"
 	"[[.Module]]/app/domain"
+[[- if and .Identity .References]]
+	"github.com/rocketinsidecorp/forge-go/auth"
+[[- end]]
 [[- if .Broadcast]]
 	"github.com/rocketinsidecorp/forge-go/broadcast"
 [[- end]]
@@ -577,10 +580,11 @@ func (h [[$.Camel]]Pages) By[[.Title]](w http.ResponseWriter, r *http.Request) {
 
 // loadChoices fills the selects of the form with the rows it may reference.
 // The row the form already names stays selectable even when it is not among
-// them (an older one).
+// them (an older one).[[if .Identity]] A caller who may not read those rows gets no
+// choices, and they are not read: the form takes the id typed in.[[end]]
 func (h [[.Camel]]Pages) loadChoices(r *http.Request, data *[[.Camel]]Page) error {
 [[- range .References]]
-	{
+	[[if $.Identity]]if [[$.Camel]]MayRead(r, "[[.Plural]]:read") [[end]]{
 		rows, err := h.service.[[.Title]]Choices(r.Context())
 		if err != nil {
 			return err
@@ -598,6 +602,19 @@ func (h [[.Camel]]Pages) loadChoices(r *http.Request, data *[[.Camel]]Page) erro
 [[- end]]
 	return nil
 }
+[[- if .Identity]]
+
+// [[.Camel]]MayRead reports whether the signed-in principal holds permission, as the
+// views helper can does: true without a principal, whose guard decided.
+func [[.Camel]]MayRead(r *http.Request, permission string) bool {
+	principal, ok := auth.FromContext(r.Context())
+	if !ok {
+		return true
+	}
+	required, err := auth.NewPermission(permission)
+	return err == nil && principal.Can(required)
+}
+[[- end]]
 [[- end]]
 [[- if .Broadcast]]
 

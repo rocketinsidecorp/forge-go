@@ -3,6 +3,9 @@ package htmlui_test
 import (
 	"cmp"
 	"context"
+[[- if and .Identity .References]]
+	"errors"
+[[- end]]
 	"io"
 	"maps"
 	"net/http"
@@ -127,7 +130,7 @@ func [[.Camel]]Grant(granted ...string) htmlui.[[.Title]]Protect {
 }
 
 [[- .MemoryListBy (printf "%sMemoryRepository" .Camel)]]
-[[- .ReferenceStubs]]
+[[- .GuardedReferenceStubs]]
 
 // new[[.Title]]Service builds the use cases over an in-memory store with a clock
 // that advances one second per reading.
@@ -950,6 +953,13 @@ func Test[[$.Title]]FormHides[[.PluralTitle]]WithoutTheirPermission(t *testing.T
 		t.Fatalf("the form lists the [[.Plural]] to a caller without [[.Plural]]:read:\n%s", form.Body)
 	}
 	[[$.Camel]]Contains(t, form, `id="[[$.Name]]_[[.Field.Name]]" name="[[.Field.Name]]" value="`+[[.KnownVar]].String()+`"`)
+	// The [[.Plural]] are not even read: the stand-in's List refuses this caller,
+	// which would fail the page, and no choice is offered.
+	empty := browser.get("/[[$.Plural]]/new")
+	[[$.Camel]]Expect(t, empty, http.StatusOK)
+	if strings.Contains(empty.Body.String(), [[.KnownVar]].String()) {
+		t.Fatalf("the form offers a [[.Human]] to a caller without [[.Plural]]:read:\n%s", empty.Body)
+	}
 	browser.handler = [[$.Camel]]As(t, pages, "[[$.Plural]]:read", "[[$.Plural]]:write", "[[.Plural]]:read")
 	[[$.Camel]]Contains(t, browser.get("/[[$.Plural]]/new"), "<select id=\"[[$.Name]]_[[.Field.Name]]\"")
 }

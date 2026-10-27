@@ -13,9 +13,26 @@ import (
 // ReferenceStubs declares, for each references field, a stand-in for the
 // referenced resource's repository: every row exists but one, and List
 // offers one.
-func (v resourceView) ReferenceStubs() string {
+func (v resourceView) ReferenceStubs() string { return v.referenceStubs(false) }
+
+// GuardedReferenceStubs is ReferenceStubs for the page tests of an
+// application with Forge identity: List also refuses a signed-in caller
+// without the referenced resource's read permission, so a page that reads
+// the rows for such a caller fails its test. (Only adapters may import auth.)
+func (v resourceView) GuardedReferenceStubs() string { return v.referenceStubs(v.Identity) }
+
+func (v resourceView) referenceStubs(guarded bool) string {
 	var out strings.Builder
 	for _, reference := range v.References {
+		listContext, listGuard := "_", ""
+		if guarded {
+			// The pages must not read the rows for a caller who may not.
+			listContext = "ctx"
+			listGuard = fmt.Sprintf(`
+	if principal, ok := auth.FromContext(ctx); ok && !principal.Can(auth.Permission(%q)) {
+		return nil, errors.New("listed the %s for a caller without %s")
+	}`, reference.Plural+":read", reference.Plural, reference.Plural+":read")
+		}
 		fmt.Fprintf(&out, `
 var (
 	%[5]s = uuid.MustNew() // the one %[2]s that does not exist
@@ -35,10 +52,10 @@ func (%[1]s) Get(_ context.Context, id uuid.UUID) (domain.%[4]s, error) {
 	return domain.%[4]s{ID: id}, nil
 }
 
-func (%[1]s) List(_ context.Context, _ uuid.UUID, _ int) ([]domain.%[4]s, error) {
+func (%[1]s) List(%[7]s context.Context, _ uuid.UUID, _ int) ([]domain.%[4]s, error) {%[8]s
 	return []domain.%[4]s{{ID: %[6]s}}, nil
 }
-`, reference.StubType(), reference.Human, reference.Field.Name, reference.Title, reference.MissingVar(), reference.KnownVar())
+`, reference.StubType(), reference.Human, reference.Field.Name, reference.Title, reference.MissingVar(), reference.KnownVar(), listContext, listGuard)
 	}
 	return out.String()
 }
