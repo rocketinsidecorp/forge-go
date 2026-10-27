@@ -66,7 +66,10 @@ func probeDatabase(ctx context.Context, database config.Database, root string) (
 		if !filepath.IsAbs(file) {
 			file = filepath.Join(root, file)
 		}
-		if _, err := os.Stat(file); err == nil {
+		if info, err := os.Stat(file); err == nil {
+			if !info.Mode().IsRegular() {
+				return "not a file (the path names a directory or a device)", "", false
+			}
 			return "the file exists", "", false
 		}
 		return "the file does not exist yet (`forge db create` or the first migrate creates it)", "", false

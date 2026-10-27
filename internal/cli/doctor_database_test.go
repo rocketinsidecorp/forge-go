@@ -149,6 +149,10 @@ func TestDoctorSQLiteAndSocketsAreNotProbedOverTheNetwork(t *testing.T) {
 	if got := run("sqlite://" + elsewhere); !strings.Contains(got, "database reachability: the file exists\n") {
 		t.Errorf("an existing absolute SQLite file:\n%s", got)
 	}
+	// A path that names a directory is not reported as an existing file.
+	if got := run("sqlite:storage"); !strings.Contains(got, "database reachability: not a file (the path names a directory or a device)\n") {
+		t.Errorf("a SQLite path naming a directory:\n%s", got)
+	}
 	if status, _, malformed := probeDatabase(t.Context(), config.Database{URL: config.NewSecret("sqlite::memory:")}, root); malformed || !strings.Contains(status, "not checked") {
 		t.Errorf("an in-memory SQLite URL: %q, malformed %v", status, malformed)
 	}
