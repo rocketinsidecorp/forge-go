@@ -8,33 +8,34 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"golang.org/x/crypto/argon2"
 )
 
 // argon2Hash encodes an Argon2id hash of password with any parameters, salt
-// and key length, for the parser and rehash tests.
+// and key length, for the parser and rehash tests, through the registered
+// (fake) implementation.
 func argon2Hash(password string, params argon2Params, salt []byte, keyBytes uint32) string {
-	key := argon2.IDKey([]byte(password), salt, params.iterations, params.memoryKiB, params.parallelism, keyBytes)
+	key := fakeArgon2idKDF([]byte(password), salt, params.iterations, params.memoryKiB, params.parallelism, keyBytes)
 	return encodeArgon2id(params, salt, key)
 }
 
-// The one test of the production cost: m=19456 KiB, t=2, p=1, a 16-byte salt
-// and a 32-byte key, the parameters of Forge-Rust's Argon2idPasswordHasher.
+// The one test of the production parameters: m=19456 KiB, t=2, p=1, a 16-byte
+// salt and a 32-byte key, the parameters of Forge-Rust's
+// Argon2idPasswordHasher, with Argon2id registered (here the fake; the
+// identity adapters' tests run the real one at this cost).
 func TestPasswordHashDefaultsToArgon2idWithForgeRustParameters(t *testing.T) {
 	hash, err := HashPassword("correct horse battery staple 🔐")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if DefaultPasswordAlgorithm == PasswordAlgorithmPBKDF2SHA256 {
+	if DefaultPasswordAlgorithm() == PasswordAlgorithmPBKDF2SHA256 {
 		// A binary built with -tags forge_pbkdf2.
 		if !strings.HasPrefix(hash, "$pbkdf2-sha256$v=1$i=600000$") {
 			t.Fatalf("forge_pbkdf2 hash %q", hash)
 		}
 		return
 	}
-	if DefaultPasswordAlgorithm != PasswordAlgorithmArgon2id || DefaultPasswordHasher().Algorithm() != PasswordAlgorithmArgon2id {
-		t.Fatalf("default algorithm %q", DefaultPasswordAlgorithm)
+	if DefaultPasswordAlgorithm() != PasswordAlgorithmArgon2id || DefaultPasswordHasher().Algorithm() != PasswordAlgorithmArgon2id {
+		t.Fatalf("default algorithm %q", DefaultPasswordAlgorithm())
 	}
 	shape := regexp.MustCompile(`^\$argon2id\$v=19\$m=19456,t=2,p=1\$([A-Za-z0-9+/]{22})\$([A-Za-z0-9+/]{43})$`)
 	parts := shape.FindStringSubmatch(hash)
@@ -65,8 +66,8 @@ func TestPasswordHasherPBKDF2OptionForFIPSBuilds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fips.Algorithm() != PasswordAlgorithmPBKDF2SHA256 || !strings.HasPrefix(fips.dummy, "$pbkdf2-sha256$v=1$i=600000$") {
-		t.Fatalf("algorithm=%q dummy=%q", fips.Algorithm(), fips.dummy)
+	if fips.Algorithm() != PasswordAlgorithmPBKDF2SHA256 || !strings.HasPrefix(fips.dummy(), "$pbkdf2-sha256$v=1$i=600000$") {
+		t.Fatalf("algorithm=%q dummy=%q", fips.Algorithm(), fips.dummy())
 	}
 	legacy, err := hashPassword("secret", DefaultPasswordIterations, bytes.NewReader(make([]byte, passwordSaltBytes)))
 	if err != nil {
@@ -248,7 +249,7 @@ func TestArgon2idParserRefusesEverythingButTheStrictPHCForm(t *testing.T) {
 
 func cheapDummy(t *testing.T) string {
 	t.Helper()
-	return cheapPasswordHasher(t).dummy
+	return cheapPasswordHasher(t).dummy()
 }
 
 func FuzzParsePasswordHashNeverPanics(f *testing.F) {

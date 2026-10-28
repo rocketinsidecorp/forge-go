@@ -58,7 +58,8 @@ The owner decided on 2026-10-26:
   exactly what `forge new` wrote, and leave an edited one alone with a note.
 - **Identity on every database (D30).** `auth/sqlite` and `auth/mysql`
   (MySQL and MariaDB) implement the same interfaces as `auth/postgres`,
-  through one shared implementation (`auth/internal/sqlidentity`) with
+  through one shared implementation (`auth/internal/sqlidentity`; since
+  [ADR 0053](0053-dependency-free-core.md) the public `auth/authsql`) with
   per-dialect SQL. Identifiers are UUIDv7 values generated in Go; the
   identity migration has the same version on every backend. Without RLS,
   tenant isolation is the mandatory `TenantContext` predicate in every

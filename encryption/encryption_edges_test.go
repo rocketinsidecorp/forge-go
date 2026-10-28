@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/rocketinsidecorp/forge-go/encryption"
-	"github.com/rocketinsidecorp/forge-go/sqlite/sqlitetest"
 )
 
 func TestKeyDerivationAndAEADRefuseBadInput(t *testing.T) {
@@ -44,32 +43,6 @@ func TestReencryptStopsOnACancelledContextBeforeReadingAnything(t *testing.T) {
 	report, err := c.Reencrypt(ctx, rewriter, encryption.RotateOptions{After: "checkpoint"})
 	if !errors.Is(err, context.Canceled) || read || report.LastID != "checkpoint" || report.Scanned != 0 {
 		t.Errorf("Reencrypt = %+v, %v (page read: %v)", report, err, read)
-	}
-}
-
-// A row the database cannot hand over (a NULL id, which SQLite allows in a
-// TEXT primary key) stops the run with the scan error, not a silent skip.
-func TestSQLRewriterReportsARowItCannotScan(t *testing.T) {
-	t.Parallel()
-	db := sqlitetest.New(t)
-	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, `CREATE TABLE people (id TEXT PRIMARY KEY, ssn TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO people (id, ssn) VALUES (NULL, 'fg1.k1.AAAA')`); err != nil {
-		t.Fatal(err)
-	}
-	rewriter, err := encryption.NewSQLRewriter(db, encryption.SQLColumn{Table: "people", Column: "ssn"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page, err := rewriter.Page(ctx, "", 10); err == nil || page != nil {
-		t.Fatalf("Page over a NULL id = %v, %v; want an error", page, err)
-	}
-	c := newCipher(t, testKey(t, "k1", 1))
-	report, err := c.Reencrypt(ctx, rewriter, encryption.RotateOptions{})
-	if err == nil || !strings.Contains(err.Error(), "read page") || report.Scanned != 0 {
-		t.Errorf("Reencrypt = %+v, %v", report, err)
 	}
 }
 

@@ -23,7 +23,10 @@ import (
 	"github.com/rocketinsidecorp/forge-go/config"
 	"github.com/rocketinsidecorp/forge-go/dbtest"
 	"github.com/rocketinsidecorp/forge-go/internal/waittest"
+	"github.com/rocketinsidecorp/forge-go/mysql"
 	"github.com/rocketinsidecorp/forge-go/mysql/mysqltest"
+	"github.com/rocketinsidecorp/forge-go/sqldb"
+	"github.com/rocketinsidecorp/forge-go/sqlite"
 	"github.com/rocketinsidecorp/forge-go/uuid"
 )
 
@@ -227,6 +230,10 @@ func testReadmeQuickstart(t *testing.T, frameworkPath, name string) {
 			t.Fatalf("%s asks for a manual edit:\n%s", line, output)
 		}
 	}
+	// forge setup stored the owner's password as Argon2id: the identity
+	// store the application links registers it (ADR 0053), with no code of
+	// the application's own.
+	assertOwnerHashIsArgon2id(t, variant, app, serverURL, runtimeURL)
 	org := ""
 	if variant.tenants {
 		org = "acme"
@@ -299,6 +306,48 @@ func testReadmeQuickstart(t *testing.T, frameworkPath, name string) {
 	other.expectJSON(http.MethodPost, "/v1/posts/"+globexPost+"/tags", `{"tag_id":"`+tag+`"}`, csrfHeader, http.StatusUnprocessableEntity)
 	assertCrossOrganizationRowsRefused(t, runtimeURL, post, tag, globexPost)
 	browser.expect(http.MethodGet, "/posts/"+post+"/comments", nil, http.StatusOK, "Nice post")
+}
+
+// assertOwnerHashIsArgon2id reads the password hash `forge setup` stored for
+// the quickstart's owner from the application's database and checks it is
+// Argon2id with Forge-Rust's parameters, not the PBKDF2 a binary without a
+// registered Argon2id writes.
+func assertOwnerHashIsArgon2id(t *testing.T, variant quickstartVariant, app, serverURL, runtimeURL string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), dbtest.SetupTimeout)
+	defer cancel()
+	const query = "SELECT password_hash FROM forge_users WHERE email_normalized = 'you@example.com'"
+	var hash string
+	switch variant.database {
+	case "postgresql":
+		conn, err := pgx.Connect(ctx, runtimeURL)
+		if err != nil {
+			t.Fatalf("connect as the runtime role: %v", err)
+		}
+		defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+		if err := conn.QueryRow(ctx, query).Scan(&hash); err != nil {
+			t.Fatalf("read the owner's password hash: %v", err)
+		}
+	default:
+		cfg := config.Default().Database
+		cfg.URL = config.NewSecret("sqlite:" + filepath.ToSlash(filepath.Join(app, "storage", "development.db")))
+		open := func(ctx context.Context, cfg config.Database) (*sqldb.DB, error) { return sqlite.Open(ctx, cfg) }
+		if variant.database == "mysql" {
+			cfg.URL = config.NewSecret(serverURL)
+			open = func(ctx context.Context, cfg config.Database) (*sqldb.DB, error) { return mysql.Open(ctx, cfg) }
+		}
+		db, err := open(ctx, cfg)
+		if err != nil {
+			t.Fatalf("open the application's database: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+		if err := db.QueryRowContext(ctx, query).Scan(&hash); err != nil {
+			t.Fatalf("read the owner's password hash: %v", err)
+		}
+	}
+	if !strings.HasPrefix(hash, "$argon2id$v=19$m=19456,t=2,p=1$") {
+		t.Fatalf("forge setup stored %.30q..., want an Argon2id hash", hash)
+	}
 }
 
 // quickstartAssociations drives the README's associations as a person

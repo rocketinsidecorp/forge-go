@@ -84,6 +84,51 @@ KiB of memory, 2 passes, 1 lane, a random 16-byte salt from `crypto/rand` and a
 $argon2id$v=19$m=19456,t=2,p=1$<salt>$<key>
 ```
 
+**Where Argon2id comes from.** The core packages import no third-party
+module ([ADR 0053](adr/0053-dependency-free-core.md)), so `auth` has no Argon2
+of its own: it hashes with the function given to `auth.RegisterArgon2id`. The
+identity stores `auth/postgres`, `auth/mysql` and `auth/sqlite` register
+`golang.org/x/crypto/argon2` in their `init`, so an application that links one
+(every `forge new --auth` application does) writes `$argon2id$` hashes with no
+code of its own. An application with another credential store registers it
+itself, once, in `main` or an `init`:
+
+```go
+import (
+	"golang.org/x/crypto/argon2"
+
+	"github.com/rocketinsidecorp/forge-go/auth"
+)
+
+func init() { auth.RegisterArgon2id(argon2.IDKey) }
+```
+
+The first registration wins and later ones are ignored; hashers look the
+function up at each hash, so the order of initialization does not matter. A
+function that is not Argon2id v19 (`argon2.Key` is Argon2i, with the same
+signature), or that ignores t, p, the key length or a small memory, fails
+two small known answers and panics at registration. At the first hash or
+verification, once per process, a third answer at the default cost
+(m=19456 KiB, t=2, p=1) catches a wrapper that changes that cost (a memory
+cap, say): the function is logged and ignored, as if none were registered.
+Costs other than the default are covered by the small answers only.
+`auth.DefaultPasswordAlgorithm()` reports what new hashes use. With nothing
+registered:
+
+- new hashes are PBKDF2-HMAC-SHA256 with 600,000 iterations
+  (`$pbkdf2-sha256$v=1$i=600000$…`), the format below, which every build
+  verifies;
+- verifying an existing `$argon2id$` hash fails closed with
+  `auth.ErrPasswordAlgorithmUnavailable`: the sign-in (or step-up) answers
+  `503`, the request log names the fix and the attempt is audited
+  (`auth.login.failed`, or the step-up's event, with the outcome `failed`);
+  it is never counted as a wrong password, and the sign-in never rewrites the
+  hash. A password reset still works and writes the new password as PBKDF2,
+  which replaces the Argon2id hash. A hasher built with
+  `auth.WithPasswordAlgorithm(auth.PasswordAlgorithmArgon2id)` refuses to hash
+  the same way (it still verifies PBKDF2 hashes and then skips the rehash).
+  Register Argon2id (or link an identity store) and restart.
+
 Either framework verifies the other's hashes (a test verifies a hash written
 by Forge-Rust). Verification uses the cost the stored hash names, within
 bounds that cap what one stored hash can demand: only version 19; `m`, `t`
@@ -139,7 +184,9 @@ hasher, err := auth.NewPasswordHasher(auth.WithLegacyHashTimingFloor(false))
 login, err := auth.NewLoginService(repository, repository, auth.WithLoginPasswordHasher(hasher))
 ```
 
-A `forge_pbkdf2` build needs no floor: every check already costs PBKDF2.
+A `forge_pbkdf2` build, or one with no Argon2id registered, needs no floor:
+every check already costs PBKDF2, and the default hasher turns it on only
+while it writes Argon2id.
 
 **Dormant PBKDF2 accounts.** To stop waiting for accounts that never sign in,
 count them and make them choose a new password through "Forgot your
@@ -186,8 +233,9 @@ iterations, the Go standard library's FIPS module) instead:
 go build -tags forge_pbkdf2 -o bin/myapp ./cmd/myapp
 ```
 
-Such a build still verifies Argon2id hashes, and rewrites them as PBKDF2 at
-the next sign-in. `auth.WithPasswordAlgorithm(auth.PasswordAlgorithmPBKDF2SHA256)`
+Such a build still verifies Argon2id hashes through the registered
+implementation (an identity store registers it even then), and rewrites them
+as PBKDF2 at the next sign-in. `auth.WithPasswordAlgorithm(auth.PasswordAlgorithmPBKDF2SHA256)`
 chooses PBKDF2 for one `PasswordHasher` only; the tag also covers `forge setup`
 and every service left on the default hasher.
 

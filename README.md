@@ -104,7 +104,13 @@ Adapter packages (third-party dependencies allowed):
 An application links only the adapter it imports. The `forge` CLI lives in
 `cmd/forge`; the deploy proxy, forge-proxy, in `cmd/forge-proxy` (its
 `go.yaml.in/yaml/v3` and `golang.org/x/crypto` dependencies are not linked
-into applications, [ADR 0030](docs/adr/0030-forge-deploy.md)).
+into applications, [ADR 0030](docs/adr/0030-forge-deploy.md)). The core
+packages import no third-party module: Argon2id password hashing
+(`golang.org/x/crypto/argon2`) comes with the identity stores `auth/postgres`,
+`auth/mysql` and `auth/sqlite`, which register it, and an application with
+another store calls `auth.RegisterArgon2id(argon2.IDKey)`; with neither, new
+passwords are PBKDF2-HMAC-SHA256 ([ADR 0053](docs/adr/0053-dependency-free-core.md),
+[password hashing](docs/AUTHENTICATION.md#password-hashing)).
 
 ## Install
 
@@ -627,6 +633,17 @@ A FIPS 140 build writes PBKDF2-HMAC-SHA256 instead
 
 ```sh
 go build -tags forge_pbkdf2 -o bin/myapp ./cmd/myapp
+```
+
+Argon2id comes with the identity store the application links (`auth/postgres`,
+`auth/mysql` or `auth/sqlite` register it). An application with its own
+credential store registers it once, or it writes PBKDF2 and answers `503` for
+a stored `$argon2id$` hash:
+
+```go
+import "golang.org/x/crypto/argon2"
+
+func init() { auth.RegisterArgon2id(argon2.IDKey) }
 ```
 
 Applications created with `--api` have no pages and are refused. See
@@ -1988,8 +2005,8 @@ prints the gross total and the gated total (production code, without the
 contract test kits) with a per-package table, and fails when the gated total is
 below `.coverage-floor`, the gross total is below 95.0%, or one of the
 security-relevant packages (`auth`, `auth/postgres`, `auth/mysql`,
-`auth/sqlite`, `auth/internal/sqlidentity`, `credentials`, `csrf`,
-`encryption`, `internal/pgurl`, `postgres`) is below 95% of its own statements
+`auth/sqlite`, `auth/authsql`, `credentials`, `csrf`,
+`encryption`, `postgres/internal/pgurl`, `postgres`) is below 95% of its own statements
 ([docs/TESTING.md](docs/TESTING.md#coverage)).
 
 CI (`.github/workflows/ci.yml`):

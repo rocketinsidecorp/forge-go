@@ -3,41 +3,12 @@
 package forge
 
 import (
-	"fmt"
-	"os"
 	"strings"
 	"testing"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/rocketinsidecorp/forge-go/config"
+	"github.com/rocketinsidecorp/forge-go/internal/ptytest"
 )
-
-// openPTY returns a pseudo-terminal: the slave a logger writes to and the
-// master the test reads the terminal's output from. The test is skipped where
-// /dev/ptmx cannot be opened.
-func openPTY(t *testing.T) (master, slave *os.File) {
-	t.Helper()
-	fd, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		t.Skipf("no pseudo-terminal available: %v", err)
-	}
-	master = os.NewFile(uintptr(fd), "/dev/ptmx")
-	t.Cleanup(func() { _ = master.Close() })
-	if err := unix.IoctlSetPointerInt(fd, unix.TIOCSPTLCK, 0); err != nil {
-		t.Skipf("cannot unlock the pseudo-terminal: %v", err)
-	}
-	number, err := unix.IoctlGetInt(fd, unix.TIOCGPTN)
-	if err != nil {
-		t.Skipf("cannot name the pseudo-terminal: %v", err)
-	}
-	slave, err = os.OpenFile(fmt.Sprintf("/dev/pts/%d", number), os.O_RDWR|unix.O_NOCTTY, 0)
-	if err != nil {
-		t.Skipf("cannot open the pseudo-terminal: %v", err)
-	}
-	t.Cleanup(func() { _ = slave.Close() })
-	return master, slave
-}
 
 // On a terminal the development log is pretty and colored, unless NO_COLOR is
 // set (to any value, an empty one included): then the layout stays and the
@@ -54,7 +25,7 @@ func TestNewLoggerOnATerminal(t *testing.T) {
 		{"NO_COLOR", map[string]string{"NO_COLOR": "1"}, config.LogFormatAuto, false},
 		{"empty NO_COLOR", map[string]string{"NO_COLOR": ""}, config.LogFormatPretty, false},
 	} {
-		master, slave := openPTY(t)
+		master, slave := ptytest.Open(t)
 		cfg := config.Default()
 		cfg.Log.Format = tc.format
 		logger := newLogger(cfg, slave, func(key string) (string, bool) { value, ok := tc.env[key]; return value, ok })

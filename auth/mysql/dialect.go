@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rocketinsidecorp/forge-go/auth/internal/sqlidentity"
+	"github.com/rocketinsidecorp/forge-go/auth/authsql"
 	"github.com/rocketinsidecorp/forge-go/fault"
 	forgemysql "github.com/rocketinsidecorp/forge-go/mysql"
 	"github.com/rocketinsidecorp/forge-go/sqldb"
@@ -28,7 +28,7 @@ var setupLockTimeout = 10
 // locks, and are retried after a deadlock; locking reads use FOR UPDATE, and
 // the pruning batches FOR UPDATE SKIP LOCKED (MySQL 8.0 and MariaDB 10.6 and
 // later).
-var dialect = &sqlidentity.Dialect{
+var dialect = &authsql.Dialect{
 	Name:       "mysql",
 	Now:        "UTC_TIMESTAMP(6)",
 	Ago:        "DATE_SUB(UTC_TIMESTAMP(6), INTERVAL ? MICROSECOND)",

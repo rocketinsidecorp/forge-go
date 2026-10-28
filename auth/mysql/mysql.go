@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/rocketinsidecorp/forge-go/auth"
-	"github.com/rocketinsidecorp/forge-go/auth/internal/setupcmd"
-	"github.com/rocketinsidecorp/forge-go/auth/internal/sqlidentity"
+	"github.com/rocketinsidecorp/forge-go/auth/authsetup"
+	"github.com/rocketinsidecorp/forge-go/auth/authsql"
 	"github.com/rocketinsidecorp/forge-go/command"
 	"github.com/rocketinsidecorp/forge-go/config"
 	forgemysql "github.com/rocketinsidecorp/forge-go/mysql"
@@ -28,59 +28,59 @@ import (
 // Repository is the identity store: password identities, sessions, password
 // recovery, MFA factors and challenges, the security audit trail and setup.
 // It implements the same auth ports as auth/postgres.Repository.
-type Repository = sqlidentity.Repository
+type Repository = authsql.Repository
 
 // LoginThrottler is an auth.LoginThrottler whose counters live in the
 // database, so every process of an application shares them.
-type LoginThrottler = sqlidentity.LoginThrottler
+type LoginThrottler = authsql.LoginThrottler
 
 // Option configures a Repository.
-type Option = sqlidentity.Option
+type Option = authsql.Option
 
 // OwnerAccount is the first organization and its owner (ProvisionOwner).
-type OwnerAccount = sqlidentity.OwnerAccount
+type OwnerAccount = authsql.OwnerAccount
 
 // ProvisionedOwner describes what ProvisionOwner created.
-type ProvisionedOwner = sqlidentity.ProvisionedOwner
+type ProvisionedOwner = authsql.ProvisionedOwner
 
 // The errors and limits of auth/postgres, with the same meaning.
 var (
-	ErrMembershipRequired       = sqlidentity.ErrMembershipRequired
-	ErrExpiryRequired           = sqlidentity.ErrExpiryRequired
-	ErrRecoveryIdentityRequired = sqlidentity.ErrRecoveryIdentityRequired
-	ErrMFAIdentityRequired      = sqlidentity.ErrMFAIdentityRequired
-	ErrAlreadyProvisioned       = sqlidentity.ErrAlreadyProvisioned
-	ErrOwnerEmailTaken          = sqlidentity.ErrOwnerEmailTaken
+	ErrMembershipRequired       = authsql.ErrMembershipRequired
+	ErrExpiryRequired           = authsql.ErrExpiryRequired
+	ErrRecoveryIdentityRequired = authsql.ErrRecoveryIdentityRequired
+	ErrMFAIdentityRequired      = authsql.ErrMFAIdentityRequired
+	ErrAlreadyProvisioned       = authsql.ErrAlreadyProvisioned
+	ErrOwnerEmailTaken          = authsql.ErrOwnerEmailTaken
 )
 
 const (
 	// DefaultSessionIdleTimeout is how long a session may go unused by
 	// default (WithSessionIdleTimeout).
-	DefaultSessionIdleTimeout = sqlidentity.DefaultSessionIdleTimeout
+	DefaultSessionIdleTimeout = authsql.DefaultSessionIdleTimeout
 	// OwnerRole is the role setup creates, holding every permission.
-	OwnerRole = setupcmd.OwnerRole
+	OwnerRole = authsetup.OwnerRole
 	// SetupPasswordVariable is the variable setup reads the password from.
-	SetupPasswordVariable = setupcmd.PasswordVariable
+	SetupPasswordVariable = authsetup.PasswordVariable
 	// MinOwnerPasswordRunes is the shortest owner password setup accepts.
-	MinOwnerPasswordRunes = setupcmd.MinPasswordRunes
+	MinOwnerPasswordRunes = authsetup.MinPasswordRunes
 )
 
 // WithSessionIdleTimeout ends a session nobody used for timeout (between
 // five minutes and 30 days; DefaultSessionIdleTimeout without it). Pass
 // config.Auth.SessionIdleTimeout (FORGE_AUTH_SESSION_IDLE_TIMEOUT).
 func WithSessionIdleTimeout(timeout time.Duration) Option {
-	return sqlidentity.WithSessionIdleTimeout(timeout)
+	return authsql.WithSessionIdleTimeout(timeout)
 }
 
 // New returns the identity repository on db, which forge-go/mysql.Open
 // returns. The tables come from Migrations.
 func New(db *sqldb.DB, options ...Option) (*Repository, error) {
-	return sqlidentity.New(db, dialect, options...)
+	return authsql.New(db, dialect, options...)
 }
 
 // NewLoginThrottler returns a LoginThrottler for config, which must be valid.
 func NewLoginThrottler(db *sqldb.DB, config auth.LoginThrottleConfig) (*LoginThrottler, error) {
-	return sqlidentity.NewLoginThrottler(db, dialect, config)
+	return authsql.NewLoginThrottler(db, dialect, config)
 }
 
 // NewRecoveryThrottler returns a LoginThrottler with
@@ -90,7 +90,7 @@ func NewRecoveryThrottler(db *sqldb.DB) (*LoginThrottler, error) {
 }
 
 // SetupOption configures SetupCommand.
-type SetupOption func(*setupcmd.Config)
+type SetupOption func(*authsetup.Config)
 
 // SetupOrganizations says whether the application has organizations
 // (`forge new --tenants`, or converted by `forge generate tenancy`): setup
@@ -98,7 +98,7 @@ type SetupOption func(*setupcmd.Config)
 // only and creates the one hidden organization (auth.DefaultTenantSlug).
 // Without this option setup requires --org.
 func SetupOrganizations(enabled bool) SetupOption {
-	return func(config *setupcmd.Config) { config.Organizations = enabled }
+	return func(config *authsetup.Config) { config.Organizations = enabled }
 }
 
 // SetupCommand returns the "setup" subcommand: it creates the first
@@ -110,19 +110,19 @@ func SetupOrganizations(enabled bool) SetupOption {
 // The password comes from FORGE_SETUP_PASSWORD, one line of standard input
 // (--password-stdin) or a terminal prompt, never an argument.
 func SetupCommand(options ...SetupOption) command.Command {
-	config := setupcmd.Config{Organizations: true, Provision: sqlidentity.Provision(open, dialect)}
+	config := authsetup.Config{Organizations: true, Provision: authsql.Provision(open, dialect)}
 	for _, option := range options {
 		if option != nil {
 			option(&config)
 		}
 	}
-	return setupcmd.Command(config)
+	return authsetup.Command(config)
 }
 
 // Migrations returns the identity migrations rooted at "." so they can be
 // passed to forge-go/mysql.CommandsFromSets or mysqltest.NewMigrated.
 func Migrations() fs.FS {
-	return sqlidentity.Migrations(migrations)
+	return authsql.Migrations(migrations)
 }
 
 // open opens the database setup provisions.

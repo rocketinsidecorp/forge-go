@@ -271,8 +271,19 @@ func TestLegacyTimingFloorCalibrationAndDefaults(t *testing.T) {
 			t.Errorf("%s: floor on=%v", name, hasher.floor != nil)
 		}
 	}
-	if fresh, err := NewPasswordHasher(); err != nil || (fresh.floor != nil) != (DefaultPasswordAlgorithm == PasswordAlgorithmArgon2id) {
-		t.Fatalf("NewPasswordHasher() floor=%v err=%v", fresh.floor, err)
+	if fresh, err := NewPasswordHasher(); err != nil || (fresh.activeFloor() != nil) != (DefaultPasswordAlgorithm() == PasswordAlgorithmArgon2id) {
+		t.Fatalf("NewPasswordHasher() floor=%v err=%v", fresh.activeFloor(), err)
+	}
+	// A default hasher follows the registration: no floor while it writes
+	// PBKDF2 for want of Argon2id, which already costs PBKDF2 on every
+	// check; the floor once Argon2id is registered.
+	pending := unregisteredHasher(t)
+	if pending.floor == nil || pending.activeFloor() != nil || pending.Algorithm() != PasswordAlgorithmPBKDF2SHA256 {
+		t.Fatalf("default hasher without Argon2id: floor=%v active=%v algorithm=%q", pending.floor, pending.activeFloor(), pending.Algorithm())
+	}
+	pending.kdfs.register(fakeArgon2idKDF)
+	if !pbkdf2Build && (pending.activeFloor() == nil || pending.Algorithm() != PasswordAlgorithmArgon2id) {
+		t.Fatalf("default hasher after registration: active=%v algorithm=%q", pending.activeFloor(), pending.Algorithm())
 	}
 
 	// The slowest calibration counts, then the slowest legacy verification

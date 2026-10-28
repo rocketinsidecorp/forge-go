@@ -9,6 +9,9 @@
   [ADR 0045](0045-generated-mfa-settings-pages.md) (where the HTTP side of
   `auth` lives), [ADR 0023](0023-persistent-job-queue.md) (`queuecmd`),
   [ADR 0029](0029-hotwire-assets-and-live-updates.md) (`broadcast`'s imports)
+- **Amended by:** [ADR 0053](0053-dependency-free-core.md): `queue/internal/jobscmd`
+  is merged into `queuecmd`; the A-5 rule is now "`queuecmd` imports no
+  store; stores may delegate to `queuecmd`"
 - **Parity with:** Forge-Rust's crates already keep the domain apart from the
   HTTP adapter (the `forge-auth` crate depends on no HTTP crate); nothing to port.
 
@@ -79,6 +82,12 @@ wrong way:
 - **`queue/internal/jobscmd`** implements the `jobs` command. The stores'
   `Commands()` and `queuecmd.Commands(opener)` both use it; neither the
   stores nor `queuecmd` depends on the other.
+  *Amended by [ADR 0053](0053-dependency-free-core.md):* `jobscmd` is merged
+  into `queuecmd`, because a store that moves to its own Go module may not
+  import another module's internal package. The rule is now: `queuecmd`
+  imports no store, directly or through another package; the stores'
+  `Commands()` delegate to `queuecmd.Commands`. `queuecmd` stays a
+  command-line adapter over `queue.Admin` with no database in it.
 
 `architecture_test.go` enforces each direction (`TestImportRules`), with a
 unit test of the checker; reintroducing any of the forbidden imports fails

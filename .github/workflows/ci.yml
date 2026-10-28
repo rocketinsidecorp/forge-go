@@ -49,6 +49,9 @@ jobs:
       # forge deploy's SSH tests (internal/deploy) fail instead of skipping
       # when sshd, ssh or ssh-keygen is missing.
       FORGE_TEST_REQUIRE_SSHD: "true"
+      # The pseudo-terminal tests (internal/ptytest: the echo-off prompt, the
+      # colored log) fail instead of skipping when no pty can be set up.
+      FORGE_TEST_REQUIRE_PTY: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,6 +92,11 @@ jobs:
         # TestGeneratedTypeScript* run in the generated job below, which names
         # them and installs the pinned tsc they need.
         run: go test -race -count=1 -timeout 30m -skip '^(TestGeneratedApplication|TestGeneratedTypeScript.*)$' ./...
+      - name: Test the FIPS build of auth (forge_pbkdf2)
+        # A binary built with -tags forge_pbkdf2 writes PBKDF2 even with
+        # Argon2id registered (ADR 0048, ADR 0053); auth/sqlite's
+        # pbkdf2_build_test.go asserts it, the rest must pass as built.
+        run: go test -race -count=1 -tags forge_pbkdf2 ./auth/...
       - name: Benchmarks
         run: go test -run='^$' -bench=. -benchmem -timeout 30m ./...
       - name: Vulnerabilities
@@ -102,8 +110,15 @@ jobs:
     # Lean on purpose: no services, no Docker, no coverage, no race detector,
     # and only the packages whose tests are known to be portable (internal/devloop's
     # process tests are only proven on Linux; widen the list as macOS proves them).
+    # internal/terminal runs its termios ioctls as raw system calls through
+    # the syscall package, not libc (ADR 0053): its echo-off test, on an
+    # internal/ptytest pseudo-terminal, is the check that they work on macOS.
     runs-on: macos-latest
     timeout-minutes: 30
+    env:
+      # A pseudo-terminal that cannot be set up (a broken raw ioctl) fails the
+      # job instead of skipping the echo-off test.
+      FORGE_TEST_REQUIRE_PTY: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -114,7 +129,7 @@ jobs:
       - name: Build forge
         run: go build -o "$RUNNER_TEMP/forge" ./cmd/forge
       - name: Test (no database, no Docker)
-        run: go test -short -count=1 -timeout 20m ./router/... ./internal/deploy/...
+        run: go test -short -count=1 -timeout 20m ./router/... ./internal/deploy/... ./internal/terminal/... ./internal/ptytest/...
 
   generated:
     # forge new's applications, for every database: generated, vetted, built

@@ -672,6 +672,7 @@ rendered by `internal/cli/resource*.go` and passed through `gofmt`.
 | [0049](adr/0049-typescript-by-default.md) | TypeScript front end by default, compiled by `forge` with esbuild (no Node), `--js` to opt out; esbuild linked only by the CLI |
 | [0050](adr/0050-opt-in-authentication-and-organizations.md) | SQLite by default; authentication (`--auth`) and organizations (`--tenants`, PostgreSQL by default) opt-in; Forge identity on MySQL, MariaDB and SQLite; `forge generate authentication` and `tenancy` |
 | [0052](adr/0052-import-boundaries.md) | Import boundaries: `auth` without HTTP (`auth/authhttp`), a leaf `command` package, `config`, `broadcast` and the queue stores decoupled; enforced by `architecture_test.go` |
+| [0053](adr/0053-dependency-free-core.md) | A core that needs nothing (module split, step 1): Argon2id registered by the identity stores (`auth.RegisterArgon2id`, PBKDF2 and a fail-closed `503` without it), `internal/terminal` on `syscall`, `auth/authsetup`, `auth/authsql`, `jobscmd` merged into `queuecmd`, driver tests under `<db>/internal/integration`; `go list -deps -test` of the core reaches only the standard library |
 
 ADR numbers 0027 and 0028 are unassigned: the rate limiting, cache and file
 storage ADRs were drafted as 0026-0028, 0026 turned out to be taken by other

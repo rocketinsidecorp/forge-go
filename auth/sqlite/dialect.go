@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rocketinsidecorp/forge-go/auth/internal/sqlidentity"
+	"github.com/rocketinsidecorp/forge-go/auth/authsql"
 	"github.com/rocketinsidecorp/forge-go/fault"
 	"github.com/rocketinsidecorp/forge-go/sqldb"
 	forgesqlite "github.com/rocketinsidecorp/forge-go/sqlite"
@@ -17,7 +17,7 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// now is SQLite's current UTC time in sqlidentity.TimeFormat (millisecond
+// now is SQLite's current UTC time in authsql.TimeFormat (millisecond
 // precision, padded to six digits).
 const now = `strftime('%Y-%m-%d %H:%M:%f000', 'now')`
 
@@ -26,14 +26,14 @@ const now = `strftime('%Y-%m-%d %H:%M:%f000', 'now')`
 // reads need no FOR UPDATE, nothing is ever skipped as locked, and setup is
 // serialized by the transaction itself. The application's processes share
 // one host (ADR 0009), so the system clock SQLite reads is theirs too.
-var dialect = &sqlidentity.Dialect{
+var dialect = &authsql.Dialect{
 	Name: "sqlite",
 	Now:  now,
 	Ago:  `strftime('%Y-%m-%d %H:%M:%f000', 'now', ?)`,
 	AgoArg: func(d time.Duration) any {
 		return fmt.Sprintf("-%d.%06d seconds", d/time.Second, (d%time.Second)/time.Microsecond)
 	},
-	Time: func(t time.Time) any { return t.UTC().Format(sqlidentity.TimeFormat) },
+	Time: func(t time.Time) any { return t.UTC().Format(authsql.TimeFormat) },
 	InsertIgnore: func(table string, columns, key []string, rows int) string {
 		row := "(" + strings.TrimSuffix(strings.Repeat("?, ", len(columns)), ", ") + ")"
 		return "INSERT INTO " + table + " (" + strings.Join(columns, ", ") + ") VALUES " +

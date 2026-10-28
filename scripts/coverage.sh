@@ -71,20 +71,20 @@ gross_floor=95.0
 # Security-relevant packages held to package_floor percent of their own
 # statements (docs/TESTING.md, "Coverage"). Paths are relative to the module
 # root; each must exist and be measured. Package encryption is the
-# AES-GCM field encryption (docs/ENCRYPTION.md); internal/pgurl guards the
+# AES-GCM field encryption (docs/ENCRYPTION.md); postgres/internal/pgurl guards the
 # PostgreSQL URL parsing the connection security depends on.
 package_floor=95.0
 guarded=(
 	auth
 	auth/authhttp
-	auth/internal/sqlidentity
+	auth/authsql
 	auth/mysql
 	auth/postgres
 	auth/sqlite
 	credentials
 	csrf
 	encryption
-	internal/pgurl
+	postgres/internal/pgurl
 	postgres
 )
 

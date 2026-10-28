@@ -95,6 +95,11 @@ func (g *MFAStepUpGate) Check(ctx context.Context, subject uuid.UUID, source str
 	started := g.hasher.checkStarted()
 	login, ok, err := verifySubjectPassword(ctx, g.hasher, g.passwords, subject, proof.Password)
 	if err != nil {
+		if errors.Is(err, ErrPasswordAlgorithmUnavailable) {
+			// The password could not be checked: audited as failed, not
+			// denied.
+			g.record(ctx, action, SecurityOutcomeFailed, subject, key, auditFailed)
+		}
 		return MFAStepUpPass{}, err
 	}
 	if !ok {
@@ -148,9 +153,14 @@ func (g *MFAStepUpGate) Succeeded(ctx context.Context, pass MFAStepUpPass) error
 // denied audits a refused two-factor change as action denied. An audit
 // failure goes to auditFailed; the refusal stands.
 func (g *MFAStepUpGate) denied(ctx context.Context, action SecurityEventKind, subject uuid.UUID, key LoginThrottleKey, auditFailed func(error)) {
+	g.record(ctx, action, SecurityOutcomeDenied, subject, key, auditFailed)
+}
+
+// record audits action for subject with outcome.
+func (g *MFAStepUpGate) record(ctx context.Context, action SecurityEventKind, outcome SecurityOutcome, subject uuid.UUID, key LoginThrottleKey, auditFailed func(error)) {
 	event := SecurityEvent{
 		Kind:      action,
-		Outcome:   SecurityOutcomeDenied,
+		Outcome:   outcome,
 		ActorID:   subject,
 		SubjectID: subject,
 	}
